@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import { DEVICE_APPLICATION_CHUNK_WINDOW, negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 
@@ -9,7 +9,13 @@ class Socket extends EventEmitter {
   peer?: Socket
   closed = false
   frames: string[] = []
-  send(text: string) { this.frames.push(text); queueMicrotask(() => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) }) }
+  latencyMs = 0
+  send(text: string) {
+    this.frames.push(text)
+    const deliver = () => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) }
+    if (this.latencyMs) setTimeout(deliver, this.latencyMs)
+    else queueMicrotask(deliver)
+  }
   close() { if (this.closed) return; this.closed = true; this.emit('close'); this.peer?.close() }
 }
 const binding = { mainId: 'main', deviceId: 'device', workerInstallationId: 'installation', keyRevision: 1, authorizationRevision: 1, bootId: 'boot', connectionEpoch: 'epoch', connectionGeneration: 1 }
@@ -55,6 +61,57 @@ describe('authenticated namespace carrier mechanics', () => {
       await flush(); expect(entered).toHaveBeenCalled(); expect(settled).toBe(false)
       release(); expect((await result).payload).toEqual({ accepted: true })
     } finally { await pair.close() }
+  })
+  it('transfers a bounded window at 50ms round-trip latency without resending packet bytes', async () => {
+    vi.useFakeTimers()
+    const bytes = new Uint8Array(262_144)
+    const received = vi.fn()
+    const pair = setup(async (_payload, context) => {
+      received(context.bytes)
+      return { payload: 'received' }
+    })
+    pair.rawMain.latencyMs = 25
+    pair.rawWorker.latencyMs = 25
+    try {
+      let settled = false
+      const startedAt = Date.now()
+      const response = pair.main.request('execution-v1', {}, { bytes }).then(value => {
+        settled = true
+        return value
+      })
+      await flush()
+      await vi.advanceTimersByTimeAsync(75)
+      const chunks = pair.rawMain.frames.map(frame => JSON.parse(frame) as { type: string })
+        .filter(frame => frame.type === 'application-chunk')
+      expect(chunks).toHaveLength(DEVICE_APPLICATION_CHUNK_WINDOW)
+      expect(received).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(725)
+      expect(settled).toBe(true)
+      expect(await response).toEqual({ payload: 'received' })
+      expect(Date.now() - startedAt).toBeLessThan(1000)
+      expect(Buffer.from(received.mock.calls[0]![0]).equals(Buffer.from(bytes))).toBe(true)
+      const sentBytes = pair.rawMain.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
+        .filter(frame => frame.type === 'application-chunk')
+        .reduce((total, frame) => total + Buffer.from(frame.data!, 'base64').byteLength, 0)
+      expect(sentBytes).toBe(bytes.byteLength + Buffer.byteLength('{}'))
+      expect(pair.rawMain.frames.reduce((total, frame) => total + Buffer.byteLength(frame), 0)).toBeLessThan(370_000)
+    } finally { await pair.close(); await vi.runOnlyPendingTimersAsync() }
+  })
+  it('bounds unacknowledged chunks across simultaneous uploads', async () => {
+    const pair = setup(async payload => ({ payload }))
+    const send = pair.rawWorker.send.bind(pair.rawWorker)
+    pair.rawWorker.send = text => {
+      const frame = JSON.parse(text) as { type: string; offset?: number }
+      if (frame.type !== 'application-ack' || frame.offset === 0) send(text)
+    }
+    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'x'.repeat(65_536)))
+    for (const request of requests) void request.catch(() => {})
+    try {
+      await flush()
+      const chunks = pair.rawMain.frames.filter(frame => JSON.parse(frame).type === 'application-chunk')
+      expect(chunks).toHaveLength(DEVICE_APPLICATION_CHUNK_WINDOW)
+      expect(chunks.reduce((total, frame) => total + Buffer.byteLength(frame), 0)).toBeLessThan(65_536)
+    } finally { await pair.close(); await Promise.allSettled(requests) }
   })
   it('domain handler denies insufficient scoped grants without acquiring authority', async () => {
     const launched = vi.fn()

@@ -1,7 +1,8 @@
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_IN_FLIGHT,
+  DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_CHUNK_WINDOW,
+  DEVICE_APPLICATION_IN_FLIGHT,
   parseExtensionDescriptors, type DeviceApplicationResult, type DeviceExtensionDescriptor, type DeviceNegotiatedExtension,
 } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -44,7 +45,8 @@ export class DeviceApplicationChannel {
   private readonly handlers = new Map<string, AbortController>()
   private readonly replies = new Map<string, AbortController>()
   private readonly uploads = new Map<string, AbortController>()
-  private readonly acknowledgements = new Map<string, { offset: number; resolve(): void; reject(error: Error): void }>()
+  private readonly acknowledgements = new Map<string, Map<number, { resolve(): void; reject(error: Error): void }>>()
+  private readonly chunkTransmissions = new Set<Promise<void>>()
   private inboundBytes = 0
   private outboundBytes = 0
   private failure: Error | undefined
@@ -120,15 +122,36 @@ export class DeviceApplicationChannel {
   private async waitAck(id: string, offset: number, signal: AbortSignal, send: () => void) {
     this.current()
     let abort: (() => void) | undefined
+    const receipts = this.acknowledgements.get(id) ?? new Map()
+    this.acknowledgements.set(id, receipts)
     const acknowledged = new Promise<void>((resolve, reject) => {
-      this.acknowledgements.set(id, { offset, resolve, reject })
+      receipts.set(offset, { resolve, reject })
       abort = () => reject(new DeviceApplicationError('cancelled'))
       signal.addEventListener('abort', abort, { once: true })
       if (signal.aborted) abort()
       else try { send() } catch (error) { reject(error as Error) }
     })
     try { await withDeviceDeadline(acknowledged, this.abort.signal, 10_000) }
-    finally { if (abort) signal.removeEventListener('abort', abort); this.acknowledgements.delete(id) }
+    finally {
+      if (abort) signal.removeEventListener('abort', abort)
+      receipts.delete(offset)
+      if (!receipts.size) this.acknowledgements.delete(id)
+    }
+  }
+  private async sendChunk(id: string, offset: number, chunk: Buffer, signal: AbortSignal) {
+    // A channel-wide window also bounds queued socket bytes across concurrent uploads.
+    while (this.chunkTransmissions.size >= DEVICE_APPLICATION_CHUNK_WINDOW) {
+      await withDeviceDeadline(Promise.race(this.chunkTransmissions), signal, 10_000)
+    }
+    this.current()
+    if (signal.aborted) throw new DeviceApplicationError('cancelled')
+    const transmission = this.waitAck(id, offset + chunk.byteLength, signal, () => {
+      sendFrame(this.options.socket, { type: 'application-chunk', id, offset, data: chunk.toString('base64') })
+    })
+    const finished = transmission.then(() => undefined, () => undefined)
+    this.chunkTransmissions.add(finished)
+    try { await transmission }
+    finally { this.chunkTransmissions.delete(finished) }
   }
   private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal) {
     this.current()
@@ -144,9 +167,13 @@ export class DeviceApplicationChannel {
     try {
       await this.waitAck(id, 0, upload.signal, () => sendFrame(this.options.socket, { type: 'application-open', id, namespace, version, kind, jsonBytes: json.byteLength, binaryBytes: bytes?.byteLength ?? 0 }))
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
-      for (let offset = 0; offset < packet.byteLength; offset += DEVICE_APPLICATION_CHUNK_BYTES) {
-        const chunk = packet.subarray(offset, offset + DEVICE_APPLICATION_CHUNK_BYTES)
-        await this.waitAck(id, offset + chunk.byteLength, upload.signal, () => sendFrame(this.options.socket, { type: 'application-chunk', id, offset, data: chunk.toString('base64') }))
+      const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * DEVICE_APPLICATION_CHUNK_WINDOW
+      for (let start = 0; start < packet.byteLength; start += windowBytes) {
+        const chunks: Promise<void>[] = []
+        for (let offset = start; offset < Math.min(start + windowBytes, packet.byteLength); offset += DEVICE_APPLICATION_CHUNK_BYTES) {
+          chunks.push(this.track(this.sendChunk(id, offset, packet.subarray(offset, offset + DEVICE_APPLICATION_CHUNK_BYTES), upload.signal)))
+        }
+        await Promise.all(chunks)
       }
     } finally { this.outboundBytes -= size; this.uploads.delete(id); signal.removeEventListener('abort', cancel); upload.abort() }
   }
@@ -157,9 +184,10 @@ export class DeviceApplicationChannel {
     const id = frame.id
     if (frame.type === 'application-ack') {
       if (typeof frame.offset !== 'number' || !Number.isSafeInteger(frame.offset) || frame.offset < 0) throw new DeviceConnectionError('malformed-frame')
-      const ack = this.acknowledgements.get(id)
-      if (!ack) return // Cancellation can race a chunk receipt; receipts acquire no authority.
-      if (frame.offset !== ack.offset) throw new DeviceConnectionError('malformed-frame')
+      const receipts = this.acknowledgements.get(id)
+      if (!receipts) return // Cancellation can race a chunk receipt; receipts acquire no authority.
+      const ack = receipts.get(frame.offset)
+      if (!ack) throw new DeviceConnectionError('malformed-frame')
       ack.resolve(); return
     }
     if (frame.type === 'application-cancel') {
@@ -267,7 +295,7 @@ export class DeviceApplicationChannel {
     for (const controller of this.handlers.values()) controller.abort()
     for (const controller of this.replies.values()) controller.abort()
     for (const controller of this.uploads.values()) controller.abort()
-    for (const ack of this.acknowledgements.values()) ack.reject(error)
+    for (const receipts of this.acknowledgements.values()) for (const ack of receipts.values()) ack.reject(error)
     this.assemblies.clear(); this.options.socket.close()
   }
 }

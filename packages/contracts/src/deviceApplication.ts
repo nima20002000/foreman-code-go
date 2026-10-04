@@ -2,6 +2,7 @@
 export const DEVICE_APPLICATION_JSON_BYTES = 1_048_576
 export const DEVICE_APPLICATION_BINARY_BYTES = 1_048_576
 export const DEVICE_APPLICATION_CHUNK_BYTES = 8_192
+export const DEVICE_APPLICATION_CHUNK_WINDOW = 4
 export const DEVICE_APPLICATION_IN_FLIGHT = 8
 export const DEVICE_APPLICATION_BUFFER_BYTES = 4_194_304
 export type DeviceExtensionRole = 'client' | 'server' | 'duplex'
