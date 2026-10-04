@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, open, readFile, readdir, readlink, rename, rmdir, unlink,
+import { access, link, lstat, mkdir, open, readFile, readdir, readlink, rename, rmdir, unlink,
   type FileHandle } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { FileRevision } from '@foreman-code/contracts/files'
@@ -185,48 +185,70 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
     } finally { await file.close() }
   }
 
-  replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void> {
+  async replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void> {
+    checkFileCondition(sha256(await this.snapshot(handle, signal)) === expectedSha256,
+      'FILE_ARTIFACT_CONFLICT', 'The native working copy changed during the file-tool edit.')
     return this.exclusive(async () => {
       const entry = this.entries.get(handle)
-      checkFileCondition(entry?.writable && !entry.cleanup, 'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
+      checkFileCondition(entry?.writable && !entry.cleanup,
+        'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
       checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
         'FILE_ARTIFACT_TOO_LARGE', 'The edited working copy exceeds the file limit.')
       const root = await this.rootDirectory()
-      const held = await entry.directory.stat()
-      const named = await lstat(at(root, handle))
-      checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
-        'FILE_ARTIFACT_CHANGED', 'The registered working-copy directory moved.')
-      const temporaryName = `.${randomUUID()}.tmp`
-      const temporaryPath = at(entry.directory, temporaryName)
-      const temporary = await open(temporaryPath,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
-      const errors: unknown[] = []
+      await assertDirectoryEntry(root, handle, entry.directory)
+      const versionName = `.versions-${randomUUID()}`
+      await mkdir(at(entry.directory, versionName), { mode: 0o700 })
+      const versions = await open(at(entry.directory, versionName), directoryFlags)
       try {
-        await temporary.writeFile(bytes)
-        await temporary.sync()
-        const candidate = await temporary.stat()
-        const candidatePath = await lstat(temporaryPath)
-        const currentDirectory = await lstat(at(root, handle))
-        checkFileCondition(candidate.isFile() && candidate.nlink === 1
-          && candidatePath.dev === candidate.dev && candidatePath.ino === candidate.ino
-          && currentDirectory.dev === held.dev && currentDirectory.ino === held.ino && currentDirectory.isDirectory(),
-        'FILE_ARTIFACT_CHANGED', 'The registered working copy moved during replacement.')
-        checkFileCondition(sha256(await this.snapshotReady(handle, signal)) === expectedSha256,
-          'FILE_ARTIFACT_CONFLICT', 'The native working copy changed during the file-tool edit.')
+        const edited = await open(at(versions, 'edited'),
+          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+        try {
+          await edited.writeFile(bytes)
+          await edited.sync()
+        } finally {
+          await edited.close()
+        }
         signal.throwIfAborted()
-        // Rename the registered leaf, never open or truncate a model-controlled replacement path.
-        await rename(temporaryPath, at(entry.directory, entry.filename))
-        const publishedDirectory = await lstat(at(root, handle))
-        checkFileCondition(publishedDirectory.dev === held.dev && publishedDirectory.ino === held.ino
-          && publishedDirectory.isDirectory(), 'FILE_ARTIFACT_CHANGED', 'The working-copy path moved during replacement.')
-      } catch (error) {
-        errors.push(error)
+        await assertDirectoryEntry(root, handle, entry.directory)
+        await assertDirectoryEntry(entry.directory, versionName, versions)
+        // Keep the displaced inode: native writers may still have it open, or rename a new version here.
+        await rename(at(entry.directory, entry.filename), at(versions, 'native'))
+        await versions.sync()
+        await entry.directory.sync()
+        try {
+          const displaced = await open(at(versions, 'native'), constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            const stat = await displaced.stat()
+            checkFileCondition(stat.isFile() && stat.nlink === 1 && stat.size <= this.options.maxFileBytes,
+              'FILE_ARTIFACT_INVALID', 'The displaced working copy must remain a bounded regular file.')
+            checkFileCondition(sha256(await displaced.readFile()) === expectedSha256,
+              'FILE_ARTIFACT_CONFLICT', 'The native edit and file-tool edit are retained in the versions directory.')
+          } finally {
+            await displaced.close()
+          }
+          // link is create-only: a concurrent native rename or write at the leaf is never overwritten.
+          await link(at(versions, 'edited'), at(entry.directory, entry.filename))
+          await unlink(at(versions, 'edited'))
+          await entry.directory.sync()
+        } catch (error) {
+          try {
+            await link(at(versions, 'native'), at(entry.directory, entry.filename))
+            await unlink(at(versions, 'native'))
+          } catch (restoreError) {
+            if (code(restoreError) !== 'EEXIST') {
+              throw new AggregateError([error, restoreError], 'Working-copy versions are retained for recovery.')
+            }
+          }
+          if (code(error) === 'EEXIST') {
+            throw new OpenCodeFileError('FILE_ARTIFACT_CONFLICT',
+              'A concurrent native edit remains at the working-copy path; both other versions are retained.')
+          }
+          throw error
+        }
+        await assertDirectoryEntry(root, handle, entry.directory)
+      } finally {
+        await versions.close()
       }
-      try { await temporary.close() } catch (error) { errors.push(error) }
-      try { await unlink(temporaryPath) }
-      catch (error) { if (code(error) !== 'ENOENT') errors.push(error) }
-      if (errors.length === 1) throw errors[0]
-      if (errors.length > 1) throw new AggregateError(errors, 'Working-copy replacement and temporary cleanup failed.')
     })
   }
 

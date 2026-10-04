@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'vitest'
@@ -153,4 +153,51 @@ describe('OpenCode owned file cleanup', () => {
       finally { await f.close() }
     }
   })
+})
+
+it('retains a native write between snapshot validation and replacement, including writes through an open descriptor', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'opencode-replacement-'))
+  const original = Buffer.from('base')
+  const revision: FileRevision = { fileId: randomUUID(), revisionId: randomUUID(), filename: 'working.md',
+    mediaType: 'text/markdown', byteSize: original.length, sha256: sha256(original), origin: 'upload',
+    createdAt: new Date().toISOString() }
+  let nativePath = ''
+  class RacingHost extends LocalOpenCodeExecutionFiles {
+    override async snapshot(handle: string, signal: AbortSignal) {
+      const bytes = await super.snapshot(handle, signal)
+      await writeFile(nativePath, 'concurrent native edit')
+      return bytes
+    }
+  }
+  const host = new RacingHost({ root, executionHostId: 'runner', maxFileBytes: 1024,
+    assertSourceIsolation: async () => undefined })
+  const handle = randomUUID()
+  try {
+    nativePath = (await host.materialize({ handle, revision, bytes: original, writable: true }, fileSignal())).path
+    await assert.rejects(host.replace(handle, Buffer.from('tool edit'), sha256(original), fileSignal()),
+      hasFileCode('FILE_ARTIFACT_CONFLICT'))
+    assert.equal(await readFile(nativePath, 'utf8'), 'concurrent native edit')
+    const versions = (await readdir(dirname(nativePath))).find(name => name.startsWith('.versions-'))!
+    assert.equal(await readFile(join(dirname(nativePath), versions, 'edited'), 'utf8'), 'tool edit')
+    await host.remove(handle)
+
+    const ordinary = new LocalOpenCodeExecutionFiles({ root, executionHostId: 'runner', maxFileBytes: 1024,
+      assertSourceIsolation: async () => undefined })
+    const file = await ordinary.materialize({ handle, revision, bytes: original, writable: true }, fileSignal())
+    const writer = await open(file.path, 'r+')
+    try {
+      await ordinary.replace(handle, Buffer.from('tool edit'), sha256(original), fileSignal())
+      await writer.truncate(0)
+      await writer.writeFile('late native edit')
+      assert.equal(await readFile(file.path, 'utf8'), 'tool edit')
+      const saved = (await readdir(dirname(file.path))).find(name => name.startsWith('.versions-'))!
+      assert.equal(await readFile(join(dirname(file.path), saved, 'native'), 'utf8'), 'late native edit')
+    } finally {
+      await writer.close()
+      await ordinary.remove(handle)
+    }
+  } finally {
+    await host.remove(handle)
+    await rm(root, { recursive: true, force: true })
+  }
 })
