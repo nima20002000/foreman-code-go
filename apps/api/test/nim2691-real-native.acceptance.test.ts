@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
@@ -60,9 +59,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
     const noRoute = 'noRoute' in scenario && scenario.noRoute
     const finalAccepted = 'finalAccepted' in scenario && scenario.finalAccepted
     await nim2691TaskDatabase(async (pool, directory, suppliedUrl) => {
-      const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
-      const projectPath = await mkdtemp(join(repositoryRoot, '.nim2691-native-project-'))
+      const projectPath = join(directory, 'workspaces')
       const runtimeRoot = join(directory, 'runtime')
+      await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
       await installAppLauncher()
       await mkdir(join(projectPath, '.codex'))
