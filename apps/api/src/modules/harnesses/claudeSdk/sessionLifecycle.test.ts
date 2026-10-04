@@ -36,7 +36,8 @@ async function drain(events: AsyncIterable<NativeHarnessEvent>) {
 }
 
 function fixture(sdkOptions: Record<string, unknown> = {}) {
-  const frames = new ClaudeBoundedQueue<unknown>(32)
+  let frames = new ClaudeBoundedQueue<unknown>(32)
+  let queryCount = 0
   const receipts = new Map<string, string>()
   const validate = vi.fn(async (identity: ClaudeCallbackIdentity) => {
     expect(identity.ownerPrincipalId).toBe('sender')
@@ -53,15 +54,18 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
   const opened = new Promise<void>(resolve => { ready = resolve })
-  const close = vi.fn(() => frames.close())
+  const close = vi.fn(() => undefined)
   const query = vi.fn<ClaudeSdkClient['query']>(input => {
+    if (queryCount++ > 0) frames = new ClaudeBoundedQueue<unknown>(32)
+    const output = frames
     messages = input.prompt[Symbol.asyncIterator]()
     ready()
     void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
       claude_code_version: qualification.cliVersion, cwd: scope.cwd })
     return {
-      [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
-      interrupt: async () => undefined, initializationResult: async () => ({}), close,
+      [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+      interrupt: async () => undefined, initializationResult: async () => ({}),
+      close: () => { close(); output.close() },
     }
   })
   const client: ClaudeSdkClient = {
@@ -82,7 +86,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   }
   const manager = createClaudeNativeSessionManager({
     runner, scope, sdkOptions: { ...sdkOptions, ...callbacks }, qualification,
-    cancelPendingRequests: () => bridge.close(),
+    cancelPendingRequests: () => bridge.cancelPendingRequests(),
     decodeFactory() {
       const normalizer = createClaudeEventNormalizer({
         owner: { ownerId: 'sender', attemptId: 'conversation', generation: 'fixture' },
@@ -108,7 +112,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     type: 'result', session_id: saved.nativeSessionId, uuid: `result-${promptUuid}`,
     user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done', ...extra,
   })
-  return { frames, client, manager, callbacks, bridge, validate, close, query, offers, input,
+  return { get frames() { return frames }, client, manager, callbacks, bridge, validate, close, query, offers, input,
     nextMessage, assistant, result }
 }
 
@@ -258,7 +262,7 @@ describe('Claude local command results', () => {
 })
 
 describe('Claude resident attach and history reconciliation', () => {
-  it('reuses only an open compatible query and retains terminal evidence after its failure', async () => {
+  it('resumes a failed idle query with the same manager and retains receipts without replay', async () => {
     const f = fixture()
     try {
       const session = await f.manager.attachSession(saved, start)
@@ -274,31 +278,63 @@ describe('Claude resident attach and history reconciliation', () => {
       await output
       f.frames.close(new Error('native query failed'))
       await vi.waitFor(() => expect(f.close).toHaveBeenCalled())
-      await expect(f.manager.attachSession(saved, start)).rejects.toMatchObject({
-        result: { error: { code: 'CLAUDE_SESSION_UNAVAILABLE' } },
-      })
       expect((await f.manager.reconcile(session, 'completed')).terminalResult).toEqual({ outcome: 'succeeded', output: 'done' })
-      expect(f.query).toHaveBeenCalledTimes(1)
+      f.client.getSessionInfo = vi.fn<typeof f.client.getSessionInfo>()
+        .mockRejectedValueOnce(new Error('Native history unavailable'))
+        .mockImplementation(async sessionId => ({ sessionId }))
+      await expect(f.manager.attachSession(saved, start)).rejects.toThrow('Native history unavailable')
+      expect((await f.manager.reconcile(session, 'completed')).terminalResult).toEqual({ outcome: 'succeeded', output: 'done' })
       expect(f.offers).toHaveBeenCalledTimes(1)
-      const fresh = fixture()
-      try {
-        const resumed = await fresh.manager.attachSession(saved, start)
-        expect(resumed).toEqual(saved)
-        expect(fresh.query.mock.calls[0]?.[0].options.resume).toBe(saved.nativeSessionId)
-        expect(fresh.offers).not.toHaveBeenCalled()
-      } finally { await fresh.manager.dispose?.() }
+      const resumed = await f.manager.attachSession(saved, start)
+      expect(resumed).toEqual(saved)
+      expect(f.query).toHaveBeenCalledTimes(2)
+      expect(f.query.mock.calls[1]?.[0].options.resume).toBe(saved.nativeSessionId)
+      expect(f.offers).toHaveBeenCalledTimes(1)
+      expect((await f.manager.reconcile(resumed, 'completed')).terminalResult).toEqual({ outcome: 'succeeded', output: 'done' })
+      expect((await f.manager.history(resumed)).events).toContainEqual(expect.objectContaining({
+        type: 'claude.session.failed', payload: expect.objectContaining({ error: {
+          code: 'CLAUDE_NATIVE_STREAM_ERROR', message: 'native query failed',
+        } }),
+      }))
+      expect(() => f.manager.startTurn(resumed, f.input('completed'))).toThrow('already offered')
+      const continued = drain(f.manager.startTurn(resumed, f.input('continued')))
+      const next = await f.nextMessage()
+      void f.assistant('continued-tool', [{ type: 'tool_use', id: 'continued-tool', name: 'Read', input: {} }], next.uuid)
+      expect(await f.callbacks.canUseTool!('Read', {}, {
+        signal: new AbortController().signal, toolUseID: 'continued-tool', requestId: 'continued-control',
+      })).toMatchObject({ behavior: 'allow' })
+      void f.result(next.uuid)
+      await continued
+      expect(f.offers).toHaveBeenCalledTimes(2)
     } finally { await f.manager.dispose?.() }
   })
 
-  it('rejects an ended resident query before offering more input', async () => {
+  it('resumes an ended resident query without offering input', async () => {
     const f = fixture()
     try {
       await f.manager.attachSession(saved, start)
       f.frames.close()
       await tick()
-      await expect(f.manager.attachSession(saved, start)).rejects.toThrow('query ended')
-      expect(f.query).toHaveBeenCalledTimes(1)
+      expect(await f.manager.attachSession(saved, start)).toEqual(saved)
+      expect(f.query).toHaveBeenCalledTimes(2)
+      expect(f.query.mock.calls[1]?.[0].options.resume).toBe(saved.nativeSessionId)
       expect(f.offers).not.toHaveBeenCalled()
+    } finally { await f.manager.dispose?.() }
+  })
+
+  it('keeps an uncertain active input fenced when its query fails', async () => {
+    const f = fixture()
+    try {
+      const session = await f.manager.attachSession(saved, start)
+      const observer = f.manager.startTurn(session, f.input('active'))[Symbol.asyncIterator]()
+      await f.nextMessage()
+      f.frames.close(new Error('native query failed'))
+      await expect(observer.next()).rejects.toThrow('native query failed')
+      await expect(f.manager.attachSession(saved, start)).rejects.toMatchObject({
+        result: { error: { code: 'CLAUDE_TURN_ACTIVE' } },
+      })
+      expect(f.query).toHaveBeenCalledTimes(1)
+      expect(f.offers).toHaveBeenCalledTimes(1)
     } finally { await f.manager.dispose?.() }
   })
 
