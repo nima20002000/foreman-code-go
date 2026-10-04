@@ -132,7 +132,13 @@ it('distinguishes loading choices from missing human-approved setup', async () =
   expect(screen.getByRole('button', { name: 'Save job definition' })).toBeDisabled()
 })
 it('explains unavailable computer roots even when choices exist and preserves their specific reasons', async () => {
-  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [{ id: 'blocked', label: 'Computer', target: definition.spec.target, ready: false, reasons: ['SOURCE_READ_ONLY'] }], sources: [definition.spec.source], policies: [definition.spec.policy] })))
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({
+    targets: [{ id: 'blocked', label: 'Computer', target: definition.spec.target,
+      ready: false, reasons: ['SOURCE_READ_ONLY'] }],
+    sources: [definition.spec.source], policies: [definition.spec.policy],
+    autoPolicies: [{ policy: jobPolicyRequirements(definition.spec.policy),
+      limits: { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 } }],
+  })))
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} /></QueryClientProvider>)
   expect(await screen.findByText('No computer and validated source root')).toBeInTheDocument()
   expect(screen.getByRole('option', { name: 'Computer — SOURCE_READ_ONLY' })).toBeDisabled()
