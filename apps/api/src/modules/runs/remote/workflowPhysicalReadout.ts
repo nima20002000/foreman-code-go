@@ -119,6 +119,7 @@ interface Retained {
   expiresAt: number
   bytes: number
   aliases: readonly {key:string;source:WorkflowOriginalNativeSource}[]
+  assertOwnerCurrent(): Promise<void>
   assertCurrent(): Promise<void>
   observe(): NativeLaunchObservation
   closure(): NativeLaunchObservation | null
@@ -148,7 +149,7 @@ export class InstalledWorkflowPhysicalReadouts {
   }
   clear() { this.originals.clear();this.events.clear(); this.byteSize = 0 }
   remember(input: { readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; source: WorkflowOriginalNativeSource;
-    leaseExpiresAt: string; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null }): void {
+    leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null }): void {
     this.purgeExpired()
     const readout = freezeTree(RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)), receipt = readout.receipt
     if (!receipt.native || readout.session.nativeSessionId !== receipt.native.sessionId) return unavailable()
@@ -172,7 +173,7 @@ export class InstalledWorkflowPhysicalReadouts {
     const nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
     if ((!previous && entries.size >= 128) || nextByteSize > 8 * 1024 * 1024) throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
     const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,
-      assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
+      assertOwnerCurrent: input.assertOwnerCurrent, assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
     entries.set(key,retained)
     this.originals.set(receipt.intent.operationId, entries); this.byteSize = nextByteSize
     const events=this.events.get(receipt.intent.operationId)??new Map<string,{retained:Retained;source:WorkflowOriginalNativeSource}>()
@@ -203,7 +204,8 @@ export class InstalledWorkflowPhysicalReadouts {
     const direct=entries?.get(key),event=this.events.get(input.intent.operationId)?.get(key),retained=direct??event?.retained
     if(retained) {
       if(!isDeepStrictEqual(retained.receipt.intent,input.intent)||!isDeepStrictEqual(retained.placement,input.placement))return unavailable()
-      try {await retained.assertCurrent()}catch(error){this.purge(input.intent.operationId);throw error}
+      // ACK only retires in-memory observations; physical checks still gate reads.
+      try {await retained.assertOwnerCurrent()}catch(error){this.purge(input.intent.operationId);throw error}
       if(direct) {
         entries!.delete(key);this.byteSize-=retained.bytes
         for(const alias of retained.aliases)if(this.events.get(input.intent.operationId)?.get(alias.key)?.retained===retained)this.events.get(input.intent.operationId)?.delete(alias.key)

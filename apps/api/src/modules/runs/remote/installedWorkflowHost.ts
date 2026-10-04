@@ -457,13 +457,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
               ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
               ...(receipt.terminal?.result?{output:{kind:'text-only',result:receipt.terminal.result}}:{})})
-            physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:resident.leaseExpiresAt,
-              assertCurrent:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
-                const logged=await(await journal()).status(resident.intent.operationId)
-                if(logged.status!=='known'||!isDeepStrictEqual(logged.receipt.intent,resident.intent)
-                  ||logged.receipt.native?.sessionId!==resident.session?.nativeSessionId
-                  ||logged.receipt.native?.processIdentityDigest!==resident.native?.native.processIdentityDigest)unavailable('original_physical_owner_changed')
-                current(context.binding)
+            const assertOwnerCurrent = async () => {
+              current(context.binding)
+              await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
+              const logged = await(await journal()).status(resident.intent.operationId)
+              if(logged.status!=='known'||!isDeepStrictEqual(logged.receipt.intent,resident.intent)
+                ||logged.receipt.native?.sessionId!==resident.session?.nativeSessionId
+                ||logged.receipt.native?.processIdentityDigest!==resident.native?.native.processIdentityDigest)unavailable('original_physical_owner_changed')
+              current(context.binding)
+            }
+            physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:resident.leaseExpiresAt,assertOwnerCurrent,
+              assertCurrent:async()=>{
+                await assertOwnerCurrent()
                 const approvedRoots=ApprovedRootAllowlistSchema.parse(await input.approvedRoots())
                 await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
                   authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read');current(context.binding)}})

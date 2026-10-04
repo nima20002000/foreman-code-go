@@ -327,7 +327,7 @@ async function physicalFixture(relativeCwd='') {
 describe('original physical source selectors and Main SQL consumer',()=>{
   it('retains the exact earlier source, never reconstructs latest history, and expires/purges selectors',async()=>{
     const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),assertCurrent=vi.fn(async()=>{})
-    const input={readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertCurrent,
+    const input={readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:assertCurrent,assertCurrent,
       observe:()=>matchingOriginalRegistryLaunch(f.registry,f.captured.launch),closure:()=>null}
     readouts.remember(input)
     const selector={intent:f.intent,placement:f.placement,receiptSequence:f.readout.receipt.sequence,sourceDigest:remoteWorkflowSourceDigest(f.source)}
@@ -382,7 +382,7 @@ describe('original physical source selectors and Main SQL consumer',()=>{
 describe('bounded physical readout retention and actual terminal correlation',()=>{
   it('expires originals without selecting current/latest data',async()=>{
     const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),now=Date.now()
-    readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertCurrent:async()=>{},
+    readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},
       observe:()=>f.captured.launch,closure:()=>null})
     vi.spyOn(Date,'now').mockReturnValue(now+60_001)
     await expect(readouts.read({intent:f.intent,placement:f.placement,receiptSequence:f.readout.receipt.sequence,sourceDigest:remoteWorkflowSourceDigest(f.source)})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
@@ -393,11 +393,11 @@ describe('bounded physical readout retention and actual terminal correlation',()
     for(let index=0;index<128;index++) {
       const source={type:'history' as const,history:{...f.source.history,nextSequence:index}}
       readouts.remember({readout:{...f.readout,history:source.history},placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',
-        assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
+        assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
     }
     const source={type:'history' as const,history:{...f.source.history,nextSequence:128}}
     expect(()=>readouts.remember({readout:{...f.readout,history:source.history},placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',
-      assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('retention is full')
+      assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('retention is full')
     await f.sqlConnection.close()
   })
   it.each(['matching','closure-digest','result-digest','foreign-result','missing-positive-closure','foreign-closure-launch'] as const)('requires original provider + positive closure + exact text output for %s terminal proof',async defect=>{
@@ -435,7 +435,7 @@ it('bounds the global original-source byte window and frees it only through expl
     const history={...f.source.history,nextSequence:index,terminalResult:{outcome:'succeeded' as const,output:{text:'x'.repeat(800_000)}}}
     try {
       readouts.remember({readout:{...f.readout,history},placement:f.placement,source:{type:'history',history},leaseExpiresAt:'2099-01-01T00:00:00.000Z',
-        assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
+        assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
       accepted++
     } catch(error) {
       expect(error).toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_BACKPRESSURE'})
@@ -445,13 +445,13 @@ it('bounds the global original-source byte window and frees it only through expl
   expect(accepted).toBeGreaterThan(0);expect(accepted).toBeLessThan(128)
   readouts.purge(f.intent.operationId)
   expect(()=>readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',
-    assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).not.toThrow()
+    assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).not.toThrow()
   await f.sqlConnection.close()
 })
 it('cannot retain an expired original application lease or use prefetched proof beyond its signed expiry in SQL',async()=>{
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
   expect(()=>readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2020-01-01T00:00:00.000Z',
-    assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('unavailable')
+    assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('unavailable')
   const original=await f.bind()
   vi.spyOn(Date,'now').mockReturnValue(Date.parse(f.readout.expiresAt)+1)
   await expect(f.sqlConnection.transaction(sql=>f.producer.assertOriginal(sql,f.owner,original))).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
@@ -499,7 +499,7 @@ it('resolves actual original per-event selectors from the frozen reply instead o
   const event={sequence:1,connectionId:'unit-original-native-connection',type:'native.notification',occurredAt:new Date().toISOString(),payload:{value:'original-provider-event'}}
   const source={type:'history' as const,history:{...f.source.history,events:[event]}}
   const readout={...f.readout,history:source.history}
-  readouts.remember({readout,placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertCurrent:async()=>{},
+  readouts.remember({readout,placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},
     observe:()=>f.captured.launch,closure:()=>null})
   const selected={type:'event' as const,event:{...event,executionId:f.intent.executionId}}
   const selector={intent:f.intent,placement:f.placement,receiptSequence:readout.receipt.sequence,sourceDigest:remoteWorkflowSourceDigest(selected)}
@@ -511,7 +511,7 @@ it('resolves actual original per-event selectors from the frozen reply instead o
 
 it('retires only an authenticated exact original reply and leaves journal/native outcomes unchanged',async()=>{
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),assertCurrent=vi.fn(async()=>{})
-  readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertCurrent,
+  readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:assertCurrent,assertCurrent,
     observe:()=>f.captured.launch,closure:()=>null})
   const selector={intent:f.intent,placement:f.placement,receiptSequence:f.readout.receipt.sequence,sourceDigest:remoteWorkflowSourceDigest(f.source)}
   await expect(readouts.ack({...selector,intent:{...f.intent,attemptId:'different-attempt'}})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
