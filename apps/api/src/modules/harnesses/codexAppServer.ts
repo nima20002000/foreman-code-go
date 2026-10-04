@@ -778,109 +778,120 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
     let nativeSubmissionAttempted = false
+    let operationFailure: NativeDeliveryError | undefined
+    let cleaningUp = false
     try {
-      await this.finishTurnResources(runtime)
-      runtime.files = undefined
-      runtime.fileCleanup = undefined
-      runtime.nativeOutput = undefined
-      runtime.nativeOutputCleanup = undefined
-      runtime.fileRequests.clear()
-      const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
-      preparationSignal.throwIfAborted()
-      if (this.chatFiles) {
-        starting.filePreparation = this.chatFiles.prepare({ session: structuredClone(session),
-          clientCorrelationId: input.clientCorrelationId, signal: preparationSignal }).then(async (bridge) => {
-          if (!bridge) return undefined
-          const files = new CodexRuntimeFileTurn(bridge, session.nativeSessionId)
-          runtime.files = files
-          if (runtime.disposed || runtime.closed || starting.cancelRequested || preparationSignal.aborted) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_TURN_CLOSED', 'File preparation was canceled before native submission.')
-          }
-          if (!starting.onSubmitted) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_RECEIPT_REQUIRED', 'File turns require durable native identity persistence.')
-          }
-          if (bridge.allowedTools().some((tool) => !codexChatFileTools(runtime.configuration).includes(tool))) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_POLICY_MISMATCH', 'File admission exceeds this chat harness policy.')
-          }
-          return files
-        })
-      }
-      preparationSignal.throwIfAborted()
-      if (this.nativeOutputs) {
-        if (!starting.onSubmitted || !runtime.effectiveSandbox) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Native outputs require measured policy and durable turn admission.')
-        starting.nativeOutputPreparation = this.nativeOutputs.prepare({
-          ...this.nativeOutputQualification(runtime.configuration, runtime.qualified, runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
-          effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(session),
-          clientCorrelationId: input.clientCorrelationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
-        }, preparationSignal).then(async (bridge) => {
-          const output = new CodexRuntimeNativeOutputTurn(bridge)
-          runtime.nativeOutput = output
-          if (runtime.closed || runtime.disposed || starting.cancelRequested || preparationSignal.aborted) {
-            await output.close(); throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Native output preparation was withdrawn.')
-          }
-          return output
-        })
-        await starting.nativeOutputPreparation
-      }
-      const preparedFiles = await starting.filePreparation
-      const nativeInput = preparedFiles ? await preparedFiles.bridge.nativeInput(input.prompt)
-        : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
-      preparationSignal.throwIfAborted()
-      if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
-      nativeSubmissionAttempted = true
-      runtimeTimingPoint('harness', 'native.submit', { nativeSessionId: session.nativeSessionId })
-      const result = await codexRequest(runtime.transport, 'turn/start', {
-        threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
-        input: nativeInput,
-        serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
-      }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
-        if (runtime.starting !== starting || runtime.disposed) return
-        if (error) this.restoreRejectedStart(runtime, starting)
-        else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
-          runtime.phase = 'uncertain'
-          this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
-        })
-      }).catch((error: unknown) => {
-        const rejected = !starting.acknowledgedTurnId && !runtime.activeTurnId
-          && error instanceof CodexRpcError && error.method === 'turn/start' && !error.uncertain
-        if (rejected) nativeSubmissionAttempted = false
-        if (runtime.starting === starting) {
-          if (!rejected) {
+      try {
+        await this.finishTurnResources(runtime)
+        runtime.files = undefined
+        runtime.fileCleanup = undefined
+        runtime.nativeOutput = undefined
+        runtime.nativeOutputCleanup = undefined
+        runtime.fileRequests.clear()
+        const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
+        preparationSignal.throwIfAborted()
+        if (this.chatFiles) {
+          starting.filePreparation = this.chatFiles.prepare({ session: structuredClone(session),
+            clientCorrelationId: input.clientCorrelationId, signal: preparationSignal }).then(async (bridge) => {
+            if (!bridge) return undefined
+            const files = new CodexRuntimeFileTurn(bridge, session.nativeSessionId)
+            runtime.files = files
+            if (runtime.disposed || runtime.closed || starting.cancelRequested || preparationSignal.aborted) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_TURN_CLOSED', 'File preparation was canceled before native submission.')
+            }
+            if (!starting.onSubmitted) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_RECEIPT_REQUIRED', 'File turns require durable native identity persistence.')
+            }
+            if (bridge.allowedTools().some((tool) => !codexChatFileTools(runtime.configuration).includes(tool))) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_POLICY_MISMATCH', 'File admission exceeds this chat harness policy.')
+            }
+            return files
+          })
+        }
+        preparationSignal.throwIfAborted()
+        if (this.nativeOutputs) {
+          if (!starting.onSubmitted || !runtime.effectiveSandbox) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Native outputs require measured policy and durable turn admission.')
+          starting.nativeOutputPreparation = this.nativeOutputs.prepare({
+            ...this.nativeOutputQualification(runtime.configuration, runtime.qualified, runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
+            effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(session),
+            clientCorrelationId: input.clientCorrelationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
+          }, preparationSignal).then(async (bridge) => {
+            const output = new CodexRuntimeNativeOutputTurn(bridge)
+            runtime.nativeOutput = output
+            if (runtime.closed || runtime.disposed || starting.cancelRequested || preparationSignal.aborted) {
+              await output.close(); throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Native output preparation was withdrawn.')
+            }
+            return output
+          })
+          await starting.nativeOutputPreparation
+        }
+        const preparedFiles = await starting.filePreparation
+        const nativeInput = preparedFiles ? await preparedFiles.bridge.nativeInput(input.prompt)
+          : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
+        preparationSignal.throwIfAborted()
+        if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
+        nativeSubmissionAttempted = true
+        runtimeTimingPoint('harness', 'native.submit', { nativeSessionId: session.nativeSessionId })
+        const result = await codexRequest(runtime.transport, 'turn/start', {
+          threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
+          input: nativeInput,
+          serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
+        }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
+          if (runtime.starting !== starting || runtime.disposed) return
+          if (error) this.restoreRejectedStart(runtime, starting)
+          else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
             runtime.phase = 'uncertain'
             this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
-          } else this.restoreRejectedStart(runtime, starting)
+          })
+        }).catch((error: unknown) => {
+          const rejected = !starting.acknowledgedTurnId && !runtime.activeTurnId
+            && error instanceof CodexRpcError && error.method === 'turn/start' && !error.uncertain
+          if (rejected) nativeSubmissionAttempted = false
+          if (runtime.starting === starting) {
+            if (!rejected) {
+              runtime.phase = 'uncertain'
+              this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
+            } else this.restoreRejectedStart(runtime, starting)
+          }
+          throw error
+        })
+        await this.acceptStartedTurn(runtime, starting, result)
+        while (!signal?.aborted && !subscriberSignal.aborted) {
+          const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
+          if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
+          const available = runtime.events.filter((event) => event.sequence >= cursor)
+          for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
+          // The consumer can suspend at yield while more events (including terminal
+          // events) arrive. Drain them before returning or registering a waiter.
+          if (runtime.events.some((event) => event.sequence >= cursor)) continue
+          if (runtime.terminalResult || runtime.closed) { await this.finishTurnResources(runtime); return }
+          await this.wait(runtime, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]))
         }
-        throw error
-      })
-      await this.acceptStartedTurn(runtime, starting, result)
-      while (!signal?.aborted && !subscriberSignal.aborted) {
-        const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
-        if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
-        const available = runtime.events.filter((event) => event.sequence >= cursor)
-        for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
-        // The consumer can suspend at yield while more events (including terminal
-        // events) arrive. Drain them before returning or registering a waiter.
-        if (runtime.events.some((event) => event.sequence >= cursor)) continue
-        if (runtime.terminalResult || runtime.closed) { await this.finishTurnResources(runtime); return }
-        await this.wait(runtime, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]))
+      } catch (error) {
+        if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
+        if (!subscriberSignal.aborted) {
+          operationFailure = new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
+          throw operationFailure
+        }
+      } finally {
+        if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
+          cleaningUp = true
+          await this.finishTurnResources(runtime)
+          cleaningUp = false
+        }
       }
     } catch (error) {
-      if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
-      if (!subscriberSignal.aborted) {
-        throw new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
-      }
+      if (!cleaningUp) throw error
+      const cause = operationFailure
+        ? new AggregateError([operationFailure, error], 'Native turn failed and resource cleanup is unconfirmed.', { cause: error })
+        : error
+      throw new NativeDeliveryError('turn_submission', 'unknown', cause)
     } finally {
       signal?.removeEventListener('abort', abort)
-      try {
-        if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
-          try { await this.finishTurnResources(runtime) } catch (error) {
-            throw new NativeDeliveryError('turn_submission', 'unknown', error)
-          }
-        }
-      } finally { runtime.streamActive = false }
+      runtime.streamActive = false
     }
   }
 
