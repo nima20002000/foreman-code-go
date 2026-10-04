@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { RunSubagentInputSchema, SubagentCapabilitiesSchema, RunSubagentSchema, subagentCapabilities } from './subagents.js'
+import { CODEX_SUBAGENT_CONTROL_UNSUPPORTED, RunSubagentInputSchema,
+  SubagentCapabilitiesSchema, RunSubagentSchema, subagentCapabilities } from './subagents.js'
 
 describe('native child contracts and evidence gates', () => {
-  it('keeps Codex v2 steering unsupported even with a claimed qualification', () => {
-    expect(subagentCapabilities('codex-multi-agent-v2', '0.154.0').sendInput).toEqual({ support: 'unsupported', qualification: 'unverified', reasonCode: 'CODEX_V2_DIRECT_INPUT_UNSUPPORTED' })
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('reports no individual controls for %s', mode => {
+    const capabilities = subagentCapabilities(mode, '0.154.0')
+    for (const action of ['sendInput', 'interrupt', 'executionResume'] as const) {
+      expect(capabilities[action]).toEqual({ support: 'unsupported', qualification: 'unverified',
+        reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+    }
+    expect(capabilities.inputTiming).toBe('none')
+    expect(capabilities.historyReadback.support).not.toBe('unsupported')
   })
   it('separates protocol evidence from app qualification and exact version evidence', () => {
     expect(subagentCapabilities('opencode-task', '1.18.33')).toMatchObject({ sendInput: { support: 'supported', qualification: 'unverified' }, inputTiming: 'idle', toolCalls: { support: 'unverified' } })

@@ -4,7 +4,9 @@ import pg from 'pg'
 import Fastify from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { RunSubagentSchema, RunSubagentsPageSchema, RunSubagentMessagesPageSchema, RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
+import { CODEX_SUBAGENT_CONTROL_EXPLANATION, CODEX_SUBAGENT_CONTROL_UNSUPPORTED,
+  RunSubagentSchema, RunSubagentsPageSchema, RunSubagentDetailSchema,
+  RunSubagentMessagesPageSchema, RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -291,6 +293,102 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect((await pool.query('select count(*)::int as count from harness_native_events where execution_id=$1', [f.executionId])).rows[0].count).toBe(2)
     } finally { await freshPool.end() }
   })
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('refuses %s controls through HTTP and MCP while retaining history', async nativeMode => {
+    const f = await fixture('codex')
+    if (nativeMode === 'codex-multi-agent-v2') await f.discover()
+    else await f.event('item.completed', { threadId: 'root', item: {
+      type: 'collabAgentToolCall', id: 'spawn-child', tool: 'spawnAgent', receiverThreadIds: ['child'],
+    } })
+    await f.event('native.unlinked_notification', { method: 'turn/started', params: {
+      threadId: 'child', turn: { id: 'child-turn', status: 'inProgress', items: [] },
+    } })
+    await f.event('native.unlinked_notification', { method: 'item/completed', params: {
+      threadId: 'child', turnId: 'child-turn', item: { type: 'agentMessage', id: 'answer', text: 'Readable child history' },
+    } })
+    const child = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
+    // Saved flags cannot confer a control capability the provider does not have.
+    const saved = { ...child, capabilities: { ...child.capabilities, inputTiming: 'active-and-idle',
+      sendInput: { support: 'supported', qualification: 'passed' },
+      interrupt: { support: 'supported', qualification: 'passed' },
+      executionResume: { support: 'supported', qualification: 'passed' },
+    } }
+    await pool.query('update run_subagents set record=$2::jsonb where id=$1', [child.id, JSON.stringify(saved)])
+    const services = { commands: new PostgresCommandCoordinator(pool), runs: { subagents: f.service },
+      workspaces: {}, workflows: {}, agents: {}, locations: {}, harnesses: {} } as unknown as OperatorServices
+    const app = Fastify()
+    app.setErrorHandler((error, _request, reply) => {
+      const domain = error instanceof DomainError ? error : new DomainError('INTERNAL_ERROR', 'Request failed.', 500)
+      reply.code(domain.status).send({ error: { code: domain.code, message: domain.message } })
+    })
+    registerOperatorHttpSecurity(app, f.access)
+    registerRunSubagentRoutes(app, services)
+    registerGraphqlMcp(app, { access: f.access, operator: services })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const clients: Client[] = []
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'codex-child-history', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        authProvider: { token: async () => token },
+      }))
+      return client
+    }
+    const childInput = { ...f.input, subagentId: child.id }
+    const base = `/api/management/workspaces/${f.input.workspaceId}/runs/${f.input.runId}/subagents/${child.id}`
+    const headers = { host: '127.0.0.1', authorization: `Bearer ${f.writer.token}` }
+    try {
+      const allowed = await connect(f.writer.token)
+      const reader = await connect(f.reader.token)
+      for (const operation of ['input', 'interrupt'] as const) {
+        const name = operation === 'input' ? 'run_subagent_input_v1' : 'run_subagent_interrupt_v1'
+        const command = { ...childInput, commandId: randomUUID(), expectedRevision: child.revision,
+          ...(operation === 'input' ? { text: 'follow up' } : {}) }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const http = await app.inject({ method: 'POST', url: `${base}/${operation}`, payload: command, headers })
+          expect(http.statusCode).toBe(409)
+          expect(http.json()).toEqual({ error: {
+            code: CODEX_SUBAGENT_CONTROL_UNSUPPORTED, message: CODEX_SUBAGENT_CONTROL_EXPLANATION,
+          } })
+          const mcp = await allowed.callTool({ name, arguments: command })
+          expect(mcp.isError).toBe(true)
+          expect(mcp.content).toEqual([{ type: 'text', text: JSON.stringify({ error: {
+            code: CODEX_SUBAGENT_CONTROL_UNSUPPORTED, message: CODEX_SUBAGENT_CONTROL_EXPLANATION,
+          } }) }])
+        }
+        const deniedHttp = await app.inject({ method: 'POST', url: `${base}/${operation}`, payload: command,
+          headers: { ...headers, authorization: `Bearer ${f.reader.token}` } })
+        expect(deniedHttp.statusCode).toBe(403)
+        expect(deniedHttp.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+        expect((await reader.callTool({ name, arguments: command })).isError).toBe(true)
+      }
+      const detail = RunSubagentDetailSchema.parse((await app.inject({ method: 'GET', url: base, headers })).json())
+      const listed = RunSubagentsPageSchema.parse((await reader.callTool({
+        name: 'run_subagents_list_v1', arguments: f.input,
+      })).structuredContent).items[0]!
+      for (const record of [detail, listed]) {
+        expect(record.availableActions).toEqual({ sendInput: false, interrupt: false,
+          blockedReason: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+        expect(record.subagent).toMatchObject({ id: child.id, revision: child.revision, native: child.native })
+        for (const action of ['sendInput', 'interrupt', 'executionResume'] as const) {
+          expect(record.subagent.capabilities[action]).toEqual({ support: 'unsupported', qualification: 'unverified',
+            reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+        }
+        expect(record.subagent.capabilities.inputTiming).toBe('none')
+      }
+      expect(RunSubagentMessagesPageSchema.parse((await app.inject({
+        method: 'GET', url: `${base}/messages`, headers,
+      })).json()).items).toMatchObject([{ text: 'Readable child history' }])
+      expect(RunSubagentMessagesPageSchema.parse((await reader.callTool({
+        name: 'run_subagent_messages_list_v1', arguments: childInput,
+      })).structuredContent).items).toMatchObject([{ text: 'Readable child history' }])
+      expect((await pool.query('select record from run_subagents where id=$1', [child.id])).rows[0].record).toEqual(saved)
+      expect((await pool.query('select count(*)::int as count from run_subagent_command_receipts where subagent_id=$1',
+        [child.id])).rows[0].count).toBe(0)
+    } finally {
+      for (const client of clients) await client.close()
+      await app.close()
+    }
+  }, 30000)
   it('serves authenticated MCP/HTTP reads and commands with denied caller audit and persisted readback', async () => {
     const f = await qualifiedFixture()
     const commands = new PostgresCommandCoordinator(pool)

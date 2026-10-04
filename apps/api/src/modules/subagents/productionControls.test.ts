@@ -12,18 +12,30 @@ const child = { id: 'child', workspaceId: 'workspace', workflowId: 'workflow', w
   parentExecutionId: 'execution', parentAttemptKey: 'execution:1', parentAgentId: 'agent', parentNodeId: 'node', parentSubagentId: null,
   provider: 'opencode', nativeMode: 'opencode-task', native: { parentSessionId: 'root', childSessionId: 'native-child' },
   profile: { deviceId: 'main', harnessInstanceId: 'configuration', providerVersion: '1.18.31' } } as RunSubagent
-function fixture() {
+function fixture(harness: 'codex' | 'opencode' = 'opencode') {
   let live = true
   const owner = { runId: 'run', assertOwned() { if (!live) throw new Error('lost') } } as RunOwnership
   const send = vi.fn(async () => {})
-  const native = { harness: 'opencode', subagentControl: vi.fn((_child, assertOwner) => ({ generation: 'native-generation', nativeTurnId: null,
+  const native = { harness, subagentControl: vi.fn((_child, assertOwner) => ({ generation: 'native-generation', nativeTurnId: null,
     matches: () => true, assertCurrent: assertOwner, sendInput: send })) } as unknown as NativeHarnessSessionManager
   const create = vi.fn(() => native)
   const managers = new ExecutionScopedNativeSessionManagerResolver(create)
-  const resolved = managers.resolve(context, owner)
+  const resolved = managers.resolve({ ...context, harness }, owner)
   return { managers, resolved, create, native, send, owner, lose: () => { live = false }, controls: productionSubagentControls(managers) }
 }
 describe('production native child control resolution', () => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('never resolves a %s controller even from a resident manager', nativeMode => {
+    const f = fixture('codex')
+    const codexChild = { ...child, provider: 'codex' as const, nativeMode,
+      profile: { ...child.profile, providerVersion: '0.154.0' } }
+    expect(f.controls(codexChild)).toBeUndefined()
+    f.resolved.beginStart!()
+    f.resolved.markResident!()
+    expect(f.controls(codexChild)).toBeUndefined()
+    expect(f.native.subagentControl).not.toHaveBeenCalled()
+    expect(f.send).not.toHaveBeenCalled()
+    expect(f.create).toHaveBeenCalledTimes(1)
+  })
   it('never allocates on a read and exposes only a resident exact execution attempt', () => {
     const f = fixture()
     expect(f.controls(child)).toBeUndefined()

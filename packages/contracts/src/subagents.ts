@@ -4,6 +4,9 @@ const id = z.string().min(1).max(512)
 const timestamp = z.iso.datetime()
 const revision = z.string().regex(/^[1-9][0-9]*$/)
 export const SUBAGENT_LIMITS = { page: 100, text: 24000, toolBytes: 32000 } as const
+export const CODEX_SUBAGENT_CONTROL_UNSUPPORTED = 'CODEX_SUBAGENT_CONTROL_UNSUPPORTED'
+export const CODEX_SUBAGENT_CONTROL_EXPLANATION =
+  "Codex doesn't support messaging or interrupting individual subagents. You can still read their history."
 export const SubagentNativeModeSchema = z.enum(['claude-agent', 'codex-collab', 'codex-multi-agent-v2', 'opencode-task'])
 export type SubagentNativeMode = z.infer<typeof SubagentNativeModeSchema>
 export const SubagentCapabilitySchema = z.object({
@@ -86,14 +89,15 @@ export const SUBAGENT_MCP_TOOLS = ['run_subagents_list_v1', 'run_subagent_get_v1
 export function subagentCapabilities(mode: SubagentNativeMode, version: string): SubagentCapabilities {
   const unverified = { support: 'unverified', qualification: 'unverified' } as const
   const observed = { support: 'supported', qualification: 'unverified' } as const
+  const codexMode = mode === 'codex-collab' || mode === 'codex-multi-agent-v2'
   const codex = mode === 'codex-multi-agent-v2' && version === '0.154.0'
   const opencode = mode === 'opencode-task' && ['1.18.31', '1.18.33'].includes(version)
   const qualifiedOpenCode = mode === 'opencode-task' && version === '1.18.31'
   // Claude's probe did not preserve exact CLI identity; the app candidate remains behind its authority qualification.
   const observation = codex || opencode ? observed : unverified
   let sendInput: SubagentCapabilities['sendInput'] = unverified
-  if (mode === 'codex-multi-agent-v2') {
-    sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CODEX_V2_DIRECT_INPUT_UNSUPPORTED' }
+  if (codexMode) {
+    sendInput = { ...unverified, support: 'unsupported', reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED }
   } else if (mode === 'claude-agent') {
     sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CLAUDE_DIRECT_INPUT_UNSUPPORTED' }
   } else if (qualifiedOpenCode) {
@@ -102,6 +106,8 @@ export function subagentCapabilities(mode: SubagentNativeMode, version: string):
     sendInput = observed
   }
   return { lifecycle: observation, transcript: observation, historyReadback: observation,
-    toolCalls: codex ? observed : unverified, toolResults: codex ? observed : unverified, sendInput,
-    inputTiming: opencode ? 'idle' : 'none', interrupt: unverified, executionResume: unverified }
+    toolCalls: codex ? observed : unverified, toolResults: codex ? observed : unverified,
+    sendInput, inputTiming: opencode ? 'idle' : 'none',
+    interrupt: codexMode ? { ...unverified, support: 'unsupported', reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED } : unverified,
+    executionResume: codexMode ? { ...unverified, support: 'unsupported', reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED } : unverified }
 }

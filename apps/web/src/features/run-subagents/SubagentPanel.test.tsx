@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { subagentCapabilities } from '@foreman-code/contracts/subagents'
+import { CODEX_SUBAGENT_CONTROL_EXPLANATION, subagentCapabilities } from '@foreman-code/contracts/subagents'
 import { server } from '../../mocks/server'
 import { SubagentPanel } from './SubagentPanel'
 import { base, child, detail, message, receipt, scope, tool } from './testFixtures'
@@ -31,6 +31,34 @@ function qualified() {
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
 }
 describe('Subagent panel', () => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('shows %s history with explained disabled controls', async nativeMode => {
+    const input = vi.fn(() => HttpResponse.json(receipt()))
+    const interrupt = vi.fn(() => HttpResponse.json(receipt({ operation: 'run_subagent_interrupt_v1' })))
+    const record = detail(child({ nativeMode, capabilities: subagentCapabilities(nativeMode, '0.154.0') }))
+    server.use(
+      http.get(`${base}/:subagentId`, () => HttpResponse.json(record)),
+      http.get(`${base}/:subagentId/messages`, () => HttpResponse.json({
+        items: [message()], nextCursor: null, coverage: record.subagent.coverage,
+      })),
+      http.post(`${base}/:subagentId/input`, input),
+      http.post(`${base}/:subagentId/interrupt`, interrupt),
+    )
+    mount()
+    expect(await screen.findByText('Child answer')).toBeVisible()
+    expect(screen.getByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)).toBeVisible()
+    const send = screen.getByRole('button', { name: 'Send' })
+    const stop = screen.getByRole('button', { name: 'Interrupt' })
+    expect(send).toBeDisabled()
+    expect(stop).toBeDisabled()
+    expect(send).toHaveAccessibleDescription(CODEX_SUBAGENT_CONTROL_EXPLANATION)
+    expect(stop).toHaveAccessibleDescription(CODEX_SUBAGENT_CONTROL_EXPLANATION)
+    fireEvent.click(send)
+    fireEvent.click(stop)
+    expect(input).not.toHaveBeenCalled()
+    expect(interrupt).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('tab', { name: /Tool calls/ }))
+    expect(await screen.findByText('read_file')).toBeVisible()
+  })
   it('requires native qualification and live availability independently', async () => {
     const unqualified = qualified()
     unqualified.subagent.capabilities.sendInput.qualification = 'unverified'
@@ -167,7 +195,7 @@ describe('Subagent panel', () => {
   it('closes on backdrop clicks but keeps clicks and drags from inside open', async () => {
     const { close } = mount()
     const dialog = screen.getByRole('dialog')
-    await screen.findByText("View only — Codex subagents can't be messaged or interrupted from here.")
+    await screen.findByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)
     const inside = screen.getByRole('tab', { name: /Messages/ })
     fireEvent.pointerDown(inside); fireEvent.click(dialog)
     expect(close).not.toHaveBeenCalled()

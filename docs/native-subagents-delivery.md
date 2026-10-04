@@ -15,12 +15,33 @@ This document describes the PR 57 continuation. Native observations, transport f
 
 | Provider and mode | Repository evidence | Production limit |
 | --- | --- | --- |
-| Codex multi-agent v2 | Package pin and installed CLI 0.154.0; existing exact-parent history adapter | Direct input is explicitly unsupported. Child interruption remains unverified and is not exposed. |
-| Codex legacy collab | Capability records are version/mode specific | No reviewed exact-version child control is enabled by this continuation. |
+| Codex multi-agent v2 | Package pin and installed CLI 0.154.0; existing exact-parent history adapter | Individual input, interruption and execution resume are unsupported. History stays readable. |
+| Codex legacy collab | Capability records are version/mode specific | Individual input, interruption and execution resume are unsupported. History stays readable. |
 | Claude Agent | SDK pinned at 0.3.284; existing owned-profile child-history reader | Direct child input is unsupported. No session-wide interrupt is substituted for exact task interruption. Live CLI identity and child operations still require qualification. |
 | OpenCode task | SDK and transport baseline 1.18.31; existing subagent capability observations name server 1.18.33 | The new idle-input adapter does not qualify either version. The cloud build diagnostic reports the OpenCode CLI unavailable. Active input and child interruption stay unavailable. |
 
 The SDK package version is not proof of the running server's version. Existing capability records retain `qualification: unverified`; installing an adapter must not change that. A live acceptance run must capture the exact native version, mode, installation/profile identity and operation evidence before any gate can pass.
+
+## Codex child-control errors
+
+The pinned Codex 0.154.0 child-history adapter does not supply individual child
+controls. Its `turn/start`, `turn/steer` and `turn/interrupt` parent-session
+operations are not substitutes for child controls. Production never resolves a
+Codex child controller, including for legacy collab children. List and detail
+reads report both control actions unavailable with
+`blockedReason: CODEX_SUBAGENT_CONTROL_UNSUPPORTED`, and normalize stale saved
+control flags without altering child identity, revision or history.
+
+After the existing authorization and child-scope checks, HTTP
+`POST /api/management/workspaces/:workspaceId/runs/:runId/subagents/:subagentId/input`
+and `/interrupt` return HTTP 409 with `error.code` set to
+`CODEX_SUBAGENT_CONTROL_UNSUPPORTED`. Operator MCP `run_subagent_input_v1` and
+`run_subagent_interrupt_v1` return `isError: true` with the same error code.
+These refusals create no command receipt and dispatch no native operation.
+Callers without the required grants still receive the existing access denial.
+The Run child panel shows disabled Send and Interrupt buttons with the
+explanation that history remains readable. Other providers retain their
+existing qualification, ownership and command-retry gates.
 
 ## Remaining acceptance gates
 

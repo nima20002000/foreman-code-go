@@ -20,6 +20,16 @@ export interface SubagentRecoveryFailure {
 }
 const recoveryLogger = componentLogger('harness')
 
+function readSubagent(record: unknown) {
+  const child = RunSubagentSchema.parse(record)
+  if (child.provider !== 'codex') return child
+  const controls = subagentCapabilities(child.nativeMode, child.profile.providerVersion)
+  return { ...child, capabilities: { ...child.capabilities,
+    sendInput: controls.sendInput, interrupt: controls.interrupt,
+    executionResume: controls.executionResume, inputTiming: controls.inputTiming,
+  } }
+}
+
 export interface SubagentReadScope { sql: pg.PoolClient; principal: ManagementPrincipal; stopped: boolean; workflowId: string; workflowVersionId: string }
 export class RunSubagentService {
   private readonly backfills = new Map<string, Promise<void>>()
@@ -62,7 +72,7 @@ export class RunSubagentService {
   async child(scope: SubagentReadScope, input: z.infer<typeof RunSubagentGetInputSchema>) {
     const row = (await scope.sql.query<{ record: unknown }>('select record from run_subagents where id=$1 and run_id=$2 for update', [input.subagentId, input.runId])).rows[0]
     if (!row) throw new DomainError('SUBAGENT_NOT_FOUND', 'The child was not found in this Run.', 404)
-    const child = RunSubagentSchema.parse(row.record)
+    const child = readSubagent(row.record)
     if (child.workspaceId !== input.workspaceId || child.workflowId !== scope.workflowId || child.workflowVersionId !== scope.workflowVersionId) {
       throw new DomainError('SUBAGENT_SCOPE_CONFLICT', 'The child no longer matches the immutable Run scope.', 409)
     }
@@ -85,7 +95,7 @@ export class RunSubagentService {
       const key = decodeCursor(input.cursor, [input.workspaceId, input.runId, 'children'])
       const rows = (await scope.sql.query<{ id: string; record: unknown }>(`select id,record from run_subagents where run_id=$1 and ($2::text is null or id>$2 collate "C") order by id collate "C" limit $3`, [input.runId, key, input.limit + 1])).rows
       return RunSubagentsPageSchema.parse({ items: await Promise.all(rows.slice(0, input.limit).map(async row => {
-        const child = await this.refreshCapabilities(scope, RunSubagentSchema.parse(row.record))
+        const child = await this.refreshCapabilities(scope, readSubagent(row.record))
         if (child.workspaceId !== input.workspaceId || child.workflowId !== scope.workflowId || child.workflowVersionId !== scope.workflowVersionId) throw new DomainError('SUBAGENT_SCOPE_CONFLICT', 'The child has inconsistent immutable Run scope.', 409)
         return { subagent: child, availableActions: subagentAvailableActions(child, scope.principal, scope.stopped, this.controls(child)) }
       })), nextCursor: rows.length > input.limit ? encodeCursor([input.workspaceId, input.runId, 'children'], rows[input.limit - 1]!.id) : null, projection })

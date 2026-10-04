@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
+import { CODEX_SUBAGENT_CONTROL_EXPLANATION } from '@graphql/contracts/subagents'
 import {
   boardSearchForInspection, boardSearchForRun, runInspectionKey,
   type RepeatGraphScopeV3, type WorkspaceBoardInspection,
@@ -143,8 +144,9 @@ describe('Run inspection inside the one mounted Board', () => {
     const panel = await screen.findByRole('dialog', { name: 'Native child' })
     await within(panel).findByText('Child answer')
     expect(history.location.hash).toContain('selectedSubagentId=parent-child')
-    expect(within(panel).getByText("View only — Codex subagents can't be messaged or interrupted from here.")).toBeVisible()
-    expect(within(panel).queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
+    expect(within(panel).getByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)).toBeVisible()
+    expect(within(panel).getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(within(panel).getByRole('button', { name: 'Interrupt' })).toBeDisabled()
     await userEvent.click(within(panel).getByRole('button', { name: 'Load more messages' }))
     await within(panel).findByText('Earlier child answer')
     await userEvent.click(within(panel).getByRole('tab', { name: /Tool calls/ }))

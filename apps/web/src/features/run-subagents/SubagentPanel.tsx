@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
-import { SUBAGENT_LIMITS, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
+import { CODEX_SUBAGENT_CONTROL_EXPLANATION, SUBAGENT_LIMITS,
+  type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { Button, CodeBlock, Drawer, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'
@@ -29,6 +30,8 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const detail = useSubagentDetail(scope, subagentId)
   const record = detail.isError ? undefined : detail.data
   const child = record?.subagent
+  const codexControlsDisabled = child?.provider === 'codex'
+  const controlExplanationId = useId()
   const messages = useSubagentMessages(scope, subagentId, Boolean(child))
   const tools = useSubagentTools(scope, subagentId, Boolean(child))
   const ui = useMemo(() => createStore(() => ({ text: '' })), [])
@@ -60,7 +63,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const receipt = lastCommand?.data
   const revisionConflict = ApiError.is(lastCommand?.error) && lastCommand.error.code === 'SUBAGENT_REVISION_CONFLICT'
   const unsettled = commandError || Boolean(receipt && ['accepted', 'dispatching', 'uncertain'].includes(receipt.state))
-  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && record?.availableActions[action]
+  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && !codexControlsDisabled && record?.availableActions[action]
     && child.capabilities[action].support === 'supported' && child.capabilities[action].qualification === 'passed')
   const send = (operation: 'input' | 'interrupt') => {
     if (!child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
@@ -76,7 +79,10 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const messageItems = messages.data?.pages.flatMap((page) => page.items) ?? []
   const toolItems = tools.data?.pages.flatMap((page) => page.items) ?? []
   const canSend = allowed('sendInput'), canInterrupt = allowed('interrupt')
-  const footer = child && (canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
+  const footer = child && (codexControlsDisabled || canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
+    {codexControlsDisabled && <p id={controlExplanationId} className="run-subagent-note">
+      {CODEX_SUBAGENT_CONTROL_EXPLANATION}
+    </p>}
     {canSend && <Textarea label="Message to subagent" value={text} maxLength={SUBAGENT_LIMITS.text} rows={2}
       hint={child.capabilities.inputTiming === 'idle' ? 'Delivered when the subagent is waiting for input.' : undefined}
       disabled={pending || unsettled} onChange={(event) => ui.setState({ text: event.currentTarget.value })}
@@ -90,8 +96,14 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
       </div>
       {revisionConflict ? <Button size="sm" loading={detail.isFetching} onClick={() => void refresh()}>Refresh</Button>
         : unsettled && lastCommand?.variables ? <Button size="sm" disabled={pending} onClick={recheck}>Check again</Button> : null}
-      {canInterrupt && <Button variant="danger" disabled={pending || unsettled} onClick={() => send('interrupt')}>Interrupt</Button>}
-      {canSend && <Button variant="primary" disabled={!text.trim() || pending || unsettled} onClick={() => send('input')}>Send</Button>}
+      {(canInterrupt || codexControlsDisabled) && <Button variant="danger"
+        disabled={codexControlsDisabled || pending || unsettled}
+        aria-describedby={codexControlsDisabled ? controlExplanationId : undefined}
+        onClick={() => send('interrupt')}>Interrupt</Button>}
+      {(canSend || codexControlsDisabled) && <Button variant="primary"
+        disabled={codexControlsDisabled || !text.trim() || pending || unsettled}
+        aria-describedby={codexControlsDisabled ? controlExplanationId : undefined}
+        onClick={() => send('input')}>Send</Button>}
     </div>
   </div> : undefined
   return <Drawer open onOpenChange={(open) => { if (!open) onClose() }} title={child ? subagentName(child) : 'Subagent'}
@@ -104,7 +116,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
           <StatusBadge label={status.label} tone={status.tone} busy={child.status === 'running'} />
           <span>{subagentTiming(child)}</span>
           {child.evidence !== 'confirmed' && <p className="run-subagent-note">This status isn't confirmed yet and may still change.</p>}
-          {!canSend && !canInterrupt && <p className="run-subagent-note">View only — {provider} subagents can't be messaged or interrupted from here.</p>}
+          {!codexControlsDisabled && !canSend && !canInterrupt && <p className="run-subagent-note">View only — {provider} subagents can't be messaged or interrupted from here.</p>}
         </section>
         <Tabs label="Subagent activity" value={tab} onValueChange={setTab} items={[
           { value: 'messages', label: 'Messages', ...(messageItems.length ? { badge: `${messageItems.length}${messages.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
