@@ -15,6 +15,7 @@ import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/
 import { createClaudeSdkCallbacks } from '../src/modules/harnesses/claudeSdk/sdkCallbacks.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
+import type { ClaudeNativeSessionManager } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -49,7 +50,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
     session.offer = (message, signal) => { offers.push(message.promptUuid); return offer(message, signal) }
     return session
   }
-  const manager = allocateClaudeNativeHarness({ harness: 'claude', role: 'operator', ownerAgentId: conversationId,
+  const manager: ClaudeNativeSessionManager = allocateClaudeNativeHarness({ harness: 'claude', role: 'operator', ownerAgentId: conversationId,
     workingDirectory: directory, appMcpAccess: 'none', scope: { deviceId: 'test-host', profilePath: '/test-profile', configRevision: '1', cwd: directory },
     runner, sdkOptions: createClaudeSdkCallbacks({ manager: () => manager, bridge: domain.bridge }),
     qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: false, history: true, interactions: true },
