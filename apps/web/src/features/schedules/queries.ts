@@ -26,8 +26,24 @@ type CommandState = {
 export const scheduleKeys = {
   read: (scope: ScheduleGetInput, generation = sessionGeneration()) =>
     ['workflow-schedule', generation, scope.workspaceId, scope.workflowId] as const,
+  latestOccurrence: (scope: ScheduleGetInput, generation = sessionGeneration()) =>
+    ['workflow-schedule-latest-occurrence', generation, scope.workspaceId, scope.workflowId] as const,
   command: (scope: ScheduleGetInput, generation = sessionGeneration()) =>
     ['workflow-schedule-command', generation, scope.workspaceId, scope.workflowId] as const,
+}
+
+export function useLatestScheduleOccurrence(scope: ScheduleGetInput, open: boolean) {
+  const generation = sessionGeneration()
+  return useQuery({
+    queryKey: scheduleKeys.latestOccurrence(scope, generation),
+    queryFn: ({ signal }) => {
+      assertSession(generation)
+      return scheduleApi.occurrences({ ...scope, limit: 1 }, { signal })
+    },
+    enabled: open, staleTime: 0, retry: false,
+    refetchOnMount: 'always', refetchOnWindowFocus: true, refetchOnReconnect: true,
+    refetchInterval: open ? 5_000 : false,
+  })
 }
 
 // Same conservative distinction as shared/api/commandAttempt.ts. An HTML 4xx,

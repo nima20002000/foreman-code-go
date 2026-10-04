@@ -163,6 +163,18 @@ export const ScheduleOccurrenceSchema = z.discriminatedUnion("status", [
 }).readonly();
 export type ScheduleOccurrence = z.infer<typeof ScheduleOccurrenceSchema>;
 
+export const MAX_OCCURRENCE_PAGE_SIZE = 100;
+export const ScheduleOccurrenceListInputSchema = ScheduleGetInputSchema.extend({
+  cursor: z.string().trim().min(1).max(4096).optional(),
+  limit: z.number().int().min(1).max(MAX_OCCURRENCE_PAGE_SIZE).default(50),
+}).strict();
+export const ScheduleOccurrencePageSchema = z.object({
+  items: z.array(ScheduleOccurrenceSchema).max(MAX_OCCURRENCE_PAGE_SIZE),
+  pageInfo: z.object({ nextCursor: z.string().min(1).max(4096).nullable() }).strict(),
+}).strict();
+export type ScheduleOccurrenceListInput = z.infer<typeof ScheduleOccurrenceListInputSchema>;
+export type ScheduleOccurrencePage = z.infer<typeof ScheduleOccurrencePageSchema>;
+
 const AdmissionInput = z.object({
   dueAt: ScheduleInstantSchema, nowUtc: ScheduleInstantSchema,
   enabled: z.boolean(), hasOverlappingScheduledRun: z.boolean(),

@@ -23,6 +23,7 @@ function mount(value: WorkflowSchedule | null) {
   const saves: ScheduleSaveInput[] = []
   server.use(
     http.get(schedulePath(scope), () => HttpResponse.json({ schedule: persisted })),
+    http.get(`${schedulePath(scope)}/occurrences`, () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
     http.put(schedulePath(scope), async ({ request }) => {
       const input = ScheduleSaveInputSchema.parse({ ...scope, ...await request.json() as object })
       saves.push(input)

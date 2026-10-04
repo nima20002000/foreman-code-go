@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { ScheduleGetResultSchema, ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
+import { ScheduleGetResultSchema, ScheduleOccurrencePageSchema, ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { ScheduleClearResultSchema, ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'
+import { ScheduleClearResultSchema } from '../src/modules/schedules/transportSchemas.js'
+import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'
 import { sch11Actions, sch11DomainState, sch11Fixture, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
@@ -58,6 +59,57 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     expect(ScheduleGetResultSchema.parse(tool.structuredContent)).toEqual(value)
     return value
   }
+
+  it.each(['accepted', 'rejected', 'missed', 'skipped'] as const)(
+    'exposes the latest persisted %s attempt equally over authenticated HTTP and MCP, and denies foreign reads',
+    async (status) => {
+      let saved = await f.save(futureOnce)
+      f.time.now = saved.nextOccurrenceAt!
+      if (status === 'skipped') {
+        await f.dispatcher().dispatch(saved)
+        saved = await f.save({ ...futureOnce, time: '10:01' }, saved.revision)
+        f.time.now = saved.nextOccurrenceAt!
+      }
+      if (status === 'missed') {
+        f.time.now = new Date(Date.parse(f.time.now) + 5 * 60_000 + 1).toISOString()
+      }
+      const dispatcher = status === 'rejected' ? f.dispatcher(async () => {
+        throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Private native detail: credential-sentinel', 409)
+      }) : f.dispatcher()
+      await dispatcher.dispatch(saved)
+
+      const reader = await connect(f.reader.token)
+      const response = await http('GET', '/occurrences?limit=1', undefined, f.reader.token)
+      expect(response.statusCode).toBe(200)
+      const page = ScheduleOccurrencePageSchema.parse(response.json())
+      expect(page.items).toHaveLength(1)
+      expect(page.items[0]).toMatchObject({ ...f.scope, status, dueAt: saved.nextOccurrenceAt })
+      expect(JSON.stringify(page)).not.toContain('credential-sentinel')
+      if (status === 'accepted') expect(page.items[0]).toMatchObject({ runId: expect.any(String) })
+      if (status === 'rejected') expect(page.items[0]).toMatchObject({ reason: 'workflow_not_executable' })
+      if (status === 'missed') expect(page.items[0]).toMatchObject({ reason: 'outside_grace' })
+      if (status === 'skipped') expect(page.items[0]).toMatchObject({ reason: 'overlap' })
+      const result = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 } })
+      expect(result.isError).not.toBe(true)
+      expect(ScheduleOccurrencePageSchema.parse(result.structuredContent)).toEqual(page)
+      expect(await readback(reader)).toMatchObject({ schedule: { enabled: true, nextOccurrenceAt: null } })
+      expect(await f.countRuns()).toBe(status === 'accepted' || status === 'skipped' ? 1 : 0)
+
+      const outsider = await f.issue(['workflows:read', 'capabilities:read'], `foreign-${randomUUID()}`)
+      const deniedClient = await connect(outsider.token)
+      const before = await sch11DomainState(f)
+      expect((await http('GET', '/occurrences?limit=1', undefined, outsider.token)).statusCode).toBe(403)
+      const denied = await deniedClient.callTool({
+        name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 },
+      })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+      expect(await sch11DomainState(f)).toEqual(before)
+      const after = await http('GET', '/occurrences?limit=1', undefined, f.reader.token)
+      expect(after.statusCode).toBe(200)
+      expect(ScheduleOccurrencePageSchema.parse(after.json())).toEqual(page)
+    }, 60_000,
+  )
 
   it('save/enable/disable/clear/recreate round-trip across transports with replay and immutable history readback', async () => {
     const owner = await connect(f.writer.token), reader = await connect(f.reader.token)
