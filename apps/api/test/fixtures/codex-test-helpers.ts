@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { chmod, mkdtemp, readFile, writeFile, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type NativeHarnessEvent } from '@foreman-code/contracts'
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
-import { isQualifiedCodexVersion, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
-import type { CodexProtocol, JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
+import { isQualifiedCodexVersion, protocolFromBundle, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
+import type { MessagePhase, Thread, ThreadItem } from '../../src/modules/harnesses/codexMethodTypes.js'
+import type { JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
 
@@ -51,7 +53,7 @@ export async function finish(directory: string, sessionId: string, answer = 'cor
   assert(Array.isArray(turn.items))
   await emit(directory, { method: 'turn/completed', params: { threadId: sessionId, turn: {
     ...turn, status: 'completed', completedAt: 2,
-    items: [...turn.items, { type: 'agentMessage', id: 'final-item', text: answer, phase: 'final_answer' }],
+    items: [...turn.items, agentMessage('final-item', answer)],
   } } })
 }
 export async function until<T>(probe: () => Promise<T | undefined | false>, timeout = 5_000): Promise<T> {
@@ -71,54 +73,28 @@ export function collect(iterator: AsyncIterable<NativeHarnessEvent>): Promise<Na
 export function errorCode(error: unknown): string | undefined {
   return error instanceof HarnessExecutionError ? error.result.error?.code : undefined
 }
-function nativeItem(value: unknown): void {
-  assert(value && typeof value === 'object')
-  const item = value as JsonObject
-  if (item.type !== 'userMessage') return
-  // Codex 0.154.0 ThreadItem requires clientId even when it is null.
-  assert.equal(typeof item.id, 'string')
-  assert(item.clientId === null || typeof item.clientId === 'string')
-  assert(Array.isArray(item.content))
+// Unchanged upstream rust-v0.154.0 bundle at commit 6b9826e3aa83b1a5947db50f4332cb9c65f1b340:
+// codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json.
+// Provider qualification remains a test seam; payload validation uses the production compiler.
+export const fixtureProtocol = protocolFromBundle(JSON.parse(
+  readFileSync(new URL('./codex-protocol.schemas.json', import.meta.url), 'utf8'),
+) as JsonObject)
+
+export function nativeThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: 'native-thread-1', sessionId: 'native-thread-1', forkedFromId: null, parentThreadId: null,
+    preview: '', ephemeral: false, section: null, sectionEnteredAt: null, projectId: null,
+    historyMode: 'legacy', modelProvider: 'openai', model: 'test-model', reasoningEffort: 'medium',
+    createdAt: 1, updatedAt: 1, recencyAt: null, status: { type: 'idle' }, path: null,
+    cwd: process.cwd(), cliVersion: '0.154.0', originator: null, source: 'appServer', threadSource: null,
+    agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [], ...overrides,
+  }
 }
-export function nativeTurn(value: unknown): void {
-  assert(value && typeof value === 'object')
-  const turn = value as JsonObject
-  assert.equal(typeof turn.id, 'string')
-  assert(Array.isArray(turn.items))
-  assert(['full', 'summary', 'notLoaded'].includes(String(turn.itemsView)))
-  assert(['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status)))
-  for (const field of ['error', 'startedAt', 'completedAt', 'durationMs']) assert(Object.hasOwn(turn, field))
-  for (const item of turn.items) nativeItem(item)
-}
-/** Test double for schema qualification only. Real implementation tests are separate. */
-export const fixtureProtocol: CodexProtocol = {
-  request() {}, serverResponse() {},
-  response(method, value) {
-    assert(value && typeof value === 'object')
-    const result = value as JsonObject
-    if (method === 'turn/start') nativeTurn(result.turn)
-    if (method === 'turn/steer') assert.equal(typeof result.turnId, 'string')
-    if (method === 'thread/turns/list') {
-      assert(Array.isArray(result.data))
-      for (const turn of result.data) nativeTurn(turn)
-    }
-    if (method === 'thread/read') {
-      assert(result.thread && typeof result.thread === 'object')
-      const thread = result.thread as JsonObject
-      assert.equal(typeof thread.id, 'string')
-      assert(Array.isArray(thread.turns))
-      for (const turn of thread.turns) nativeTurn(turn)
-    }
-  },
-  serverRequest(message) { assert(message.params && typeof message.params.threadId === 'string') },
-  notification(message) {
-    assert(message.params && typeof message.params === 'object')
-    const params = message.params as JsonObject
-    if (message.method === 'turn/started' || message.method === 'turn/completed') {
-      assert.equal(typeof params.threadId, 'string'); nativeTurn(params.turn)
-    }
-    if (message.method === 'item/started' || message.method === 'item/completed') nativeItem(params.item)
-  },
+
+export function agentMessage(
+  id: string, text: string, phase: MessagePhase | null = 'final_answer',
+): Extract<ThreadItem, { type: 'agentMessage' }> {
+  return { type: 'agentMessage', id, text, phase, memoryCitation: null, delivery: null, questions: null }
 }
 export async function fixtureQualification(
   binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,

@@ -73,9 +73,22 @@ const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
 const store = () => save(`state-${current.id}.json`, current)
 const userMessage = (id, clientId, content = []) => ({ type: 'userMessage', id, clientId: clientId ?? null, content })
+const agentMessage = (id, text) => ({
+  type: 'agentMessage', id, text, phase: 'final_answer', memoryCitation: null, delivery: null, questions: null,
+})
 const turn = (id, status = 'inProgress', correlation = null, content = []) => ({
   id, status, itemsView: 'full', error: null, startedAt: 1, completedAt: status === 'inProgress' ? null : 2, durationMs: null,
   items: [userMessage(`native-user-${id}-1`, correlation, content)],
+})
+const thread = (id, params, original) => ({
+  id, sessionId: id, forkedFromId: original?.id || null, parentThreadId: null,
+  preview: '', ephemeral: !!params.ephemeral, section: null, sectionEnteredAt: null, projectId: null,
+  historyMode: 'legacy', modelProvider: 'openai', model: params.model || 'test-model',
+  reasoningEffort: params.config?.model_reasoning_effort || 'medium', createdAt: 1, updatedAt: 1,
+  recencyAt: null, status: { type: 'idle' }, path: null, cwd: params.cwd || process.cwd(),
+  cliVersion: '0.154.0', originator: null, source: 'appServer', threadSource: null,
+  agentNickname: null, agentRole: null, gitInfo: null, name: null,
+  turns: original ? JSON.parse(JSON.stringify(original.turns)) : [], settings: settings(params),
 })
 const settings = (params) => {
   const config = params.config || {}
@@ -99,7 +112,7 @@ const replyThread = (id, params) => {
 const complete = (nativeTurn, status = 'completed', answer = `answer-${agent}`) => {
   nativeTurn.status = status
   nativeTurn.completedAt = 2
-  nativeTurn.items.push({ type: 'agentMessage', id: `answer-${nativeTurn.id}`, text: answer, phase: 'final_answer' })
+  nativeTurn.items.push(agentMessage(`answer-${nativeTurn.id}`, answer))
   store()
   const item = nativeTurn.items[nativeTurn.items.length - 1]
   send({ method: 'item/completed', params: { threadId: current.id, turnId: nativeTurn.id, item, completedAtMs: 2 } })
@@ -110,6 +123,7 @@ const approval = (nativeTurn, id) => {
   outstanding.set(id, nativeTurn)
   send({ id, method: 'item/commandExecution/requestApproval', params: {
     threadId: current.id, turnId: nativeTurn.id, itemId: `command-${id}`, command: 'printf harmless', cwd: process.cwd(),
+    startedAtMs: 1,
     availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
   } })
 }
@@ -144,13 +158,24 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   else if (message.method === 'initialized') { /* Initialization has no response. */ }
   else if (message.method === 'thread/start') {
     if (flag('fail-start') || flag('required-mcp-failure')) { fail(message.id); return }
-    current = { id: `thread-${agent}-${process.pid}-${++created}`, ephemeral: !!params.ephemeral, turns: [], settings: settings(params) }
+    if (flag('late-reject-thread-start')) { setTimeout(() => fail(message.id), 800); return }
+    current = thread(`thread-${agent}-${process.pid}-${++created}`, params)
+    nextTurn = 0
     store()
     if (flag('late-thread-start')) setTimeout(() => replyThread(message.id, params), 800)
     else replyThread(message.id, params)
+  } else if (message.method === 'thread/fork') {
+    const original = read(`state-${params.threadId}.json`, null)
+    if (!original) { fail(message.id); return }
+    current = thread(`thread-${agent}-${process.pid}-${++created}`, params, original)
+    nextTurn = current.turns.length
+    store()
+    if (flag('hold-thread-fork-ack')) return
+    if (flag('late-thread-fork')) setTimeout(() => replyThread(message.id, params), 800)
+    else replyThread(message.id, params)
   } else if (message.method === 'thread/resume') {
     if (flag('fail-resume')) { fail(message.id); return }
-    current = read(`state-${params.threadId}.json`, { id: 'not-the-requested-thread', turns: [], settings: settings(params) })
+    current = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))
     nextTurn = current.turns.length
     if (flag('resume-delay')) setTimeout(() => replyThread(message.id, params), 250)
     else replyThread(message.id, params)
@@ -171,7 +196,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     current.turns.push(nativeTurn); store()
     if (prompt === 'lost-start') {
       nativeTurn.status = 'completed'; nativeTurn.completedAt = 2
-      nativeTurn.items.push({ type: 'agentMessage', id: 'recovered', text: 'recovered-answer', phase: 'final_answer' }); store()
+      nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store()
       process.exit(17)
     }
     const started = () => {
@@ -182,7 +207,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
         if (prompt === 'multi') { approval(nativeTurn, 900 + nextTurn); approval(nativeTurn, 1900 + nextTurn) }
       } else if (prompt === 'crash-completed') {
         nativeTurn.status = 'completed'; nativeTurn.completedAt = 2
-        nativeTurn.items.push({ type: 'agentMessage', id: 'recovered', text: 'recovered-answer', phase: 'final_answer' }); store()
+        nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store()
         setTimeout(() => process.exit(17), 15)
       } else if (['wait', 'slow-start', 'late-start'].includes(prompt)) { /* The fixture intentionally leaves the turn active. */ }
       else complete(nativeTurn)
@@ -222,10 +247,15 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     result(message.id, { config: { approval_policy: 'on-request', mcp_servers: servers }, origins: {}, layers: [] })
   }
   else if (message.method === 'mcpServerStatus/list') result(message.id, { data: [], nextCursor: null })
-  else if (message.method === 'model/list') result(message.id, { data: [{ id: 'test-model' }], nextCursor: null })
+  else if (message.method === 'model/list') result(message.id, { data: [{
+    id: 'test-model', model: 'test-model', displayName: 'Test model', description: 'Deterministic protocol fixture',
+    hidden: false, isDefault: true, defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
+      { reasoningEffort: 'medium', description: 'Medium' }],
+  }], nextCursor: null })
   else if (message.method === 'config/mcpServer/reload') result(message.id, {})
   else if (message.method === 'account/login/start') result(message.id, { type: 'chatgptDeviceCode', loginId: 'login-1', verificationUrl: 'https://example.invalid/device', userCode: 'TEST-CODE' })
-  else if (message.method === 'account/login/cancel') result(message.id, {})
+  else if (message.method === 'account/login/cancel') result(message.id, { status: 'canceled' })
   else if (message.method === 'test/echo') result(message.id, params)
   else if (message.method === 'test/descendant') {
     const child = require('node:child_process').spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: ['ignore', 1, 2] })

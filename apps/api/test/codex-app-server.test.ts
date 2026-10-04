@@ -20,11 +20,11 @@ import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
 import {
   calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
-  input, state, until, type Fixture,
+  input, nativeThread, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
-// below runs the repository implementation. The real schema gate has its own tests.
+// below runs the repository implementation, including the pinned native schema gate.
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>('../src/modules/harnesses/codexProtocol.js')
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
@@ -64,7 +64,9 @@ async function pending(session: NativeSessionReference): Promise<PendingNativeIn
 }
 async function inject(session: NativeSessionReference, method: string, extra: JsonObject = {}, id = 4000): Promise<void> {
   const current = await state(f.directory, session.nativeSessionId)
-  await emit(f.directory, { id, method, params: { threadId: session.nativeSessionId, turnId: current.turns.at(-1)!.id, ...extra } })
+  await emit(f.directory, { id, method, params: {
+    threadId: session.nativeSessionId, turnId: current.turns.at(-1)!.id, startedAtMs: 1, ...extra,
+  } })
 }
 function responseQuery(value: PendingNativeInteraction): NativeResponseAvailabilityQuery {
   const { nativeRequestId, nativeTurnId } = value.turn
@@ -92,7 +94,8 @@ async function assertSpawnedEnvironment(expected: Record<string, string | null>,
 
 describe('Codex fixture user-message contract', () => {
   const userMessage = {
-    type: 'userMessage', id: 'native-item-123', clientId: 'application-request-456', content: [],
+    type: 'userMessage', id: 'native-item-123', clientId: 'application-request-456',
+    content: [{ type: 'text', text: 'hello', text_elements: [] }],
   } satisfies ThreadItem
   const turn = {
     id: 'native-turn-1', items: [userMessage], itemsView: 'full', status: 'inProgress',
@@ -103,7 +106,7 @@ describe('Codex fixture user-message contract', () => {
       turn: { ...turn, items: [item] },
     }) },
     { name: 'thread/read response', validate: (item) => fixtureProtocol.response('thread/read', {
-      thread: { id: 'native-thread-1', turns: [{ ...turn, items: [item] }] },
+      thread: nativeThread({ turns: [{ ...turn, items: [item as ThreadItem] }] }),
     }) },
     { name: 'thread/turns/list response', validate: (item) => fixtureProtocol.response('thread/turns/list', {
       data: [{ ...turn, items: [item] }], nextCursor: null, prevCursor: null,
@@ -115,7 +118,7 @@ describe('Codex fixture user-message contract', () => {
     })),
     ...['item/started', 'item/completed'].map((method) => ({
       name: `${method} notification`, validate: (item: JsonObject) => fixtureProtocol.notification({
-        method, params: { threadId: 'native-thread-1', turnId: turn.id, item },
+        method, params: { threadId: 'native-thread-1', turnId: turn.id, item, startedAtMs: 1, completedAtMs: 2 },
       }),
     })),
   ]
@@ -125,18 +128,38 @@ describe('Codex fixture user-message contract', () => {
       assert.doesNotThrow(() => surface.validate(userMessage))
       const uncorrelated = { ...userMessage, clientId: null } satisfies ThreadItem
       assert.doesNotThrow(() => surface.validate(uncorrelated))
+      const noClientId: JsonObject = { ...userMessage }
+      delete noClientId.clientId
+      assert.doesNotThrow(() => surface.validate(noClientId))
       assert.doesNotThrow(() => surface.validate({ ...userMessage, id: userMessage.clientId }))
     })
 
     it(`rejects malformed user-message identities and content on ${surface.name}`, () => {
-      const missingClientId: JsonObject = { ...userMessage }
-      delete missingClientId.clientId
+      const missingId: JsonObject = { ...userMessage }
+      delete missingId.id
       for (const item of [
-        missingClientId,
+        missingId,
         { ...userMessage, id: 123 },
         { ...userMessage, clientId: 456 },
         { ...userMessage, content: {} },
+        { ...userMessage, content: [{ type: 'text', text: 123 }] },
+        { ...userMessage, content: [{ type: 'localImage', path: 123 }] },
+        { ...userMessage, content: [{ type: 'text', text: 'hello', text_elements: [
+          { byteRange: { start: 'bad', end: 1 } },
+        ] }] },
       ]) assert.throws(() => surface.validate(item))
+    })
+
+    it(`validates other thread item variants on ${surface.name}`, () => {
+      const agentMessage = { type: 'agentMessage', id: 'assistant-item', text: 'hello', phase: 'commentary' }
+      const command = { type: 'commandExecution', id: 'command-item', command: 'printf hello',
+        commandActions: [], cwd: process.cwd(), status: 'completed' }
+      assert.doesNotThrow(() => surface.validate(agentMessage))
+      assert.doesNotThrow(() => surface.validate(command))
+      assert.throws(() => surface.validate({ ...agentMessage, text: 123 }))
+      assert.throws(() => surface.validate({ ...agentMessage, memoryCitation: { entries: [{}], threadIds: [] } }))
+      assert.throws(() => surface.validate({ ...command, commandActions: [{}] }))
+      assert.throws(() => surface.validate({ type: 'inventedItem', id: 'unknown-item' }))
     })
   }
 
@@ -479,7 +502,10 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const interaction = await pending(session)
     const current = (await state(f.directory, session.nativeSessionId)).turns.at(-1)!
     await emit(f.directory, { method: 'turn/completed', params: { threadId: 'foreign', turn: { ...current, status: 'completed' } } })
-    await emit(f.directory, { method: 'item/completed', params: { threadId: session.nativeSessionId, turnId: 'turn-1', item: { id: 'stale', type: 'agentMessage', phase: 'final_answer', text: 'WRONG' } } })
+    await emit(f.directory, { method: 'item/completed', params: {
+      threadId: session.nativeSessionId, turnId: 'turn-1', completedAtMs: 2,
+      item: { id: 'stale', type: 'agentMessage', phase: 'final_answer', text: 'WRONG' },
+    } })
     await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId, turn: { status: 'bad' } } })
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'native.malformed'))
     assert.equal((await manager.pending(session))?.turn.nativeRequestId, interaction.turn.nativeRequestId)
@@ -1102,7 +1128,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const requests: Record<string, [string, JsonObject]> = {
       command: ['item/commandExecution/requestApproval', { itemId: 'cmd', availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'] }],
       file: ['item/fileChange/requestApproval', { itemId: 'file', reason: null, grantRoot: null }],
-      permissions: ['item/permissions/requestApproval', { itemId: 'permission', permissions: {} }],
+      permissions: ['item/permissions/requestApproval', { itemId: 'permission', cwd: f.directory, permissions: {} }],
       tool: ['item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null, questions: [{ id: 'mcp_tool_call_approval_t', header: 'Approve app tool call?', question: 'Allow?', isOther: false, isSecret: false, options: ['Allow', 'Allow for this session', 'Cancel'].map((label) => ({ label, description: '' })) }] }],
       elicitation: ['mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Confirm', requestedSchema: { type: 'object', properties: {} }, _meta: { codex_approval_kind: 'mcp_tool_call', persist: 'session' } }],
     }
