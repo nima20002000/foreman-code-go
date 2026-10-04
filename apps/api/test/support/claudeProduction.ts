@@ -101,10 +101,11 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const start: NativeSessionStart = kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
     : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } }
   const queries: { frames: ClaudeBoundedQueue<unknown>; messages: AsyncIterator<ClaudeSdkUserMessage> }[] = []
+  const initialFrames = new ClaudeBoundedQueue<unknown>(64)
   const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
   const setMcpServers = vi.fn(async () => ({ added: ['graphql'], removed: [], errors: {} }))
   const sdkQuery = vi.fn<ClaudeSdkClient['query']>(options => {
-    const frames = new ClaudeBoundedQueue<unknown>(64)
+    const frames = queries.length ? new ClaudeBoundedQueue<unknown>(64) : initialFrames
     const messages = options.prompt[Symbol.asyncIterator]()
     queries.push({ frames, messages })
     ready.resolve(messages)
@@ -134,17 +135,18 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
       choice: { optionId: 'allow_once', semantic: 'approve_once' },
     } } }]
   }
-  return { ...result, row, claim, start, profiles, proof, ready, queries, get frames() { return queries.at(-1)!.frames },
+  return { ...result, row, claim, start, profiles, proof, ready, queries,
+    get frames() { return queries.at(-1)?.frames ?? initialFrames },
     sdkQuery, loadClient, query, factories, setMcpServers, harness, binding, installations, launcher }
 }
 
-export async function managementEndpoint() {
+export async function managementEndpoint(token = 'synthetic-scoped-token') {
   const app = Fastify()
   const list = vi.fn(async () => ({ items: [], pageInfo: { nextCursor: null } }))
   const principal = { id: 'sender', name: 'Sender', audience: 'operator' as const,
     grants: [{ actions: ['workspaces:read' as const], scope: {} }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
   app.post('/mcp', async (request, reply) => {
-    if (request.headers.authorization !== 'Bearer synthetic-scoped-token') return reply.code(401).send()
+    if (request.headers.authorization !== `Bearer ${token}`) return reply.code(401).send()
     const server = new McpServer({ name: 'graphql', version: '1.0.0' })
     registerWorkspaceTools(server, { principal, services: { workspaces: { list } } } as unknown as OperatorRequestContext)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
