@@ -220,16 +220,56 @@ describe('durable remote ownership', () => {
     const retained = await Promise.all((await readdir(dirname(path))).map(name => readFile(join(dirname(path), name), 'utf8')))
     expect(retained).toContain(JSON.stringify(owner))
   })
-  it('refuses a live service identity or unidentifiable legacy lock even without a kernel holder', async () => {
+  it('refuses a live service identity even without a kernel holder', async () => {
     const { path, journal } = await setup()
     await journal.close()
     const service = processIdentity(process.pid)!
     await writeFile(`${path}.owner-lock`, JSON.stringify({ version: 1, ownerId: randomUUID(),
       bootId: bootIdentity(), pid: service.pid, startTicks: service.startTicks }))
     await expect(RemoteOperationJournal.open(path)).rejects.toMatchObject({ code: 'EEXIST' })
-    await writeFile(`${path}.owner-lock`, randomUUID())
-    await expect(RemoteOperationJournal.open(path)).rejects.toThrow()
-    expect(await readFile(`${path}.owner-lock`, 'utf8')).toMatch(/^[a-f0-9-]{36}$/)
+  })
+  it('upgrades a crashed legacy owner only after its retained descriptor closes, preserving native fences', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.close()
+    const ownerId = randomUUID()
+    const script = `
+      const { open } = await import('node:fs/promises');
+      const lock = await open(process.argv[1] + '.owner-lock', 'wx', 0o600);
+      await lock.writeFile(process.argv[2]);
+      await lock.sync();
+      process.send('owned');
+      setInterval(() => {}, 1000);
+    `
+    const worker = spawn(process.execPath, ['--input-type=module', '-e', script, path, ownerId], {
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    })
+    try {
+      await Promise.race([
+        once(worker, 'message'),
+        once(worker, 'exit').then(() => { throw new Error('Legacy worker exited before owning its lock') }),
+      ])
+      await expect(RemoteOperationJournal.open(path)).rejects.toMatchObject({ code: 'EEXIST' })
+      expect(await readFile(`${path}.owner-lock`, 'utf8')).toBe(ownerId)
+      const exited = once(worker, 'exit')
+      worker.kill('SIGKILL')
+      await exited
+      const recovered = await RemoteOperationJournal.open(path)
+      journals.push(recovered)
+      expect(await recovered.status(intent.operationId)).toMatchObject({
+        status: 'known', receipt: { native, entryAttempted: true, phase: 'start_acknowledged' },
+      })
+      expect((await recovered.reserveEntry(intent.operationId)).reserved).toBe(false)
+      expect(await readFile(`${path}.retired-owner-${ownerId}.json`, 'utf8')).toBe(ownerId)
+      await recovered.close()
+      const restarted = await RemoteOperationJournal.open(path)
+      journals.push(restarted)
+      expect(await restarted.status(intent.operationId)).toMatchObject({ status: 'known', receipt: { native } })
+    } finally {
+      worker.kill('SIGKILL')
+    }
   })
   it('reuses settled capacity while retaining immutable readback and duplicate ownership fences', async () => {
     const root = await mkdtemp(join(tmpdir(), 'journal-retention-'))
