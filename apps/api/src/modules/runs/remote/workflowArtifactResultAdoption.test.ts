@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import type { VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
-import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { WorkflowVersionV3Schema, parseWorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { fileToolFixture } from '../../../../test/support/fileTools.js'
 import { DomainError } from '../../errors.js'
 import { TemporaryFileService } from '../../files/service.js'
@@ -122,6 +122,28 @@ describe('saved original workflow artifact result adoption', () => {
       pins: { fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId, sha256: t.receipt.sha256 }, transferReceipt: t.receipt })
     expect({ result: t.result, version: t.original.version, accepted: t.accepted }).toEqual(before)
     expect(t.current).toHaveBeenCalledTimes(3)
+  })
+  it('publishes original bytes for a combined handoff result and restores the same associations', async () => {
+    const t = await fixture()
+    t.original.version.definition.handoffs = { contractVersion: 1 }
+    const result: ExecutionResult = { outcome: 'succeeded', output: { text: JSON.stringify({
+      ...t.envelope, routing: { kind: 'finish' },
+      data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+    }) } }
+    t.setResult(result)
+    const before = structuredClone(result)
+    await expect(t.adoption.adoptOriginalOutputs(t.accepted)).rejects.toMatchObject({ code: 'FILE_PUBLICATION_PENDING' })
+    expect(t.records.size).toBe(0)
+    const published = await t.publish()
+    expect((await t.adoption.adoptOriginalOutputs(t.accepted)).status).toBe('adopted')
+    const first = structuredClone(t.records.get('report'))
+    const restored = new WorkflowArtifactResultAdoption(t.source, t.outputs)
+    expect(await restored.adoptOriginalOutputs(t.accepted)).toEqual({ status: 'adopted', outputs: [first] })
+    expect(first?.pins.fileId).toBe(published.value.file.fileId)
+    expect(first?.pins.sha256).toBe(t.receipt.sha256)
+    expect(parseWorkHandoffResult(result)).toMatchObject({ routing: { kind: 'finish' },
+      artifactOutputs: { outputs: [{ outputKey: 'report', commandId: t.publicationCommand }] } })
+    expect(result).toEqual(before)
   })
   it('supports explicit alias names backed by one original publication', async () => {
     const t = await fixture(['report', 'summary']); await t.publish()

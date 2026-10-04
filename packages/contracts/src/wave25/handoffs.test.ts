@@ -110,7 +110,8 @@ describe('FLOW-01 versioned work handoff contract', () => {
       ...fixture.version.definition, handoffs: { contractVersion: 1 },
       nodes: fixture.version.definition.nodes.map((node, index) => index ? node : { ...node, artifactOutputs: declaration }),
     } })
-    expect(version.definition.nodes[0]?.artifactOutputs).toEqual(declaration)
+    const savedNode = version.definition.nodes[0]
+    expect(savedNode?.kind !== 'job' && savedNode?.artifactOutputs).toEqual(declaration)
   })
 
   it('charges only a new business work request and requires truthful return and notice shapes', () => {

@@ -100,8 +100,9 @@ describe('NIM-2691 workflow activation routing', () => {
     expect(requests).toEqual([second.id])
   })
 
-  it.each(['entry', 'limit_denial'] as const)(
-    'finishes a choice activation cleanly without a downstream outcome after %s', async (cause) => {
+  it.each((['entry', 'limit_denial'] as const).flatMap((cause) =>
+    [false, true].map((restart) => ({ cause, restart }))))(
+    'finishes a choice activation cleanly after $cause (restart=$restart)', async ({ cause, restart }) => {
       const fixture = makeCurrentWorkflowFixture(`choice-finish-${cause}`)
       const edge = fixture.version.definition.edges[0]!
       const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
@@ -136,8 +137,9 @@ describe('NIM-2691 workflow activation routing', () => {
         driver: { candidate: () => { throw new Error('An accepted execution must not restart') },
           observe: async () => undefined },
         limiter: new ExecutionLimiter(1, 10), signal: new AbortController().signal })
+      if (restart) await store.acceptWorkTerminal()
       expect(await action()('activation')).toEqual([])
-      // A new action instance resumes the already accepted result before routing.
+      // A new action instance replays the terminal finish without allocating work.
       expect(await action()('activation')).toEqual([])
     },
   )
