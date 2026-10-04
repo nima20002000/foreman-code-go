@@ -56,7 +56,7 @@ describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback th
       page = AppInteractionGetOutputSchema.parse((await call('interaction_get', {
         interactionId: interaction.id, contentCursor,
       })).structuredContent)
-    } while (true)
+    } while (json.length < page.content!.totalCharacters)
     expect(JSON.parse(json).interaction).toEqual(interaction)
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
     const outsider = await f.access.issue({ name: 'out-of-scope-reader', audience: 'worker',

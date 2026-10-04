@@ -1592,7 +1592,7 @@ export const RespondToInteractionRequestSchema = z.object({
 export const RespondToInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema, replayed: z.boolean() }).strict();
 
 /** MCP summaries keep decisions visible; interaction_get retrieves omitted JSON in chunks. */
-export const McpInteractionSummarySchema = DurableInteractionSchema.pick({
+export const McpInteractionSummarySchema = z.object(DurableInteractionSchema.shape).pick({
   id: true, revision: true, workspaceId: true, workflowId: true, runId: true,
   executionId: true, harness: true, status: true, deliveryState: true, approval: true,
   responseOptions: true, selectedOptionId: true, selectedSemantic: true, decidedAt: true, deliveredAt: true,

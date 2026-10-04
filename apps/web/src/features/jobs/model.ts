@@ -11,7 +11,6 @@ export function jobError(error: unknown) {
 /** Strip CSI, OSC, escape and nonprinting controls. React renders the remaining output as text. */
 export function plainLog(text: string) {
   // Control matching is intentional: remove terminal commands before display.
-  // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
 }
 export function loadedChunks(pages: JobLogPage[] = []) {

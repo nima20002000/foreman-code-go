@@ -222,7 +222,10 @@ describe('lazy installed worker host qualification boundary',()=>{
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
-      const { connectionEpoch: _epoch, ...connection } = f.context.binding
+      const { mainId, deviceId, workerInstallationId, bootId, keyRevision,
+        authorizationRevision, connectionGeneration } = f.context.binding
+      const connection = { mainId, deviceId, workerInstallationId, bootId, keyRevision,
+        authorizationRevision, connectionGeneration }
       await retainedJournal!.accept(f.intent, connection, randomUUID())
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({

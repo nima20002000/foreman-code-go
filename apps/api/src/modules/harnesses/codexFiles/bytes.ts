@@ -53,7 +53,6 @@ export function assertRegisteredCodexCopy(copy: RegisteredCodexCopy, expected: {
   if (!copy.registrationId || copy.registrationId.length > 500 || copy.executionHostId !== expected.executionHostId
     || copy.writable !== expected.writable || copy.byteSize !== expected.byteSize || copy.sha256 !== expected.sha256
     || !copy.executionPath || copy.executionPath.length > 4_096
-  // eslint-disable-next-line no-control-regex -- control characters in file names are rejected on purpose
     || /[\u0000-\u001f\u007f]/u.test(copy.executionPath)
     || !path.isAbsolute(copy.executionPath) || path.normalize(copy.executionPath) !== copy.executionPath) {
     fail('CODEX_FILE_HOST_RECEIPT_INVALID')

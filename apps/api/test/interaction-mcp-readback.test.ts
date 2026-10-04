@@ -38,14 +38,14 @@ describe('bounded interaction MCP readback', () => {
     let page = modelVisible(interactionMcpGet({ interaction }))
     expect(page.interaction).toMatchObject({ id: source.id, responseOptions: source.responseOptions })
     let json = ''
-    let digest = ''
+    const digest = page.content!.sha256
     do {
       const content = page.content!
       json += content.text
-      digest = content.sha256
+      expect(content.sha256).toBe(digest)
       if (!content.nextCursor) break
       page = modelVisible(interactionMcpGet({ interaction }, content.nextCursor))
-    } while (true)
+    } while (json.length < page.content!.totalCharacters)
     expect(JSON.parse(json)).toEqual({ interaction })
     expect(createHash('sha256').update(json).digest('hex')).toBe(digest)
   })
@@ -101,7 +101,7 @@ describe('bounded interaction MCP readback', () => {
       if (!cursor) break
       page = AppInteractionGetOutputSchema.parse(await service.get(principal, interaction.id, cursor))
       modelVisible(page)
-    } while (true)
+    } while (json.length < page.content!.totalCharacters)
     expect(JSON.parse(json).interaction.responseOptions).toEqual(interaction.responseOptions)
   })
 })

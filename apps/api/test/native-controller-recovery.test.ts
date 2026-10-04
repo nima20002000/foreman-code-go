@@ -69,8 +69,8 @@ it('closes an exited controller after systemd removes its cgroup, with the recor
 })
 
 it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live', 'missing-exit',
-  'wrong-provider', 'partial-cgroup-mount', 'changed-cgroup-device', 'invalid-exit'] as const)
-('keeps ownership unresolved when the cgroup is absent and %s', async failure => {
+  'wrong-provider', 'partial-cgroup-mount', 'changed-cgroup-device', 'invalid-exit'] as const)(
+'keeps ownership unresolved when the cgroup is absent and %s', async failure => {
   const f = fixture()
   if (failure === 'parent-live') host.livePid = f.launch.parent.pid
   if (failure === 'guardian-live') host.livePid = f.guardian.pid

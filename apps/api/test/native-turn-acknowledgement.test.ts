@@ -19,6 +19,7 @@ it('persists the acknowledged native turn before a running result can be observe
       expect(saved?.correlationId).toBe('execution:original')
       expect(saved?.currentTurnOrMessageId).toBe('original-turn')
       expect(saved?.leaseToken).toBeTruthy()
+      yield* []
     },
   } satisfies Pick<NativeHarnessSessionManager, 'harness' | 'createSession' | 'reconcile' | 'startTurn'>
   const writer = new SingleWriterSessionManager(manager as unknown as NativeHarnessSessionManager, coordination, 'agent')
