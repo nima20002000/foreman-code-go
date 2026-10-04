@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-10-04
+
+### Fixed
+
+- Restore native cancellation, recovery and reviewer safety verification with persisted session and turn identities, retaining coverage for both bound and unbound recovered lanes.
+- Exercise startup recovery and orderly shutdown with the production rsync availability result in the lifecycle fixture.
+- Align source-capture timeout verification with the intended five-minute preparation budget and enable the existing worker execution policy in the source reconciliation fixture.
+- Make schedule editor and modal verification independent of the machine timezone while preserving saved instants, device-local display and daylight-saving behavior.
+
 ## [0.0.2] - 2026-10-04
 
 ### Added
