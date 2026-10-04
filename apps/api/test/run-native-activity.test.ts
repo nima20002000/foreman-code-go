@@ -24,7 +24,7 @@ describe('native Run activity status', () => {
       }
     }
     const snapshot = projectNativeActivityFacts([{
-      execution_id: 'execution', sequence: '1', item_id: 'command', item_type: 'commandExecution', status,
+      execution_id: 'execution', sequence: '1', item_id: 'command', item_type: 'commandExecution', status, item_error: true,
       native_session_id: 'session', native_turn_id: null, generation: null, observed_at: fixture.createdAt,
     }], () => ({ owner: { kind: 'run', ...fixture.scope }, harness: 'codex', sessionId: 'session', terminal: false }))
     expect(snapshot.activities[0]).toMatchObject({ status: 'canceled', evidence: 'confirmed' })
@@ -39,5 +39,12 @@ describe('native Run activity status', () => {
   ])('preserves completion and real failures: $expected', ({ expected, ...native }) => {
     expect(publicRunActivity({ ...row, native: { type: 'item.completed', itemType: 'commandExecution', ...native } },
       fixture.version, fixture.run.id, fixture.run.outcome).status).toBe(expected)
+    const snapshot = projectNativeActivityFacts([{
+      execution_id: 'execution', sequence: '1', item_id: 'command', item_type: 'commandExecution',
+      status: native.itemStatus, item_error: native.itemError,
+      native_session_id: 'session', native_turn_id: null, generation: null, observed_at: fixture.createdAt,
+    }], () => ({ owner: { kind: 'run', ...fixture.scope }, harness: 'codex', sessionId: 'session', terminal: false }))
+    expect(snapshot.activities[0]).toMatchObject({ status: expected, evidence: 'confirmed' })
+    expect(snapshot.active).toEqual([])
   })
 })

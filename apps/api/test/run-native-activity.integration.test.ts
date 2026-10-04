@@ -1,21 +1,60 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import type { AgentConfigurationVersion, NativeHarnessEvent } from '@graphql/contracts'
-import { RunActivitiesPageSchema } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, type AgentConfigurationVersion, type NativeHarnessEvent } from '@graphql/contracts'
+import { RunActivitiesPageSchema, SavedRunDetailsSchema } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { readNativeActivityFacts, projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
-import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
+import { openRunGraphPublication } from '../src/modules/run-graph/publication.js'
+import { openRepeatCanonicalPublicationLocked, publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
+import { bindRepeatNodeInput, repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
 import { claudeNativeEvent } from '../src/modules/harnesses/claudeSdk/nativeEvents.js'
 import type { ClaudeDecodedChange } from '../src/modules/harnesses/claudeSdk/normalization.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
-import { graphFixture, graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { graphFixture, graphHeaders, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
 
 const occurredAt = '2026-10-04T10:00:00.000Z'
 const executionId = 'native-activity-execution'
+
+async function captureExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
+  fixture: Awaited<ReturnType<typeof graphFixture>>) {
+  const node = agentWorkflowNode(fixture.version.definition.nodes[0])
+  const candidate = HarnessExecutionSchema.parse({
+    id: executionId, runId: fixture.run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1,
+    state: 'queued', input: {}, createdAt: occurredAt, nativeSessionId: 'native-session',
+    agentConfigurationVersionId: fixture.version.agentConfigurationVersionIds[node.agentId],
+  })
+  const ref = { nodeId: node.id, occurrence: null }
+  const bound = bindRepeatNodeInput({ version: fixture.version, runInput: fixture.run.input,
+    recipient: candidate, ref, occurrence: null, entry: null, predecessors: [] })
+  const queued = HarnessExecutionSchema.parse({ ...candidate, input: bound.input })
+  const slot = repeatSlotId(fixture.run.id, ref)
+  const effect = { kind: 'input.bind' as const, entityId: queued.id,
+    digest: repeatDigest({ ref, queued, inputDigest: bound.digest, bindings: bound.bindings }) }
+  await ownedGraph(db, fixture, (owner) => owner.oneShotConnection().transaction(async (sql) => {
+    const publication = await openRunGraphPublication(sql, fixture.scope)
+    await publishRepeatRunStateLocked(publication, owner)
+    const canonical = await openRepeatCanonicalPublicationLocked(sql, fixture.scope, owner, publication)
+    const fence = await owner.readOneShotFence(sql)
+    await canonical.publishEffectLocked(effect, [{ type: 'repeat.execution.queued', ref,
+      execution: repeatExecutionIdentity(queued), inputDigest: bound.digest }], async () => {
+      await sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
+        values($1,$2,null,$3,$4,$5)`, [slot, fixture.run.id, node.id, JSON.stringify(bound.input), bound.digest])
+      await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+        values($1,$2,$3,$4,1,$5::jsonb)`, [queued.id, fixture.run.id, node.id, node.agentId, JSON.stringify(queued)])
+      await sql.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,
+        technical_attempt,previous_execution_id,identity) values($1,$2,$3,null,1,null,$4::jsonb)`,
+      [queued.id, fixture.run.id, slot, JSON.stringify(repeatExecutionIdentity(queued))])
+      await sql.query(`insert into run_repeat_effects(run_id,effect_kind,entity_id,payload_digest,owner_id,owner_fence)
+        values($1,$2,$3,$4,$5,$6)`, [fixture.run.id, effect.kind, effect.entityId,
+        effect.digest, fence.ownerId, fence.fence])
+    })
+    await canonical.assertEffectReceiptLocked(effect)
+  }))
+}
 
 async function activityFixture(work: (pool: pg.Pool, fixture: Awaited<ReturnType<typeof graphFixture>>,
   app: ReturnType<typeof buildApp>) => Promise<void>, options: { harness?: AgentConfigurationVersion['harness'] } = {}) {
@@ -29,13 +68,7 @@ async function activityFixture(work: (pool: pg.Pool, fixture: Awaited<ReturnType
       operator: { access: fixture.access, services: { commands: fixture.commands, workflows: fixture.workflows, runs } as never },
     })
     try {
-      const node = agentWorkflowNode(fixture.version.definition.nodes[0])
-      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, fixture.run.id, node.id, node.agentId, JSON.stringify({
-        id: executionId, runId: fixture.run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1,
-        state: 'running', input: {}, createdAt: occurredAt, nativeSessionId: 'native-session',
-        agentConfigurationVersionId: fixture.version.agentConfigurationVersionIds[node.agentId],
-      })])
+      await captureExecution(db, fixture)
       await work(pool, fixture, app)
     } finally {
       await app.close()
@@ -68,6 +101,22 @@ async function readBoth(app: ReturnType<typeof buildApp>, fixture: Awaited<Retur
   return page
 }
 
+async function readSnapshot(app: ReturnType<typeof buildApp>, fixture: Awaited<ReturnType<typeof graphFixture>>) {
+  const args = { workspaceId: fixture.scope.workspaceId, runId: fixture.run.id }
+  const url = `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`
+  const http = await app.inject({ method: 'GET', url, headers: graphHeaders(fixture.writer.token) })
+  expect(http.statusCode, http.body).toBe(200)
+  const details = SavedRunDetailsSchema.parse(http.json())
+  const mcp = await graphRpc(app, fixture.writer.token, 'tools/call', { name: 'run_get', arguments: args })
+  expect(mcp.result?.isError).not.toBe(true)
+  expect(SavedRunDetailsSchema.parse(graphRpcValue(mcp.result))).toEqual(details)
+  const denied = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
+  const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_get', arguments: args })
+  expect(blocked.error || blocked.result?.isError).toBeTruthy()
+  expect(details.activitySnapshot).toBeDefined()
+  return details.activitySnapshot!
+}
+
 describe('persisted native Run activity', () => {
   it('distinguishes absent and JSON-null errors from real error objects in PostgreSQL', async () => {
     await activityFixture(async (pool, fixture, app) => {
@@ -84,6 +133,10 @@ describe('persisted native Run activity', () => {
         'Command action completed', 'Command action completed', 'Command action failed',
       ])
       expect(JSON.stringify(page)).not.toContain('private failure body')
+      const snapshot = await readSnapshot(app, fixture)
+      expect(snapshot.activities.filter((item) => item.kind === 'tool').map((item) => item.status))
+        .toEqual(['completed', 'completed', 'failed'])
+      expect(snapshot.active.filter((item) => item.ref.kind === 'tool')).toEqual([])
       expect((await pool.query('select count(*)::integer as count from harness_native_events where execution_id=$1',
         [executionId])).rows[0]?.count).toBe(3)
     })
@@ -111,6 +164,10 @@ describe('persisted native Run activity', () => {
       expect(native.activities).toHaveLength(9)
       expect(native.activities.every((item) => 'status' in item && item.status === 'canceled')).toBe(true)
       expect(native.active).toEqual([])
+      const snapshot = await readSnapshot(app, fixture)
+      expect(snapshot.activities.filter((item) => item.kind === 'tool').map((item) => item.status))
+        .toEqual(Array(9).fill('canceled'))
+      expect(snapshot.active.filter((item) => item.ref.kind === 'tool')).toEqual([])
     })
   }, 120000)
 
@@ -148,7 +205,7 @@ describe('persisted native Run activity', () => {
         ['MCP tool action completed', 'completed'], ['Subagent activity started', 'running'],
         ['Subagent activity canceled', 'canceled'], ['Subagent activity unknown', 'unknown'],
       ])
-      const snapshot = await readRunActivitySnapshot(pool, fixture.scope, fixture.version)
+      const snapshot = await readSnapshot(app, fixture)
       const native = snapshot.activities.filter((item) => item.source.system === 'harness_native_events')
       expect(native.map((item) => item.kind === 'tool' || item.kind === 'subagent'
         ? [item.native?.itemId, item.title, item.status] : null)).toEqual([
