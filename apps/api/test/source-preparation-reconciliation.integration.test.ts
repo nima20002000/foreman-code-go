@@ -12,6 +12,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { JobService } from '../src/modules/jobs/service.js'
+import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { PostgresSourceService } from '../src/modules/sources/service.js'
 import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
@@ -95,7 +96,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     spec.target={...spec.target,mainId,mainInstallationId:mainId,hostRef:root.selection.hostRef,registration:root.registration,
       destination:{...spec.target.destination,canonicalProjectRoot:namespace,canonicalCwd:namespace,managedRuntimeRoot:runtime,rootPolicyId:policyId,attestationId:root.attestationId,attestationHash:root.attestationDigest}}
     spec.policy.preparationTimeoutMs=600000
-    const jobs = new JobService(database.pool,commands,{preparation:{choices:async()=>({targets:[],sources:[],policies:[]}),validate:async()=>({valid:true,reasons:[],sideEffects:false}),
+    const jobs = new JobService(database.pool,commands,{
+      workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }),
+      preparation:{choices:async()=>({targets:[],sources:[],policies:[]}),validate:async()=>({valid:true,reasons:[],sideEffects:false}),
       revalidateAccepted:async()=>{},adoptFinalBinding:async()=>{},accept:async(_sql,principal,_workspace,_spec,identity)=>{
         const attempt={executionId:identity.executionId,attemptId:identity.attemptId,placementHash:'',keyRevision:1,authorizationRevision:1};attempt.placementHash=sourceBindingHash(root,attempt,identity.operationId)
         await sources.prepareExecution({principal,workspaceId,rootId:root.binding.rootId,bindingRevision:1,source:root.source,attempt,operationId:identity.operationId})

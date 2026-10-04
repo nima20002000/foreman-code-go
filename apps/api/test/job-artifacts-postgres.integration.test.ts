@@ -7,6 +7,7 @@ import pg from 'pg'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { JobExecutionSchema } from '@graphql/contracts/jobs'
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
@@ -28,6 +29,8 @@ const digest=(v:Uint8Array|string)=>createHash('sha256').update(v).digest('hex')
 describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical artifact authenticated persistence (%s)', placementMode=>{
   const schema=`ci_artifacts_${randomUUID().replaceAll('-','')}`
   let admin:pg.Pool,pool:pg.Pool,root:string,app:FastifyInstance
+  let address: string
+  const clients: Client[] = []
   let artifacts:ReturnType<typeof createCanonicalJobArtifactPort>
   const execution=jobExecution(),ownerToken=`fixture-owner-${randomUUID()}`,deniedToken=`fixture-denied-${randomUUID()}`
   const data=Buffer.from('{"build":"passed"}'),outputPath='dist/report.json'
@@ -78,8 +81,9 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
       reply.raw.once('close',()=>{void Promise.allSettled([transport.close(),server.close()])})
       await server.connect(transport);reply.hijack();await transport.handleRequest(request.raw,reply.raw,request.body)
     })
+    address = await app.listen({ host: '127.0.0.1', port: 0 })
   })
-  afterAll(async()=>{await app?.close();await pool?.end();if(root)await rm(root,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
+  afterAll(async()=>{await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await pool?.end();if(root)await rm(root,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
   it('finalizes and adopts one exact standalone artifact, then authenticates HTTP/MCP readback and denial',async()=>{
     const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,
       commandId:'ci-output-command',path:outputPath,mediaType:'application/json' as const,sha256:digest(data),byteSize:data.length}
@@ -93,11 +97,22 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
     expect(read.rawPayload).toEqual(data);expect(read.headers['x-artifact-sha256']).toBe(p.sha256)
     const denied=await app.inject({method:'GET',url:base,headers:{authorization:`Bearer ${deniedToken}`}})
     expect(denied.statusCode).toBe(403)
-    const rpc=await app.inject({method:'POST',url:'/mcp',headers:{authorization:`Bearer ${ownerToken}`,accept:'application/json, text/event-stream'},payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'job_artifact_read',arguments:{workspaceId:execution.workspaceId,executionId:execution.id,fileId:p.fileId,revisionId:p.revisionId}}}})
-    const line=rpc.body.split('\n').find(v=>v.startsWith('data: ')),result=JSON.parse(line?line.slice(6):rpc.body)
-    expect(result.result.structuredContent).toMatchObject({artifact:p,content:data.toString('base64')})
-    const deniedRpc=await app.inject({method:'POST',url:'/mcp',headers:{authorization:`Bearer ${deniedToken}`,accept:'application/json, text/event-stream'},payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'job_artifact_read',arguments:{workspaceId:execution.workspaceId,executionId:execution.id,fileId:p.fileId,revisionId:p.revisionId}}}})
-    expect(deniedRpc.json().result.isError).toBe(true)
+    const ownerClient = new Client({ name: 'artifact-owner', version: '1' })
+    clients.push(ownerClient)
+    await ownerClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { authorization: `Bearer ${ownerToken}` } },
+    }))
+    const artifactArguments = { workspaceId: execution.workspaceId, executionId: execution.id,
+      fileId: p.fileId, revisionId: p.revisionId }
+    const result = await ownerClient.callTool({ name: 'job_artifact_read', arguments: artifactArguments })
+    expect(result.structuredContent).toMatchObject({ artifact: p, content: data.toString('base64') })
+    const deniedClient = new Client({ name: 'artifact-reader', version: '1' })
+    clients.push(deniedClient)
+    await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { authorization: `Bearer ${deniedToken}` } },
+    }))
+    const deniedRpc = await deniedClient.callTool({ name: 'job_artifact_read', arguments: artifactArguments })
+    expect(deniedRpc.isError).toBe(true)
     const counts=(await pool.query(`select (select count(*) from file_tool_publications)::int as publications,(select count(*) from file_allocations where state='finalized')::int as allocations,(select count(*) from files where scope_kind='job_execution' and conversation_id is null and run_id is null and agent_id is null)::int as explicit_scopes`)).rows[0]
     expect(counts).toEqual({publications:1,allocations:1,explicit_scopes:1})
     const stored=JobExecutionSchema.parse((await pool.query('select record from job_executions where id=$1',[execution.id])).rows[0].record)
