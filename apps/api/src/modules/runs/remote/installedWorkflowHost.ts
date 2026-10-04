@@ -309,6 +309,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         readFacts:()=>readFacts(intent,placement),suiteRevision:input.codexSuiteRevision})
       const capture=await reader.capture()
       current(context.binding)
+      if(operations.size>=1000)unavailable('operation_retention_full')
       owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,scope:registry.scope(`execution:${intent.executionId}`)}
       operations.set(intent.executionId,owned)
     }
@@ -316,6 +317,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     let host=hosts.get(generation)
     if(!host) {
       const log=await journal();current(context.binding)
+      // Other executions may publish this generation's host while the journal opens.
+      host = hosts.get(generation)
+      if (host) return host
       const managers=new ExecutionScopedNativeSessionManagerResolver(configurationContext=>{
         const resident=operations.get(configurationContext.executionId)
         if(!resident||configurationContext.harness!=='codex'||!isDeepStrictEqual(configurationContext.configuration,resident.capture.facts.configuration)
@@ -469,11 +473,30 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     owned.host = host
     return host
   }
-  let construction:Promise<unknown>=Promise.resolve()
-  const construct=(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,action:'read'|'stop')=>{
-    const next=construction.then(()=>constructOwned(context,intent,placement,action))
-    construction=next.then(()=>undefined,()=>undefined)
-    return next
+  const construction = new Map<string, {
+    binding: Readonly<DeviceSessionBinding>
+    intent: DispatchIntent
+    placement: AcceptedNodePlacement
+    task: Promise<RemoteExecutionHost>
+  }>()
+  const construct = (context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,action:'read'|'stop') => {
+    context.signal.throwIfAborted()
+    current(context.binding)
+    const pending = construction.get(intent.executionId)
+    if (pending) {
+      if (!isDeepStrictEqual(pending.binding,context.binding) || !isDeepStrictEqual(pending.intent,intent)
+        || !isDeepStrictEqual(pending.placement,placement)) unavailable('original_operation_generation_changed')
+      return pending.task
+    }
+    const task = constructOwned(context,intent,placement,action)
+    construction.set(intent.executionId, {
+      binding: structuredClone(context.binding),
+      intent: structuredClone(intent),
+      placement: structuredClone(placement),
+      task,
+    })
+    void task.then(() => construction.delete(intent.executionId), () => construction.delete(intent.executionId))
+    return task
   }
   const releaseSettled = async (intent: DispatchIntent) => {
     for (const host of hosts.values()) await host.retireSettled(intent.operationId)
@@ -655,8 +678,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   })()
   const preparationClosed = async (owner: SourceOperationOwner): Promise<boolean> => {
     if (owner.preparationKind !== 'workflow' || owner.preparationClosed !== true) return false
-    // Main has fenced future construction. Join any earlier fact lookup before checking its installed owner.
-    await construction
+    // A failed fact lookup may still leave an owner that needs cleanup.
+    const pending = construction.get(owner.attempt.executionId)
+    if (pending) await Promise.allSettled([pending.task])
     const owned = operations.get(owner.attempt.executionId)
     const log = await journal()
     const status = await log.status(owner.identity.operationId)
