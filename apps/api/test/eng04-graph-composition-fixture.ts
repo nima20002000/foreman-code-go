@@ -69,8 +69,9 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
         // A fresh authorable workflow has no saved version yet. Preserve its
         // exact creation stamps; publication assigns the first immutable V3.
         graph: { ...f.version.definition,
-          executionPolicy: { ...f.version.definition.executionPolicy,
-            maxNodeExecutions: options.maxNodeExecutions ?? f.version.definition.executionPolicy.maxNodeExecutions },
+          ...(options.maxNodeExecutions === undefined ? {} : {
+            executionPolicy: { ...f.version.definition.executionPolicy, maxNodeExecutions: options.maxNodeExecutions },
+          }),
           ...(options.handoffs ? { handoffs: { contractVersion: 1 },
             edges: f.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })) } : {}),
           id: workflowId, version: managed.workflow.version,

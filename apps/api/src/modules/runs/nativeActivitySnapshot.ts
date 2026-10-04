@@ -61,7 +61,7 @@ export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], 
     let observed = nativeActivityStatus(row.status)
     if (observed !== 'canceled' && row.item_error) observed = 'failed'
     const provenTerminal = observed === 'completed' || observed === 'failed' || observed === 'canceled'
-    let status = observed ?? 'running'
+    let status: Extract<ActivityItem, { kind: 'tool' }>['status'] = observed ?? 'running'
     if (!provenTerminal && context.terminal) status = 'unknown'
     const nativeSession = row.native_session_id ?? (child ? null : context.sessionId)
     const native = nativeSession && context.harness ? { harness: context.harness, sessionId: nativeSession,
