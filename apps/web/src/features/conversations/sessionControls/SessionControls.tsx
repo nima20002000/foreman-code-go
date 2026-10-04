@@ -1,4 +1,5 @@
-import { useId, useState } from 'react'
+import { useFloatingSurface } from '../../../shared/ui/nocturne/useFloatingSurface'
+import { useEffect, useId, useRef, useState } from 'react'
 import { compactionBlocksSend, type SessionPreferences } from '@graphql/contracts'
 import { Button, Input, Select } from '../../../shared/ui/nocturne'
 import type { ComposerSessionControls } from './useSessionControls'
@@ -8,10 +9,31 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const state = controls.state
   const id = useId()
   const [open, setOpen] = useState(false)
-  if (!state) return <span role="status">{controls.query.isError ? 'Context unavailable' : 'Context loading…'}</span>
+  const anchor = useRef<HTMLButtonElement>(null)
+  const surface = useRef<HTMLDivElement>(null)
+  const restoringFocus = useRef(false)
+  useFloatingSurface(open, anchor, surface, 320, 'end')
+  useEffect(() => { setOpen(false) }, [state?.conversationId])
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !surface.current?.contains(event.target) && !anchor.current?.contains(event.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [open])
+  const close = () => {
+    restoringFocus.current = true
+    setOpen(false)
+    anchor.current?.focus()
+    queueMicrotask(() => { restoringFocus.current = false })
+  }
+  if (!state) return <span role="status">{!controls.conversationId ? 'No native context yet' : controls.query.isError ? 'Context unavailable' : 'Context loading…'}</span>
   const context = state.context
   const known = context?.usedTokens != null && context.capacityTokens != null
-  const percentage = known ? Math.min(100, Math.round(context.usedTokens! / context.capacityTokens! * 100)) : null
+  const percentage = known ? Math.round(context.usedTokens! / context.capacityTokens! * 100) : null
   const compactReason = state.busyReason ?? (compactionBlocksSend(state.compaction) ? 'Compaction is still unconfirmed. Refresh its status.'
     : state.capabilities.compact.reason)
   const pending = controls.mutation.isPending
@@ -23,17 +45,17 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
       onChange={event => { void controls.change({ kind: 'mode', mode: event.target.value === 'plan' ? 'plan' : 'regular' }).catch(() => undefined) }} />
     {state.desiredMode !== state.appliedMode ? <small>Next turn</small> : null}
     <div className="session-context">
-      <Button size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
-        onClick={() => setOpen(true)} onFocus={() => setOpen(true)} onMouseEnter={() => setOpen(true)}>
+      <Button ref={anchor} size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
+        onClick={() => setOpen(true)} onFocus={() => { if (!restoringFocus.current) setOpen(true) }} onMouseEnter={() => setOpen(true)}>
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2" />
           {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"
-            strokeDasharray={`${percentage * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
+            strokeDasharray={`${Math.min(100, percentage) * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
         </svg>
         {percentage === null ? 'Context unknown' : `${percentage}% context`}{context?.stale ? ' · stale' : ''}
       </Button>
-      {open ? <div id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
-        if (event.key === 'Escape') { event.preventDefault(); setOpen(false) }
+      {open ? <div ref={surface} popover="manual" id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
       }}>
         <p>{context?.usedTokens == null ? 'Current usage unknown' : `${context.usedTokens.toLocaleString()} tokens in context`}
           {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
@@ -64,7 +86,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
         {compactReason ? <p>{compactReason}</p> : null}
         {state.compaction ? <p role="status">{state.compaction.message}</p> : null}
         <Button size="sm" variant="secondary" onClick={() => { void controls.query.refetch() }}>Refresh status</Button>
-        <Button size="sm" variant="secondary" onClick={() => setOpen(false)}>Close context details</Button>
+        <Button size="sm" variant="secondary" onClick={close}>Close context details</Button>
       </div> : null}
     </div>
     {controls.mutation.isError ? <p role="alert">{controls.mutation.error.message}</p> : null}

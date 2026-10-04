@@ -1,3 +1,4 @@
+import { admitSessionMessage } from './sessionControls/messageAdmission.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -323,6 +324,7 @@ export class PostgresAgentChatRepository {
         ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
       const targetNativeTurnId = input.request.intent === 'interrupt_and_send'
         ? input.request.expectedNativeTurnId ?? interruptTarget?.nativeTurnId : input.targetNativeTurnId
+      await admitSessionMessage(client, row.id, input.request.sessionMode)
       await validateMessageAttachments(client, row.id, input.request.attachments)
       const now = new Date().toISOString()
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: row.id, role: 'user', requestId: input.request.requestId,

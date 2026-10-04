@@ -401,10 +401,18 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         beforeTokens: state.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
       await input.onProgress(state.compaction)
       const [providerID, ...model] = state.configuration.model.split('/')
-      const accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
+      let accepted: unknown
+      try {
+        accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerID, modelID: model.join('/'), auto: false }),
       }, combined)
+      } catch (error) {
+        const definite = error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
+        state.compaction = { ...state.compaction, status: definite ? 'failed' : 'uncertain',
+          message: definite ? 'OpenCode rejected compaction.' : 'Read to recover native compaction.' }
+        throw error
+      }
       if (accepted !== true) {
         if (accepted === false) state.compaction = { ...state.compaction, status: 'failed', message: 'OpenCode declined compaction.' }
         else throw new OpenCodeNativeDeliveryError('OPENCODE_COMPACT_UNCONFIRMED', 'The accepted summarize response was invalid.', 'uncertain')
@@ -1788,6 +1796,16 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private record(state: SessionState, native: OpenCodeEvent): NativeHarnessEvent | undefined {
+    if (native.type === 'message.updated') {
+      const info = object(object(native.properties).info)
+      const sessionId = [...this.sessions.entries()].find(([, owned]) => owned === state)?.[0]
+      if (sessionId && info.sessionID === sessionId) {
+        if (info.summary === true && state.context) state.context = { ...state.context, stale: true }
+        const context = openCodeContextSnapshot([{ info, parts: [] }], sessionId, state.configuration.model,
+          state.context?.capacityTokens ?? null)
+        if (context) state.context = { ...context, generation: `${state.connectionId}:${this.generation}` }
+      }
+    }
     // Provider-controlled SSE cannot impersonate our history-scan observation.
     if (native.type === OPENCODE_RECONCILIATION_EVENT) return undefined
     const key = native.id ?? native.sseId

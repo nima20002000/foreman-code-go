@@ -41,6 +41,7 @@ export const CompactionStateSchema = z.object({
   requestId: z.string(),
   nativeSessionId: z.string().nullable(),
   nativeOperationId: z.string().nullable(),
+  baselineTurnId: z.string().nullable().optional(),
   status: z.enum(['accepted', 'running', 'completed', 'no-op', 'failed', 'uncertain']),
   message: z.string(),
   beforeTokens: z.number().nonnegative().nullable(),
@@ -59,7 +60,10 @@ export const SessionControlStateSchema = z.object({
   applicability: z.enum(['applied', 'next-turn', 'safe-resume', 'new-session']),
   capabilities: SessionControlCapabilitiesSchema,
   context: ContextSnapshotSchema.nullable(),
+  nativeSessionId: z.string().nullable(),
+  nativeProviderVersion: z.string().nullable(),
   compaction: CompactionStateSchema.nullable(),
+  compactions: z.array(CompactionStateSchema),
   busyReason: z.string().nullable(),
 }).strict()
 export type SessionControlState = z.infer<typeof SessionControlStateSchema>
@@ -72,8 +76,8 @@ export const SessionControlRequestSchema = z.discriminatedUnion('kind', [
 ])
 export type SessionControlRequest = z.infer<typeof SessionControlRequestSchema>
 
-export function unavailableSessionControls(profileKey: string): SessionControlCapabilities {
-  const unavailable = { supported: false, reason: 'Send a message to discover this native session’s controls.' }
+export function unavailableSessionControls(profileKey: string, reason = 'Send a message to discover this native session’s controls.'): SessionControlCapabilities {
+  const unavailable = { supported: false, reason }
   return { compact: unavailable, plan: unavailable, autoCompact: unavailable, autoCompactBudget: unavailable,
     contextBudgets: [], contextProfiles: [], modelCapacity: null, model: null, profileKey }
 }

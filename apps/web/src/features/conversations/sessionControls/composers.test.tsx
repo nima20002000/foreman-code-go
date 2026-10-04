@@ -9,7 +9,7 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 
 const state = SessionControlStateSchema.parse({ conversationId: 'chat', revision: 1, profileKey: 'profile',
   desiredMode: 'regular', appliedMode: 'regular', defaults: {}, desired: {}, applied: {}, applicability: 'applied',
-  context: null, compaction: null, busyReason: null,
+  context: null, nativeSessionId: null, nativeProviderVersion: null, compaction: null, compactions: [], busyReason: null,
   capabilities: { profileKey: 'profile', model: 'model', modelCapacity: null, contextBudgets: [], contextProfiles: [],
     compact: { supported: true, reason: null }, plan: { supported: true, reason: null },
     autoCompact: { supported: true, reason: null }, autoCompactBudget: { supported: false, reason: 'Capacity unknown' } } })
@@ -69,4 +69,15 @@ it('shows unknown context honestly and the popover invokes the compact operation
   expect(screen.getByText('Automatic compaction: default')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Compact context' }))
   await waitFor(() => expect(controls.change).toHaveBeenCalledWith({ kind: 'compact' }))
+})
+
+it('closes context details with Escape and restores focus to the meter', () => {
+  render(<SessionControls controls={controller()} />)
+  const meter = screen.getByRole('button', { name: 'Context unknown' })
+  fireEvent.click(meter)
+  const close = screen.getByRole('button', { name: 'Close context details' })
+  close.focus()
+  fireEvent.keyDown(close, { key: 'Escape' })
+  expect(screen.queryByText('Current usage unknown')).not.toBeInTheDocument()
+  expect(meter).toHaveFocus()
 })

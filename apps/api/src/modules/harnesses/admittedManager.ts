@@ -42,7 +42,7 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     sessionControlCapabilities: async session => {
       const current = await actual()
       return current.sessionControlCapabilities ? current.sessionControlCapabilities(session)
-        : unavailableSessionControls(`${harness}:${session.providerVersion}`)
+        : unavailableSessionControls(`${harness}:${session.providerVersion}`, 'This admitted driver does not expose native session controls.')
     },
     compactSession: async (session, input, signal) => {
       const current = await actual(signal)
@@ -53,6 +53,7 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       const current = await actual(signal)
       return current.reconcileCompaction ? current.reconcileCompaction(session, state, signal) : state
     },
+    appliedSessionPreferences: session => allocation?.manager.appliedSessionPreferences?.(session) ?? null,
     contextSnapshot: session => allocation?.manager.contextSnapshot?.(session) ?? null,
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
     createSession: async (start, signal) => {

@@ -10,7 +10,7 @@ export function registerSessionControlTools(server: McpServer, context: Operator
   for (const role of ['operator', 'agent'] as const) {
     const chat = role === 'operator' ? context.services.operatorChat : context.services.agentChat
     if (!chat) continue
-    const target = z.object({ conversationId: id, workspaceId: id.optional() }).strict()
+    const target = z.object({ conversationId: id, workspaceId: role === 'agent' ? id : z.never().optional() }).strict()
     const get = `${role}_chat_controls_get` as const
     const update = `${role}_chat_controls_update` as const
     const read = async (conversationId: string, workspaceId?: string) => {
@@ -23,7 +23,7 @@ export function registerSessionControlTools(server: McpServer, context: Operator
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async ({ conversationId, workspaceId }) => invokeOperatorTool(context, get, () => read(conversationId, workspaceId)))
     if (operatorToolAvailable(context, update)) server.registerTool(update, {
-      description: 'Compact the existing idle native session or change subsequent-turn mode/context preferences. Requires matching chat write and read grants. Use expectedRevision from controls_get; reuse requestId and identical input after response loss. Read to recover uncertain compaction; never issue a second identity. A running Operator cannot compact itself. Mode changes do not send a task or broaden permissions.',
+      description: 'Compact the existing idle native session or change subsequent-turn mode/context preferences. Requires matching chat write and read grants. Use expectedRevision from controls_get; reuse requestId and identical input after response loss. Read to recover uncertain compaction; never issue a second identity. A running Operator cannot compact itself. Mode changes do not send a task or broaden permissions. Saving future defaults additionally requires settings:update for Operator or scoped agents:update for agent chat.',
       inputSchema: target.extend({ request: SessionControlRequestSchema }), outputSchema: SessionControlStateSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async ({ conversationId, workspaceId, request }) => invokeOperatorTool(context, update, () => role === 'operator'

@@ -7,7 +7,7 @@ import { invokeOperatorTool } from '../invoke.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 
-export const OPERATOR_CONTROL_TOOLS = ['operator_chat_cancel', 'operator_chat_respond'] as const
+export const OPERATOR_CONTROL_TOOLS = ['operator_chat_cancel', 'operator_chat_respond', 'operator_chat_controls_get', 'operator_chat_controls_update', 'agent_chat_controls_get', 'agent_chat_controls_update'] as const
 
 /** Actual HTTP control services and native receipt fence, including current owner/grant rechecks. */
 export function registerOperatorControlTools(server: McpServer, context: OperatorRequestContext) {
@@ -43,7 +43,8 @@ export async function unavailableOperatorControlToolCall(context: OperatorReques
   const call = ToolCall.safeParse(body)
   if (!call.success || operatorToolAvailable(context, call.data.params.name)) return undefined
   const name = call.data.params.name
-  const error = context.services.operatorChat
+  const composed = name.startsWith('agent_chat_') ? context.services.agentChat : context.services.operatorChat
+  const error = composed
     ? new DomainError('ACCESS_DENIED', 'Operator control requires compatible global control and read grants.', 403)
     : new DomainError('OPERATOR_CHAT_UNAVAILABLE', 'Operator chat is not composed in this application.', 503)
   if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)

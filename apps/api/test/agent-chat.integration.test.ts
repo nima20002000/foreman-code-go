@@ -1,3 +1,4 @@
+import { SessionControlStateSchema, unavailableSessionControls } from '@graphql/contracts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -210,6 +211,56 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       expect(after.record.startupReceipt).toEqual(before.record.startupReceipt)
       expect((await repository.turn(id, active.activeTurn!.requestId))?.delivery).toBe('accepted')
       expect(native.prompts).toHaveLength(2)
+    } finally { await service.shutdown() }
+  })
+
+  it('isolates native controls for two nodes using the same Agent and enforces authenticated MCP grants', async () => {
+    const twin = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
+    const firstNode = twin.version.definition.nodes[0]!
+    const secondNode = twin.version.definition.nodes[1]!
+    secondNode.agentId = firstNode.agentId
+    const seeded = await seedAgent3(pool, root, twin, { run: false })
+    const { service, managers } = makeService()
+    const context = (nodeId: string) => ({ workflowId: seeded.scope.workflowId, workflowNodeId: nodeId, agentId: firstNode.agentId })
+    const read = (nodeId: string) => service.read(writer, seeded.scope.workspaceId, context(nodeId))
+    try {
+      for (const node of [firstNode, secondNode]) {
+        await service.send(writer, seeded.scope.workspaceId, { requestId: randomUUID(), content: 'Seed this node',
+          context: context(node.id), expectedConversationId: null, intent: 'next_turn' })
+        await settled(service, () => read(node.id))
+      }
+      const first = (await read(firstNode.id)).conversation!
+      const second = (await read(secondNode.id)).conversation!
+      expect(first.id).not.toBe(second.id)
+      expect(first.nativeSession!.nativeSessionId).not.toBe(second.nativeSession!.nativeSessionId)
+      for (const manager of managers.values()) Object.assign(manager, { async sessionControlCapabilities() {
+        return { ...unavailableSessionControls('fixture'), plan: { supported: true, reason: null } }
+      } })
+      const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+      const client = new Client({ name: 'node-session-controls', version: '1' })
+      const reader = new Client({ name: 'node-session-controls-reader', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => writerToken } }))
+        await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
+        const target = { workspaceId: seeded.scope.workspaceId, conversationId: first.id }
+        const before = SessionControlStateSchema.parse((await client.callTool({ name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+        const result = await client.callTool({ name: 'agent_chat_controls_update', arguments: { ...target,
+          request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision } } })
+        expect(result.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(result.structuredContent).desiredMode).toBe('plan')
+        expect((await service.readSessionControls(writer, seeded.scope.workspaceId, second.id)).desiredMode).toBe('regular')
+        const denied = await app.inject({ method: 'POST',
+          url: `/api/workspaces/${seeded.scope.workspaceId}/agent-chat/conversations/${first.id}/session-controls`,
+          headers: { authorization: `Bearer ${readOnlyToken}` },
+          payload: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: before.revision + 1 } })
+        expect(denied.statusCode).toBe(403)
+        const refusal = await reader.callTool({ name: 'agent_chat_controls_update', arguments: { ...target,
+          request: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: before.revision + 1 } } })
+        expect(refusal.isError).toBe(true)
+        expect((await service.readSessionControls(writer, seeded.scope.workspaceId, first.id)).desiredMode).toBe('plan')
+      } finally { await client.close(); await reader.close(); await app.close() }
     } finally { await service.shutdown() }
   })
 

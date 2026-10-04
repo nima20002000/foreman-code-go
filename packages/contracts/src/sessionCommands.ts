@@ -18,7 +18,7 @@ export function parseSessionCommand(content: string): SessionCommand {
     ? { kind: 'invalid', message: '/new does not accept arguments.' } : { kind: 'new' }
   if (!argument) return { kind: 'mode', mode: 'plan' }
   if (argument === 'off') return { kind: 'mode', mode: 'regular' }
-  if (argument.startsWith('off ')) return { kind: 'invalid', message: 'Use /plan off to leave Plan mode.' }
+  if (/^off\s/.test(argument)) return { kind: 'invalid', message: 'Use /plan off to leave Plan mode.' }
   return { kind: 'plan-task', task: argument }
 }
 

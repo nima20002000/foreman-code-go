@@ -4,6 +4,7 @@ import { publicOperatorConversation } from './operatorConversationRecord.js'
 import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { sessionTaskContent } from '@foreman-code/contracts'
+import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import type { SessionControlStore } from './sessionControls/store.js'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -23,7 +24,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
   CodexSessionCompatibilitySchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
-  type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
+  type ContextSnapshot, type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
 } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -116,6 +117,7 @@ interface Runtime {
   observationOnly?: boolean
 }
 interface HistoryContext {
+  context?: ContextSnapshot | null
   harness: NativeHarnessSessionManager['harness']
   session?: NativeSessionReference | undefined
   configuration?: OperatorConfigurationVersion | undefined
@@ -165,6 +167,13 @@ export class OperatorChatService {
   private shutdownTask: Promise<void> | undefined
   private sessionControlsStore: SessionControlStore | undefined
   private sessionControls() { return this.sessionControlsStore ??= this.repository.createSessionControls() }
+
+  private async nativeTurnSettings(id: string, mode?: import('@graphql/contracts').SessionMode) {
+    const settings = await this.sessionControls().turnSettings(id, mode)
+    return { ...settings, onSettingsApplied: async () => {
+      if (settings.sessionMode) await this.control(id, () => this.sessionControls().appliedMode(id, settings.sessionMode!))
+    } }
+  }
 
   private commandReceipts: OperatorChatCommands | undefined
   private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
@@ -332,9 +341,11 @@ export class OperatorChatService {
   async changeSessionControls(id: string, input: SessionControlRequest, principal: ManagementPrincipal,
     source: 'http' | 'mcp' = 'http') {
     this.assertOpen()
-    if (input.kind === 'save-default') requireAuthorization(await this.authority.current(principal.id), 'settings:update')
     return this.control(id, () => this.sessionControls().execute(principal, source, input,
-      () => this.sessionControlBinding(id, principal, true), this.lifetime.signal))
+      async () => {
+        if (input.kind === 'save-default') requireAuthorization(await this.authority.current(principal.id), 'settings:update')
+        return this.sessionControlBinding(id, principal, true)
+      }, this.lifetime.signal))
   }
 
   async history(id: string, principal: ManagementPrincipal, query: Partial<OperatorConversationHistoryQuery> = {}) {
@@ -358,9 +369,17 @@ export class OperatorChatService {
 
   private historyContext(id: string, requestId: string, runtime: Runtime): HistoryContext {
     return { harness: runtime.manager.harness, session: runtime.session, configuration: runtime.configuration,
+      context: runtime.session ? runtime.manager.contextSnapshot?.(runtime.session) ?? null : null,
       environment: runtime.environment, reconcile: () => this.control(id, () => this.observe(id, requestId, runtime)) }
   }
   private async recordActivity(id: string, requestId: string, runtime: HistoryContext, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {
+    const context = runtime.context ?? null
+    if (context) {
+      const snapshot = structuredClone(context)
+      void this.control(id, () => this.sessionControls().observeContext(id, snapshot, runtime.configuration?.contentHash ?? '')).catch(error => {
+        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Context usage could not be saved.' })
+      })
+    }
     const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
     const known = knownNativeActivity(event, runtime.harness)
     if (known) {
@@ -433,6 +452,7 @@ export class OperatorChatService {
     if (publicOperatorConversation(row.record).status === 'archived') {
       throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
     }
+    if (!receiptId) validateSessionMessage(input.content, input.sessionMode)
     const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
     if (!receiptId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
     const harness = configuration ? await this.repository.harnessForMessage(configuration, input) : undefined
@@ -575,7 +595,8 @@ export class OperatorChatService {
       if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
         'OPERATOR_FILE_DELIVERY_UNAVAILABLE', 'The accepted Operator attachments have no native delivery binding.', 409)
       await this.sessionControls().read({ conversationId: id, principalId: ownerId,
-        defaultSubject: 'application-operator', profileKey: configuration.contentHash, busyReason: null })
+        defaultSubject: 'application-operator', profileKey: configuration.contentHash,
+        ...(input.sessionMode ? { initialMode: input.sessionMode } : {}), busyReason: null })
       const runtime = await this.runtime(id, row, configuration, signal, fileInputs)
       const onTerminal = async (observation: NativeTerminalObservation) => {
         submitted = true
@@ -609,7 +630,7 @@ export class OperatorChatService {
           const hint = input.context && Object.values(input.context).some(Boolean)
             ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
-            ...await this.sessionControls().turnSettings(id, input.sessionMode),
+            ...await this.nativeTurnSettings(id, input.sessionMode),
             prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`,
             clientCorrelationId: start.correlationId,
             onTerminal,
@@ -674,7 +695,7 @@ export class OperatorChatService {
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
-        ...await this.sessionControls().turnSettings(id, input.sessionMode),
+        ...await this.nativeTurnSettings(id, input.sessionMode),
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`, clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {

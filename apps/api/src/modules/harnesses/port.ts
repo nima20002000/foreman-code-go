@@ -65,6 +65,7 @@ export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSess
 
 export interface NativeCompactInput {
   requestId: string
+  clientCorrelationId: string
   onProgress(state: CompactionState): Promise<void>
 }
 
@@ -160,6 +161,7 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
   compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>
   reconcileCompaction?(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
+  appliedSessionPreferences?(session: NativeSessionReference): SessionPreferences | null
   contextSnapshot?(session: NativeSessionReference): ContextSnapshot | null
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>

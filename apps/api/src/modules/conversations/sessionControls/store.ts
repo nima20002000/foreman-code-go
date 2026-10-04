@@ -1,7 +1,7 @@
 import { mergeContextSnapshot } from './context.js'
 import type pg from 'pg'
 import {
-  SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
+  CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
   compactionBlocksSend, unavailableSessionControls,
   type SessionControlState, type SessionControlRequest, type NativeSessionReference,
 } from '@graphql/contracts'
@@ -15,6 +15,7 @@ export interface SessionControlBinding {
   principalId: string
   defaultSubject: string
   profileKey: string
+  initialMode?: SessionControlState['desiredMode']
   busyReason: string | null
   session?: NativeSessionReference | undefined
   manager?: NativeHarnessSessionManager | undefined
@@ -27,6 +28,12 @@ export class SessionControlStore {
     this.commands = new NativeConversationControlCommands(pool, {
       operation: role === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
       parse: value => SessionControlStateSchema.parse(value), prefix: 'SESSION', label: 'Session controls',
+      auditOutcome: (state, payload) => {
+        if (!payload || typeof payload !== 'object' || !('kind' in payload) || payload.kind !== 'compact') return 'succeeded'
+        if (state.compaction?.status === 'failed') return 'failed'
+        if (state.compaction && ['completed', 'no-op'].includes(state.compaction.status)) return 'succeeded'
+        return 'uncertain'
+      },
     })
   }
 
@@ -40,34 +47,63 @@ export class SessionControlStore {
     const defaults = SessionPreferencesSchema.parse(defaultsRow.rows[0]?.record ?? {})
     const initial: SessionControlState = {
       conversationId, revision: 0, profileKey: binding.profileKey,
-      desiredMode: 'regular', appliedMode: null, defaults, desired: defaults, applied: null,
-      applicability: 'next-turn', capabilities, context: null, compaction: null, busyReason: binding.busyReason,
+      desiredMode: binding.initialMode ?? 'regular', appliedMode: null, defaults, desired: defaults, applied: null,
+      applicability: 'next-turn', capabilities, context: null, nativeSessionId: binding.session?.nativeSessionId ?? null, nativeProviderVersion: binding.session?.providerVersion ?? null, compaction: null, compactions: [], busyReason: binding.busyReason,
     }
     await this.pool.query(`insert into conversation_session_controls(conversation_id,record)
       values($1,$2::jsonb) on conflict do nothing`, [conversationId, JSON.stringify(initial)])
     const state = await this.saved(conversationId)
+    state.nativeSessionId = session?.nativeSessionId ?? null
+    state.nativeProviderVersion = session?.providerVersion ?? null
     state.defaults = defaults
     if (manager) state.capabilities = capabilities
     state.busyReason = binding.busyReason
     if (state.profileKey !== binding.profileKey) {
+      if (compactionBlocksSend(state.compaction)) {
+        throw new DomainError('SESSION_CONTROL_PROFILE_CHANGED', 'Recover the previous profile’s compaction before changing this chat.', 409)
+      }
+      state.profileKey = binding.profileKey
       state.desired = initial.desired
       state.desiredMode = 'regular'
       state.applied = null
       state.appliedMode = null
       state.context = null
       state.applicability = 'new-session'
+      state.compaction = null
+      await this.save(state)
     }
     if (state.compaction && compactionBlocksSend(state.compaction) && session && manager?.reconcileCompaction) {
       if (state.compaction.nativeSessionId !== session.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The compaction belongs to a different native session.', 409)
       }
-      const reconciled = await manager.reconcileCompaction(session, state.compaction)
+      const reconciled = CompactionStateSchema.parse(await manager.reconcileCompaction(session, state.compaction))
+      if (reconciled.requestId !== state.compaction.requestId || reconciled.nativeSessionId !== session.nativeSessionId) {
+        throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native compaction result belongs to a different request or session.', 409)
+      }
       if (JSON.stringify(reconciled) !== JSON.stringify(state.compaction)) {
         state.compaction = reconciled
         await this.save(state)
       }
     }
+    const applied = session ? manager?.appliedSessionPreferences?.(session) : null
+    if (applied && JSON.stringify(applied) !== JSON.stringify(state.applied)) {
+      state.applied = applied
+      if (state.appliedMode === state.desiredMode && JSON.stringify(applied) === JSON.stringify(state.desired)) {
+        state.applicability = 'applied'
+      }
+      await this.save(state)
+    }
+    const rows = await this.pool.query<{ compaction: unknown }>(`select result#>'{state,compaction}' as compaction
+      from management_command_receipts where target_key=$1 and operation=$2
+      and result#>>'{state,compaction,requestId}'=command_id order by created_at desc limit 32`,
+    [conversationId, this.role === 'operator' ? 'operator_chat_control' : 'agent_chat_control'])
+    state.compactions = rows.rows.map(row => SessionControlStateSchema.shape.compaction.parse(row.compaction))
+      .filter((entry): entry is NonNullable<SessionControlState['compaction']> => entry !== null).reverse()
     const context = session ? manager?.contextSnapshot?.(session) : null
+    if (!context && state.context && !state.context.stale) {
+      state.context = { ...state.context, stale: true }
+      await this.save(state)
+    }
     if (context && session) {
       const merged = mergeContextSnapshot(state.context, context, session.nativeSessionId, state.capabilities.model)
       if (JSON.stringify(merged) !== JSON.stringify(state.context)) {
@@ -126,26 +162,35 @@ export class SessionControlStore {
   private async compact(binding: SessionControlBinding, state: SessionControlState, requestId: string,
     markDispatch: () => void, signal?: AbortSignal): Promise<SessionControlState> {
     const progress = async (compaction: NonNullable<SessionControlState['compaction']>) => {
-      state.compaction = compaction
+      const parsed = CompactionStateSchema.parse(compaction)
+      if (parsed.requestId !== requestId || parsed.nativeSessionId !== (binding.session?.nativeSessionId ?? null)) {
+        throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native result does not match this compaction.', 409)
+      }
+      state.compaction = parsed
       await this.save(state)
     }
     const initial = { requestId, nativeSessionId: binding.session?.nativeSessionId ?? null,
       nativeOperationId: null, status: 'accepted' as const, beforeTokens: null,
       message: 'Compaction is starting.', observedAt: new Date().toISOString() }
+    if (binding.busyReason) throw new DomainError('SESSION_BUSY', binding.busyReason, 409)
     if (!binding.session) {
       await progress({ ...initial, status: 'no-op', message: 'There is no native session to compact yet.' })
       return state
     }
-    if (binding.busyReason) throw new DomainError('SESSION_BUSY', binding.busyReason, 409)
     if (!state.capabilities.compact.supported || !binding.manager?.compactSession) {
       throw new DomainError('SESSION_COMPACT_UNSUPPORTED', state.capabilities.compact.reason ?? 'Compaction is unavailable.', 409)
     }
-    await progress(initial)
+    state.compaction = initial
+    await this.claimCompaction(state)
     markDispatch()
     try {
-      await progress(await binding.manager.compactSession(binding.session, { requestId, onProgress: progress }, signal))
+      await progress(await binding.manager.compactSession(binding.session, { requestId, clientCorrelationId: `session-control:${this.role}:${binding.conversationId}:${binding.principalId}:${requestId}`, onProgress: progress }, signal))
     } catch (error) {
-      const definite = !!error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
+      const definite = !!error && typeof error === 'object' && (
+        'certainty' in error && error.certainty === 'definite'
+        || 'deliveryState' in error && error.deliveryState === 'not-delivered'
+        || 'method' in error && error.method === 'thread/compact/start' && 'uncertain' in error && error.uncertain === false
+      )
       await progress({ ...state.compaction!, status: definite ? 'failed' : 'uncertain',
         message: definite ? 'The native provider rejected compaction.' : 'Compaction is unconfirmed. Recover by reading this conversation.' })
     }
@@ -179,6 +224,20 @@ export class SessionControlStore {
     }
   }
 
+  async observeContext(conversationId: string, incoming: NonNullable<SessionControlState['context']>, profileKey: string) {
+    const result = await this.pool.query<{ record: unknown }>(
+      'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+    if (!result.rows[0]) return
+    const state = SessionControlStateSchema.parse(result.rows[0].record)
+    if (state.profileKey !== profileKey) return
+    const sessionId = state.nativeSessionId ?? incoming.nativeSessionId
+    const merged = mergeContextSnapshot(state.context, incoming, sessionId, state.capabilities.model)
+    if (JSON.stringify(merged) === JSON.stringify(state.context)) return
+    state.context = merged
+    state.nativeSessionId = sessionId
+    await this.save(state)
+  }
+
   async preferences(conversationId: string) {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from conversation_session_controls where conversation_id=$1', [conversationId])
@@ -191,15 +250,11 @@ export class SessionControlStore {
     if (!result.rows[0]) return
     const state = SessionControlStateSchema.parse(result.rows[0].record)
     state.appliedMode = mode
+    const nativeDefault = SessionPreferencesSchema.parse({})
+    if (!state.applied && JSON.stringify(state.desired) === JSON.stringify(nativeDefault)) state.applied = nativeDefault
     if (state.desiredMode === mode && state.applied && JSON.stringify(state.applied) === JSON.stringify(state.desired)) {
       state.applicability = 'applied'
     }
-    await this.save(state)
-  }
-
-  async nativePreferencesApplied(conversationId: string) {
-    const state = await this.saved(conversationId)
-    state.applied = state.desired
     await this.save(state)
   }
 
@@ -210,11 +265,22 @@ export class SessionControlStore {
     if (!result.rows[0]) return selectedMode ? { sessionMode: selectedMode } : {}
     const state = SessionControlStateSchema.parse(result.rows[0].record)
     const sessionMode = selectedMode ?? state.desiredMode
-    if (selectedMode && state.desiredMode !== selectedMode) {
-      state.desiredMode = selectedMode
-      await this.save(state)
-    }
     return { sessionMode, onSettingsApplied: () => this.appliedMode(conversationId, sessionMode) }
+  }
+
+  private async claimCompaction(state: SessionControlState): Promise<void> {
+    const revision = state.revision
+    const saved = { ...state, revision: revision + 1 }
+    const result = await this.pool.query(`with target as materialized (
+      select id,active_request_id,pending_interaction from operator_conversations where id=$1 for update
+    ), idle as (
+      select id from target where active_request_id is null and pending_interaction is null
+        and not exists(select 1 from operator_conversation_turns where conversation_id=$1 and delivery='queued')
+    ) update conversation_session_controls set record=$2::jsonb from idle
+      where conversation_id=idle.id and (record->>'revision')::bigint=$3`,
+    [state.conversationId, JSON.stringify(saved), revision])
+    if (result.rowCount !== 1) throw new DomainError('SESSION_BUSY', 'The conversation changed or another turn started. Refresh its status.', 409)
+    state.revision = saved.revision
   }
 
   private async saved(conversationId: string): Promise<SessionControlState> {

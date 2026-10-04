@@ -1,3 +1,4 @@
+import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSessionControls } from '../sessionControls/useSessionControls'
 import type { SessionMode } from '@graphql/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -116,6 +117,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     .flatMap((message) => message.attachments ?? []) : []
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
+    <CompactionActivity controls={sessionControls} />
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
       : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}

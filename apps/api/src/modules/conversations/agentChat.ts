@@ -2,6 +2,7 @@ import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interac
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { sessionTaskContent } from '@foreman-code/contracts'
+import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -180,6 +181,13 @@ export class AgentChatService {
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
   private readonly sessionControls: SessionControlStore
+  private async nativeTurnSettings(id: string, mode?: import('@graphql/contracts').SessionMode) {
+    const settings = await this.sessionControls.turnSettings(id, mode)
+    return { ...settings, onSettingsApplied: async () => {
+      if (settings.sessionMode) await this.control(id, () => this.sessionControls.appliedMode(id, settings.sessionMode!))
+    } }
+  }
+
   private readonly commands: AgentChatCommands
   private readonly lifetime = new AbortController()
   private closing = false
@@ -639,6 +647,7 @@ export class AgentChatService {
       throw new DomainError('AGENT_CHAT_UNAVAILABLE',
         resolution.blocked.message, 409, { reason: resolution.blocked.reason })
     }
+    validateSessionMessage(input.content, input.sessionMode)
     const row = resolution.row
     if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution, selectedRun, assertCurrent)
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
@@ -982,9 +991,11 @@ export class AgentChatService {
       if (row.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
+      const selectedMode = await this.repository.turnSessionMode(id, turn.requestId)
       const principalId = await this.repository.turnPrincipalId(id, turn.requestId)
       if (principalId) await this.sessionControls.read({ conversationId: id, principalId,
-        defaultSubject: `${row.workspace_id}:${row.agent_id}`, profileKey: row.agent_configuration_version_id, busyReason: null })
+        defaultSubject: `${row.workspace_id}:${row.agent_id}`, profileKey: row.agent_configuration_version_id,
+        ...(selectedMode ? { initialMode: selectedMode } : {}), busyReason: null })
       creatingSession = !row.native_session_id
       runtime = await this.runtime(row, configuration, correlationId, signal)
       creatingSession = !runtime.session
@@ -996,12 +1007,12 @@ export class AgentChatService {
       // Stop may have committed while the first session was being created/bound. No turn was sent.
       if (fresh.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       signal.throwIfAborted()
-      const prompt = this.prompt(fresh, configuration, sessionTaskContent(content, await this.repository.turnSessionMode(id, turn.requestId)))
+      const prompt = this.prompt(fresh, configuration, sessionTaskContent(content, selectedMode))
       if (!session) {
         if (!runtime.manager.startInitialTurn || fresh.record.origin.kind !== 'fresh') throw new DomainError('AGENT_INITIAL_TURN_UNAVAILABLE', 'No admitted initial native lifecycle is available.', 409)
         initialOffered = true // A failure after offer is not a definite prompt rejection/create failure.
         initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(this.startInput(fresh, configuration, correlationId, false), {
-          ...await this.sessionControls.turnSettings(id, await this.repository.turnSessionMode(id, turn.requestId)),
+          ...await this.nativeTurnSettings(id, selectedMode),
           prompt: prompt.text, clientCorrelationId: correlationId,
           onSessionObserved: async (observed) => {
             await this.control(id, async () => {
@@ -1055,7 +1066,7 @@ export class AgentChatService {
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
-        ...await this.sessionControls.turnSettings(id, await this.repository.turnSessionMode(id, turn.requestId)),
+        ...await this.nativeTurnSettings(id, selectedMode),
         prompt: prompt.text, clientCorrelationId: correlationId,
         onMessageSubmitted: async (receipt) => {
           submitted = true
@@ -1142,6 +1153,13 @@ export class AgentChatService {
   }
 
   private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false, textHandled = false, nativeSubmission?: NativeMessageSubmission) {
+    const context = runtime.session ? runtime.manager.contextSnapshot?.(runtime.session) : null
+    if (context) {
+      const snapshot = structuredClone(context)
+      void this.control(id, () => this.sessionControls.observeContext(id, snapshot, runtime.configuration.id)).catch(error => {
+        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Context usage could not be saved.' })
+      })
+    }
     const known = knownNativeActivity(event, runtime.manager.harness)
     const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native, redact) : undefined
     if (settled) this.events.publish(id, 'activity', settled)

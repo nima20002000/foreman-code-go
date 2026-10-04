@@ -1,3 +1,4 @@
+import { SessionPreferencesSchema } from '@graphql/contracts'
 import { claudeContextSnapshot, claudeSessionEnvironment } from './sessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionPreferences } from '@graphql/contracts'
 import { claudeNativeEvent } from './nativeEvents.js'
@@ -82,9 +83,10 @@ interface Turn {
   cancelRequested?: boolean
 }
 interface Runtime {
+  appliedPreferences?: SessionPreferences
   commands?: string[]
   context?: ContextSnapshot
-  compaction?: { state: CompactionState; promptUuid: string; finish(): void; fail(error: unknown): void }
+  compaction?: { state: CompactionState; promptUuid: string; finish(): void; fail(error: unknown): void } | undefined
 
   sdk: ClaudeSdkSession
   generation: string
@@ -354,6 +356,7 @@ export function createClaudeNativeSessionManager(options: {
           options: nativeOptions,
           ...(startup.signal ? { signal: startup.signal } : {}), onObservation: (observation) => observed(runtime, observation),
           ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}) })
+        runtime.appliedPreferences = structuredClone(start.sessionPreferences ?? sessionPreferences ?? SessionPreferencesSchema.parse({}))
         runtime.pumping = pump(runtime)
         if (!runtime.sdk.initializationResult) throw new HarnessExecutionError('CLAUDE_INIT_INSPECTION_UNAVAILABLE', 'The SDK initialization control result is unavailable.')
         await ownedControl(runtime, () => runtime.sdk.initializationResult!(), signal)
@@ -425,6 +428,7 @@ export function createClaudeNativeSessionManager(options: {
         onObservation: (observation) => observed(runtime, observation),
         ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}),
       })
+      runtime.appliedPreferences ??= structuredClone(start.sessionPreferences ?? sessionPreferences ?? SessionPreferencesSchema.parse({}))
       runtime.pumping ??= pump(runtime)
       if (resume) {
         if (!runtime.sdk.initializationResult) throw new HarnessExecutionError('CLAUDE_INIT_INSPECTION_UNAVAILABLE', 'The pinned SDK must acknowledge exact-session resume initialization.')
@@ -502,7 +506,9 @@ export function createClaudeNativeSessionManager(options: {
           && frame.session_id === runtime.session.nativeSessionId) {
           const metadata = frame.compact_metadata as { pre_tokens?: number; trigger?: string } | undefined
           if (runtime.context) runtime.context = { ...runtime.context, stale: true }
-          record(runtime, 'session.compaction', { trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null })
+          record(runtime, 'session.compaction', { nativeSessionId: runtime.session.nativeSessionId,
+            nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
+            trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null }, runtime.active)
           if (runtime.compaction) runtime.compaction.state = { ...runtime.compaction.state,
             status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
         }
@@ -510,7 +516,7 @@ export function createClaudeNativeSessionManager(options: {
           const modelUsage = frame.modelUsage as Record<string, { contextWindow?: number; inputTokens?: number; outputTokens?: number }> | undefined
           const usage = modelUsage?.[String(options.sdkOptions.model ?? '')]
           if (usage?.contextWindow && usage.contextWindow > 0) runtime.context = { ...runtime.context,
-            capacityTokens: usage.contextWindow, cost: typeof frame.total_cost_usd === 'number' ? frame.total_cost_usd : null }
+            capacityTokens: usage.contextWindow }
         }
         if (runtime.compaction && frame.type === 'result' && frame.session_id === runtime.session?.nativeSessionId) {
           const control = runtime.compaction
@@ -927,6 +933,7 @@ export function createClaudeNativeSessionManager(options: {
         contextBudgets: [], contextProfiles: [], modelCapacity: runtime.context?.capacityTokens ?? null,
         model: String(options.sdkOptions.model ?? ''), profileKey: JSON.stringify(options.scope) }
     },
+    appliedSessionPreferences(session) { return runtimeFor(session).appliedPreferences ?? null },
     contextSnapshot(session) { return runtimeFor(session).context ?? null },
     async compactSession(session, input, signal) {
       const runtime = runtimeFor(session)
@@ -940,7 +947,7 @@ export function createClaudeNativeSessionManager(options: {
       const control = { state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
         nativeOperationId: null, status: 'running' as CompactionState['status'], message: 'Compacting context.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: now() },
-        promptUuid: claudePromptUuid(`compact:${input.requestId}`), finish, fail }
+        promptUuid: claudePromptUuid(input.clientCorrelationId), finish, fail }
       runtime.compaction = control
       const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
       const abort = () => fail(waitSignal.reason)
@@ -951,7 +958,11 @@ export function createClaudeNativeSessionManager(options: {
         await completed
         return control.state
       } catch (error) {
-        control.state = { ...control.state, status: 'uncertain', message: 'Read to recover native compaction.' }
+        const definite = !!error && typeof error === 'object' && (
+          'deliveryState' in error && error.deliveryState === 'not-delivered'
+          || 'certainty' in error && error.certainty === 'definite')
+        control.state = { ...control.state, status: definite ? 'failed' : 'uncertain',
+          message: definite ? 'Claude rejected the command before delivery.' : 'Read to recover native compaction.' }
         throw error
       } finally {
         waitSignal.removeEventListener('abort', abort)

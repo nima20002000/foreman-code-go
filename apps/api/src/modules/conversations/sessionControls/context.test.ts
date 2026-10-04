@@ -14,3 +14,7 @@ it('marks a compaction snapshot stale without inventing zero usage and accepts a
   expect(mergeContextSnapshot(context, { ...context, generation: 'reconnected', sequence: 0,
     observedAt: '2026-10-04T00:01:00.000Z', usedTokens: 80 }, 'session', 'model')).toMatchObject({ usedTokens: 80 })
 })
+
+it('keeps repeated reads of the same native snapshot stable', () => {
+  expect(mergeContextSnapshot(context, { ...context, observedAt: '2026-10-04T00:01:00.000Z' }, 'session', 'model')).toEqual(context)
+})

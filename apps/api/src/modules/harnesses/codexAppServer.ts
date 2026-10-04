@@ -161,6 +161,7 @@ interface StartingTurn {
 }
 interface Runtime extends TurnSnapshot {
   parent?: Runtime
+  compactionPreviousTurns?: Set<string>
   compaction?: CompactionState
   context?: ContextSnapshot
   readonly connectionId: string
@@ -815,7 +816,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return { compact: { supported: compact, reason: compact ? null : 'Native compaction is unavailable in this schema.' },
       plan: { supported: plan, reason: plan ? null : 'Native Plan mode is unavailable in this schema.' },
       autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
-      modelCapacity: null, model: runtime.configuration.model, profileKey: runtime.configurationIdentity }
+      modelCapacity: null, model: runtime.configuration.model, profileKey: createHash('sha256').update(runtime.configurationIdentity).digest('hex') }
   }
 
   contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
@@ -827,10 +828,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const runtime = this.requireRuntime(session)
       this.assertIdle(runtime)
       if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconnect before compacting.')
+      const before = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
+      runtime.compactionPreviousTurns = new Set(before.thread.turns.map(turn => turn.id))
       runtime.compaction = { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        baselineTurnId: before.thread.turns.at(-1)?.id ?? null,
         nativeOperationId: null, status: 'accepted', message: 'Compaction is starting.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
       try {
+        await input.onProgress(runtime.compaction)
         await runtime.transport.request('thread/compact/start', { threadId: session.nativeSessionId }, signal)
         await input.onProgress(runtime.compaction)
         const waitSignal = AbortSignal.any([this.shutdownController.signal, AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
@@ -842,7 +847,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.record(runtime, 'session.compaction', { ...runtime.compaction })
         return runtime.compaction
       } catch (error) {
-        runtime.compaction = { ...runtime.compaction, status: 'uncertain', message: 'Native compaction is unconfirmed.' }
+        const definite = error instanceof CodexRpcError && error.method === 'thread/compact/start' && !error.uncertain
+        runtime.compaction = { ...runtime.compaction, status: definite ? 'failed' : 'uncertain',
+          message: definite ? 'Codex rejected compaction.' : 'Native compaction is unconfirmed.' }
         throw error
       }
     })
@@ -851,11 +858,17 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async reconcileCompaction(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
     const runtime = this.requireRuntime(session)
     if (runtime.compaction?.requestId === state.requestId) return runtime.compaction
-    if (!state.nativeOperationId || state.nativeSessionId !== session.nativeSessionId) return state
+    if (state.nativeSessionId !== session.nativeSessionId) return state
     const result = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
-    const turn = result.thread.turns.find(entry => entry.id === state.nativeOperationId)
+    let turn = result.thread.turns.find(entry => entry.id === state.nativeOperationId)
+    if (!turn && state.baselineTurnId) {
+      const baseline = result.thread.turns.findIndex(entry => entry.id === state.baselineTurnId)
+      const matches = baseline < 0 ? [] : result.thread.turns.slice(baseline + 1)
+        .filter(entry => entry.items.some(item => item.type === 'contextCompaction'))
+      if (matches.length === 1) turn = matches[0]
+    }
     if (!turn) return state
-    return codexCompactionNotification(state, 'turn/completed', { threadId: session.nativeSessionId, turn })
+    return codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', { threadId: session.nativeSessionId, turn })
   }
 
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
@@ -880,6 +893,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal?.throwIfAborted()
       if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
       if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
+      if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)) {
+        throw new HarnessExecutionError('CODEX_COMPACT_PENDING', 'Recover native compaction before sending another turn.')
+      }
       if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
         throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
       }
@@ -2551,6 +2567,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)
       && params.threadId === runtime.session.nativeSessionId && ['turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+      const turnId = text(params.turnId) ?? text(isObject(params.turn) ? params.turn.id : undefined)
+      if (turnId && runtime.compactionPreviousTurns?.has(turnId)) return
       runtime.compaction = codexCompactionNotification(runtime.compaction, method, params)
       if (runtime.compaction.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
       this.wake(runtime)

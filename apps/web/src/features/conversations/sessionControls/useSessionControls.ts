@@ -43,6 +43,6 @@ export function useSessionControls(conversationId: string | undefined, workspace
     useConversationDraftStore.getState().clearDraft(draftKey, content)
     return true
   }
-  return { state: query.data, query, mutation, change, command }
+  return { state: query.data, conversationId, query, mutation, change, command }
 }
 export type ComposerSessionControls = ReturnType<typeof useSessionControls>

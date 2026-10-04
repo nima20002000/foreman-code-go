@@ -28,7 +28,7 @@ export function codexCompactionNotification(state: CompactionState, method: stri
   params: Record<string, unknown>): CompactionState {
   if (params.threadId !== state.nativeSessionId) return state
   const turn = params.turn as { id?: string; status?: string; items?: { type?: string }[] } | undefined
-  if (method === 'turn/started' && turn?.id && state.nativeOperationId === null) {
+  if (method === 'turn/started' && turn?.id && turn.id !== state.baselineTurnId && state.nativeOperationId === null) {
     return { ...state, nativeOperationId: turn.id, status: 'running', message: 'Compacting context.' }
   }
   const item = params.item as { type?: string } | undefined

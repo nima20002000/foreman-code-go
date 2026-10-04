@@ -1,4 +1,5 @@
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
+import { CompactionActivity } from '../conversations/sessionControls/CompactionActivity'
 import { useSessionControls } from '../conversations/sessionControls/useSessionControls'
 import type { SessionMode } from '@foreman-code/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
@@ -560,6 +561,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               {turnStatus && (conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected') ? <div className="operator-chat-turn-actions">
                 <p role="status">{turnStatus}</p>
               </div> : null}
+              <CompactionActivity controls={sessionControls} />
               <OperatorComposer sessionControls={sessionControls} key={conversation.conversation.id} context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                 onChange={preferences.change}
                 access={preferences.harness ? <OperatorAccessPicker key={preferences.harness.harness} value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
