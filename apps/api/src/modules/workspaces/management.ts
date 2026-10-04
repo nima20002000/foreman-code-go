@@ -180,8 +180,15 @@ export class WorkspaceManagementService {
     workspaceId: string; commandId: string; expectedRevision: number; name?: string | undefined; description?: string | null | undefined
   }) {
     requireAuthorization(principal, 'workspaces:update', { workspaceId: input.workspaceId })
+    let canReadLocation = false
     return this.commands.execute({
-      replayResult: replayWorkspaceResult,
+      replayResult: (value) => {
+        const workspace = replayWorkspaceResult(value)
+        if (canReadLocation) return workspace
+        return ManagedWorkspaceSchema.parse({ ...workspace,
+          executionLocation: null, locationRevision: 0, locationValidation: { status: 'restricted' },
+        })
+      },
       principal, source, operation: 'workspace.update', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
       authorize: async (client) => {
@@ -189,6 +196,8 @@ export class WorkspaceManagementService {
         await client.query('select id from workspaces where id = $1 for update', [input.workspaceId])
         const live = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(live, 'workspaces:update', { workspaceId: input.workspaceId })
+        canReadLocation = isAuthorized(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+          && isAuthorized(live, 'workspace_locations:read', { workspaceId: input.workspaceId })
       },
       perform: async (client) => {
         const current = await client.query<WorkspaceRow>(
@@ -213,7 +222,11 @@ export class WorkspaceManagementService {
            where id = $1 returning record, revision, archived_at`,
           [input.workspaceId, JSON.stringify(workspace)],
         )
-        return managed(result.rows[0]!)
+        const base = managed(result.rows[0]!)
+        if (!canReadLocation) return base
+        return ManagedWorkspaceSchema.parse({ ...base,
+          ...await this.locations.inspect(principal, input.workspaceId, client),
+        })
       },
     })
   }

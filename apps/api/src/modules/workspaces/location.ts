@@ -291,9 +291,9 @@ export class WorkspaceLocationService {
     }
   }
 
-  async inspect(principal: ManagementPrincipal, workspaceId: string) {
+  async inspect(principal: ManagementPrincipal, workspaceId: string, client: GraphSqlClient = this.pool) {
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
-    const result = await this.pool.query<LocationRow>(
+    const result = await client.query<LocationRow>(
       `select execution_location, execution_location_identity, location_revision, archived_at
        from workspaces where id = $1`, [workspaceId],
     )
