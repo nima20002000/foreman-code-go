@@ -193,7 +193,7 @@ export function signalOwnedChildren(active, timers, signal, graceMs = 5000) {
   }
 }
 
-function requireLoopbackTestDatabase(url) {
+export function requireLoopbackTestDatabase(url) {
   const parsed = new URL(url)
   const databaseName = decodeURIComponent(parsed.pathname.slice(1))
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol)
