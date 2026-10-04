@@ -24,10 +24,11 @@ describe('Runs selector model', () => {
       .every((label) => !label.showShortId)).toBe(true)
   })
 
-  it('does not invent a timestamp or a shared date for unstarted Runs', () => {
+  it('identifies every unstarted Run without inventing a timestamp', () => {
     const rows = labelRuns([{ ...runA, startedAt: null, status: 'queued' }, { ...runB, startedAt: null, status: 'queued' }])
-    expect(rows.map((row) => row.label)).toEqual(['Not started · Queued', 'Not started · Queued'])
-    expect(rows.every((row) => !row.showShortId)).toBe(true)
+    expect(rows.map((row) => row.label)).toEqual(['Not started · short-A · Queued', 'Not started · short-B · Queued'])
+    expect(rows.every((row) => row.showShortId)).toBe(true)
+    expect(labelRuns([{ ...runC, startedAt: null }])[0]!.label).toBe('Not started · short-C · Interrupted')
   })
 
   it('bounds pages and rows and terminates a repeated opaque cursor', () => {

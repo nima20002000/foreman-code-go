@@ -93,11 +93,21 @@ describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
     expect(screen.getByRole('button', { name: /^Runs$/ })).toHaveFocus()
   })
 
-  it('renders null startedAt honestly', async () => {
-    server.use(http.get(listRoute, () => HttpResponse.json(page([{ ...runA, startedAt: null, status: 'queued' }]))))
-    await mount(); const menu = await openMenu()
-    const queued = await within(menu).findByRole('menuitemradio', { name: 'Not started · Queued' })
-    expect(queued).not.toHaveTextContent('short-A')
+  it('gives unstarted Runs distinct visible and accessible labels', async () => {
+    server.use(http.get(listRoute, () => HttpResponse.json(page([
+      { ...runA, startedAt: null, status: 'queued' },
+      { ...runB, startedAt: null, status: 'queued' },
+    ]))))
+    await mount()
+    const menu = await openMenu()
+    const first = await within(menu).findByRole('menuitemradio', { name: 'Not started · short-A · Queued' })
+    const second = within(menu).getByRole('menuitemradio', { name: 'Not started · short-B · Queued' })
+    expect(first).toHaveTextContent('Not started')
+    expect(first).toHaveTextContent('short-A')
+    expect(second).toHaveTextContent('Not started')
+    expect(second).toHaveTextContent('short-B')
+    await userEvent.click(second)
+    await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
   })
 
   it('shows concise loading, empty, transient error and retry without a redundant current-workflow section', async () => {

@@ -43,7 +43,7 @@ export function labelRuns(items: readonly RunDropdownSummary[], locale?: string,
   }
   return items.map((run) => {
     const date = run.startedAt === null ? null : new Date(run.startedAt)
-    const showShortId = date !== null && (counts.get(day.format(date)) ?? 0) > 1
+    const showShortId = date === null || (counts.get(day.format(date)) ?? 0) > 1
     const time = date ? dateTime.format(date) : 'Not started'
     const status = runStatusLabels[run.status]
     return { run, time, status, showShortId, label: `${time}${showShortId ? ` · ${run.shortId}` : ''} · ${status}` }
