@@ -9,6 +9,7 @@ export interface ClaudeSdkUserMessage {
 }
 
 export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
+  setPermissionMode?(mode: 'default' | 'plan'): Promise<void>
   interrupt(): Promise<unknown>
   /** First-connect answer only; does not resend initialize or offer input. */
   initializationResult?(): Promise<unknown>
@@ -83,6 +84,7 @@ export interface ClaudeSdkSession {
   readonly nativeSessionId: string | undefined
   assertInputCapacity(): void
   offer(input: { promptUuid: string; content: string }, signal?: AbortSignal): Promise<{ state: 'queue-offered'; promptUuid: string }>
+  setPermissionMode?(mode: 'default' | 'plan'): Promise<void>
   interrupt(): Promise<unknown>
   initializationResult?(): Promise<unknown>
   mcpServerStatus?(): Promise<readonly unknown[]>

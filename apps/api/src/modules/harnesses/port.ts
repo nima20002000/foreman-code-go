@@ -38,6 +38,7 @@ export interface ChildProcessEnvironment {
 }
 
 export interface WorkflowNativeSessionStart {
+  sessionPreferences?: SessionPreferences
   kind?: 'workflow'
   correlationId?: string
   nativeTurnId?: string
@@ -48,6 +49,7 @@ export interface WorkflowNativeSessionStart {
 }
 
 export interface OperatorNativeSessionStart {
+  sessionPreferences?: SessionPreferences
   kind: 'operator'
   correlationId: string
   configuration: OperatorConfigurationVersion

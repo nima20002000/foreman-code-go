@@ -1,5 +1,7 @@
 import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { ClaudeQualificationProofSchema, ClaudeQualificationPinSchema, claudeQualificationCapabilities, type ClaudeQualificationPin } from '@foreman-code/contracts/claude-qualification'
+import { SessionPreferencesSchema, type SessionPreferences } from '@foreman-code/contracts'
+import { claudeSessionEnvironment } from './sessionControls.js'
 import { isDeepStrictEqual } from 'node:util'
 import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { inheritedAgentEnvironment } from '../secrets.js'
@@ -63,7 +65,7 @@ export function claudeEnvironment(configuration: ClaudeHarnessConfiguration, sou
     if (!apiKey?.trim()) throw new HarnessExecutionError('CLAUDE_API_KEY_REQUIRED', 'The accepted API-key mode requires an explicitly supplied credential.')
     env.ANTHROPIC_API_KEY = apiKey
   } else if (apiKey !== undefined) throw new HarnessExecutionError('CLAUDE_AUTH_MODE_CONFLICT', 'Subscription mode cannot receive an API key.')
-  return env
+  return claudeSessionEnvironment(env, SessionPreferencesSchema.parse({}))
 }
 
 export function requireClaudePolicyQualification(configuration: ClaudeHarnessConfiguration, qualification: ClaudePolicyQualification) {
@@ -82,16 +84,16 @@ export function requireClaudePolicyQualification(configuration: ClaudeHarnessCon
 }
 
 export function compileClaudeConfiguration(raw: unknown, cwd: string, qualification: ClaudePolicyQualification,
-  source: NodeJS.ProcessEnv = process.env, apiKey?: string): ClaudeCompiledConfiguration {
+  source: NodeJS.ProcessEnv = process.env, apiKey?: string, preferences = SessionPreferencesSchema.parse({})): ClaudeCompiledConfiguration {
   const configuration = ClaudeHarnessConfigurationSchema.parse(raw)
   const capabilities = requireClaudePolicyQualification(configuration, qualification)
-  return { ...claudeCandidateConfiguration(configuration, cwd, source, apiKey), qualification: capabilities }
+  return { ...claudeCandidateConfiguration(configuration, cwd, source, apiKey, preferences), qualification: capabilities }
 }
 
 /** Pure policy translation shared by owned qualification and admitted runtime.
  * This does not allocate a manager or grant production admission. */
 export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfiguration, cwd: string,
-  source: NodeJS.ProcessEnv = process.env, apiKey?: string): Omit<ClaudeCompiledConfiguration, 'qualification'> {
+  source: NodeJS.ProcessEnv = process.env, apiKey?: string, preferences: SessionPreferences = SessionPreferencesSchema.parse({})): Omit<ClaudeCompiledConfiguration, 'qualification'> {
   if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
   // AskUserQuestion is a real available tool; allowedTools only configures approval, not availability.
   const tools = configuration.tools.filter(tool => !tool.startsWith('mcp__'))
@@ -100,6 +102,6 @@ export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfigu
   return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
     ...(configuration.effort ? { effort: configuration.effort } : {}),
     tools, allowedTools, disallowedTools, strictMcpConfig: true, settingSources: [], systemPrompt: configuration.instructions,
-    mcpServers: structuredClone(configuration.mcpServers), env: claudeEnvironment(configuration, source, apiKey),
+    mcpServers: structuredClone(configuration.mcpServers), env: claudeSessionEnvironment(claudeEnvironment(configuration, source, apiKey), preferences),
     sandbox: { enabled: configuration.sandbox !== 'danger-full-access', autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }
 }

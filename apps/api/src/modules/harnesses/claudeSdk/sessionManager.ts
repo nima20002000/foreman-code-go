@@ -1,3 +1,5 @@
+import { claudeContextSnapshot, claudeSessionEnvironment } from './sessionControls.js'
+import type { CompactionState, ContextSnapshot } from '@graphql/contracts'
 import { claudeNativeEvent } from './nativeEvents.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
@@ -80,6 +82,10 @@ interface Turn {
   cancelRequested?: boolean
 }
 interface Runtime {
+  commands?: string[]
+  context?: ContextSnapshot
+  compaction?: { state: CompactionState; promptUuid: string; finish(): void; fail(error: unknown): void }
+
   sdk: ClaudeSdkSession
   generation: string
   currentAuthorizationScope: string
@@ -161,7 +167,9 @@ export function createClaudeNativeSessionManager(options: {
       throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
         'The Claude environment cannot contain database credentials.')
     }
-    return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment) }
+    const scoped = appMcpTokenEnvironment(environment)
+    return { ...options.sdkOptions, env: start.sessionPreferences
+      ? claudeSessionEnvironment(scoped, start.sessionPreferences) : scoped }
   }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
     if (!options.qualification[capability]) throw new HarnessExecutionError('CLAUDE_CAPABILITY_UNQUALIFIED', `Claude ${capability} has not been qualified on the selected installation.`)
@@ -464,6 +472,7 @@ export function createClaudeNativeSessionManager(options: {
       for await (const output of runtime.sdk.output) {
         const frame = output.raw && typeof output.raw === 'object' ? output.raw as Record<string, unknown> : {}
         if (frame.type === 'system' && frame.subtype === 'init') {
+          runtime.commands = Array.isArray(frame.slash_commands) ? frame.slash_commands.filter((value): value is string => typeof value === 'string') : []
           if (frame.claude_code_version !== options.qualification.cliVersion || frame.cwd !== options.scope.cwd) {
             throw new HarnessExecutionError('CLAUDE_NATIVE_INSTALLATION_CHANGED', 'Native initialization differs from the qualified CLI version or pinned working directory.')
           }
@@ -475,6 +484,27 @@ export function createClaudeNativeSessionManager(options: {
           await runtime.onSessionObserved?.(runtime.session)
           await record(runtime, 'session.idle', { nativeSessionId: frame.session_id })
           runtime.resolveInit(runtime.session)
+        }
+        if (runtime.session) {
+          const context = claudeContextSnapshot(frame, runtime.session.nativeSessionId,
+            String(options.sdkOptions.model ?? ''), runtime.nextSequence)
+          if (context) runtime.context = context
+        }
+        if (frame.type === 'system' && frame.subtype === 'compact_boundary' && runtime.session
+          && frame.session_id === runtime.session.nativeSessionId) {
+          const metadata = frame.compact_metadata as { pre_tokens?: number; trigger?: string } | undefined
+          if (runtime.context) runtime.context = { ...runtime.context, stale: true }
+          record(runtime, 'session.compaction', { trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null })
+          if (runtime.compaction) runtime.compaction.state = { ...runtime.compaction.state,
+            status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
+        }
+        if (runtime.compaction && frame.type === 'result' && frame.session_id === runtime.session?.nativeSessionId) {
+          const control = runtime.compaction
+          if (frame.is_error === true) control.state = { ...control.state, status: 'failed', message: 'Claude rejected compaction.' }
+          else if (control.state.status !== 'completed') control.state = { ...control.state,
+            status: 'no-op', message: 'Claude completed the command without a compaction boundary.' }
+          control.finish()
+          continue
         }
         const patch = frame.patch && typeof frame.patch === 'object' ? frame.patch as Record<string, unknown> : {}
         if (frame.type === 'system' && (frame.subtype === 'task_started' && frame.is_backgrounded === true
@@ -573,6 +603,7 @@ export function createClaudeNativeSessionManager(options: {
       runtime.closed = true
       delete runtime.httpCredentialAcknowledgement
       if (!runtime.session) runtime.rejectInit(new Error('Claude stream ended before native initialization'))
+      runtime.compaction?.fail(new Error('Claude output closed before compaction completed'))
       runtime.active?.events.close(new Error('Claude stream ended without an exact result; submission remains uncertain'))
     } catch (error) {
       runtime.failure = error
@@ -866,6 +897,59 @@ export function createClaudeNativeSessionManager(options: {
         rollovers.delete(session.nativeSessionId)
       }
     },
+    async sessionControlCapabilities(session) {
+      const runtime = runtimeFor(session)
+      const compact = runtime.commands?.includes('compact') === true
+      const plan = !!runtime.sdk.setPermissionMode
+      const unsupported = { supported: false, reason: 'Context profiles require native model/account qualification.' }
+      return { compact: { supported: compact, reason: compact ? null : 'Native initialization did not advertise compact.' },
+        plan: { supported: plan, reason: plan ? null : 'The owned SDK query has no Plan control.' },
+        autoCompact: { supported: true, reason: null }, autoCompactBudget: { supported: runtime.context?.capacityTokens != null, reason: runtime.context?.capacityTokens != null ? null : 'Native model capacity is not known yet.' },
+        contextBudgets: [], contextProfiles: [], modelCapacity: runtime.context?.capacityTokens ?? null,
+        model: String(options.sdkOptions.model ?? ''), profileKey: JSON.stringify(options.scope) }
+    },
+    contextSnapshot(session) { return runtimeFor(session).context ?? null },
+    async compactSession(session, input, signal) {
+      const runtime = runtimeFor(session)
+      if (runtime.active || runtime.controlPending || runtime.compaction
+        || options.pendingInteractions?.(session).length) throw new HarnessExecutionError('CLAUDE_TURN_ACTIVE', 'Wait for the turn and its approvals to finish.')
+      if (!runtime.commands?.includes('compact')) throw new HarnessExecutionError('CLAUDE_COMPACT_UNAVAILABLE', 'Native compact is unavailable.')
+      runtime.controlPending = true
+      let finish!: () => void
+      let fail!: (error: unknown) => void
+      const completed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
+      const control = { state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        nativeOperationId: null, status: 'running' as CompactionState['status'], message: 'Compacting context.',
+        beforeTokens: runtime.context?.usedTokens ?? null, observedAt: now() },
+        promptUuid: claudePromptUuid(`compact:${input.requestId}`), finish, fail }
+      runtime.compaction = control
+      const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
+      const abort = () => fail(waitSignal.reason)
+      waitSignal.addEventListener('abort', abort, { once: true })
+      try {
+        await runtime.sdk.offer({ promptUuid: control.promptUuid, content: '/compact' }, signal)
+        await input.onProgress(control.state)
+        await completed
+        return control.state
+      } catch (error) {
+        control.state = { ...control.state, status: 'uncertain', message: 'Read to recover native compaction.' }
+        throw error
+      } finally {
+        waitSignal.removeEventListener('abort', abort)
+        if (control.state.status !== 'uncertain') runtime.compaction = undefined
+        runtime.controlPending = control.state.status === 'uncertain'
+      }
+    },
+    async reconcileCompaction(session, state) {
+      const runtime = runtimeFor(session)
+      const control = runtime.compaction
+      if (!control || control.state.requestId !== state.requestId) return state
+      if (['completed', 'no-op', 'failed'].includes(control.state.status)) {
+        runtime.compaction = undefined
+        runtime.controlPending = false
+      }
+      return control.state
+    },
     startTurn(session, rawInput, signal) {
       qualified('basicTurns')
       signal?.throwIfAborted()
@@ -896,6 +980,11 @@ export function createClaudeNativeSessionManager(options: {
             }
             if (rows.length < 256) break
           }
+        }
+        if (input.sessionMode && runtime.sdk.setPermissionMode) {
+          await runtime.sdk.setPermissionMode(input.sessionMode === 'plan' ? 'plan' : 'default')
+        } else if (input.sessionMode === 'plan') {
+          throw new HarnessExecutionError('CLAUDE_PLAN_UNAVAILABLE', 'The owned SDK query cannot enter Plan mode.')
         }
         await runtime.sdk.offer({ promptUuid: turn.promptUuid, content: input.prompt }, signal)
       }

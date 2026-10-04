@@ -80,6 +80,7 @@ export function ownedClaudeSdkQueries(input: {
         } })
         return {
           [Symbol.asyncIterator]: () => query[Symbol.asyncIterator](),
+          setPermissionMode: mode => query.setPermissionMode(mode),
           interrupt: () => query.interrupt(),
           initializationResult: () => query.initializationResult(),
           mcpServerStatus: () => query.mcpServerStatus(),

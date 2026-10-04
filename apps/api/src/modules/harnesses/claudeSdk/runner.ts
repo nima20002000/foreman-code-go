@@ -268,6 +268,11 @@ export function createClaudeSdkRunner(input: {
         abort.signal.throwIfAborted()
         return { state: 'queue-offered', promptUuid: message.promptUuid }
       },
+      async setPermissionMode(mode) {
+        abort.signal.throwIfAborted()
+        if (!query?.setPermissionMode) throw new Error('Claude SDK Plan control is unavailable')
+        await query.setPermissionMode(mode)
+      },
       async interrupt() {
         abort.signal.throwIfAborted()
         if (!query) throw new Error('Claude SDK not initialized')
