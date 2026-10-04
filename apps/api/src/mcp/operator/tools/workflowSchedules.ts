@@ -28,7 +28,7 @@ const actions: Record<WorkflowScheduleToolName, ManagementAction> = {
 const scheduleTimeContract = 'Calendar time input requires the caller device\'s IANA timezone, never the server timezone. New Once settings are normalized to UTC; weekly weekday/time intent retains its source timezone for DST. All nextOccurrenceAt, anchorAt and dueAt values are canonical UTC instants; format those instants in the viewing device timezone without reinterpreting them. Read or unchanged saves must preserve existing weekly calendar intent; an intentional weekday/time edit may choose the editing device timezone.'
 const scheduleCursorContract = 'Saving unchanged enabled settings or enabling an already-enabled schedule preserves its occurrence cursor, including an exhausted Once, while updating the revision and owner binding.'
 
-/** SCH-02 omitted discovery names. This exact additive composition is API-local pending contract follow-up. */
+/** Schedule tools extend the shared Operator discovery names. */
 const CapabilityToolName = z.enum([...CurrentOperatorToolNameSchema.options, ...WORKFLOW_SCHEDULE_TOOLS])
 export const ScheduleOperatorCapabilitiesSchema = CurrentOperatorCapabilitiesSchema.extend({
   tools: z.array(CapabilityToolName),
@@ -45,7 +45,7 @@ export function workflowScheduleToolAvailable(context: OperatorRequestContext, n
 export function workflowScheduleCapabilities(context: OperatorRequestContext, resource: AuthorizedResource) {
   return WORKFLOW_SCHEDULE_TOOLS.filter((name) => workflowScheduleToolAvailable(context, name, resource))
     .map((name) => ({ name, actions: [actions[name]],
-      detail: 'Exact workspace/workflow scope; live authority is rechecked, including command replay. Saving does not immediately start a Run. The API dispatcher attempts only the latest due within five minutes, skips overlapping scheduled Runs, and pins the latest saved workflow. Admission requires the bound human owner\'s current runs:start and workspace_locations:read rights within the captured writer grant ceiling. Clear and occurrence paging use provisional SCH-03 compositions. ' + scheduleTimeContract + ' ' + scheduleCursorContract }))
+      detail: 'Workspace/workflow scope; live authority is rechecked, including command replay. Saving does not immediately start a Run. The API dispatcher attempts only the latest due within five minutes, skips overlapping scheduled Runs, and uses the latest saved workflow. Admission requires the bound human owner\'s current runs:start and workspace_locations:read rights within the captured writer grant ceiling. Occurrence paging uses the shared schedule contracts. ' + scheduleTimeContract + ' ' + scheduleCursorContract }))
 }
 
 export function registerWorkflowScheduleTools(server: McpServer, context: OperatorRequestContext): void {
