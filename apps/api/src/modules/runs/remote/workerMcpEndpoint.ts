@@ -38,7 +38,7 @@ export async function createWorkerMcpEndpoint(input: {
   onArtifactPublication?(input: { transferId: string; publication: AgentFilePublishInput }, result: AgentFilePublishResult): void
 }) {
   input.signal.throwIfAborted()
-  const expiresAt = input.relay.expiresAt
+  let expiresAt = input.relay.expiresAt
   const token = input.relay.environment.variables.GRAPHQL_MCP_TOKEN
   if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
   const digest = createHash('sha256').update(`Bearer ${token}`).digest()
@@ -103,10 +103,11 @@ export async function createWorkerMcpEndpoint(input: {
   const refreshLease = () => {
     const task = (async () => {
       if (closing) throw new Error('The original worker MCP endpoint is closing.')
-      const expiresAt = await input.relay.refresh(input.signal)
+      const renewedExpiry = await input.relay.refresh(input.signal)
       input.signal.throwIfAborted()
       if (closing) throw new Error('The original worker MCP endpoint is closing.')
-      unregister = await registerAppRoute(token, endpoint, expiresAt, input.launcher)
+      unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
+      expiresAt = renewedExpiry
       return expiresAt
     })()
     active.add(task)

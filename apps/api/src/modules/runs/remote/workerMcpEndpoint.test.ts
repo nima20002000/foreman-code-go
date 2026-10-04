@@ -48,6 +48,15 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     expect(JSON.parse(await readFile(f.route, 'utf8'))).toMatchObject({
       endpoint: f.endpoint.endpoint, expiresAt: renewedExpiry, pid: process.pid,
     })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20 * 60_000)
+    try {
+      const response = await fetch(f.endpoint.endpoint, { method: 'POST',
+        headers: { authorization: `Bearer ${f.token}` }, body: '{"method":"tools/list"}' })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ result: 'Main grant checked' })
+    } finally {
+      clock.mockRestore()
+    }
     f.refresh.mockRejectedValueOnce(new Error('Original lease revoked'))
     await expect(f.endpoint.refreshLease()).rejects.toThrow('Original lease revoked')
     expect(JSON.parse(await readFile(f.route, 'utf8')).expiresAt).toBe(renewedExpiry)
