@@ -14,7 +14,6 @@ import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-i
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
 import * as installedInspection from '../../harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
-import * as workerMcpEndpoint from './workerMcpEndpoint.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
 import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
 import { RemoteOperationJournal } from './operationJournal.js'
