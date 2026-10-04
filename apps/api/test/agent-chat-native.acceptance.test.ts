@@ -6,15 +6,14 @@ import { describe, expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
 
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { readNativeSource } from './helpers/agentChatNativeSource.js'
 
 /**
- * Real installed Codex/OpenCode proof for the FEAT-15 native primitives that a live Run cannot
- * reach without a configured Foreman Code MCP: forking a finished session keeps its context in a new
- * session and leaves the source session's history unchanged. Opt in with RUN_REAL_HARNESS_TESTS=1.
+ * Real installed Codex/OpenCode Agent chat through the production runtime factory.
+ * Forking a finished session keeps its context and preserves the source session's history.
+ * Opt in with RUN_REAL_HARNESS_TESTS=1.
  */
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1'
 const binaries = harnessBinaries(process.env)
@@ -46,10 +45,12 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
     it(`${harness}: fork keeps context in a new session and leaves the source unchanged`, async () => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), `agent-chat-${harness}-`)))
       const config = configuration(harness)
-      const make = (): NativeHarnessSessionManager => harness === 'codex'
-        ? new CodexAppServerSessionManager(binaries.codexBinary)
-        : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: binaries.openCodeBinary, workingDirectory: directory,
-          ownerAgentId: config.agentId }), ownerAgentId: config.agentId, expectedAppMcpEndpoint: 'http://127.0.0.1:9/mcp' })
+      const factories = new NativeHarnessFactories(binaries)
+      const make = (): NativeHarnessSessionManager => factories.allocate({
+        harness, role: 'agent-chat', workingDirectory: directory, ownerAgentId: config.agentId, appMcpAccess: 'none',
+        configured: { instanceId: config.agentId, instanceRevision: config.id, driverId: harness,
+          enabled: true, configuration: config.harness },
+      }).manager
       const source = make()
       const forker = make()
       try {
