@@ -85,6 +85,19 @@ test('failed-log selection includes only discovered failures once', () => {
   assert.throws(() => failedFilesFromLog('no failures', files), /no failed files/)
 })
 
+test('isolates bounded resource checks and retains every requested file exactly once', () => {
+  const files = ['apps/api/test/ordinary.integration.test.ts',
+    'apps/api/test/operator-chat.integration.test.ts',
+    'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
+    'apps/api/test/production-lifecycle.integration.test.ts',
+    'apps/api/test/dev-startup.integration.test.ts']
+  const partition = partitionIntegrationFiles(files)
+  assert.deepEqual(partition.parallel, [files[0]])
+  assert.deepEqual(partition.exclusive, [files[4], files[2], files[1], files[3]])
+  assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
+  assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
+})
+
 test('exact-file selection runs only requested discovered files once', () => {
   const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
   assert.deepEqual(selectExactFiles(files, [files[1], files[1]]), [files[1]])
