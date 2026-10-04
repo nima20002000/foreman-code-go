@@ -1,3 +1,4 @@
+import type { SessionMode } from '@graphql/contracts'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient, type MutationFilters } from '@tanstack/react-query'
 import type { ManagementAction } from '@foreman-code/contracts/management'
@@ -280,7 +281,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     if (pending) return 'A command is being sent.'
     return undefined
   }
-  const send = (content: string, intent: AgentChatIntent, clearDraft = true, allowNewMessage = false, attachmentAttempt?: ChatAttachmentAttempt): boolean => {
+  const send = (content: string, intent: AgentChatIntent, clearDraft = true, allowNewMessage = false, attachmentAttempt?: ChatAttachmentAttempt, sessionMode?: SessionMode): boolean => {
     const text = content.trim()
     const attachments = attachmentAttempt?.attachments ?? []
     const reason = blocked('agent_chat:write') ?? (state ? intentUnavailable(state, intent) : undefined)
@@ -301,7 +302,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     return runCommand(() => {
       const target = { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId,
         ...(context.runId ? { runId: context.runId } : {}) }
-      return { kind: 'send', clearDraft, attachmentAttempt, input: { requestId: `agent-chat-${crypto.randomUUID()}`, context: target, content: text, intent,
+      return { kind: 'send', clearDraft, attachmentAttempt, input: { requestId: `agent-chat-${crypto.randomUUID()}`, context: target, content: text, intent, ...(sessionMode ? { sessionMode } : {}),
         ...(attachments.length ? { attachments: attachments.map((pin) => ({ ...pin })) } : {}),
         expectedConversationId: state.conversation?.id ?? null,
         ...(intent !== 'next_turn' && state.activeTurn?.nativeTurnId ? { expectedNativeTurnId: state.activeTurn.nativeTurnId } : {}) } }

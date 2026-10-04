@@ -1,3 +1,5 @@
+import { useSessionControls } from '../sessionControls/useSessionControls'
+import type { SessionMode } from '@graphql/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
@@ -36,6 +38,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
   const conversationId = conversation?.id
+  const sessionControls = useSessionControls(conversationId, context.workspaceId)
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
     download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
   }) : undefined, [context.workspaceId, conversationId])
@@ -60,9 +63,9 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     }
   }, [state])
   const focus = () => composer.current?.focus({ preventScroll: true })
-  const submit = (intent: AgentChatIntent, content = draft) => {
+  const submit = (intent: AgentChatIntent, content = draft, sessionMode?: SessionMode) => {
     const attempt = prepareChatAttachments(attachments)
-    if (attempt) chat.send(content, intent, true, false, attempt)
+    if (attempt) chat.send(content, intent, true, false, attempt, sessionMode)
     focus()
   }
   if (selected && chat.access.isPending) return <p role="status">Loading…</p>
@@ -179,11 +182,11 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
     {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId} {...drop.dropTargetProps}>
-      {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
+      {showComposer ? <ConversationComposer sessionControls={sessionControls} conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
         allowEditingWhileSending isSending={chat.pending} sendDisabled={!!nextReason || attachments.hasBlockingAttachments}
         hasAttachments={attachments.hasAttachments}
         attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} composerDrop={drop} />} error={chat.localError}
-        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content) => submit('next_turn', content)} /> : null}
+        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content, mode) => submit('next_turn', content, mode)} /> : null}
       {(!selected || !sessionMissing) && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}
           title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}

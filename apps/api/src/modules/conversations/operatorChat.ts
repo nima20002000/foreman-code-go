@@ -3,6 +3,7 @@ import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-co
 import { publicOperatorConversation } from './operatorConversationRecord.js'
 import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
 import type { SessionControlRequest } from '@foreman-code/contracts'
+import { sessionTaskContent } from '@foreman-code/contracts'
 import type { SessionControlStore } from './sessionControls/store.js'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -609,7 +610,7 @@ export class OperatorChatService {
             ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
             ...await this.sessionControls().turnSettings(id, input.sessionMode),
-            prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`,
+            prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`,
             clientCorrelationId: start.correlationId,
             onTerminal,
             onSessionObserved: async (observed) => {
@@ -674,7 +675,7 @@ export class OperatorChatService {
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
         ...await this.sessionControls().turnSettings(id, input.sessionMode),
-        prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
+        prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`, clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {
           submitted = true

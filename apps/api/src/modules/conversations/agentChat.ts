@@ -1,6 +1,7 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import type { SessionControlRequest } from '@foreman-code/contracts'
+import { sessionTaskContent } from '@foreman-code/contracts'
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -995,7 +996,7 @@ export class AgentChatService {
       // Stop may have committed while the first session was being created/bound. No turn was sent.
       if (fresh.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       signal.throwIfAborted()
-      const prompt = this.prompt(fresh, configuration, content)
+      const prompt = this.prompt(fresh, configuration, sessionTaskContent(content, await this.repository.turnSessionMode(id, turn.requestId)))
       if (!session) {
         if (!runtime.manager.startInitialTurn || fresh.record.origin.kind !== 'fresh') throw new DomainError('AGENT_INITIAL_TURN_UNAVAILABLE', 'No admitted initial native lifecycle is available.', 409)
         initialOffered = true // A failure after offer is not a definite prompt rejection/create failure.

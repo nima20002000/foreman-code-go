@@ -1,4 +1,6 @@
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
+import { useSessionControls } from '../conversations/sessionControls/useSessionControls'
+import type { SessionMode } from '@foreman-code/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@foreman-code/contracts'
@@ -71,6 +73,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
+  const sessionControls = useSessionControls(selectedId ?? undefined)
   const preferences = useOperatorSettings(enabled && open)
   const preferencesDenied = useAccessFailureLatch(preferences.query)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
@@ -406,7 +409,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     } catch { /* The mutation keeps the failure visible. */ }
     finally { creating.current = false }
   }
-  const submit = async (content: string) => {
+  const submit = async (content: string, sessionMode?: SessionMode) => {
     if (content.trim() === '/new') {
       await createConversation()
       return
@@ -430,7 +433,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
         pendingHandoff ? conversation?.revision : undefined,
         { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
-          defaultsRevision: preferences.query.data?.revision }, attachmentAttempt.attachments)
+          defaultsRevision: preferences.query.data?.revision, ...(sessionMode ? { sessionMode } : {}) }, attachmentAttempt.attachments)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       attachmentReceipts.remember(id, command, attachmentAttempt)
       setPreparationError(undefined)
@@ -557,7 +560,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               {turnStatus && (conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected') ? <div className="operator-chat-turn-actions">
                 <p role="status">{turnStatus}</p>
               </div> : null}
-              <OperatorComposer key={conversation.conversation.id} context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+              <OperatorComposer sessionControls={sessionControls} key={conversation.conversation.id} context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                 onChange={preferences.change}
                 access={preferences.harness ? <OperatorAccessPicker key={preferences.harness.harness} value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                   saving={preferences.form.isSaving} saveError={preferences.form.error}

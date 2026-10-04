@@ -1,4 +1,4 @@
-import { useId, type ReactNode, type Ref } from 'react'
+import { useId, type ReactNode, type Ref, type KeyboardEventHandler, type TextareaHTMLAttributes } from 'react'
 import { Button } from './Button'
 import { Avatar } from './Layout'
 import { Icon, type IconName } from './Icon'
@@ -16,20 +16,23 @@ export function MessageBubble({ author, role = 'assistant', children, time, date
 
 /** The caller owns the draft and mutation. Rejected sends never erase the draft here. */
 export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, hasAttachments = false, error, onStop, maxLength = 16000,
-  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, footerControl, inputRef }:
+  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, footerControl, inputRef, commandMenu, onInputKeyDown, commandInputProps }:
   { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; hasAttachments?: boolean; error?: string;
-    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; footerControl?: ReactNode; inputRef?: Ref<HTMLTextAreaElement> }) {
+    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; footerControl?: ReactNode; inputRef?: Ref<HTMLTextAreaElement>; commandMenu?: ReactNode; onInputKeyDown?: KeyboardEventHandler<HTMLTextAreaElement>; commandInputProps?: Pick<TextareaHTMLAttributes<HTMLTextAreaElement>, 'aria-controls' | 'aria-expanded' | 'aria-autocomplete' | 'aria-activedescendant'> }) {
   const id = useId()
   const limit = Number.isFinite(maxLength) ? Math.max(1, Math.floor(maxLength)) : 16000
   const cannotSend = disabled || sendDisabled || pending || (!value.trim() && !hasAttachments) || value.length > limit
   function send() { if (!cannotSend) onSend(value) }
   return <form className="n-composer" onSubmit={(event) => { event.preventDefault(); send() }} aria-label={formLabel} aria-busy={pending || undefined}>
     {context && <div className="n-composer-context">{context}</div>}
+    {commandMenu}
     <label className="n-sr-only" htmlFor={id}>{label}</label>
-    <textarea ref={inputRef} id={id} className="n-input" value={value} maxLength={limit} placeholder={placeholder} disabled={disabled}
+    <textarea {...commandInputProps} ref={inputRef} id={id} className="n-input" value={value} maxLength={limit} placeholder={placeholder} disabled={disabled}
       aria-invalid={Boolean(error) || value.length > limit || undefined}
       aria-describedby={`${id}-hint${error ? ` ${id}-error` : ''}`}
       onChange={(event) => onValueChange(event.currentTarget.value)} onKeyDown={(event) => {
+        onInputKeyDown?.(event)
+        if (event.defaultPrevented) return
         if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
         event.preventDefault(); send()
       }} />

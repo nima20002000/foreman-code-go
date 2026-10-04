@@ -1,0 +1,72 @@
+import { useId, useState } from 'react'
+import { compactionBlocksSend, type SessionPreferences } from '@graphql/contracts'
+import { Button, Input, Select } from '../../../shared/ui/nocturne'
+import type { ComposerSessionControls } from './useSessionControls'
+import './sessionControls.css'
+
+export function SessionControls({ controls }: { controls: ComposerSessionControls }) {
+  const state = controls.state
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  if (!state) return <span role="status">{controls.query.isError ? 'Context unavailable' : 'Context loading…'}</span>
+  const context = state.context
+  const known = context?.usedTokens != null && context.capacityTokens != null
+  const percentage = known ? Math.min(100, Math.round(context.usedTokens! / context.capacityTokens! * 100)) : null
+  const compactReason = state.busyReason ?? (compactionBlocksSend(state.compaction) ? 'Compaction is still unconfirmed. Refresh its status.'
+    : state.capabilities.compact.reason)
+  const pending = controls.mutation.isPending
+  const update = (preferences: SessionPreferences) => { void controls.change({ kind: 'preferences', preferences }).catch(() => undefined) }
+  return <div className="session-controls" aria-label="Native session controls">
+    <Select label="Conversation mode" value={state.desiredMode} disabled={pending || !state.capabilities.plan.supported}
+      options={[{ value: 'regular', label: 'Regular' }, { value: 'plan', label: 'Plan' }]}
+      title={state.capabilities.plan.reason ?? undefined}
+      onChange={event => { void controls.change({ kind: 'mode', mode: event.target.value === 'plan' ? 'plan' : 'regular' }).catch(() => undefined) }} />
+    {state.desiredMode !== state.appliedMode ? <small>Next turn</small> : null}
+    <div className="session-context">
+      <Button size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
+        onClick={() => setOpen(true)} onFocus={() => setOpen(true)} onMouseEnter={() => setOpen(true)}>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2" />
+          {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeDasharray={`${percentage * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
+        </svg>
+        {percentage === null ? 'Context unknown' : `${percentage}% context`}{context?.stale ? ' · stale' : ''}
+      </Button>
+      {open ? <div id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); setOpen(false) }
+      }}>
+        <p>{context?.usedTokens == null ? 'Current usage unknown' : `${context.usedTokens.toLocaleString()} tokens in context`}
+          {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
+        {state.capabilities.modelCapacity !== null ? <p>Model capacity: {state.capabilities.modelCapacity.toLocaleString()}</p> : null}
+        {context?.stale ? <p>Last known usage. Waiting for a native update.</p> : null}
+        {context?.lifetimeTokens != null ? <p>Total processed: {context.lifetimeTokens.toLocaleString()}</p> : null}
+        {context?.cost != null ? <p>Total cost: {context.cost}</p> : null}
+        <p>Automatic compaction: {state.applied?.autoCompact ?? 'Native default'}</p>
+        {state.applied?.autoCompactTokens ? <p>Automatic budget: {state.applied.autoCompactTokens.toLocaleString()}</p> : null}
+        <details><summary>Context options for this chat</summary>
+          {state.capabilities.contextBudgets.length ? <Select label="Context budget" value={String(state.desired.contextBudget ?? '')}
+            options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextBudgets.map(value => ({ value: String(value), label: value.toLocaleString() }))]}
+            disabled={pending} onChange={event => update({ ...state.desired, contextBudget: event.target.value ? Number(event.target.value) : null })} /> : <p>Context size follows the native model/profile.</p>}
+          {state.capabilities.contextProfiles.length ? <Select label="Context profile" options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextProfiles.map(profile => ({ value: profile.id, label: profile.label }))]} value={state.desired.contextProfile ?? ''} disabled={pending}
+            onChange={event => update({ ...state.desired, contextProfile: event.target.value || null })} /> : null}
+          {state.capabilities.autoCompact.supported ? <Select label="Auto compact" options={[{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]} value={state.desired.autoCompact} disabled={pending}
+            onChange={event => update({ ...state.desired, autoCompact: event.target.value as SessionPreferences['autoCompact'] })} /> : null}
+          {state.capabilities.autoCompactBudget.supported ? <Input label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
+              placeholder="Native default" defaultValue={state.desired.autoCompactTokens ?? ''} disabled={pending}
+              onBlur={event => update({ ...state.desired, autoCompactTokens: event.target.value ? Number(event.target.value) : null })} /> : null}
+          <p>{state.applicability === 'applied' ? 'Applied now' : `Applies ${state.applicability.replace('-', ' ')}`}</p>
+          <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
+            void controls.change({ kind: 'save-default', preferences: state.desired }).catch(() => undefined)
+          }}>Save as default for future chats</Button>
+        </details>
+        <Button size="sm" disabled={pending || !!compactReason} title={compactReason ?? undefined}
+          onClick={() => { void controls.change({ kind: 'compact' }).catch(() => undefined) }}>Compact context</Button>
+        {compactReason ? <p>{compactReason}</p> : null}
+        {state.compaction ? <p role="status">{state.compaction.message}</p> : null}
+        <Button size="sm" variant="secondary" onClick={() => { void controls.query.refetch() }}>Refresh status</Button>
+        <Button size="sm" variant="secondary" onClick={() => setOpen(false)}>Close context details</Button>
+      </div> : null}
+    </div>
+    {controls.mutation.isError ? <p role="alert">{controls.mutation.error.message}</p> : null}
+  </div>
+}
