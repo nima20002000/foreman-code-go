@@ -1,6 +1,7 @@
-import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { access, lstat, mkdir, open, readFile, readlink, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, lstat, mkdir, open, readFile, readdir, readlink, rename, rmdir, unlink,
+  type FileHandle } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { FileRevision } from '@foreman-code/contracts/files'
 import { sha256 } from './attachments.js'
@@ -29,12 +30,46 @@ export async function openDirectory(path: string): Promise<FileHandle> {
   } catch (error) { await fd.close(); throw error }
 }
 
+async function assertDirectoryEntry(parent: FileHandle, name: string, directory: FileHandle): Promise<void> {
+  const held = await directory.stat({ bigint: true })
+  const named = await lstat(at(parent, name), { bigint: true })
+  checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
+    'FILE_CLEANUP_REQUIRED', 'The owned directory moved; do not remove an unregistered replacement.')
+}
+
+async function removeDirectoryContents(directory: FileHandle): Promise<void> {
+  const parent = await directory.stat({ bigint: true })
+  for (const name of await readdir(at(directory, '.'))) {
+    const path = at(directory, name)
+    const named = await lstat(path, { bigint: true })
+    if (!named.isDirectory()) {
+      // unlink removes links themselves, without opening their targets.
+      await unlink(path)
+      continue
+    }
+    checkFileCondition(named.dev === parent.dev, 'FILE_CLEANUP_REQUIRED',
+      'Do not traverse a mounted filesystem while cleaning an owned directory.')
+    const child = await open(path, directoryFlags)
+    try {
+      const held = await child.stat({ bigint: true })
+      checkFileCondition(held.dev === named.dev && held.ino === named.ino,
+        'FILE_CLEANUP_REQUIRED', 'The child directory changed before cleanup.')
+      await removeDirectoryContents(child)
+      await assertDirectoryEntry(directory, name, child)
+      await rmdir(path)
+    } finally {
+      await child.close()
+    }
+  }
+}
+
 interface Registered {
   file: OpenCodeRegisteredFile
   directory: FileHandle
   filename: string
   inputHash: string
   writable: boolean
+  cleanup?: { name: string; directory: FileHandle; moved: boolean; emptied: boolean }
 }
 interface LocalFileOptions {
   executionHostId: string
@@ -82,6 +117,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const old = this.entries.get(input.handle)
       const inputHash = sha256(JSON.stringify([input.revision, input.writable]))
       if (old) {
+        checkFileCondition(!old.cleanup, 'FILE_CLEANUP_REQUIRED', 'The registered handle is being removed.')
         checkFileCondition(old.inputHash === inputHash, 'FILE_ARTIFACT_CONFLICT', 'A registered handle cannot change its source.')
         return { ...old.file } // Never overwrite native edits when preparation is retried.
       }
@@ -115,7 +151,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
 
   private async snapshotReady(handle: string, signal: AbortSignal): Promise<Uint8Array> {
     const entry = this.entries.get(handle)
-    checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
+    checkFileCondition(entry?.writable && !entry.cleanup, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
     signal.throwIfAborted()
     const file = await open(at(entry.directory, entry.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
@@ -152,7 +188,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
   replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void> {
     return this.exclusive(async () => {
       const entry = this.entries.get(handle)
-      checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
+      checkFileCondition(entry?.writable && !entry.cleanup, 'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
       checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
         'FILE_ARTIFACT_TOO_LARGE', 'The edited working copy exceeds the file limit.')
       const root = await this.rootDirectory()
@@ -195,15 +231,31 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const entry = this.entries.get(handle)
       if (!entry) return
       const root = await this.rootDirectory()
-      const held = await entry.directory.stat()
-      const named = await lstat(at(root, handle))
-      checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
-        'FILE_CLEANUP_REQUIRED', 'The registered directory moved; do not remove an unregistered replacement.')
-      try { await unlink(at(entry.directory, entry.filename)) }
-      catch (error) { if (code(error) !== 'ENOENT') throw error }
-      // Do not recursively follow or delete unregistered editor-created entries.
-      await rmdir(at(root, handle))
+      if (!entry.cleanup) {
+        await assertDirectoryEntry(root, handle, entry.directory)
+        // Detach the native path before deletion; failed cleanup keeps its descriptors and ownership.
+        const name = `.cleanup-${randomUUID()}`
+        await mkdir(at(root, name), { mode: 0o700 })
+        entry.cleanup = { name, directory: await open(at(root, name), directoryFlags), moved: false, emptied: false }
+      }
+      const cleanup = entry.cleanup
+      await assertDirectoryEntry(root, cleanup.name, cleanup.directory)
+      if (!cleanup.moved) {
+        await assertDirectoryEntry(root, handle, entry.directory)
+        await rename(at(root, handle), at(cleanup.directory, 'files'))
+        cleanup.moved = true
+      }
+      if (!cleanup.emptied) {
+        await assertDirectoryEntry(cleanup.directory, 'files', entry.directory)
+        await removeDirectoryContents(entry.directory)
+        await assertDirectoryEntry(cleanup.directory, 'files', entry.directory)
+        await rmdir(at(cleanup.directory, 'files'))
+        cleanup.emptied = true
+      }
+      await assertDirectoryEntry(root, cleanup.name, cleanup.directory)
+      await rmdir(at(root, cleanup.name))
       await entry.directory.close()
+      await cleanup.directory.close()
       this.entries.delete(handle)
       if (!this.entries.size && this.root) { await this.root.close(); this.root = undefined }
     })
