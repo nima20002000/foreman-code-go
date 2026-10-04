@@ -22,6 +22,7 @@ vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: 
 }) }))
 vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
   app: state.app,
+  rsync: { kind: 'unavailable' },
   registerFileStorage: () => { expect(state.listeners.has('SIGTERM')).toBe(true) },
   startDeviceListener: async () => undefined,
   initialize: async () => undefined,
