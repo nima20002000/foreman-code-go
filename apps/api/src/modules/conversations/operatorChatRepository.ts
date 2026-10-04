@@ -191,8 +191,17 @@ export class PostgresOperatorConversationRepository {
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {
     // One statement gives the bounded recent window and state the same MVCC
     // snapshot. Large/older messages remain accessible through history().
-    const result = await query.query<ConversationRow & { messages: unknown[]; activities: unknown[]; activity_cursor: string | null; message_count: string; configuration: unknown }>(`select c.*,
+    const result = await query.query<ConversationRow & {
+      messages: unknown[]
+      activities: unknown[]
+      activity_cursor: string | null
+      message_count: string
+      configuration: unknown
+      native_submission: NativeMessageSubmission | null
+    }>(`select c.*,
       (select record from operator_configuration_versions where id=c.operator_configuration_version_id) as configuration,
+      (select t.payload->'nativeSubmission' from operator_conversation_turns t
+        where t.conversation_id=c.id and t.request_id=c.active_request_id) as native_submission,
       (select count(*) from operator_conversation_messages where conversation_id=c.id) as message_count,
       coalesce((select jsonb_agg(a.record || jsonb_build_object('sequence',a.sequence::text,'revision',a.revision) order by a.sequence)
         from (select record,sequence,revision from operator_conversation_activity where conversation_id=c.id order by sequence desc limit 100) a),'[]'::jsonb) as activities,
@@ -223,6 +232,7 @@ export class PostgresOperatorConversationRepository {
       hasEarlierMessages: Number(row.message_count) > row.messages.length,
       settings: operatorChatSettings(configuration.harness, configuration.showThinking),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
+      ...(row.native_submission ? { nativeSubmission: row.native_submission } : {}),
       ...(row.last_error ? { error: row.last_error } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
