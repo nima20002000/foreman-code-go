@@ -234,7 +234,7 @@ async function main() {
   let selected = selectFiles(allFiles, startAt)
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
-  const diagnostic = Boolean(startAt || failedFrom)
+  const diagnostic = Boolean(startAt || failedFrom || files)
   const shardCount = Math.min(integrationShardLimit(readProductEnvironment(process.env, 'INTEGRATION_SHARDS')), selected.length)
   const timeouts = integrationTimeouts(process.env)
   const admin = await testAdminPool()
@@ -351,7 +351,7 @@ async function main() {
         else unreported++
       }
       if (code === 0 && !summary) { code = 1; error = new Error('Vitest case summary missing') }
-      if (code === 0 && failForSkippedCases(summary, diagnostic)) {
+      if (code === 0 && failForSkippedCases(summary, Boolean(startAt || failedFrom))) {
         code = 1
         error = new Error(`${summary.skipped} skipped cases in an integration run`)
       }

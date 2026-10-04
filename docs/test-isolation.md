@@ -22,6 +22,11 @@ PostgreSQL ownership markers before deletion. Uncertain process or cleanup
 settlement retains resources. Integration logs are retained in an owned directory
 under ignored `.logs/test-integration/`.
 
+For focused verification, use `corepack pnpm test:files scripts|unit|integration|acceptance`
+followed by explicit repository-relative test file paths. Empty lists and unknown
+integration files are rejected. Integration uses the same disposable slots and
+fails on skipped cases; its report identifies a selected-file run.
+
 Native acceptance uses dedicated authentication. Set `GRAPHQL_TEST_CODEX_AUTH_FILE`
 and/or `GRAPHQL_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
 these are copied into private homes. API-key authentication can use
