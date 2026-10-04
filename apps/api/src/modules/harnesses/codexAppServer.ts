@@ -2128,7 +2128,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private handleNotification(runtime: Runtime, method: string, params: JsonObject, staged = false, arrivalOrdinal = ++runtime.arrivalOrdinal): void {
     if (method === 'protocol/malformed') { this.record(runtime, 'native.malformed', params); return }
-    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed',
+      'item/agentMessage/delta'].includes(method)) {
       if (params.threadId === runtime.session.nativeSessionId && !staged && this.stage(runtime, { method, params, arrivalOrdinal })) return
     }
     const normalized = normalizeCodexNotification({ threadId: runtime.session.nativeSessionId, ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
