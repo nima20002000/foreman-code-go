@@ -8,7 +8,7 @@ import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.j
 
 afterEach(() => vi.restoreAllMocks())
 
-const failures = ['receipt', 'audit', 'commit'] as const
+const failures = ['receipt', 'audit', 'commit', 'commit division by zero'] as const
 
 describe('workspace project folder compensation through authenticated MCP', () => {
   for (const explicitName of [true, false]) {
@@ -18,16 +18,19 @@ describe('workspace project folder compensation through authenticated MCP', () =
         const name = 'Recovered project'
         await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
         const table = failure === 'receipt' ? 'management_command_receipts' : 'management_audit'
-        const trigger = failure === 'commit'
+        const trigger = failure.startsWith('commit')
           ? `create constraint trigger reject_creation after insert on ${table}
              deferrable initially deferred for each row execute function reject_creation()`
           : `create trigger reject_creation before insert on ${table}
              for each row execute function reject_creation()`
         const condition = failure === 'receipt'
           ? "new.operation = 'workspace.create'" : "new.action = 'workspace.create' and new.outcome = 'succeeded'"
+        const rejection = failure === 'commit division by zero'
+          ? "raise exception 'Injected division by zero' using errcode = '22012'"
+          : "raise exception 'Injected creation failure'"
         await f.pool.query(`create function reject_creation() returns trigger language plpgsql as $$
           begin
-            if ${condition} then raise exception 'Injected creation failure'; end if;
+            if ${condition} then ${rejection}; end if;
             return new;
           end $$; ${trigger}`)
         const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicitName ? { name } : {}) }

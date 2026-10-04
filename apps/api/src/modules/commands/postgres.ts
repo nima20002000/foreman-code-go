@@ -9,8 +9,9 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 
 function commitWasRejected(error: unknown): boolean {
   if (!(error instanceof pg.DatabaseError) || !error.code) return false
-  // These server errors abort COMMIT; transport errors cannot establish its outcome.
-  return error.code.startsWith('23') || ['40001', '40P01', 'P0001'].includes(error.code)
+  // A server ERROR rejects the statement. Connection and unknown-completion
+  // errors cannot establish whether COMMIT reached durable storage.
+  return error.severity === 'ERROR' && !error.code.startsWith('08') && error.code !== '40003'
 }
 
 export class PostgresCommandCoordinator {
