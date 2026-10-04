@@ -101,7 +101,7 @@ describe('FLOW-01 versioned work handoff contract', () => {
       .toThrow('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
     expect(() => parseWorkHandoffArtifactResult({ ...native, output: result }, declaration))
       .toThrow('WORKFLOW_ARTIFACT_NATIVE_TEXT_REQUIRED')
-    const { artifactOutputs: _outputs, ...missing } = result
+    const missing = { routing: result.routing, data: result.data }
     expect(() => parseWorkHandoffArtifactResult({ ...native, output: { text: JSON.stringify(missing) } }, declaration))
       .toThrow()
     expect(WorkHandoffResultSchema.safeParse({ ...result, artifactOutputs: { ...result.artifactOutputs,

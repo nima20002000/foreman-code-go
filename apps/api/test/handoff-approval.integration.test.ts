@@ -28,10 +28,9 @@ async function fixture() {
   const entry = agentWorkflowNode(definition.version.definition.nodes[0])
   const edge = definition.version.definition.edges[0]!
   entry.choice = { outcomes: [{ outcome: 'delegate', target: { kind: 'edge', relationshipId: edge.id } }] }
-  let runtime: Fixture
   let revision = 0
   const revisions = new Map<string, number>()
-  runtime = await br1002OpenCodeRuntime('orchestrator', {
+  const runtime: Fixture = await br1002OpenCodeRuntime('orchestrator', {
     fixture: definition,
     async workflowOutput(executionId) {
       const execution = await runtime.runs.getExecution(executionId)

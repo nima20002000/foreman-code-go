@@ -51,9 +51,10 @@ function fixture(code: string) {
 }
 
 describe('handoff runtime failure disposition', () => {
-  it.each(['WORK_SELECTED_EXECUTION_FAILED', 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
-    'WORK_REQUEST_ROUTE_FORBIDDEN', 'WORK_RETURN_ANCESTRY_CONFLICT', 'WORK_HANDOFF_DELIVERY_TOO_LARGE'])
-  ('settles the permanent failure %s once across reconciliation', async (code) => {
+  it.each([
+    'WORK_SELECTED_EXECUTION_FAILED', 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+    'WORK_REQUEST_ROUTE_FORBIDDEN', 'WORK_RETURN_ANCESTRY_CONFLICT', 'WORK_HANDOFF_DELIVERY_TOO_LARGE',
+  ])('settles the permanent failure %s once across reconciliation', async (code) => {
     const f = fixture(code)
     await expect(f.execute()).rejects.toBe(f.error)
     expect(f.state).toMatchObject({ executionState: 'completed', failed: 1, canceled: 1, candidates: 0 })
@@ -62,8 +63,9 @@ describe('handoff runtime failure disposition', () => {
     expect(f.state.candidates).toBe(0)
   })
 
-  it.each(['WORK_TERMINAL_PENDING', 'WORK_NEEDS_DIRECTION', 'NATIVE_SESSION_START_UNCERTAIN'])
-  ('retains the recoverable disposition of %s', async (code) => {
+  it.each([
+    'WORK_TERMINAL_PENDING', 'WORK_NEEDS_DIRECTION', 'NATIVE_SESSION_START_UNCERTAIN',
+  ])('retains the recoverable disposition of %s', async (code) => {
     const f = fixture(code)
     await expect(f.execute()).rejects.toBe(f.error)
     expect(f.state).toMatchObject({ executionState: 'running', failed: 0, canceled: 0, candidates: 0 })
