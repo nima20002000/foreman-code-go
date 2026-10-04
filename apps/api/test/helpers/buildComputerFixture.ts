@@ -6,6 +6,19 @@ import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/con
 import type { JobComputerCandidate } from '../../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../../src/modules/settings/buildComputers.js'
 import { jobSpec } from './jobFixture.js'
+import type pg from 'pg'
+import { vi } from 'vitest'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { JobSql } from '../../src/modules/jobs/repository.js'
+import type { ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { BuildComputerSettings } from '../../src/modules/settings/buildComputers.js'
+import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecution.js'
+import { JobComputerSelection, releaseClosedJobComputers } from '../../src/modules/jobs/computerSelection.js'
+import { PostgresSourceReservations } from '../../src/modules/sources/reservations.js'
+import { JobService } from '../../src/modules/jobs/service.js'
+import { JobWorkerService } from '../../src/modules/jobs/worker.js'
+import type { JobQueueConfiguration } from '../../src/modules/jobs/ports.js'
 
 // Runtime readiness is an inventory fixture; these tests make no physical qualification claim.
 export function buildComputerFixture(mainId: string, workspaceId: string, deviceId: string = randomUUID()) {
@@ -40,4 +53,126 @@ export function buildComputerFixture(mainId: string, workspaceId: string, device
   const auto = AutoJobDefinitionSpecSchema.parse({ ...spec, target: { kind: 'auto' },
     policy: jobPolicyRequirements(spec.policy), limits: profile.limits })
   return { registration, candidate, auto, target: buildComputerTarget(spec.target) }
+}
+
+/** PostgreSQL queue behavior with trusted runtime/source events supplied by the fixture. */
+export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrincipal, options: {
+  computerCount?: number; maxBackfillClaims?: number; maxPendingPerPrincipal?: number; clock?: () => Date
+} = {}) {
+  const workspaceId = randomUUID()
+  const mainId = (await pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+  await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+    [workspaceId, JSON.stringify({ id: workspaceId, name: 'Queued builds' })])
+  const source = { ...jobSpec().source, approvedSourceId: randomUUID(), snapshotId: randomUUID() }
+  const computers = Array.from({ length: options.computerCount ?? 1 }, () => buildComputerFixture(mainId, workspaceId))
+  await pool.query(`insert into source_approvals
+    (approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
+    values($1,$2,$3,$4,$4,$5,$6,'approved','{}','{}')`,
+  [source.approvedSourceId, source.snapshotId, workspaceId, principal.id, randomUUID(), '1'.repeat(64)])
+  await pool.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record)
+    values($1,$2,$3,$4,'{}')`, [source.snapshotId, source.approvedSourceId, workspaceId, source.manifestDigest])
+  const commands = new PostgresCommandCoordinator(pool)
+  const settings = new BuildComputerSettings(pool, commands, async () => ({
+    state: 'ready', reasons: [], remoteExecutionEnabled: true,
+  }))
+  for (const computer of computers) {
+    computer.candidate.spec.source = source
+    computer.auto.source = source
+    computer.candidate.profile.root = SourceRootRecordSchema.parse({ ...computer.candidate.profile.root,
+      source: { approvedSourceId: source.approvedSourceId, snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
+      binding: { ...computer.candidate.profile.root.binding, snapshotId: source.snapshotId } })
+    computer.candidate.ready = false
+    computer.candidate.reasons = ['offline']
+    const root = computer.candidate.profile.root
+    await pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
+      values($1,$2,$3,'fixture',$4::jsonb)`, [computer.registration.deviceId, mainId,
+      computer.registration.workerInstallationId, JSON.stringify(computer.registration)])
+    await pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+      values($1,$2,$3,1)`, [root.binding.rootId, workspaceId, randomUUID()])
+    await pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+      values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, source.snapshotId, JSON.stringify(root)])
+    await settings.update(principal, 'http', { target: computer.target, commandId: randomUUID(),
+      expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
+  }
+  const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,
+    _workspaceId: string, spec: import('@graphql/contracts/jobs').JobDefinitionSpec) => computers.map(computer => ({
+      ...computer.candidate, spec: { ...computer.candidate.spec, argv: spec.argv },
+    }))) }
+  const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
+  const placement = new JobComputerSelection(settings, inventory, workerExecution)
+  const reservations = new PostgresSourceReservations()
+  const accept = vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal, _workspace: string,
+    spec: ResolvedJobDefinitionSpec, identity: { executionId: string; attemptId: string; operationId: string }) => {
+    const computer = computers.find(computer => computer.candidate.spec.policy.isolationPolicyId === spec.policy.isolationPolicyId)!
+    const materializationId = randomUUID()
+    const sql = await pool.connect()
+    try {
+      await sql.query('begin')
+      const reservation = await reservations.reserve(sql, { ...computer.candidate.sourceReservation,
+        ownerKind: 'materialization', ownerId: identity.operationId })
+      await reservations.retain(sql, reservation, 'owned')
+      await sql.query(`insert into source_execution_materializations
+        (materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)
+        values($1,$2,$3,$4,$5,$6,1,$7,'{}','prepared') on conflict(execution_id,attempt_id) do nothing`,
+      [materializationId, workspaceId, identity.executionId, identity.attemptId, identity.operationId,
+        computer.candidate.profile.root.binding.rootId, reservation.reservationId])
+      const original = (await sql.query<{ materialization_id: string }>(
+        'select materialization_id from source_execution_materializations where operation_id=$1', [identity.operationId])).rows[0]!
+      await sql.query('commit')
+      return { ...spec, source: { ...spec.source, materializationId: original.materialization_id,
+        materializationDigest: '1'.repeat(64) } }
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally { sql.release() }
+  })
+  const wake = vi.fn(async () => {})
+  const cancel = vi.fn(async () => {})
+  const queue: JobQueueConfiguration = { revision: 1,
+    review: { reviewedByPrincipalId: principal.id, reviewedAt: new Date().toISOString(), decisionDigest: '1'.repeat(64) },
+    limits: { maxPendingPerPrincipal: options.maxPendingPerPrincipal ?? 20, maxPendingPerWorkspace: 40,
+      maxBackfillClaims: options.maxBackfillClaims ?? 0 },
+    resources: async () => ({ schemaVersion: 1, limits: computers[0]!.candidate.profile.limits,
+      mutableInodes: 100, controlTempBytes: 1024, scratchBytes: 1048576, scratchExecutable: false,
+      shmBytes: 1024, spoolBytes: 4096, reportBytes: 4096 }),
+  }
+  const ports = { placement, workerExecution, queue,
+    preparation: { accept, choices: async () => ({ targets: [], sources: [], policies: [] }),
+      validate: async () => ({ valid: true, reasons: [], sideEffects: false as const }),
+      revalidateAccepted: async () => {}, adoptFinalBinding: async () => {} },
+    dispatch: { accept: async (_sql: JobSql, input: { operationId: string; attemptId: string }) => ({
+      operationId: input.operationId, attemptId: input.attemptId, owner: { grantId: randomUUID(), epoch: '1' } }),
+    wake, cancel, cancelForRunCleanup: async () => { throw new Error('No Run cleanup in the queue fixture') } },
+    artifacts: { list: async () => [], read: async () => { throw new Error('No physical artifact fixture') } },
+  }
+  const createService = () => new JobService(pool, commands, ports, options.clock)
+  const jobs = createService()
+  const worker = new JobWorkerService(pool, { require: async () => {}, verifyPublication: async () => {} })
+  async function complete(executionId: string) {
+    const execution = await jobs.getExecution(principal, workspaceId, executionId)
+    const fence = { attemptId: execution.attemptId, owner: execution.owner }
+    if (execution.process.phase !== 'terminal') {
+      await worker.settleProcess(workspaceId, executionId, fence, {
+        process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
+        startedAt: execution.createdAt, finishedAt: new Date().toISOString(),
+      })
+    }
+    await worker.publication(workspaceId, executionId, fence, { state: 'complete', issue: null })
+    await pool.query("update source_execution_materializations set state='closed' where execution_id=$1", [executionId])
+    const reservation = (await pool.query<{ record: import('../../src/modules/sources/reservations.js').SourceReservation }>(
+      "select record from source_storage_reservations where owner_kind='materialization' and owner_id=$1",
+      [execution.operationId])).rows[0]!.record
+    await reservations.reclaimed(pool, reservation, async () => true)
+    await releaseClosedJobComputers(pool)
+  }
+  async function save(spec: import('@graphql/contracts/jobs').JobDefinitionSpec = computers[0]!.auto) {
+    return jobs.saveDefinition(principal, 'http', workspaceId, { commandId: randomUUID(),
+      expectedRevision: null, name: 'Queued build', spec })
+  }
+  function online(index = 0) {
+    computers[index]!.candidate.ready = true
+    computers[index]!.candidate.reasons = []
+  }
+  return { principal, workspaceId, computers, settings, commands, jobs, createService, accept, wake, cancel,
+    inventory, worker, complete, save, online, queue }
 }
