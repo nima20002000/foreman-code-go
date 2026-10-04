@@ -5,7 +5,7 @@ import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
   AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@foreman-code/contracts/files'
 import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
-import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
+import { checkFileCondition, OpenCodeFileCleanupError, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
   type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileTurnOptions } from './types.js'
 
 const owners = new WeakMap<object, OpenCodeFileTurn>()
@@ -453,9 +453,19 @@ export class OpenCodeFileTurn {
       // Publication adoption is retryable by the exact durable binding, without
       // keeping an otherwise-terminal native credential alive on a DB failure.
       const errors: unknown[] = []
-      try { await this.release(signal) } catch (error) { errors.push(error) }
+      let cleanup: OpenCodeFileCleanupError | undefined
+      try {
+        await this.release(signal)
+      } catch (error) {
+        if (error instanceof OpenCodeFileCleanupError) cleanup = error
+        else errors.push(error)
+      }
       if (evidence === 'terminal') try { await this.adoptReady() } catch (error) { errors.push(error) }
-      if (errors.length) throw new AggregateError(errors, 'File turn finalization needs retry.')
+      if (errors.length) {
+        if (cleanup) errors.push(cleanup)
+        throw new AggregateError(errors, 'File turn finalization needs retry.')
+      }
+      if (cleanup) throw cleanup
     })
   }
 
@@ -511,19 +521,26 @@ export class OpenCodeFileTurn {
   }
 
   private async release(signal: AbortSignal): Promise<void> {
-    if (this.closed) return
-    await this.revokeReady()
-    if (this.connected && this.serverName) {
-      await this.json(`/mcp/${encodeURIComponent(this.serverName)}/disconnect`, signal, {})
-      this.connected = false
+    if (!this.closed) {
+      await this.revokeReady()
+      if (this.connected && this.serverName) {
+        await this.json(`/mcp/${encodeURIComponent(this.serverName)}/disconnect`, signal, {})
+        this.connected = false
+      }
+      this.copies.clear()
+      this.closed = true
+      this.token = undefined
+      if (owners.get(this.options.server) === this) owners.delete(this.options.server)
     }
+    const errors: unknown[] = []
     for (const handle of this.handles) {
-      await this.options.host.remove(handle)
-      this.handles.delete(handle)
+      try {
+        await this.options.host.remove(handle)
+        this.handles.delete(handle)
+      } catch (error) {
+        errors.push(error)
+      }
     }
-    this.copies.clear()
-    this.closed = true
-    this.token = undefined
-    if (owners.get(this.options.server) === this) owners.delete(this.options.server)
+    if (errors.length) throw new OpenCodeFileCleanupError(errors)
   }
 }

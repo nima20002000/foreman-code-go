@@ -4,7 +4,7 @@ import type { FileToolContext } from '../../files/tools/types.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 import { createOpenCodeFileMcpFacade } from './facade.js'
 import { OpenCodeFileTurn, type PreparedOpenCodeFiles } from './turn.js'
-import { checkFileCondition, type AcceptedOpenCodeFileTurn, type OpenCodeAcceptedFileReader,
+import { checkFileCondition, OpenCodeFileCleanupError, type AcceptedOpenCodeFileTurn, type OpenCodeAcceptedFileReader,
   type OpenCodeFileTurnOptions } from './types.js'
 
 /** The manager supplies all native fields. The resolver uses the durable accepted
@@ -55,11 +55,21 @@ export class OpenCodeManagedFileTurn {
 
   private async close(operation: () => Promise<void>): Promise<void> {
     const errors: unknown[] = []
-    try { await operation() } catch (error) { errors.push(error) }
+    let released = false
+    try {
+      await operation()
+      released = true
+    } catch (error) {
+      released = error instanceof OpenCodeFileCleanupError
+      errors.push(error)
+    }
     if (!this.unmounted) {
       try { await this.unmount(); this.unmounted = true } catch (error) { errors.push(error) }
     }
-    if (errors.length) throw new AggregateError(errors, 'OpenCode chat file cleanup needs retry.')
+    if (errors.length) {
+      if (released) throw new OpenCodeFileCleanupError(errors)
+      throw new AggregateError(errors, 'OpenCode chat file cleanup needs retry.')
+    }
   }
 
   finish(evidence: 'terminal' | 'definite_rejection', signal: AbortSignal): Promise<void> {
@@ -68,6 +78,10 @@ export class OpenCodeManagedFileTurn {
 
   nativeProcessClosed(signal: AbortSignal): Promise<void> {
     return this.close(() => this.bridge.nativeProcessClosed(signal))
+  }
+
+  retryCleanup(signal: AbortSignal): Promise<void> {
+    return this.close(() => this.bridge.retryCleanup(signal))
   }
 }
 

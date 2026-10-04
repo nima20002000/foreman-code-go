@@ -48,6 +48,7 @@ import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
+import { OpenCodeFileCleanupError } from './opencodeFiles/types.js'
 import { harnessProfile } from './qualification/profiles.js'
 import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
@@ -156,6 +157,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private readonly knownSecrets = new Set<string>()
   private readonly responseReceipts = new Map<string, NativeResponseDeliveryEvidence>()
   private readonly childCommandAttempts = new Set<string>()
+  private readonly pendingFileCleanup = new Set<OpenCodeManagedFileTurn>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.chatFiles && options.appMcpAccess !== 'none') {
@@ -545,9 +547,17 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async finishFiles(turn: OwnedTurn, evidence: 'terminal' | 'definite_rejection'): Promise<void> {
-    if (!turn.files) return
-    await turn.files.finish(evidence, AbortSignal.timeout(10_000))
-    delete turn.files
+    const files = turn.files
+    if (!files) return
+    try {
+      await files.finish(evidence, AbortSignal.timeout(10_000))
+    } catch (error) {
+      if (!(error instanceof OpenCodeFileCleanupError)) throw error
+      this.pendingFileCleanup.add(files)
+      process.emitWarning('Released OpenCode file resources will be retried during manager disposal.',
+        { code: 'FILE_CLEANUP_REQUIRED' })
+    }
+    if (turn.files === files) delete turn.files
   }
 
   async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery,
@@ -1248,6 +1258,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       for (const state of this.sessions.values()) {
         try { await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000)) } catch (error) { errors.push(error) }
+      }
+      for (const files of this.pendingFileCleanup) {
+        try {
+          await files.retryCleanup(AbortSignal.timeout(10_000))
+          this.pendingFileCleanup.delete(files)
+        } catch (error) {
+          errors.push(error)
+        }
       }
       // Keep failed cleanup reachable for a subsequent dispose attempt.
       if (errors.length) throw new AggregateError(errors, 'Disposed native manager still requires file cleanup.')

@@ -86,6 +86,14 @@ export class OpenCodeFileError extends Error {
   }
 }
 
+/** File resources still need disposal after credentials and native MCP access are closed. */
+export class OpenCodeFileCleanupError extends AggregateError {
+  constructor(errors: readonly unknown[]) {
+    super(errors, 'OpenCode file resource cleanup needs retry.')
+    this.name = 'OpenCodeFileCleanupError'
+  }
+}
+
 export function checkFileCondition(condition: unknown, code: string, message: string): asserts condition {
   if (!condition) throw new OpenCodeFileError(code, message)
 }
