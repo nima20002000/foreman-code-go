@@ -1,4 +1,5 @@
 import { ClaudeBoundedQueue } from './queue.js'
+import { isDeepStrictEqual } from 'node:util'
 import type {
   ClaudeNativeObservation, ClaudePersistedSession, ClaudeSdkClient, ClaudeSdkOpenInput,
   ClaudeSdkOutput, ClaudeSdkQuery, ClaudeSdkRunner, ClaudeSdkSession, ClaudeSdkUserMessage, ClaudeSessionScope,
@@ -24,6 +25,62 @@ function observationOf(raw: unknown): ClaudeNativeObservation | undefined {
     nativeSessionId: frame.session_id, promptUuids: uuids,
     kind: frame.type === 'result' ? 'result' : 'reply',
     ...(typeof frame.uuid === 'string' ? { providerMessageId: frame.uuid } : {}),
+  }
+}
+
+function responseObservations(): (raw: unknown) => ClaudeNativeObservation | undefined {
+  const owners = new Map<string, readonly string[]>()
+  const finished = new Set<string>()
+  let response: readonly string[] | undefined
+  let stream: readonly string[] | undefined
+  return (raw) => {
+    if (!raw || typeof raw !== 'object') return undefined
+    const frame = raw as Record<string, unknown>
+    if (typeof frame.session_id !== 'string' || !frame.session_id || frame.parent_tool_use_id != null) return undefined
+    if (!['assistant', 'stream_event', 'result'].includes(String(frame.type))) return undefined
+    const message = frame.message as { id?: unknown } | undefined
+    const event = frame.event as { type?: unknown; message?: { id?: unknown } } | undefined
+    const messageId = message?.id ?? event?.message?.id
+    const ids: string[] = []
+    if (typeof frame.uuid === 'string' && (frame.type !== 'stream_event' || event?.type === 'message_start')) {
+      ids.push(`frame:${frame.uuid}`)
+    }
+    if (typeof messageId === 'string') ids.push(`message:${messageId}`)
+    const echo = observationOf(raw)
+    const known = ids.map(id => owners.get(id)).find(owner => owner !== undefined)
+    if (echo && known && !isDeepStrictEqual(echo.promptUuids, known)) {
+      throw new Error('Claude response identity was reused for another input')
+    }
+    // The native stream opens a response on its input echo and closes it on its result.
+    // Known delayed frames retain their original owner without moving that boundary.
+    let promptUuids = echo?.promptUuids ?? (frame.type === 'result' ? undefined : known)
+    if (!promptUuids && frame.type !== 'result') {
+      promptUuids = frame.type === 'stream_event' && event?.type !== 'message_start' ? stream : response
+    }
+    if (echo?.kind === 'reply' && !known && !echo.promptUuids.some(uuid => finished.has(uuid))) {
+      response = echo.promptUuids
+      if (frame.type === 'stream_event') stream = echo.promptUuids
+    }
+    if (frame.type === 'stream_event' && event?.type === 'message_start') stream = promptUuids
+    if (promptUuids) {
+      for (const id of ids) {
+        const previous = owners.get(id)
+        if (previous && !isDeepStrictEqual(previous, promptUuids)) {
+          throw new Error('Claude response identity was reused for another input')
+        }
+        owners.set(id, promptUuids)
+      }
+    }
+    if (frame.type === 'result') {
+      for (const uuid of promptUuids ?? []) finished.add(uuid)
+      if (!promptUuids || isDeepStrictEqual(promptUuids, response)) {
+        response = undefined
+        stream = undefined
+      }
+    }
+    if (!promptUuids) return undefined
+    return { nativeSessionId: frame.session_id, promptUuids, kind: frame.type === 'result' ? 'result' : 'reply',
+      ...(typeof frame.uuid === 'string' ? { providerMessageId: frame.uuid } : {}) }
   }
 }
 
@@ -119,6 +176,7 @@ export function createClaudeSdkRunner(input: {
     const outputQueue = new ClaudeBoundedQueue<ClaudeSdkOutput>(input.outputCapacity ?? 256)
     const receipts = new Map<string, ClaudeNativeObservation[]>()
     const offered = new Set<string>()
+    const observeResponse = responseObservations()
     let nativeSessionId: string | undefined
     let query: ClaudeSdkQuery | undefined
     let pump: Promise<void> | undefined
@@ -218,7 +276,7 @@ export function createClaudeSdkRunner(input: {
               if (options.resume && options.resume.nativeSessionId !== frame.session_id) throw new Error('Claude resumed a different native session')
               nativeSessionId = frame.session_id
             }
-            const observation = observationOf(raw)
+            const observation = observeResponse(raw)
             if (observation) {
               const ownedUuids = observation.promptUuids.filter((uuid) => offered.has(uuid))
               if (ownedUuids.length) {

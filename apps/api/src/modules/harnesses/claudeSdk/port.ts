@@ -42,7 +42,7 @@ export interface ClaudeNativeObservation {
   nativeSessionId: string
   /** Native output frame identity, never an application/native turn ID. */
   providerMessageId?: string
-  /** Client UUIDs positively echoed by native output; not native IDs. */
+  /** Client UUIDs from the native input echo that owns this response sequence; not native IDs. */
   promptUuids: readonly string[]
   kind: 'reply' | 'result'
 }
