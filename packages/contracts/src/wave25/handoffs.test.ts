@@ -136,6 +136,8 @@ describe('FLOW-01 versioned work handoff contract', () => {
     expect(WorkReturnSchema.safeParse({ ...returned, latestDeliverable: null }).success).toBe(false)
     const { continuationActivationId: _unused, ...withoutContinuation } = returned
     expect(WorkReturnSchema.safeParse({ ...withoutContinuation, outcome: 'accepted', remainingFindings: [] }).success).toBe(true)
+    expect(WorkReturnSchema.parse({ ...withoutContinuation, outcome: 'accepted' }).remainingFindings)
+      .toEqual(result.data.remainingFindings)
     expect(WorkReturnSchema.safeParse({ ...returned, outcome: 'accepted' }).success).toBe(false)
     void _unused
     const notice = { scope: fixture.scope, noticeId: 'notice-3', requesterActivationId: 'activation-b-3',

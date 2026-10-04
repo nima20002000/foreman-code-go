@@ -35,6 +35,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'After reactivation, use parentRequest.requestId for the outstanding caller.',
       'For a work_request activation, use work.request.requestId.',
       'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
+      'An accepted return approves the deliverable. Any remaining findings are preserved for direction and do not automatically reactivate the requester. Use needs_changes to request another revision.',
       'To finish this activation, use {"kind":"finish"}; on a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
       ...(saved ? [

@@ -222,10 +222,23 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
   if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
   if (node.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   if (reason === 'finish_with_findings') {
-    if (relationshipId || result.routing.kind !== 'finish' || !result.data.remainingFindings.length) {
+    const acceptedReturn = result.routing.kind === 'return' && result.routing.outcome === 'accepted'
+    if (relationshipId || result.routing.kind !== 'finish' && !acceptedReturn || !result.data.remainingFindings.length) {
       return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
     }
-    const route = node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target
+    if (acceptedReturn) {
+      const returned = (await sql.query<{ record: unknown }>(
+        'select record from run_work_returns where run_id=$1 and source_execution_id=$2',
+        [scope.runId, sourceExecutionId])).rows[0]
+      if (!returned) return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+      const value = WorkReturnSchema.parse(returned.record)
+      if (result.routing.kind !== 'return' || value.requestId !== result.routing.requestId
+        || value.outcome !== 'accepted' || value.acceptedResultDigest !== repeatDigest(execution.result, 64 * 1024)) {
+        return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+      }
+    }
+    const route = result.routing.kind === 'finish'
+      ? node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target : undefined
     if (route?.kind === 'edge') return repeatConflict('WORK_UNRESOLVED_ROUTE_EXISTS')
   } else {
     const selected = (await sql.query<{ routes: string[] }>(
@@ -536,6 +549,9 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
     const value = WorkReturnSchema.parse(prior.record)
     if (value.sourceExecutionId !== sourceExecutionId || value.acceptedResultDigest !== resultDigest
       || !sameRepeatValue(value.scope, scope)) return repeatConflict('WORK_RETURN_REPLAY_CONFLICT')
+    if (value.outcome === 'accepted' && value.remainingFindings.length) {
+      await recordUnresolvedWorkLocked(context, sourceExecutionId, 'finish_with_findings')
+    }
     return { value, replayed: true }
   }
   context.assertActive()
@@ -595,6 +611,9 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
       context.now, canonicalGraphJson({ activationId: continuationActivationId,
         requesterNodeId: request.requesterNodeId, returnId,
         ...(notice ? { noticeId: notice.noticeId } : {}) })])
+  }
+  if (value.outcome === 'accepted' && value.remainingFindings.length) {
+    await recordUnresolvedWorkLocked(context, sourceExecutionId, 'finish_with_findings')
   }
   return { value, replayed: false }
 }
