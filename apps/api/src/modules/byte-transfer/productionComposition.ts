@@ -194,7 +194,14 @@ export function createInstalledRsyncComposition(input: {
         const signal = AbortSignal.timeout(5000)
         const tasks: Promise<unknown>[] = [ownership.drain(signal)]
         if (control) { try { tasks.push(control.close()) } catch (error) { tasks.push(Promise.reject(error)) } }
-        try { tasks.push(...ownership.inventory().map(i => writers.stop(i, signal))) } catch (error) { tasks.push(Promise.reject(error)) }
+        try {
+          // Drain every local owner, but coordinate only peers acquired by this instance.
+          // Historical remote uncertainty remains in its journal for reconciliation.
+          const acquired = ownership.inventory().filter(intent => references.has(intent.transferId))
+          tasks.push(...acquired.map(intent => writers.stop(intent, signal)))
+        } catch (error) {
+          tasks.push(Promise.reject(error))
+        }
         await join(tasks)
       })()
       shutdown = attempt

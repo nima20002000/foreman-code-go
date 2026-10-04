@@ -170,5 +170,14 @@ describe('original rsync common composition, no SSH/native acceptance', () => {
     // The only positive closure here is cancellation of both real never-dispatched reservations.
     await main.writers.stop(f.intent, signal); await main.writers.quiescent(f.intent, signal)
     await main.rsyncWriters.close(); await worker.rsyncWriters.close()
+    const peer = vi.fn(() => undefined)
+    const restarted = createInstalledRsyncComposition({ side: 'main', current: () => undefined,
+      providers: { ...f.providers, stagingRoot: localRoot, selection: async () => selected,
+        peer: { capture: peer } } })
+    if (restarted.kind !== 'configured') throw new Error('Restarted Main factory unavailable')
+    expect(restarted.rsyncWriters.inventory()).toEqual([f.intent])
+    await restarted.rsyncWriters.close()
+    expect(peer).not.toHaveBeenCalled()
+    expect(restarted.rsyncWriters.inventory()).toEqual([f.intent])
   })
 })
