@@ -101,7 +101,7 @@ export function OperatorAccessSettings() {
   if (principal) { try { revokeCommand = revokeCredentialCommand(principal.id) } catch { /* Never turn an unrecognized ID into a shell command. */ } }
   return <section className="settings-editor-page access-page" aria-label="App access">
     <header className="settings-experience-heading"><h1>App access</h1>
-      <p>Connect this browser to GraphQL. This token controls app permissions, not your Codex or OpenCode sign-in.</p></header>
+      <p>Connect this browser to Foreman Code. This token controls app permissions, not your Codex or OpenCode sign-in.</p></header>
     {resultHash === '#operator-enrollment-failed' || resultHash === '#access-change-unconfirmed' ? <Alert live tone="warning" title="The access change was not confirmed. Check the current session below before trying again." /> : null}
     {session.isPending ? <p role="status">Checking browser access…</p> : null}
     {session.isError && !unauthorized ? <Alert tone="danger" title="Could not check browser access."

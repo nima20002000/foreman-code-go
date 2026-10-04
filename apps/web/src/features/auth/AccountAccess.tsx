@@ -17,7 +17,7 @@ export function AccountAccess() {
   const restricted = principal.grants.some((grant) => Object.values(grant.scope).some((ids) => ids?.length))
   return <section className="settings-editor-page account-page" aria-label="Account profile">
     <header className="settings-experience-heading"><span className="n-eyebrow">Account</span>
-      <h1>Profile</h1><p>Your identity and access on this GraphQL installation.</p></header>
+      <h1>Profile</h1><p>Your identity and access on this Foreman Code installation.</p></header>
     <div className="settings-editor-content account-content">
       <section aria-labelledby="account-identity-heading">
         <h2 id="account-identity-heading">Your profile</h2>
