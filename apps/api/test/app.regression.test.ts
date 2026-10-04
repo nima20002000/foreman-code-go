@@ -107,3 +107,12 @@ it('loads configurable deadlines for both PostgreSQL pools and readiness', () =>
   expect(() => loadConfig({ DATABASE_URL: config.database.connectionString, READINESS_TIMEOUT_MS: '0' }))
     .toThrow()
 })
+
+it('accepts a separate production workspace root and rejects relative storage', () => {
+  const environment = {
+    DATABASE_URL: 'postgresql://graphql_production:fixture@127.0.0.1:55440/graphql_production',
+    WORKSPACE_STORAGE_ROOT: '/srv/graphql-production/workspaces',
+  }
+  expect(loadConfig(environment).workspaceStorageRoot).toBe(environment.WORKSPACE_STORAGE_ROOT)
+  expect(() => loadConfig({ ...environment, WORKSPACE_STORAGE_ROOT: 'workspaces' })).toThrow()
+})

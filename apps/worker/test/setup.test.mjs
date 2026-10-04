@@ -20,9 +20,12 @@ async function fixture(t) {
   await mkdir(join(artifact, 'artifacts'));
   const bridge = 'console.log("fixture authenticated MCP bridge")';
   await writeFile(join(artifact, 'artifacts/graphql-mcp.mjs'), bridge);
+  const icon = await readFile(new URL('../../web/public/graphql.svg', import.meta.url));
+  await writeFile(join(artifact, 'artifacts/graphql.svg'), icon);
   const manifest = { format: 1, version: '1.0.0', protocolVersion: 1, identityFormat: 1, commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', target: facts,
     files: [...['cli.mjs', 'companion.mjs'].map((name) => ({ path: `src/${name}`, size: Buffer.byteLength(content), sha256: hash(content) })),
-      { path: 'artifacts/graphql-mcp.mjs', size: Buffer.byteLength(bridge), sha256: hash(bridge) }] };
+      { path: 'artifacts/graphql-mcp.mjs', size: Buffer.byteLength(bridge), sha256: hash(bridge) },
+      { path: 'artifacts/graphql.svg', size: icon.length, sha256: hash(icon) }] };
   const bytes = JSON.stringify(manifest); await writeFile(join(artifact, 'manifest.json'), bytes);
   return { home, artifact, node: process.execPath, facts, approvedManifestSha256: hash(bytes), serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') };
 }
@@ -47,6 +50,8 @@ test('setup installs private repeatable launcher files and retains existing iden
   assert.match(await readFile(result.launcher, 'utf8'), /unset NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED/);
   assert.match(await readFile(result.desktop, 'utf8'), /Terminal=false/);
   assert.match(await readFile(result.desktop, 'utf8'), / --desktop\n/);
+  const iconPath = (await readFile(result.desktop, 'utf8')).match(/^Icon=(.+)$/m)[1];
+  assert.deepEqual(await readFile(iconPath), await readFile(join(f.artifact, 'artifacts/graphql.svg')));
 });
 
 test('setup rejects checksum and nonprivate identity storage before publishing a launcher', async (t) => {

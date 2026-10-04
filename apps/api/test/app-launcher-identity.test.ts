@@ -2,12 +2,13 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { APP_MCP_TOKEN, appLauncherPath, installManagedLauncher, isAppLauncher, isManagedLauncherCommand } from '../src/modules/harnesses/appMcpLauncher.js'
 
 const runtime = process.execPath
 const directories: string[] = []
 afterEach(async () => {
+  vi.unstubAllEnvs()
   Object.defineProperty(process, 'execPath', { value: runtime })
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
@@ -24,6 +25,23 @@ async function fixture() {
 }
 
 describe('managed launcher installation identity', () => {
+  it('installs a configured launcher and rejects commands targeting the default installation', async () => {
+    const original = appLauncherPath()
+    const { directory, source } = await fixture()
+    vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', directory)
+    const installed = appLauncherPath()
+    await installManagedLauncher(source, installed)
+    expect(await readFile(installed, 'utf8')).toBe('// launcher')
+    const entry = { command: process.execPath, args: [installed], env_vars: [APP_MCP_TOKEN] }
+    expect(isAppLauncher('codex', entry)).toBe(true)
+    expect(isAppLauncher('codex', { ...entry, args: [original] })).toBe(false)
+  })
+
+  it.each(['', 'relative/mcp'])('rejects a relative launcher directory (%s)', (directory) => {
+    vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', directory)
+    expect(() => appLauncherPath()).toThrow('absolute directory')
+  })
+
   it('recognizes the installed runtime after an API runtime change and preserves both installations', async () => {
     const { launcher, source, nodeA, nodeB } = await fixture()
     Object.defineProperty(process, 'execPath', { value: nodeA })
