@@ -1,5 +1,29 @@
 import { isAutoJobSpec, type JobDefinitionSpec, type AcceptedJobSpec } from '@graphql/contracts/jobs'
+import type { JobQueueTicket } from '@graphql/contracts/job-admission'
 import { CodeBlock } from '../../shared/ui/nocturne'
+import { queueLabel } from './model'
+
+export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
+  const awaitingAssignment = ticket.placement.kind === 'auto' && ['waiting', 'blocked'].includes(ticket.state)
+  let computer = ticket.reservationId ? 'Computer reserved; concrete facts appear in the accepted execution' : 'Not assigned'
+  if (ticket.state === 'accepted') computer = 'See original execution for the accepted computer'
+  if (awaitingAssignment) computer = 'Waiting for an eligible computer'
+  if (ticket.placement.kind === 'explicit') {
+    const { target } = ticket.placement
+    computer = target.labelAtAcceptance ?? (target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'Main computer')
+  }
+  return <dl className="job-facts">
+    <dt>Queue status</dt><dd>{queueLabel(ticket)}</dd>
+    <dt>Computer</dt><dd>{computer}</dd>
+    <dt>Enqueued</dt><dd>{ticket.enqueuedAt}</dd>
+    <dt>Queue deadline</dt><dd>{ticket.deadlineAt}</dd>
+    <dt>Waiting reasons</dt><dd>{ticket.waitingReasons.map(reason => reason.replaceAll('_', ' ')).join(' · ') || 'None'}</dd>
+    <dt>Compatible computers</dt><dd>{ticket.compatibleTargetCount}</dd>
+    <dt>Workspace queue position</dt><dd>{ticket.queuePosition ?? 'No longer waiting'}</dd>
+    <dt>Estimated start</dt><dd>Unknown</dd>
+    {ticket.reservationId && <><dt>Reservation</dt><dd>{ticket.reservationId}</dd></>}
+  </dl>
+}
 
 export function JobSpecFacts({ spec }: { spec: JobDefinitionSpec | AcceptedJobSpec }) {
   const policy = spec.policy

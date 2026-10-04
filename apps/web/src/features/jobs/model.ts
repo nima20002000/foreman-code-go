@@ -1,4 +1,5 @@
 import type { JobExecution, JobLogPage } from '@graphql/contracts/jobs'
+import type { JobQueueTicket } from '@graphql/contracts/job-admission'
 import { ApiError } from '../../shared/api/client'
 
 export const jobAccessLost = (error: unknown) => ApiError.is(error) && [401, 403, 404].includes(error.status)
@@ -23,6 +24,13 @@ export function processLabel(execution: JobExecution) {
   if (process.outcome === 'cancelled' && process.processStopped) return 'Cancellation confirmed'
   if (execution.cancelRequestedAt && !process.processStopped) return 'Cancellation requested · stop unconfirmed'
   return (process.outcome ?? process.phase).replaceAll('_', ' ')
+}
+export function queueLabel(ticket: JobQueueTicket) {
+  if (ticket.state === 'terminal') return (ticket.terminalReason ?? 'terminal').replaceAll('_', ' ')
+  if (ticket.cancelRequestedAt) return 'Cancellation requested · stop unconfirmed'
+  const labels = { waiting: 'Queued · waiting', blocked: 'Queued · blocked',
+    claimed: 'Claimed · preparing', accepted: 'Accepted' }
+  return labels[ticket.state]
 }
 
 export function jobWriteUncertain(error: unknown) {

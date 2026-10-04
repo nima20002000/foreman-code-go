@@ -1,10 +1,13 @@
 import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
 import { z } from 'zod'
-import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobStartSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec, type JobStart } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
+  JobQueueTicketSchema } from '@graphql/contracts/job-admission'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 const root = (workspaceId: string) => `/api/management/workspaces/${encodeURIComponent(workspaceId)}/jobs`
 const executionPath = (workspaceId: string, id: string) => `${root(workspaceId)}/executions/${encodeURIComponent(id)}`
+const queuePath = (workspaceId: string, id: string) => `${root(workspaceId)}/queue/${encodeURIComponent(id)}`
 function mismatch(): never { throw new ApiError({ code: 'JOB_SELECTION_MISMATCH', message: 'The response belongs to another job or workspace.' }, 409) }
 export const jobsClient = {
   async workflowExecution(input: JobWorkflowAdmissionReference, options?: RequestOptions) {
@@ -36,10 +39,35 @@ export const jobsClient = {
   validate(workspaceId: string, spec: JobDefinitionSpec) {
     return apiClient.request(`${root(workspaceId)}/validate`, JobValidationSchema, { method: 'POST', body: { spec: JobDefinitionSpecSchema.parse(spec) } })
   },
-  async start(workspaceId: string, input: JobStart) {
-    const { execution } = await apiClient.request(`${root(workspaceId)}/executions`, z.object({ execution: JobExecutionSchema }), { method: 'POST', body: JobStartSchema.parse(input), signal: AbortSignal.timeout(30000) })
-    if (execution.workspaceId !== workspaceId || execution.acceptedSpec.definitionId !== input.definitionId || execution.acceptedSpec.definitionRevision !== input.expectedRevision) mismatch()
-    return execution
+  async start(workspaceId: string, input: z.infer<typeof JobQueuedStartSchema>) {
+    const { admission } = await apiClient.request(`${root(workspaceId)}/executions`,
+      z.object({ admission: JobAdmissionResultSchema }),
+      { method: 'POST', body: JobQueuedStartSchema.parse(input), signal: AbortSignal.timeout(30000) })
+    if (admission.kind === 'pending-admission') {
+      const { ticket } = admission
+      if (ticket.workspaceId !== workspaceId || ticket.commandId !== input.commandId
+        || ticket.definition.id !== input.definitionId || ticket.definition.revision !== input.expectedRevision) mismatch()
+    }
+    return admission
+  },
+  async queue(workspaceId: string, options?: RequestOptions) {
+    const { tickets } = await apiClient.request(`${root(workspaceId)}/queue`,
+      z.object({ tickets: z.array(JobQueueTicketSchema) }), options)
+    if (tickets.some(ticket => ticket.workspaceId !== workspaceId)) mismatch()
+    return tickets
+  },
+  async queueTicket(workspaceId: string, id: string, options?: RequestOptions) {
+    const { ticket } = await apiClient.request(queuePath(workspaceId, id),
+      z.object({ ticket: JobQueueTicketSchema }), options)
+    if (ticket.workspaceId !== workspaceId || ticket.id !== id) mismatch()
+    return ticket
+  },
+  async cancelQueued(workspaceId: string, input: z.infer<typeof JobQueueCancelSchema>) {
+    const { ticketId, ...body } = JobQueueCancelSchema.parse(input)
+    const { ticket } = await apiClient.request(`${queuePath(workspaceId, ticketId)}/cancel`,
+      z.object({ ticket: JobQueueTicketSchema }), { method: 'POST', body })
+    if (ticket.workspaceId !== workspaceId || ticket.id !== ticketId) mismatch()
+    return ticket
   },
   async executions(workspaceId: string, options?: RequestOptions) {
     const { executions } = await apiClient.request(`${root(workspaceId)}/executions`, z.object({ executions: z.array(JobExecutionSchema) }), options)

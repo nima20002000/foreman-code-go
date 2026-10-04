@@ -1,4 +1,6 @@
 import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, JobLogPage } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
+import { JobQueueTicketSchema } from '@graphql/contracts/job-admission'
 const digest = 'a'.repeat(64)
 const uuid = '11111111-1111-4111-8111-111111111111'
 export const definition: JobDefinition & { spec: ResolvedJobDefinitionSpec } = {
@@ -17,3 +19,20 @@ export const execution: JobExecution = {
   createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:03Z', startedAt: '2026-10-01T00:00:01Z', finishedAt: '2026-10-01T00:00:03Z', lastSeenAt: '2026-10-01T00:00:03Z', resultIssue: 'missing_output',
 }
 export const logPage: JobLogPage = { chunks: [{ executionId: execution.id, attemptId: execution.attemptId, sequence: 1, stream: 'stderr', text: 'build failed <script>bad()</script>\nλ🙂', byteSize: 45, createdAt: execution.updatedAt }], nextCursor: 1, truncated: false, gap: null }
+export const queueTicket = JobQueueTicketSchema.parse({
+  schemaVersion: 1, id: uuid, workspaceId: definition.workspaceId, revision: 1,
+  commandId: 'start-a', commandDigest: digest, principalId: 'principal-a', definition,
+  executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId,
+  workflow: null, gateId: null, placement: { kind: 'explicit', target: definition.spec.target }, placementOverride: null,
+  resources: { schemaVersion: 1, limits: { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 },
+    mutableInodes: 1000, controlTempBytes: 1048576, scratchBytes: 1048576, scratchExecutable: false,
+    shmBytes: 1048576, spoolBytes: 1048576, reportBytes: 1048576 },
+  enqueueSequence: '1', enqueuedAt: '2026-10-01T00:00:00Z', deadlineAt: '2026-10-01T00:00:10Z',
+  state: 'waiting', waitingReasons: ['offline'], compatibleTargetCount: 1, queuePosition: 1,
+  estimatedStartAt: null, reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null,
+})
+export const autoDefinition = JobDefinitionSchema.parse({ ...definition,
+  spec: { ...definition.spec, target: { kind: 'auto' }, limits: queueTicket.resources.limits,
+    policy: jobPolicyRequirements(definition.spec.policy) } })
+export const autoQueueTicket = JobQueueTicketSchema.parse({ ...queueTicket,
+  definition: autoDefinition, placement: { kind: 'auto' } })
