@@ -11,11 +11,10 @@ afterEach(async () => { while (closes.length) await closes.pop()!() })
 
 describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback through selected Main', () => {
   it('retrieves an oversized persisted list and individual request, and denies out-of-scope chunks', async () => {
-    const f = await approvalDatabase()
+    const f = await approvalDatabase({ permissionPatterns: ['😀"\\\n'.repeat(150_000)] })
     closes.push(f.close)
-    const interaction = { ...f.interaction, request: { patch: '😀"\\\n'.repeat(150_000) } }
-    await f.pool.query('update durable_interactions set record=$2::jsonb where id=$1',
-      [interaction.id, JSON.stringify(interaction)])
+    const interaction = f.interaction
+    expect(Buffer.byteLength(JSON.stringify(interaction), 'utf8')).toBeGreaterThan(1_000_000)
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
     const app = buildApp({
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -59,17 +58,18 @@ describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback th
     } while (json.length < page.content!.totalCharacters)
     expect(JSON.parse(json).interaction).toEqual(interaction)
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
-    const outsider = await f.access.issue({ name: 'out-of-scope-reader', audience: 'worker',
-      agentId: f.principal.agentId!, expiresAt: new Date(Date.now() + 60_000),
-      grants: [{ actions: ['interactions:read'], scope: {
+    const outsider = await f.credentials.issueForReviewer(f.reviewer.id)
+    await f.pool.query('update management_principals set grants=$2::jsonb where id=$1', [
+      outsider.principalId, JSON.stringify([{ actions: ['interactions:read'], scope: {
         workspaceIds: [interaction.workspaceId], workflowIds: [interaction.workflowId], runIds: ['another-run'],
-      } }],
-    })
-    const denied = await call('interaction_get', { interactionId: interaction.id, contentCursor: firstCursor }, outsider.token)
+      } }]),
+    ])
+    const outsiderToken = outsider.environment.variables.GRAPHQL_MCP_TOKEN!
+    const denied = await call('interaction_get', { interactionId: interaction.id, contentCursor: firstCursor }, outsiderToken)
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('INTERACTION_NOT_FOUND')
     expect(denied.structuredContent).toBeUndefined()
-    const deniedList = await call('interaction_list', {}, outsider.token)
+    const deniedList = await call('interaction_list', {}, outsiderToken)
     expect(deniedList.structuredContent).toEqual({ items: [], nextCursor: null })
   }, 60_000)
 })

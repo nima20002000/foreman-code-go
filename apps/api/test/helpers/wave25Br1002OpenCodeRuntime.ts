@@ -37,7 +37,7 @@ import { agent3Database, seedAgent3 } from './wave25Agent3.js'
  * real OpenCode adapter. No provider process, network listener or model runs. */
 export class Br1002OpenCodeServer extends FixtureServer {
   beforeReply?: () => Promise<void>
-  constructor(readonly executionId: string, entry: boolean) {
+  constructor(readonly executionId: string, entry: boolean, options: { permissionPatterns?: string[] } = {}) {
     super()
     // Each execution owns a separate OpenCode process in production. Distinct
     // provider-issued session IDs also keep this deterministic fixture honest.
@@ -51,6 +51,7 @@ export class Br1002OpenCodeServer extends FixtureServer {
       if (entry) { this.complete(workflowCorrelation, 'entry complete', sessionID); return }
       const tool = this.assistant(String(body.messageID), 'Requesting permission', 'tool-calls', true, sessionID)
       const ask = { ...permission(`per_${executionId}`, sessionID),
+        ...(options.permissionPatterns ? { patterns: options.permissionPatterns } : {}),
         tool: { messageID: String(tool.info.id), callID: `call_${executionId}` } }
       this.permissions.push(ask)
       this.emit('permission.asked', ask)
@@ -81,7 +82,8 @@ export class Br1002OpenCodeServer extends FixtureServer {
  * identity are substituted. Execution credential preparation uses the real inspector and SQL issuer.
  * Authenticated HTTP/MCP and a live provider are NOT qualified by this fixture. Reviewer decisions
  * below use a real issued SQL-scoped principal, not a fabricated binding. */
-export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = 'user') {
+export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = 'user',
+  options: { permissionPatterns?: string[] } = {}) {
   const db = await agent3Database()
   let engine: LangGraphWorkflowEngine | undefined
   const adapters: OpenCodeNativeSessionManager[] = []
@@ -127,7 +129,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
     const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
       let server = servers.get(context.executionId)
       if (!server) {
-        server = new Br1002OpenCodeServer(context.executionId, context.agentId === entry.agentId)
+        server = new Br1002OpenCodeServer(context.executionId, context.agentId === entry.agentId, options)
         servers.set(context.executionId, server)
       }
       // FixtureServer retains external sessions/history across an adapter close.

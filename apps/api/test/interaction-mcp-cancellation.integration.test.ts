@@ -50,6 +50,8 @@ async function result(response: Response) {
 describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', () => {
   it('cancels a waiting decision before commit, without affecting another request or accepting another caller', async () => {
     const f = await setup()
+    const outsider = await f.credentials.issueForReviewer(f.reviewer.id)
+    const outsiderToken = outsider.environment.variables.GRAPHQL_MCP_TOKEN!
     const lock = await f.pool.connect()
     await lock.query('begin')
     await lock.query('select id from management_principals where id=$1 for update', [f.principal.id])
@@ -62,9 +64,7 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
     const pending = f.call(71, 'interaction_respond', f.args)
     try {
       const signal = await entered.promise
-      const outsider = await f.access.issue({ name: 'another-caller', audience: 'worker',
-        agentId: f.principal.agentId!, grants: f.principal.grants, expiresAt: new Date(Date.now() + 60_000) })
-      expect((await f.cancel(71, outsider.token)).status).toBe(202)
+      expect((await f.cancel(71, outsiderToken)).status).toBe(202)
       expect(signal.aborted).toBe(false)
       const concurrent = await result(await f.call(72, 'interaction_get', { interactionId: f.interaction.id }))
       expect(concurrent.result.isError).not.toBe(true)

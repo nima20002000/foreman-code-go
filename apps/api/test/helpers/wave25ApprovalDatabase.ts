@@ -6,8 +6,8 @@ import { deferred } from './wave25Agent3.js'
 
 /** Current typed Save/Start and real OpenCode adapter capture. Only external
  * HTTP/SSE transport and filesystem qualification are deterministic fixtures. */
-export async function approvalDatabase() {
-  const runtime = await br1002OpenCodeRuntime('orchestrator')
+export async function approvalDatabase(options: { permissionPatterns?: string[] } = {}) {
+  const runtime = await br1002OpenCodeRuntime('orchestrator', options)
   const reconcile = vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
   const live = deferred<void>(), release = deferred<void>()
   const issuance = vi.spyOn(runtime.credentials, 'issueForReviewer')
