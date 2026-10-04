@@ -78,6 +78,25 @@ export function createClaudeSdkRunner(input: {
       signal?.throwIfAborted()
       return client.getSessionMessages(session.nativeSessionId, { dir: session.cwd, limit: page?.limit ?? 256, offset: page?.offset ?? 0 })
     },
+    async subagentHistory(session, scope, agentId, offset = 0, signal) {
+      signal?.throwIfAborted()
+      assertClaudeSessionScope(session, scope)
+      if (disposed) throw new Error('Claude runner disposed')
+      const client = await input.loadClient()
+      if (!client.listSubagents || !client.getSubagentMessages) throw new Error('The pinned SDK child read helper is unavailable')
+      const info = await client.getSessionInfo(session.nativeSessionId, { dir: scope.cwd })
+      if (info?.sessionId !== session.nativeSessionId) throw new Error('Exact parent history is unavailable')
+      const agentIds = [...new Set(await client.listSubagents(session.nativeSessionId, { dir: scope.cwd }))].sort()
+      signal?.throwIfAborted()
+      if (agentIds.length > 32 || agentIds.some(id => !id || id.length > 512)) throw new Error('Native child roster exceeds its bound')
+      const target = agentId ?? agentIds[0]
+      if (!target) return { agentIds, messages: [], hasMore: false }
+      if (!agentIds.includes(target)) throw new Error('Child transcript does not belong to this exact parent')
+      const messages = await client.getSubagentMessages(session.nativeSessionId, target, { dir: scope.cwd, limit: 51, offset })
+      signal?.throwIfAborted()
+      if (messages.length > 51) throw new Error('Native child transcript page exceeds its bound')
+      return { agentIds, agentId: target, messages: messages.slice(0, 50), hasMore: messages.length > 50 }
+    },
     async dispose() {
       disposed = true
       const result = await Promise.allSettled([...sessions].map((session) => session.close()))

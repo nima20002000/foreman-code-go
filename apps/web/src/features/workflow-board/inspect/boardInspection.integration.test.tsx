@@ -19,6 +19,7 @@ import { nextDraftKey } from '../../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspectionFixtures'
 import { useInspectionPresentation } from './presentation'
 import { executionPagesKey } from './queries'
+import { base as childRoute, child, detail, message, tool } from '../../run-subagents/testFixtures'
 import { clearBoardStopStorage, readBoardStop, recordBoardStopReceipt, reserveBoardStop, type BoardStopJournal } from '../stopOutbox'
 
 // Actual registered route, Board, retained authoring owner, pinned React Flow,
@@ -103,6 +104,65 @@ afterEach(() => {
 })
 
 describe('Run inspection inside the one mounted Board', () => {
+  it('shows nested native children on Start-pinned Run links and pages their own recorded items', async () => {
+    const scope = fixture.runs.before.scope
+    const { workspaceId, workflowId, workflowVersionId, runId } = scope
+    const childScope = { workspaceId, workflowId, workflowVersionId, runId }
+    const parent = child({ ...childScope, id: 'parent-child', parentNodeId: fixture.first.id,
+      parentAgentId: fixture.first.agentId, name: 'Native child' })
+    const nested = child({ ...childScope, id: 'nested-child', parentNodeId: fixture.first.id,
+      parentAgentId: fixture.first.agentId, parentSubagentId: parent.id, name: 'Nested child' })
+    const cursors: string[] = []
+    server.use(
+      http.get(childRoute, ({ params }) => HttpResponse.json({
+        items: params.runId === scope.runId ? [detail(parent), detail(nested)] : [],
+        nextCursor: null, projection: 'caught-up',
+      })),
+      http.get(`${childRoute}/:subagentId`, ({ params }) => HttpResponse.json(detail(
+        params.subagentId === nested.id ? nested : parent))),
+      http.get(`${childRoute}/:subagentId/messages`, ({ request, params }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(`messages:${cursor ?? 'first'}`)
+        return HttpResponse.json({ items: [{ ...message(cursor ?? 'first', cursor ? 'Earlier child answer' : 'Child answer'),
+          subagentId: String(params.subagentId) }], nextCursor: cursor ? null : 'messages-next', coverage: parent.coverage })
+      }),
+      http.get(`${childRoute}/:subagentId/tools`, ({ request, params }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(`tools:${cursor ?? 'first'}`)
+        return HttpResponse.json({ items: [{ ...tool(), id: cursor ?? 'first-tool', subagentId: String(params.subagentId) }],
+          nextCursor: cursor ? null : 'tools-next', coverage: parent.coverage })
+      }),
+    )
+    const { history } = await mount(`${href(scope)}#keep=anchor`)
+    const root = await screen.findByRole('button', { name: 'Native child, Codex, Running' })
+    const descendant = await screen.findByRole('button', { name: 'Nested child, Codex, Running' })
+    expect(root).toHaveAttribute('data-parent-id', fixture.first.id)
+    expect(descendant).toHaveAttribute('data-parent-id', parent.id)
+    await userEvent.click(root)
+    const panel = await screen.findByRole('dialog', { name: 'Native child' })
+    await within(panel).findByText('Child answer')
+    expect(history.location.hash).toContain('selectedSubagentId=parent-child')
+    expect(within(panel).getByText("View only — Codex subagents can't be messaged or interrupted from here.")).toBeVisible()
+    expect(within(panel).queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Load more messages' }))
+    await within(panel).findByText('Earlier child answer')
+    await userEvent.click(within(panel).getByRole('tab', { name: /Tool calls/ }))
+    await userEvent.click(await within(panel).findByRole('button', { name: 'Load more tool calls' }))
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: 'Load more tool calls' })).not.toBeInTheDocument())
+    expect(cursors).toContain('messages:messages-next')
+    expect(cursors).toContain('tools:tools-next')
+    fireEvent(panel, new Event('cancel', { cancelable: true }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Native child' })).not.toBeInTheDocument())
+    expect(root).toHaveFocus()
+    expect(history.location.hash).toBe('#keep=anchor')
+    await act(async () => { history.back() })
+    expect(await screen.findByRole('dialog', { name: 'Native child' })).toBeVisible()
+    await act(async () => { history.forward() })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Native child' })).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Return to draft' }))
+    expect(history.location.hash).toBe('#keep=anchor')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Native child, Codex, Running' })).not.toBeInTheDocument())
+  }, 15_000)
   it('switches before/with/after-repeat Runs without changing the draft or its owner', async () => {
     const user = userEvent.setup(), key = nextDraftKey(fixture.mock.workspaceId, fixture.after.workflowId)
     const { router } = await mount(href(fixture.runs.before.scope))

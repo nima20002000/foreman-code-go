@@ -140,6 +140,7 @@ import { AgentChatService, type AgentChatManagerFactory } from './modules/conver
 import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
+import { productionSubagentControls } from './modules/subagents/productionControls.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { FileCompatibilityCache } from './modules/harnesses/compatibility/cache.js'
 import { scopedCompatibilityProbe } from './modules/harnesses/compatibility/scopedProbe.js'
@@ -1027,7 +1028,14 @@ export function buildProductionApp(
     ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
     workerExecution,
-    runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
+    runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction, async (executionId, session, cursor, signal) => {
+      const owned = managers.residentForRead(executionId)
+      if (!owned?.manager.subagentHistory || owned.context.harness !== session.harness) throw new DomainError('SUBAGENT_HISTORY_UNAVAILABLE', 'The original admitted parent history owner is unavailable.', 409)
+      owned.assertCurrent()
+      const page = await owned.manager.subagentHistory(session, cursor, signal)
+      owned.assertCurrent()
+      return page
+    }, productionSubagentControls(managers)),
     commands,
     interactions: new OperatorInteractionService(interactions),
     // Reads and lifecycle mutations share the same canonical V3 journal.
@@ -1191,6 +1199,8 @@ export function buildProductionApp(
       await appRoutes.refresh()
       assertOpen()
       await harnessSettings.mcp.recover()
+      assertOpen()
+      await operatorServices.runs.recoverSubagentCommands()
       assertOpen()
       await harnessSettings.plugins.recover()
       assertOpen()

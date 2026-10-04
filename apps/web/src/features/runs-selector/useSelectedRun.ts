@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import { defaultParseSearch, defaultStringifySearch, useRouter } from '@tanstack/react-router'
 import { createRunSelectionSource } from './selectionGeneration'
-import { readRunSelection, searchForSelectedRun } from './search'
+import { readRunSelection, searchForSelectedRun, clearSelectedSubagentHash } from './search'
 import type { RunsSelectorScope } from './types'
 
 /** URL-only identity. No effect selects the newest Run and no local-storage fallback exists. */
@@ -27,7 +27,9 @@ export function useSelectedRun({ workspaceId, workflowId }: RunsSelectorScope) {
     // href avoids tying this standalone lane to the app's registered search type
     // before the documented route mount has extended that type.
     const query = (router.options.stringifySearch ?? defaultStringifySearch)(search)
-    return router.navigate({ href: `/workspaces/${encodeURIComponent(workspaceId)}${query}${history.hash}`,
+    const hash = source.getSnapshot().identity.runId === runId
+      ? history.hash : clearSelectedSubagentHash(history.hash)
+    return router.navigate({ href: `/workspaces/${encodeURIComponent(workspaceId)}${query}${hash}`,
       resetScroll: false, replace: false })
   }, [router, source, workspaceId, workflowId])
   return { ...snapshot, capture, isCurrent: source.isCurrent, selectRun }

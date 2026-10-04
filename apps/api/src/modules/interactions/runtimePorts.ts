@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { randomUUID } from 'node:crypto'
 
 import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
@@ -52,7 +53,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
   private disposal: Promise<void> | undefined
   private readonly entries = new Map<string, {
     context: NativeManagerResolutionContext
-    admission: { owner: RunOwnership | undefined }
+    admission: { owner: RunOwnership | undefined; generation: string }
     manager: NativeHarnessSessionManager
     lifecycle: NativeManagerLifecycle
     resolved: ResolvedNativeSessionManager
@@ -79,6 +80,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         if (existing.admission.owner && existing.admission.owner.runId !== owner.runId) {
           throw new Error('A durable execution cannot borrow another Run owner.')
         }
+        if (existing.admission.owner !== owner) existing.admission.generation = randomUUID()
         existing.admission.owner = owner
       }
       return existing.resolved
@@ -86,7 +88,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     // Pin plain configuration before passing it to the side-effect-free allocator.
     context = structuredClone(context)
     owner?.assertOwned()
-    const admission = { owner }
+    const admission = { owner, generation: randomUUID() }
     const manager = this.create(context, () => {
       const current = this.entries.get(context.executionId)
       return !this.disposed && current?.admission === admission && current.lifecycle !== 'failed'
@@ -95,7 +97,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')
     const entry: {
       context: NativeManagerResolutionContext
-      admission: { owner: RunOwnership | undefined }
+      admission: { owner: RunOwnership | undefined; generation: string }
       manager: NativeHarnessSessionManager
       lifecycle: NativeManagerLifecycle
       resolved: ResolvedNativeSessionManager
@@ -127,6 +129,22 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     return entry.resolved
   }
 
+  /** Read-only descendant recovery never allocates or starts a manager. The original Run owner must still be current. */
+  residentForRead(executionId: string) {
+    const entry = this.entries.get(executionId)
+    if (!entry || this.disposed || entry.lifecycle !== 'resident' || !entry.admission.owner) return undefined
+    const owner = entry.admission.owner
+    if (entry.context.runId !== owner.runId) return undefined
+    const generation = entry.admission.generation
+    const assertCurrent = () => {
+      if (this.disposed || this.entries.get(executionId) !== entry || entry.lifecycle !== 'resident'
+        || entry.admission.owner !== owner || entry.admission.generation !== generation) throw new Error('Original native history ownership changed.')
+      owner.assertOwned()
+    }
+    assertCurrent()
+    return { manager: entry.manager, context: structuredClone(entry.context), generation, assertCurrent }
+  }
+
   release(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state: 'released' | 'failed' = 'released'): void {
     const current = this.entries.get(context.executionId)
     if (current && current.context.agentId === context.agentId && (!manager || current.manager === manager)) {
@@ -142,6 +160,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     if (this.disposed || !entry || entry.manager !== manager || entry.context.runId !== owner.runId) {
       throw new Error('The existing native manager does not belong to this Run owner.')
     }
+    if (entry.admission.owner !== owner) entry.admission.generation = randomUUID()
     entry.admission.owner = owner
   }
 

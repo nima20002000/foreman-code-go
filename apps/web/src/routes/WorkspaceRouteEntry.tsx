@@ -13,6 +13,7 @@ import { queryKeys, useManagedWorkflowQuery, useWorkspaceDetailsQuery } from '..
 import { WorkspaceSelection } from './WorkspaceRoute'
 import { RunsSelectorSearchSchema, withoutRunsSelectorSearch,
   resolveRunsSelectorBoardLocation as resolveWorkflowBoardLocation } from '../features/runs-selector'
+import { clearSelectedSubagentHash } from '../features/runs-selector/search'
 import { UnsavedChangesContext, type EditorRegistration, type LeaveTarget } from '../shared/ui/unsavedChanges'
 
 function cacheWorkspaceProjection(client: ReturnType<typeof useQueryClient>, workspaceId: string, details: CurrentWorkspaceDetails) {
@@ -85,9 +86,10 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
     if (!workflowId) return
     if (scope && (scope.workspaceId !== workspaceId || scope.workflowId !== workflowId)) throw new Error('Run selection belongs to a different board.')
     // Explicit legacy Run/Current actions replace, rather than combine, history pins.
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true,
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId },
+      hash: (previous) => run?.runId === scope?.runId ? previous ?? '' : clearSelectedSubagentHash(previous ?? ''),
       search: (previous) => boardSearchForRun(withoutRunsSelectorSearch(previous), workflowId, scope) })
-  }, [workflowId, workspaceId, navigate])
+  }, [workflowId, workspaceId, navigate, run?.runId])
   const selectInspection = useCallback((inspection: WorkspaceBoardInspection) => {
     if (!workflowId || !run) return
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true, search: (previous) => {

@@ -5,6 +5,7 @@ import type { RunSelection } from './selectionGeneration'
 
 /** Deliberately NOT `runId`: that frozen Board field requires version/semantics pins. */
 export const SELECTED_RUN_PARAM = 'selectedRunId'
+export const SELECTED_SUBAGENT_FRAGMENT_PARAM = 'selectedSubagentId'
 const runIdSchema = RunBoardSnapshotGetInputSchema.shape.runId
 export const RunsSelectorSearchSchema = WorkspaceBoardSearchSchema.safeExtend({
   selectedRunId: runIdSchema.optional(),
@@ -59,4 +60,12 @@ export function searchForSelectedRun(
     'runRelationshipId', 'runExchangeKey', 'activityKind', 'activityAgentId', SELECTED_RUN_PARAM]) delete next[key]
   if (runId !== null) next[SELECTED_RUN_PARAM] = runIdSchema.parse(runId)
   return next
+}
+
+export function clearSelectedSubagentHash(hash: string): string {
+  const prefix = hash.startsWith('#') ? '#' : ''
+  const fragment = new URLSearchParams(hash.replace(/^#/, ''))
+  if (!fragment.has(SELECTED_SUBAGENT_FRAGMENT_PARAM)) return hash
+  fragment.delete(SELECTED_SUBAGENT_FRAGMENT_PARAM)
+  return fragment.size ? `${prefix}${fragment}` : ''
 }

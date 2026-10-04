@@ -19,9 +19,9 @@ export interface ClaudeCumulativeModelUsage {
 }
 export type ClaudeDecodedChange =
   | { kind: 'session'; model?: string }
-  | { kind: 'text'; itemId: string; operation: 'append' | 'replace'; text: string; final: boolean }
+  | { kind: 'text'; itemId: string; role?: 'user' | 'assistant'; truncation?: { truncated: boolean; originalBytes: number }; operation: 'append' | 'replace'; text: string; final: boolean }
   | { kind: 'tool'; itemId: string; name?: string; input?: unknown; inputJsonDelta?: string; output?: unknown; status: 'running' | 'completed' | 'failed'; provisional: boolean }
-  | { kind: 'task'; taskId: string; status: 'running' | 'completed' | 'failed' | 'canceled' | 'unknown'; background?: boolean; summary?: string }
+  | { kind: 'task'; taskId: string; status: 'running' | 'completed' | 'failed' | 'canceled' | 'unknown'; taskType?: string; agentId?: string; description?: string; depth?: number; background?: boolean; summary?: string }
   | { kind: 'result'; outcome: 'succeeded' | 'failed' | 'unknown'; subtype: string; text?: string; resultIndex?: number; cumulativeCostUsd?: number
       cumulativeModelUsage?: Record<string, ClaudeCumulativeModelUsage>; terminalReason?: string; deferredToolUse?: boolean }
   | { kind: 'compaction' }
@@ -114,6 +114,10 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
           const retainedStatus = frame.subtype === 'task_updated' && value === undefined ? prior ?? status : status
           tasks.set(taskId, retainedStatus)
           return [emit({ kind: 'task', taskId, status: retainedStatus,
+            ...(string(frame.task_type) ? { taskType: frame.task_type as string } : {}),
+            ...(string(frame.agent_id) ? { agentId: frame.agent_id as string } : {}),
+            ...(string(frame.description) ? { description: (frame.description as string).slice(0, 512) } : {}),
+            ...(count(frame.depth) !== undefined ? { depth: frame.depth as number } : {}),
             ...(typeof frame.is_backgrounded === 'boolean' ? { background: frame.is_backgrounded } : typeof patch.is_backgrounded === 'boolean' ? { background: patch.is_backgrounded } : {}),
             ...(string(frame.summary) ? { summary: (frame.summary as string).slice(0, 24000) } : {}) },
           { ...(string(frame.tool_use_id) ? { toolUseId: frame.tool_use_id as string } : {}) })]
@@ -183,19 +187,21 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
           const block = candidates[0]
           if (block) block.canonical = true
           const itemId = block?.itemId ?? (type === 'tool_use' && toolUseId ? `claude:tool:${toolUseId}` : `claude:${eventId}:${offset}`)
-          const extra = { messageId, ...(block ? { contentIndex: block.index } : {}), ...(toolUseId ? { toolUseId } : {}) }
-          if (type === 'text' && typeof content.text === 'string') return content.text.length > 24000
+          const extra = { messageId, ...(block ? { contentIndex: block.index } : base.parentToolUseId ? { contentIndex: offset } : {}), ...(toolUseId ? { toolUseId } : {}) }
+          if (type === 'text' && typeof content.text === 'string') return content.text.length > 24000 && !base.parentToolUseId
             ? diagnostic({ ...base, ...extra }, 'CLAUDE_TEXT_LIMIT')
-            : [emit({ kind: 'text', itemId, operation: 'replace', text: content.text, final: frame.aborted !== true }, extra)]
+            : [emit({ kind: 'text', itemId, operation: 'replace', text: content.text.slice(0, 24000), final: frame.aborted !== true,
+              ...(base.parentToolUseId ? { truncation: { truncated: content.text.length > 24000, originalBytes: Buffer.byteLength(content.text) } } : {}) }, extra)]
           if (type === 'tool_use' && toolUseId) return [emit({ kind: 'tool', itemId, ...(string(content.name) ? { name: content.name as string } : {}), input: content.input, status: 'running', provisional: false }, extra)]
           return ['thinking', 'redacted_thinking'].includes(type) ? [] : diagnostic({ ...base, ...extra }, 'CLAUDE_BLOCK_VARIANT')
         })
       }
       if (frame.type === 'user') {
         const message = object(frame.message)
-        return (Array.isArray(message.content) ? message.content : []).flatMap((value): ClaudeDecodedEvent[] => {
+        return (Array.isArray(message.content) ? message.content : typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : []).flatMap((value, index): ClaudeDecodedEvent[] => {
           const content = object(value)
           const toolUseId = string(content.tool_use_id)
+          if (base.parentToolUseId && eventId && content.type === 'text' && typeof content.text === 'string') return [emit({ kind: 'text', role: 'user', itemId: `claude:${eventId}:${index}`, operation: 'replace', text: content.text.slice(0, 24000), final: true, truncation: { truncated: content.text.length > 24000, originalBytes: Buffer.byteLength(content.text) } }, { messageId: string(message.id) ?? eventId, contentIndex: index })]
           if (content.type !== 'tool_result' || !toolUseId) return []
           return [emit({ kind: 'tool', itemId: `claude:tool:${toolUseId}`, output: content.content,
             ...(toolNames.get(toolUseId) ? { name: toolNames.get(toolUseId)! } : {}),

@@ -57,6 +57,8 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
     },
     getSessionInfo: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionInfo(id, options) },
     getSessionMessages: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionMessages(id, options) },
+    listSubagents: async (id, options) => { assertHelperProfile(profilePath); return sdk.listSubagents(id, options) },
+    getSubagentMessages: async (id, agentId, options) => { assertHelperProfile(profilePath); return sdk.getSubagentMessages(id, agentId, options) },
     forkSession: async (id, options) => { assertHelperProfile(profilePath); return sdk.forkSession(id, options) },
   }
 }

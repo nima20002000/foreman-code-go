@@ -1,3 +1,6 @@
+import type { SubagentNativeRecoverySource, SubagentControlResolver } from '../subagents/types.js'
+import { recoverSubagentCommands } from '../subagents/recovery.js'
+import { RunSubagentService } from '../subagents/service.js'
 import { RunActivitySchema } from '@graphql/contracts'
 import { RunStopInputSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
@@ -24,6 +27,7 @@ import { createScheduleDispatcher } from '../schedules/runtime.js'
 import type { WorkflowScheduleDispatcher } from '../schedules/dispatcher.js'
 
 export class RunManagementService {
+  readonly subagents: RunSubagentService
   readonly history: RunHistoryService
   private scheduleDispatcher: WorkflowScheduleDispatcher | undefined
   readonly inspection: RunInspectionService
@@ -36,12 +40,17 @@ export class RunManagementService {
     private readonly engine: LangGraphWorkflowEngine,
     private readonly locations: WorkspaceLocationService,
     private readonly currentProduction?: CurrentRunProductionBinding,
+    subagentRecovery?: SubagentNativeRecoverySource,
+    subagentControls?: SubagentControlResolver,
   ) {
+    this.subagents = new RunSubagentService(pool, subagentControls, subagentRecovery)
     this.history = new RunHistoryService(pool)
     this.inspection = new RunInspectionService(pool)
     this.activities = new RunActivitiesService(pool)
     this.handoffs = new RunHandoffReadService(pool)
   }
+
+  recoverSubagentCommands(): Promise<number> { return recoverSubagentCommands(this.pool) }
 
   /** Internal API lifecycle, not a remotely callable Start endpoint. */
   startScheduleDispatcher(reportError: (error: unknown) => void): void {
@@ -51,6 +60,7 @@ export class RunManagementService {
   }
   async stopScheduleDispatcher(): Promise<void> {
     await this.scheduleDispatcher?.stop()
+    await this.subagents.close()
   }
 
   /** Report the actual schedule composition separately from native readiness. */

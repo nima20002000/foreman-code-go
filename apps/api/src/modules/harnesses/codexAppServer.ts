@@ -1,3 +1,4 @@
+import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
@@ -1068,6 +1069,62 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         nativeRequestId: entry.pending.turn.nativeRequestId!, state: entry.delivery,
         ...(entry.selectedOptionId ? { selectedOptionId: entry.selectedOptionId } : {}),
       })),
+    })
+  }
+
+  async subagentHistory(session: NativeSessionReference, cursor?: string, signal?: AbortSignal) {
+    return this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      const transport = runtime.transport, generation = runtime.generation
+      const current = () => {
+        signal?.throwIfAborted()
+        if (runtime.closed || runtime.disposed || runtime.transport !== transport || runtime.generation !== generation || transport.isConnected?.() !== true) {
+          throw new DomainError('SUBAGENT_HISTORY_OWNER_STALE', 'The exact parent history owner is not connected.', 409)
+        }
+      }
+      current()
+      const metadata = (value: unknown): JsonObject => isObject(value) ? value : {}
+      const page = childHistoryCursor(session.nativeSessionId, cursor)
+      if (page.target !== session.nativeSessionId) {
+        let target = page.target
+        const visited = new Set<string>()
+        while (target !== session.nativeSessionId) {
+          if (visited.has(target) || visited.size >= 32) throw new DomainError('SUBAGENT_ANCESTRY_INVALID', 'Native child ancestry does not reach the admitted parent.', 409)
+          visited.add(target)
+          const response = object(await transport.request('thread/read', { threadId: target, includeTurns: false }, signal))
+          current()
+          const thread = object(response.thread)
+          const spawn = metadata(metadata(metadata(thread.source).subAgent).thread_spawn)
+          if (thread.id !== target || !text(thread.parentThreadId) || spawn.parent_thread_id !== thread.parentThreadId || thread.ephemeral === true) {
+            throw new DomainError('SUBAGENT_ANCESTRY_INVALID', 'Native history did not prove the exact durable child ancestry.', 409)
+          }
+          target = thread.parentThreadId as string
+        }
+      }
+      const response = object(await transport.request('thread/items/list', { threadId: page.target, cursor: page.cursor, limit: 50, sortDirection: 'asc' }, signal))
+      current()
+      if (!Array.isArray(response.data) || response.data.length > 50) throw new DomainError('SUBAGENT_HISTORY_INVALID', 'Native child item page is not bounded.', 409)
+      const events: NativeHarnessEvent[] = []
+      for (const raw of response.data) {
+        const entry = object(raw), item = object(entry.item)
+        if (!text(item.id) || !text(entry.turnId)) continue
+        const root = page.target === session.nativeSessionId
+        if (root && !['subAgentActivity', 'collabAgentToolCall'].includes(String(item.type))) continue
+        if (!root && !['subAgentActivity', 'collabAgentToolCall', 'agentMessage', 'userMessage', 'commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange'].includes(String(item.type))) continue
+        const params = { threadId: page.target, turnId: entry.turnId, item }
+        events.push(childHistoryEvent(root ? 'item.completed' : 'native.unlinked_notification', root ? params : { threadId: page.target, method: 'item/completed', params }))
+      }
+      const rootHistory = await this.history(session)
+      const childIds = [...new Set([...(page.children ?? []), ...[...rootHistory.events, ...events].flatMap(event => {
+        const payload = event.type === 'native.unlinked_notification' ? metadata(event.payload.params) : event.payload
+        const item = metadata(payload.item)
+        return item.type === 'subAgentActivity' && text(item.agentThreadId) ? [item.agentThreadId as string]
+          : item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent' && Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((id): id is string => Boolean(text(id))) : []
+      })])].filter(id => id !== session.nativeSessionId).sort()
+      if (response.nextCursor != null && !text(response.nextCursor)) throw new DomainError('SUBAGENT_HISTORY_INVALID', 'Native page cursor is invalid.', 409)
+      const nextTarget = page.target === session.nativeSessionId ? childIds[0] : childIds.find(id => id > page.target)
+      return { events, nextCursor: response.nextCursor ? encodeChildHistoryCursor({ ...page, children: childIds, cursor: response.nextCursor as string })
+        : nextTarget ? encodeChildHistoryCursor({ root: page.root, target: nextTarget, children: childIds, cursor: null }) : null }
     })
   }
 

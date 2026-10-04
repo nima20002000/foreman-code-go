@@ -343,6 +343,9 @@ export function createCurrentBoardMock(options: {
         const runId = match[1]!, tail = match[2]!, detail = runs.get(runId)
         if (!detail) return failure('NOT_FOUND', 'Run not found', 404)
         if (!tail && method === 'GET') return HttpResponse.json(detail)
+        if (tail === '/subagents' && method === 'GET') {
+          return HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })
+        }
         if (tail.includes('/graph') && tail.endsWith('/current') && method === 'GET') return HttpResponse.json(currents.get(runId))
         if (method === 'GET' && path.startsWith(prefix)) {
           const inspected = runInspectionFixtureResponse(url, tail, detail, versions.get(detail.run.workflowVersionId), inspection.get(runId) ?? [])

@@ -58,6 +58,7 @@ const RunToolCallSchema = z.object({
   jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.enum([
     'run_start', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1',
+    'run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1', 'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1',
   ]) }).passthrough(),
 }).passthrough()
 

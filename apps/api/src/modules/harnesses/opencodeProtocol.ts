@@ -126,6 +126,7 @@ export function credentialReferences(source: JsonObject): Readonly<Record<string
 export function eventSessionId(event: OpenCodeEvent): string | undefined {
   const props = object(event.properties)
   const id = props.sessionID ?? object(props.info).sessionID ?? object(props.part).sessionID
+    ?? (['session.created', 'session.updated'].includes(event.type) ? object(props.info).id : undefined)
   return typeof id === 'string' ? id : undefined
 }
 

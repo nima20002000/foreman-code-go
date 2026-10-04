@@ -1,3 +1,4 @@
+import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
 import { createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, type OpenCodeClientFactory } from './opencodeClient.js'
@@ -46,6 +47,9 @@ import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 import { harnessProfile } from './qualification/profiles.js'
+import type { RunSubagent, RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import type { SubagentControlLease } from '../subagents/types.js'
+import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -149,6 +153,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private healthVersion: string | undefined
   private readonly knownSecrets = new Set<string>()
   private readonly responseReceipts = new Map<string, NativeResponseDeliveryEvidence>()
+  private readonly childCommandAttempts = new Set<string>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.chatFiles && options.appMcpAccess !== 'none') {
@@ -885,6 +890,128 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       // A general history page has no requested turn identity. Do not invent a terminal result.
     }
+  }
+
+  subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
+    // Workflow allocations own one root. Never guess among shared sessions or
+    // advertise active-turn steering for OpenCode's session-wide prompt API.
+    if (child.provider !== 'opencode' || child.nativeMode !== 'opencode-task' || this.sessions.size !== 1
+      || child.parentAgentId !== this.options.ownerAgentId || child.profile.providerVersion !== this.healthVersion
+      || !['pending', 'running', 'waiting', 'completed'].includes(child.status) || !child.native.childSessionId) return undefined
+    const [root, state] = [...this.sessions.entries()][0]!
+    const target = child.native.childSessionId, generation = this.generation
+    const idle = ['waiting', 'completed'].includes(child.status)
+    if (target === root) return undefined
+    const signal = this.signal(AbortSignal.timeout(10000))
+    const current = () => {
+      assertOwner(); this.lifetime.signal.throwIfAborted()
+      if (this.sessions.get(root) !== state || this.generation !== generation || this.readyGeneration !== generation) {
+        throw new OpenCodeNativeDeliveryError('SUBAGENT_OWNER_STALE', 'The exact child control owner changed.', 'uncertain')
+      }
+    }
+    const ancestry = async () => {
+      let id = target
+      const visited = new Set<string>()
+      while (id !== root && visited.size < 32 && !visited.has(id)) {
+        current(); visited.add(id)
+        const info = object(await this.json(`/session/${encodeURIComponent(id)}`, state.directory, signal))
+        current()
+        if (info.id !== id || info.directory !== state.directory || typeof info.parentID !== 'string'
+          || id === target && info.parentID !== child.native.parentSessionId) break
+        id = info.parentID
+      }
+      if (id !== root) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'The exact admitted parent does not own this child.')
+    }
+    const checkReceipt = (receipt: RunSubagentCommandReceipt) => {
+      current()
+      if (receipt.subagentId !== child.id || receipt.runId !== child.runId || receipt.workspaceId !== child.workspaceId
+        || receipt.nativeTurnId !== null || receipt.operation !== 'run_subagent_input_v1') {
+        throw new HarnessExecutionError('SUBAGENT_COMMAND_IDENTITY_INVALID', 'The receipt does not address this idle child.')
+      }
+    }
+    return {
+      generation: `${state.connectionId}:${generation}`, nativeTurnId: idle ? null : child.native.currentTurnId ?? null,
+      matches: other => {
+        try { current(); return other.id === child.id && other.parentExecutionId === child.parentExecutionId
+          && other.parentAttemptKey === child.parentAttemptKey && isDeepStrictEqual(other.native, child.native)
+          && isDeepStrictEqual(other.profile, child.profile) && ['pending', 'running', 'waiting', 'completed'].includes(other.status) }
+        catch { return false }
+      },
+      assertCurrent: current,
+      ...(idle ? { sendInput: (receipt: RunSubagentCommandReceipt, text: string) => this.exclusive(async () => {
+        try {
+          checkReceipt(receipt); signal.throwIfAborted()
+          await ancestry()
+          if (await this.sessionStatus(target, state.directory, signal) !== 'idle') throw new SubagentDispatchRejectedError()
+          current()
+        } catch { throw new SubagentDispatchRejectedError() }
+        if (this.childCommandAttempts.has(receipt.id) || this.childCommandAttempts.size >= 4096) {
+          throw new HarnessExecutionError('SUBAGENT_COMMAND_NOT_REPLAYABLE', 'The command cannot be dispatched again.')
+        }
+        this.childCommandAttempts.add(receipt.id)
+        // Preserve the child's native agent/model/system defaults. Do not
+        // overwrite them with the parent's configuration or adopt its turn.
+        try {
+          await this.mutate(withDirectory(`/session/${encodeURIComponent(target)}/prompt_async`, state.directory), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ messageID: receipt.nativeCorrelationId, parts: [{ type: 'text', text }] }),
+          }, signal)
+        } catch (error) {
+          if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') throw new SubagentDispatchRejectedError()
+          throw error
+        }
+        current()
+      }) } : {}),
+      reconcile: async receipt => {
+        checkReceipt(receipt); signal.throwIfAborted(); await ancestry()
+        const message = await this.message(target, receipt.nativeCorrelationId, state.directory, signal)
+        current()
+        return message?.info.role === 'user' ? 'acknowledged' : 'uncertain'
+      },
+    }
+  }
+
+  async subagentHistory(session: NativeSessionReference, cursor?: string, signal?: AbortSignal) {
+    const combined = this.signal(signal)
+    await this.exclusive(() => this.ready(combined))
+    const state = this.requireSession(session), generation = this.generation
+    const current = () => {
+      combined.throwIfAborted()
+      if (this.generation !== generation || this.sessions.get(session.nativeSessionId) !== state) throw new OpenCodeNativeDeliveryError('SUBAGENT_HISTORY_OWNER_STALE', 'The exact native history owner changed.', 'uncertain')
+    }
+    const page = childHistoryCursor(session.nativeSessionId, cursor)
+    const queue = [session.nativeSessionId], children = new Map<string, JsonObject>()
+    const events: NativeHarnessEvent[] = []
+    for (let index = 0; index < queue.length; index++) {
+      if (queue.length > 32) throw new HarnessExecutionError('SUBAGENT_HISTORY_LIMIT', 'The bounded native descendant tree is full.')
+      const parent = queue[index]!
+      const response = await this.json(`/session/${encodeURIComponent(parent)}/children`, state.directory, combined)
+      current()
+      if (!Array.isArray(response) || response.length > 32) throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Invalid bounded child roster.')
+      for (const raw of response) {
+        const child = object(raw)
+        if (typeof child.id !== 'string' || child.parentID !== parent || child.directory !== state.directory || child.id === parent || children.has(child.id)) {
+          throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'Child roster does not prove exact ancestry and directory.')
+        }
+        children.set(child.id, child); queue.push(child.id)
+        events.push(childHistoryEvent('session.created', { info: child }))
+      }
+    }
+    const ids = [...children.keys()].sort()
+    const target = page.target === session.nativeSessionId ? ids[0] : page.target
+    if (!target) return { events, nextCursor: null }
+    if (!children.has(target) || !await this.ownedSession(session.nativeSessionId, target, state, combined)) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'Requested child is not owned by its exact parent.')
+    current()
+    const messages = await this.messagePage(target, state.directory, page.cursor ?? undefined, combined)
+    current()
+    for (const event of normalizedHistory(messages.messages, false)) {
+      const id = eventSessionId({ type: event.type, properties: event.payload })
+      if (id !== target) throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history returned another native session.')
+      events.push(childHistoryEvent(event.type, { ...event.payload, subagentNativeId: target }, event.occurredAt))
+    }
+    const next = ids.find(id => id > target)
+    return { events, nextCursor: messages.nextCursor ? encodeChildHistoryCursor({ root: page.root, target, cursor: messages.nextCursor })
+      : next ? encodeChildHistoryCursor({ root: page.root, target: next, cursor: null }) : null }
   }
 
   async reconcileResponse(

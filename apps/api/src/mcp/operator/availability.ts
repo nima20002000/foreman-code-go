@@ -163,6 +163,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
   if (['agent_create','agent_update','agent_clone','agent_configuration_restore'].includes(name)) result.push({action:'agents:read',scope:name==='agent_clone'?'resource':'workspace'})
   if (['run_resume','run_retry'].includes(name)) result.push({action:'runs:read',scope:'run'})
+  if (name.startsWith('run_subagent')) {
+    result[0]!.scope = 'run'
+    if (name === 'run_subagent_input_v1' || name === 'run_subagent_interrupt_v1') result.push({ action: 'runs:read', scope: 'run' })
+  }
   if (name === 'run_handoffs_get_v1') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_update') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_fire') result.push({action:'runs:start',scope:'workflow'},{action:'workspace_locations:read',scope:'workspace'})
@@ -207,6 +211,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name.startsWith('device_connection_') && !service.trustedConnections) return false
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
+  if (name.startsWith('run_subagent') && !service.runs?.subagents) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false
   if ((name === 'harness_qualifications_list' || name === 'harness_qualification_run') && !service.harnessQualifications) return false

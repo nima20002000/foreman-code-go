@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, type EdgeProps, type NodeProps } from '@xyflow/react'
 import { AgentNodeView } from '../../shared/ui/nocturne/Canvas'
 import { SignalEdgeShape } from '../graph/SignalEdgeShape'
+import { RunSubagentsOverlay } from '../run-subagents/RunSubagentsOverlay'
 import { savedEdgeCurve } from './curve'
 import { projectRunBoard, READ_ONLY_FLOW_PROPS, type AvailableRunBoardSnapshot, type SavedBoardEdge, type SavedBoardNode } from './model'
 import '@xyflow/react/dist/style.css'
@@ -40,13 +41,16 @@ export function RunBoardCanvas({ snapshot }: { snapshot: AvailableRunBoardSnapsh
   return <div className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
     // History keystrokes must not bubble into an ancestor's authoring shortcuts.
     event.stopPropagation()
-    if (event.key === 'Delete' || event.key === 'Backspace' || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's')) event.preventDefault()
+    const editing = event.target instanceof HTMLElement && event.target.closest('input,textarea,[contenteditable="true"]')
+    if ((!editing && (event.key === 'Delete' || event.key === 'Backspace'))
+      || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's')) event.preventDefault()
   }}>
     <ReactFlowProvider>
       <ReactFlow<SavedBoardNode, SavedBoardEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         {...READ_ONLY_FLOW_PROPS} fitView fitViewOptions={fitViewOptions} minZoom={0.02} maxZoom={2}
         proOptions={proOptions} preventScrolling={false} aria-label="Saved Run graph"
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Saved agent, read only.', 'edge.a11yDescription.default': 'Saved connection, read only.' }}>
+        <RunSubagentsOverlay scope={snapshot} nodes={snapshot.nodes} />
         <Background color="var(--border)" gap={24} size={1} />
         <Controls showInteractive={false} fitViewOptions={fitViewOptions} aria-label="Run view controls" />
       </ReactFlow>
