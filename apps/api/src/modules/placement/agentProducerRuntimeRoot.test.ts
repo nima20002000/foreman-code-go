@@ -65,7 +65,7 @@ async function fixture() {
   const installations = new HarnessInstallationRegistry(instances)
   installations.refresh([{ hostRef, harnessInstallationId, installationFingerprint: digest, driverId: 'codex', driverRevision: '1',
     protocolRevision: 'codex-native-adapter-v1', environmentGeneration: '1', connectionGeneration: '1', observedVersion: '0.156.1',
-    installed: true, authenticated: true, compatible: true, qualified: true,
+    installed: true, authenticated: null, compatible: null, qualified: true,
     launcher: { requested: '/installed/codex', resolvedLauncher: '/installed/codex', fingerprint: digest,
       payloadFingerprints: [{ path: '/installed/codex', fingerprint: digest }], status: 'installed', interpreter: null, diagnostics: [],
       environment: { generation: '1', provenance: 'worker', cwd: project, path: '/installed' }, checkedAt: f.createdAt } }])

@@ -1,4 +1,6 @@
-import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema } from '@graphql/contracts/harness-registry'
+import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema,
+  PinnedHarnessSelectionSchema, type HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+import { z } from 'zod'
 import { HarnessQualificationSchema } from '@graphql/contracts/harness-qualification'
 import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -9,6 +11,29 @@ import { QUALIFICATION_TARGET_PROFILE } from '../harnesses/qualification/profile
 import type { CompatibilityHarness } from '@graphql/contracts'
 import { placementDigest } from './binding.js'
 const unavailable = (): never => { throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Exact persisted host profile and native qualification are required.', 409) }
+const QualificationIdentitySchema = z.object({
+  schemaVersion: z.literal(1), selection: PinnedHarnessSelectionSchema,
+  driverRevision: z.string(), protocolRevision: z.string(), suiteRevision: z.string(),
+  environmentGeneration: z.string(), connectionGeneration: z.string(), launcher: z.string().nullable(),
+  payloadFingerprints: z.array(z.object({ path: z.string(), fingerprint: z.string() }).strict()),
+}).strict()
+
+function measuredInstallationMatches(evidence: unknown, installation: HostHarnessInstallationDto, suiteRevision: string) {
+  const parsed = z.object({ qualificationIdentity: QualificationIdentitySchema }).passthrough().safeParse(evidence)
+  if (!parsed.success) return false
+  const identity = parsed.data.qualificationIdentity
+  const selection = identity.selection
+  return selection.driverId === installation.driverId
+    && selection.harnessInstallationId === installation.harnessInstallationId
+    && selection.installationFingerprint === installation.installationFingerprint
+    && sameWorkflowValue(selection.hostRef, installation.hostRef)
+    && sameWorkflowValue(identity, {
+      schemaVersion: 1, selection, driverRevision: installation.driverRevision,
+      protocolRevision: installation.protocolRevision, suiteRevision,
+      environmentGeneration: installation.environmentGeneration, connectionGeneration: installation.connectionGeneration,
+      launcher: installation.launcher.resolvedLauncher, payloadFingerprints: installation.launcher.payloadFingerprints ?? [],
+    })
+}
 /** Exact immutable instance revision and binary proof; never today's Agent head
  * or a baseline/ready boolean. Registry provides the current host file identity. */
 export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: Pick<AcceptedNodePlacement, 'payload' | 'hostRef'>,
@@ -36,11 +61,22 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
     || installation.installationFingerprint !== payload.installationFingerprint || installation.driverId !== payload.driverId
     || installation.driverRevision !== payload.driverRevision || installation.protocolRevision !== payload.protocolRevision
-    || !installation.installed || !installation.observedVersion) unavailable()
+    || !installation.installed) unavailable()
   if (payload.driverId !== 'codex' && payload.driverId !== 'opencode') unavailable()
   const harness = payload.driverId as CompatibilityHarness
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint
   if (!binarySha256 || !suites[harness]) unavailable()
+  if (!installation.observedVersion) {
+    if (installation.hostRef.kind !== 'main') unavailable()
+    // Passive discovery does not run --version. Use the completed native measurement
+    // only when its full installation and live context still match.
+    const measured = await sql.query<{ version: string; evidence: unknown }>(`select version,evidence from harness_qualifications
+      where harness=$1 and binary_sha256=$2 and suite_revision=$3 and status='passed' order by checked_at desc limit 20 for share`,
+    [harness, binarySha256, suites[harness]])
+    const matching = measured.rows.filter(row => measuredInstallationMatches(row.evidence, installation, suites[harness]))
+    if (matching.length !== 1) unavailable()
+    installation.observedVersion = matching[0]!.version
+  }
   const rows = await sql.query<Record<string, unknown>>(`select * from harness_qualifications where harness=$1 and version=$2
     and binary_sha256=$3 and suite_revision=$4 and status='passed' order by checked_at desc limit 1 for share`,
     [payload.driverId, installation.observedVersion, binarySha256, suites[harness]])

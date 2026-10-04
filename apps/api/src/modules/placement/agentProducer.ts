@@ -60,7 +60,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         if (!sameWorkflowValue(root.selection, { hostRef: saved!.hostRef, rootPolicyId: saved!.rootPolicyId,
           rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision }) || !sameWorkflowValue(policy.registration, root.registration)) this.conflict()
         const installation = this.installations.list().find(item => item.harnessInstallationId === saved!.harnessInstallationId && sameWorkflowValue(item.hostRef, saved!.hostRef))
-        if (!installation || installation.compatible !== true || installation.authenticated !== true) this.conflict()
+        if (!installation?.installed || !installation.installationFingerprint) this.conflict()
         const selection = this.installations.pin({ instanceId: saved!.instanceId, hostRef: saved!.hostRef,
           harnessInstallationId: saved!.harnessInstallationId, connectionGeneration: installation!.connectionGeneration, environmentGeneration: installation!.environmentGeneration })
         if (selection.instance.instanceRevision !== saved!.instanceRevision || !sameWorkflowValue(selection.instance.configuration, config.harness)
