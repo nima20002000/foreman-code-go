@@ -159,7 +159,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and e
       expect((await f.db.pool.query("select 1 from run_repeat_effects where run_id=$1 and effect_kind='run.complete'",
         [f.run.id])).rowCount).toBe(1)
       const read = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })
-      expect(read.result?.isError).not.toBe(true)
+      expect(read.result?.isError, JSON.stringify(read)).not.toBe(true)
       const persisted = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(read.result))
       expect(persisted.state.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(persisted.state.executions).toHaveLength(9)

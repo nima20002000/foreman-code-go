@@ -33,6 +33,25 @@ async function retainOwner(sql: GraphTransactionSql, owner: RunOwnership): Promi
   })
 }
 
+/** Settled handoff attempts need transport closure, while their checkpoint remains resumable. */
+export async function settleWorkForRestart(owner: RunOwnership): Promise<boolean> {
+  return owner.oneShotConnection().transaction(async (sql) => {
+    const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+    if (!snapshot.version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
+      || !['running', 'waiting'].includes(snapshot.run.executionState)) return false
+    const pending = (await sql.query<{ pending: boolean }>(`select exists(
+      select 1 from harness_executions e where e.run_id=$1 and (
+        e.record->>'state' is distinct from 'completed'
+        or e.record#>>'{result,outcome}'='succeeded' and (not e.accepted or not exists(
+          select 1 from run_work_results x where x.run_id=e.run_id and x.execution_id=e.id
+            and x.activation_id=e.work_activation_id)))) as pending`, [owner.runId])).rows[0]
+    if (pending?.pending !== false) return false
+    await retainOwner(sql, owner)
+    await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'success')
+    return true
+  })
+}
+
 /** Re-enter an unresolved approval BEFORE native observation resumes its budget
  * or touches a resident process. A parallel graph invocation re-runs siblings
  * too; delivery alone does not consume their task-local checkpoint. This is a

@@ -20,6 +20,7 @@ import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 type Fixture = Awaited<ReturnType<typeof br1002OpenCodeRuntime>>
 type Runtime = ReturnType<Fixture['compose']>
 afterEach(() => vi.restoreAllMocks())
+const routingFailures: Array<{ code?: string; message: string }> = []
 
 async function fixture() {
   const definition = makeCurrentWorkflowFixture(randomUUID())
@@ -142,13 +143,26 @@ async function runtimeDetails(f: Fixture, runtime: Runtime): Promise<string> {
   const run = await runtime.runs.get(f.f.run.id)
   const executions = (await f.db.pool.query('select record from harness_executions where run_id=$1',
     [f.f.run.id])).rows.map((row) => row.record)
-  return JSON.stringify({ run, executions })
+  return JSON.stringify({ run, executions, routingFailures })
 }
 
 describe.skipIf(!postgresEnabled)('handoff Worker approval through the designated Orchestrator', () => {
   it.each([false, true])('resumes each business activation with persisted reviewer ownership (restart=%s)', async (restart) => {
     const f = await fixture()
+    routingFailures.length = 0
     let runtime: Runtime = f
+    const returnWork = RepeatRunRepository.prototype.returnWork
+    vi.spyOn(RepeatRunRepository.prototype, 'returnWork').mockImplementation(async function (
+      this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['returnWork']>
+    ) {
+      try {
+        return await returnWork.apply(this, args)
+      } catch (error) {
+        if (error instanceof Error) routingFailures.push({ message: error.message,
+          ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}) })
+        throw error
+      }
+    })
     vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
     const cut = deferred<string>()
     const release = deferred<void>()

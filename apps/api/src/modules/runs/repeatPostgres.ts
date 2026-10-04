@@ -842,6 +842,7 @@ export class RepeatRunRepository {
         recipient: execution, ref, occurrence: occurrence?.occurrence ?? null, entry: occurrence?.input ?? null, predecessors: sources })
       const queued = HarnessExecutionSchema.parse({ ...execution, input: bound.input })
       await context.hooks.assertAdmissionLocked(context.sql, queued, ref)
+      await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version)
       await this.effect(context, 'input.bind', queued.id, { ref, queued, inputDigest: bound.digest, bindings: bound.bindings },
         [{ type: 'repeat.execution.queued', ref, execution: repeatExecutionIdentity(queued), inputDigest: bound.digest }], async () => {
           await context.sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)

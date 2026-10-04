@@ -18,7 +18,7 @@ import { executeRepeatEngineStart } from './repeatStartComposition.js'
 import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
 import { hasWorkDirectionWait, persistWorkDirectionWait,
-  persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
+  persistWorkflowApprovalWait, settleWorkForRestart, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
 import type { PostgresRunRepository } from './postgres.js'
@@ -236,6 +236,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           },
           settleRun: async () => { await this.cleanupOwned(owner) },
           requestCleanup: () => this.runs.requestCleanup(runId, owner),
+          requestRestartCleanup: () => this.requestRestartCleanup(owner),
           finishNative: () => this.nativeExecutions.finishRun(runId),
           finishCleanup: () => this.runs.finishCleanup(runId, false, owner),
         },
@@ -388,7 +389,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // commits. Failed persistence must not authorize a Job abort or close.
       this.restartIntent = Promise.resolve().then(async () => {
         const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
-          if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
+          if (this.activeOwners.get(runId) === owner) await this.requestRestartCleanup(owner)
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
         if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
@@ -418,5 +419,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // when its close receipt or draining was unconfirmed on the previous attempt.
     void attempt.catch(() => { if (this.shutdownTask === attempt) this.shutdownTask = undefined })
     return attempt
+  }
+
+  private async requestRestartCleanup(owner: RunOwnership): Promise<void> {
+    const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
+    if (version.definition.handoffs && await settleWorkForRestart(owner)) return
+    await this.runs.requestCleanup(owner.runId, owner)
   }
 }

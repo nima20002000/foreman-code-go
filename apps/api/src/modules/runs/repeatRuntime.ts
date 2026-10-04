@@ -317,6 +317,7 @@ export interface RepeatRuntimeLifecycle {
   settleRun(stopped: boolean, interrupted: boolean): Promise<void>
   /** These are the existing post-terminal cleanup/finalization paths, not fake ack. */
   requestCleanup(): Promise<void>
+  requestRestartCleanup?(): Promise<void>
   finishNative(): Promise<void>
   finishCleanup(): Promise<void>
 }
@@ -489,7 +490,8 @@ export async function executeRepeatRuntime(input: {
     if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
       // The owning engine closes the original native sessions before releasing
       // ownership. Restart is not a synthetic Stop or terminal business result.
-      await input.lifecycle.requestCleanup()
+      if (input.lifecycle.requestRestartCleanup) await input.lifecycle.requestRestartCleanup()
+      else await input.lifecycle.requestCleanup()
       failed.abort(error)
       await drain(true)
       throw error
