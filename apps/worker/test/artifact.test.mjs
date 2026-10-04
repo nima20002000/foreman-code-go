@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { workerPath } from '../src/harnessPath.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 test('packaged worker help identifies Foreman Code without starting runtime services', { skip: !artifact }, () => {
@@ -18,7 +19,7 @@ test('packaged schema checker accepts the actual pinned Codex export', {
 }, async (t) => {
   const directory = await mkdtemp('/var/tmp/worker-schema-check-');
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const environment = { PATH: '/usr/bin:/bin', HOME: directory, CODEX_HOME: join(directory, 'codex') };
+  const environment = { PATH: workerPath(directory, process.execPath), HOME: directory, CODEX_HOME: join(directory, 'codex') };
   const exported = spawnSync(readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
     ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')],
     { cwd: directory, env: environment, encoding: 'utf8', timeout: 10000 });
@@ -43,7 +44,7 @@ test('packaged rsync writer has separate source/output receipts and keeps diagno
   const invalid = spawnSync(process.execPath, [join(artifact, output.path), '--invalid'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(invalid.status, 1);
   assert.equal(invalid.stdout, '');
-  assert.equal(invalid.stderr.trim(), 'Rsync writer failed; original ownership retained');
+  assert.equal(invalid.stderr.trim(), 'Rsync writer failed: Invalid rsync writer invocation; original ownership retained');
 });
 
 test('built worker factory accepts supplied real registration and rejects placeholder servers', { skip: !artifact }, async () => {
