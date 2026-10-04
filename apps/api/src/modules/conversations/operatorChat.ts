@@ -417,12 +417,15 @@ export class OperatorChatService {
               (accepted) => this.validate(accepted))
           : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
               configuration!.id, false, (accepted) => this.validate(accepted))
-      requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
-      if (begun.replayed) return begun
+      if (begun.replayed) {
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+        return begun
+      }
       const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
       let accepted: OperatorConfigurationVersion
       try {
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
         const saved = await this.repository.configuration(acceptedId)
         if (!saved) throw new Error('Accepted Operator configuration disappeared.')
         accepted = saved

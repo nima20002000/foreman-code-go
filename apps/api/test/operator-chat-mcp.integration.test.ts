@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GetOperatorConversationResponseSchema, OperatorActivityPageSchema,
   CreateOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
   OperatorChatSetupSchema, SendOperatorMessageResponseSchema } from '@graphql/contracts'
@@ -143,6 +143,30 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(result.state.activities?.[0]?.output).toBe('Private tool output')
     expect(await repository.get(conversation.id)).toEqual(before)
     expect(manager.turns).toBe(0)
+
+    const beginTurn = repository.beginTurn.bind(repository)
+    const admission = vi.spyOn(repository, 'beginTurn').mockImplementationOnce(async (...args) => {
+      const begun = await beginTurn(...args)
+      await database.pool.query('update management_principals set grants=$2::jsonb where id=$1', [
+        writer.principal.id, JSON.stringify([{ actions: ['operator_chat:write'], scope: {} }]),
+      ])
+      return begun
+    })
+    try {
+      const revoked = await reader.callTool({ name: 'operator_chat_send', arguments: {
+        conversationId: conversation.id, request: fresh,
+      } })
+      expect(revoked.isError).toBe(true)
+      expect(revoked.structuredContent).toBeUndefined()
+      expect(JSON.stringify(revoked)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify(revoked)).not.toContain('Private tool output')
+      const settled = await repository.get(conversation.id)
+      expect(settled).toMatchObject({ activeRequestId: null, turnState: 'error',
+        lastResult: { outcome: 'failed', error: { code: 'ACCESS_DENIED' } } })
+      expect(manager.turns).toBe(0)
+    } finally {
+      admission.mockRestore()
+    }
   })
 
   it('pages owned messages and activities omitted from snapshots with scoped cursors and denied callers', async () => {
