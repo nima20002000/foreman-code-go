@@ -36,6 +36,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private intent: DispatchIntent
   private session?: NativeSessionReference
   private receipt?: RemoteOperationReceipt
+  private streamHistory: {
+    value: z.infer<typeof HistorySchema>
+    receipt: RemoteOperationReceipt
+    observedAt: number
+  } | undefined
   private prepareAttempted = false
   private detached = false
   constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
@@ -110,20 +115,25 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
       const receipt = await this.status(value.status)
       if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
-      for (const event of value.history.events) {
-        if (event.sequence <= sequence) continue
-        sequence = event.sequence
-        // A caller may refresh history between yields. Use its current original
-        // receipt; the Worker still verifies this exact event in that history.
-        const currentReceipt = this.receipt!
-        if (!submitted && currentReceipt.native?.turnId) {
-          await input.onSubmitted?.(currentReceipt.native.turnId)
-          submitted = true
+      this.streamHistory = { value: value.history, receipt, observedAt: Date.now() }
+      try {
+        for (const event of value.history.events) {
+          if (event.sequence <= sequence) continue
+          sequence = event.sequence
+          // A caller may refresh history between yields. Use its current original
+          // receipt; the Worker still verifies this exact event in that history.
+          const currentReceipt = this.receipt!
+          if (!submitted && currentReceipt.native?.turnId) {
+            await input.onSubmitted?.(currentReceipt.native.turnId)
+            submitted = true
+          }
+          await this.options.observeOriginalSource?.(currentReceipt, {
+            type: 'event', event: { ...event, executionId: this.intent.executionId },
+          })
+          yield event
         }
-        await this.options.observeOriginalSource?.(currentReceipt, {
-          type: 'event', event: { ...event, executionId: this.intent.executionId },
-        })
-        yield event
+      } finally {
+        this.streamHistory = undefined
       }
       if (value.history.terminalTurn?.correlationId === input.clientCorrelationId || receipt.phase === 'confirmed_terminal') return
       if (receipt.phase === 'uncertain') throw new Error('Original remote execution requires reconciliation')
@@ -148,8 +158,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     this.assertSession(session)
+    signal?.throwIfAborted()
+    const streamed = this.streamHistory
+    if (streamed && Date.now() - streamed.observedAt < 30_000 && isDeepStrictEqual(streamed.receipt, this.receipt)) {
+      const history = this.projectHistory(streamed.value)
+      await this.options.observeOriginalSource?.(streamed.receipt, { type: 'history', history })
+      return history
+    }
     const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
     await this.status(value.status)
+    if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now() }
     const history = this.projectHistory(value.history)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })
     return history
