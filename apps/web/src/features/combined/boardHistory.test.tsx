@@ -62,6 +62,21 @@ async function choose(user: ReturnType<typeof userEvent.setup>, trigger: HTMLEle
   }))
 }
 
+function installBoardHistory() {
+  const fixture = getMockFixture(scope.workspaceId)!
+  server.use(
+    http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
+      revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
+    http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
+    http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
+    http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
+      HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
+    http.get('*/api/workspaces/:workspaceId/reference-files', () =>
+      HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
+  )
+}
+
 function SelectedSurface() {
   selected = useSelectedRun(chatScope)
   return <><RunsSelector selection={selected} /><RunBoard selection={selected} />
@@ -127,21 +142,10 @@ afterEach(() => {
 })
 
 describe('FIL-17 + SCH selected Board', () => {
-  it('keeps the 320px controls together and Files read only across A, B, A', async () => {
+  it('keeps the 320px controls together and Files read only on the selected Run', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('innerWidth', 320)
-    const fixture = getMockFixture(scope.workspaceId)!
-    server.use(
-      http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
-        revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
-        locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
-      http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
-      http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
-      http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
-        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
-      http.get('*/api/workspaces/:workspaceId/reference-files', () =>
-        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
-    )
+    installBoardHistory()
     await mountBoard()
     const board = await screen.findByRole('region', { name: 'Selected Run board' })
     const graph = within(board)
@@ -159,6 +163,18 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(within(dialog).queryByRole('button', { name: 'Upload workflow file' })).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Choose workflow file')).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
+  })
+
+  it('keeps the saved graph and chat selection together across A, B, A', async () => {
+    const user = userEvent.setup()
+    installBoardHistory()
+    await mountBoard()
+    const board = await screen.findByRole('region', { name: 'Selected Run board' })
+    const graph = within(board)
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    const controls = screen.getByRole('group', { name: 'Board controls' })
+    const runs = within(controls).getByRole('button', { name: 'Runs' })
     await choose(user, runs, 'run-b')
     expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
