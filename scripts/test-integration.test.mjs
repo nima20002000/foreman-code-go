@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -65,6 +65,12 @@ test('failed-log selection includes only discovered failures once', () => {
   assert.deepEqual(failedFilesFromLog(log, files), ['apps/api/test/b.integration.test.ts'])
   assert.throws(() => failedFilesFromLog('[integration] FAIL apps/api/test/unknown.integration.test.ts (slot 1, exit 1)\n', files), /Unknown failed/)
   assert.throws(() => failedFilesFromLog('no failures', files), /no failed files/)
+})
+
+test('exact-file selection runs only requested discovered files once', () => {
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  assert.deepEqual(selectExactFiles(files, [files[1], files[1]]), [files[1]])
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/unknown.integration.test.ts']), /Unknown --files/)
 })
 
 test('nested integration files retain distinct log paths', () => {

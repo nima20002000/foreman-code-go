@@ -143,6 +143,34 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(second.acceptedSpec.target).toEqual(f.computers[1]!.candidate.spec.target)
     expect((await f.jobs.getExecution(reader.principal, f.workspaceId, first.id)).acceptedSpec).toEqual(first.acceptedSpec)
   })
+  it('saves, starts and reads an Auto Job through authenticated MCP while denying a read-only start', async () => {
+    const f = await fixture()
+    await f.enroll(0, true, 100)
+    const client = await f.connect(writer.token)
+    const saved = await client.callTool({ name: 'job_definition_save', arguments: {
+      workspaceId: f.workspaceId, commandId: randomUUID(), expectedRevision: null,
+      name: 'MCP automatic build', spec: f.computers[0]!.auto,
+    } })
+    expect(saved.isError).not.toBe(true)
+    const definition = saved.structuredContent?.definition as JobDefinition
+    const command = { workspaceId: f.workspaceId, commandId: randomUUID(),
+      definitionId: definition.id, expectedRevision: definition.revision }
+    const readOnly = await f.connect(reader.token)
+    const denied = await readOnly.callTool({ name: 'job_start', arguments: command })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    expect(f.accept).not.toHaveBeenCalled()
+    const started = await client.callTool({ name: 'job_start', arguments: command })
+    expect(started.isError).not.toBe(true)
+    const execution = started.structuredContent?.execution as import('@graphql/contracts/jobs').JobExecution
+    expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
+    expect((await client.callTool({ name: 'job_start', arguments: command })).structuredContent).toEqual(started.structuredContent)
+    expect((await readOnly.callTool({ name: 'job_get', arguments: {
+      workspaceId: f.workspaceId, executionId: execution.id,
+    } })).structuredContent).toEqual(started.structuredContent)
+    expect((await f.jobs.getExecution(writer.principal, f.workspaceId, execution.id)).acceptedSpec).toEqual(execution.acceptedSpec)
+    expect(f.accept).toHaveBeenCalledTimes(1)
+  })
   it('fails before preparation with no participants and preserves the startup gate separately', async () => {
     const f = await fixture({ startupEnabled: false })
     const definition = await f.save()

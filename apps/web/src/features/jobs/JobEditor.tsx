@@ -88,7 +88,8 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
           label: `Image ${item.policy.imageDigest.slice(7, 15)} · ${item.limits.cpuLimit} CPU · ${Math.round(item.limits.memoryBytes / 1048576)} MiB` }))]}
       onChange={event => {
         setPolicy(event.target.value)
-        const selected = event.target.value === '' ? undefined : autoPolicies[Number(event.target.value)]
+        const saved = definition && isAutoJobSpec(definition.spec) ? definition.spec : undefined
+        const selected = event.target.value === '' ? saved : autoPolicies[Number(event.target.value)]
         setPolicyPin(selected?.policy)
         setLimitsPin(selected?.limits)
         changed()

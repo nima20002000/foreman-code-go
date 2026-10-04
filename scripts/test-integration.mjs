@@ -44,6 +44,14 @@ export function selectFiles(files, startAt) {
   return files.slice(files.indexOf(startAt))
 }
 
+export function selectExactFiles(files, requested) {
+  const known = new Set(files)
+  for (const file of requested) {
+    if (!known.has(file)) throw new Error(`Unknown --files integration file: ${file}`)
+  }
+  return [...new Set(requested)].sort()
+}
+
 export function failedFilesFromLog(output, files) {
   const known = new Set(files)
   const failed = new Set()
@@ -210,15 +218,18 @@ function options(argv) {
   const failedFrom = process.env.GRAPHQL_INTEGRATION_FAILED_LOG || null
   if (!argv.length) {
     if (startAt && failedFrom) throw new Error('Choose either a resume cursor or a failed-file log')
-    return { startAt, failedFrom }
+    return { startAt, failedFrom, files: null }
+  }
+  if (argv[0] === '--files' && argv.length > 1 && !startAt && !failedFrom) {
+    return { startAt: null, failedFrom: null, files: argv.slice(1) }
   }
   if (argv.length === 2 && argv[0] === '--start-at' && argv[1] && !failedFrom) return { startAt: argv[1], failedFrom: null }
   if (argv.length === 2 && argv[0] === '--failed-from' && argv[1] && !startAt) return { startAt: null, failedFrom: argv[1] }
-  throw new Error('Usage: test-integration.mjs [--start-at <integration file> | --failed-from <runner log>]')
+  throw new Error('Usage: test-integration.mjs [--files <integration files...> | --start-at <integration file> | --failed-from <runner log>]')
 }
 
 async function main() {
-  const { startAt, failedFrom } = options(process.argv.slice(2))
+  const { startAt, failedFrom, files } = options(process.argv.slice(2))
   const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
   if (commonResult.status !== 0) throw new Error('Could not find the project heavy-job queue')
   const common = realpathSync(commonResult.stdout.trim())
@@ -228,7 +239,9 @@ async function main() {
     return
   }
   const allFiles = discoverFiles()
-  const selected = failedFrom ? failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles) : selectFiles(allFiles, startAt)
+  let selected = selectFiles(allFiles, startAt)
+  if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
+  if (files) selected = selectExactFiles(allFiles, files)
   const diagnostic = Boolean(startAt || failedFrom)
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
