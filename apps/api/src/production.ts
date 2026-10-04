@@ -13,6 +13,7 @@ import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
 import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
+import { closeCompletedWorkflowSources } from './modules/sources/workflowCleanup.js'
 import { placedContinuationValidator } from './modules/placement/continuation.js'
 import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
@@ -949,7 +950,7 @@ export function buildProductionApp(
   // actual constructor-held engine/repository/native/atomic-checkpoint ports.
   const nativeFactory = createCurrentNativeProductionFactory({
     isRuntimeOpen: () => initialized && !closing,
-    reportDispatchFailure: (runId, code) => app.log.error({ runId, code }, 'current workflow dispatch remains unresolved'),
+    reportDispatchFailure: (runId, code, error) => app.log.error({ runId, code, err: error }, 'current workflow dispatch remains unresolved'),
   })
   const productionContext = { primaryPool: database.pool, commands,
     runs, workflows, locations, engine, nativeExecutions: approvals, interactions, checkpointer: checkpoints.saver }
@@ -1345,6 +1346,7 @@ export function buildProductionApp(
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
+      if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {

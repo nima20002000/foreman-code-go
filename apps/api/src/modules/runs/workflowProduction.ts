@@ -1,5 +1,6 @@
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { DomainError } from '../errors.js'
+import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { repeatStartPublication } from '../run-graph/repeatStartPublication.js'
 import { assertApprovalCheckpointRegistration } from './approvalCheckpointRegistration.js'
 import type { CurrentRunProductionBinding, CurrentRunProductionContext, CurrentRunProductionFactory, CurrentStopContext } from './currentProduction.js'
@@ -16,7 +17,7 @@ export function isCurrentNativeProductionBinding(value: CurrentRunProductionBind
  * cannot open admission. Live provider/PG qualification remains a separate gate. */
 export function createCurrentNativeProductionFactory(options: {
   isRuntimeOpen(): boolean
-  reportDispatchFailure(runId: string, code: string): void
+  reportDispatchFailure(runId: string, code: string, error: unknown): void
 }): CurrentRunProductionFactory {
   return (context: CurrentRunProductionContext): CurrentRunProductionBinding => {
     context.runs.assertCurrentProduction(context.primaryPool, context.workflows, context.locations)
@@ -44,7 +45,8 @@ export function createCurrentNativeProductionFactory(options: {
       // A queued/running Run and its accepted facts remain intact. The existing
       // engine reconciler retries eligible work; this sink cannot terminalize it.
       reportDispatchFailure: (runId: string, error: unknown) => options.reportDispatchFailure(runId,
-        error instanceof DomainError ? error.code : 'WORKFLOW_DISPATCH_UNCERTAIN'),
+        error instanceof DomainError ? error.code : 'WORKFLOW_DISPATCH_UNCERTAIN',
+        nativePersistenceRedactor([]).error(error)),
     })
     bindings.set(binding, context)
     return binding

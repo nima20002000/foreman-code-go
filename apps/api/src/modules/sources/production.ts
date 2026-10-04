@@ -38,6 +38,7 @@ import { DomainError } from '../errors.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
+import { localWorkflowSourceClosed } from './workflowCleanup.js'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -145,6 +146,10 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       const native = readNativeExecutionBinding(parent, intent, rawNative)
       if (native.bindingHash !== record.finalDispatchBindingHash || native.workingTree.materializationId !== record.receipt.materializationId
         || native.workingTree.materializationDigest !== sourceMaterializationDigest(record)) return false
+      if (parent.hostRef.kind === 'main') {
+        if (record.receipt.binding.deviceId !== null || record.receipt.binding.workerInstallationId !== null) return false
+        return localWorkflowSourceClosed(sql, intent.executionId)
+      }
       const receipts = (await readRemoteReceipts(sql, intent.runId, intent.nodeId)).filter(value => value.intent.operationId === record.operationId)
       const receipt = receipts.length === 1 ? receipts[0] : undefined
       if (!receipt || parent.hostRef.kind !== 'device' || !parent.registration) return false
