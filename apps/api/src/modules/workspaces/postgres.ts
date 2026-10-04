@@ -1,18 +1,66 @@
 import {
   AgentSchema,
   WorkspaceSchema,
+  WorkflowRunSummarySchema,
   type Agent,
 } from '@graphql/contracts'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
-import { withCurrentRunRead } from '../runs/currentRead.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { SavedWorkspaceDetailsSchema, type SavedWorkspaceDetails } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { saveAgentConfiguration } from './agentConfiguration.js'
+
+function requireWorkspaceRead(principal: ManagementPrincipal, workspaceId: string): void {
+  for (const action of ['workspaces:read', 'workflows:read', 'agents:read', 'runs:read'] as const) {
+    requireAuthorization(principal, action, { workspaceId })
+  }
+}
+
+interface SummaryRow {
+  id: string
+  workspace_id: string
+  workflow_id: string
+  execution_state: string
+  summary: unknown
+}
+
+async function readRunSummaries(client: pg.PoolClient, workspaceId: string) {
+  const rows = (await client.query<SummaryRow>(`
+    select r.id,r.workspace_id,r.workflow_id,r.execution_state,
+      jsonb_build_object('id',r.record->'id','workspaceId',r.record->'workspaceId',
+        'workflowId',r.record->'workflowId','executionCondition',r.record->'executionCondition',
+        'executionState',r.record->'executionState','outcome',r.record->'outcome',
+        'authRequired',false,'browserWait',null,
+        'cleanupPending',exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending),
+        'runnerHealth',jsonb_build_object('status','healthy','checkedAt',$2::text))
+      || case when r.record ? 'stopCause' then jsonb_build_object('stopCause',r.record->'stopCause') else '{}'::jsonb end
+      || case when r.record ? 'startedAt' then jsonb_build_object('startedAt',r.record->'startedAt') else '{}'::jsonb end
+      || case when r.record ? 'finishedAt' then jsonb_build_object('finishedAt',r.record->'finishedAt') else '{}'::jsonb end
+      as summary
+    from runs r where r.workspace_id=$1 and r.record->'executionSemanticsVersion'='3'::jsonb
+      and (r.execution_state<>'completed'
+        or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+        or r.id in (select recent.id from runs recent where recent.workspace_id=$1
+          and recent.record->'executionSemanticsVersion'='3'::jsonb
+          order by recent.created_at desc,recent.id desc limit 20))
+    order by r.created_at desc,r.id desc limit 2001`, [workspaceId, new Date().toISOString()])).rows
+  if (rows.length > 2000) {
+    throw new DomainError('WORKSPACE_RUN_READ_TOO_LARGE', 'Use the bounded management Run pages for this workspace.', 409)
+  }
+  return rows.map((row) => {
+    const summary = WorkflowRunSummarySchema.parse(row.summary)
+    if (summary.id !== row.id || summary.workspaceId !== workspaceId || summary.workspaceId !== row.workspace_id
+      || summary.workflowId !== row.workflow_id || summary.executionState !== row.execution_state) {
+      throw new DomainError('RUN_PIN_CONFLICT', 'A Run summary does not match its persisted scope and state.', 409)
+    }
+    return summary
+  })
+}
 
 export class PostgresWorkspaceRepository {
   constructor(
@@ -55,9 +103,7 @@ export class PostgresWorkspaceRepository {
 
   async getDetails(workspaceId: string, principal?: ManagementPrincipal): Promise<SavedWorkspaceDetails | undefined> {
     if (!principal) throw new DomainError('AUTH_REQUIRED', 'Workspace readback requires an authenticated management caller.', 401)
-    for (const action of ['workspaces:read', 'workflows:read', 'agents:read', 'runs:read'] as const) {
-      requireAuthorization(principal, action, { workspaceId })
-    }
+    requireWorkspaceRead(principal, workspaceId)
     const result = await this.pool.query<{ record: unknown }>('select record from workspaces where id = $1', [workspaceId])
     if (!result.rows[0]) return undefined
     return SavedWorkspaceDetailsSchema.parse({
@@ -74,24 +120,22 @@ export class PostgresWorkspaceRepository {
     })
   }
   private async currentSummaries(workspaceId: string, principal: ManagementPrincipal) {
-    const rows = (await this.pool.query<{ id: string }>(
-      `select r.id from runs r where r.workspace_id=$1 and r.record->>'executionSemanticsVersion'='3'
-        and (r.execution_state<>'completed'
-        or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
-        or r.id in (select recent.id from runs recent where recent.workspace_id=$1
-          and recent.record->>'executionSemanticsVersion'='3' order by recent.created_at desc,recent.id desc limit 20))
-       order by r.created_at desc,r.id desc limit 2001`, [workspaceId])).rows
-    if (rows.length > 2000) throw new DomainError('WORKSPACE_RUN_READ_TOO_LARGE', 'Use the bounded management Run pages for this workspace.', 409)
-    const summaries = []
-    for (const { id } of rows) summaries.push(await withCurrentRunRead(this.pool, principal, workspaceId, id, 'runs:read',
-      async (_sql, { run, cleanupPending }) => ({
-        id: run.id, workspaceId: run.workspaceId, workflowId: run.workflowId, executionCondition: run.executionCondition,
-        executionState: run.executionState, outcome: run.outcome, authRequired: false, browserWait: null, cleanupPending,
-        ...(run.stopCause ? { stopCause: run.stopCause } : {}),
-        runnerHealth: { status: 'healthy' as const, checkedAt: new Date().toISOString() },
-        ...(run.startedAt ? { startedAt: run.startedAt } : {}), ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
-      })))
-    return summaries
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const live = await readLiveManagementPrincipal(client, principal.id)
+      requireWorkspaceRead(live, workspaceId)
+      const summaries = await readRunSummaries(client, workspaceId)
+      requireWorkspaceRead(principal, workspaceId)
+      requireWorkspaceRead(live, workspaceId)
+      await client.query('commit')
+      return summaries
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
   }
 
 }
