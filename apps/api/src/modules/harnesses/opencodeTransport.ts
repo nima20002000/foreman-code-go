@@ -15,6 +15,7 @@ import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
+import { OpenCodeVaultIsolation } from './opencodeFiles/isolation.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -36,6 +37,7 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  assertFileSourceIsolation?(root: string, signal: AbortSignal): Promise<void>
   /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
   readonly residentGeneration?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
@@ -64,6 +66,7 @@ export interface ManagedOpenCodeServerOptions {
   environment?: ChildProcessEnvironment
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
+  protectedFileStorageRoot?: string
   /** One budget for version probing, spawning, readiness and health, not per stage. */
   startupTimeoutMs?: number
 }
@@ -101,6 +104,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private stderr = ''
   private readonly stops = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>()
   private references: Readonly<Record<string, string>> = {}
+  private fileIsolation: OpenCodeVaultIsolation | undefined
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
     this.advancedConfiguration = options.advancedConfiguration
@@ -116,6 +120,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
   get nativePid(): number | undefined { return this.child?.pid }
+  async assertFileSourceIsolation(root: string, signal: AbortSignal): Promise<void> {
+    if (!this.fileIsolation || this.fileIsolation.root !== root || this.residentGeneration === undefined) {
+      throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED', 'The resident OpenCode process has no isolated file host.')
+    }
+    await this.fileIsolation.assert(signal)
+  }
   get residentGeneration(): number | undefined {
     return !this.cleanupRequired && !this.disposal && this.child?.exitCode === null && this.child.signalCode === null
       && this.baseUrl && this.password ? this.generation : undefined
@@ -352,10 +362,17 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         environment.OPENCODE_CONFIG_CONTENT = buildOpenCodeChatConfigContent(environment.OPENCODE_CONFIG_CONTENT, this.disabledAppMcpServerName)
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
+      const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
+      this.fileIsolation = this.options.protectedFileStorageRoot
+        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot) : undefined
+      const launch = this.fileIsolation
+        ? await this.fileIsolation.launch({ binary: this.options.binary, args,
+          workingDirectory: this.options.workingDirectory, environment }, abort.signal)
+        : { binary: this.options.binary, args }
       this.stderr = ''
       await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
-      const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
+      const child = spawnNativeProcess(launch.binary, launch.args, {
         cwd: this.options.workingDirectory, env: appMcpTokenEnvironment(environment),
         ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
       })
@@ -372,6 +389,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       child.once('exit', () => { void this.stopChild(child).catch(() => undefined) })
       this.baseUrl = await this.waitForUrl(child, abort.signal)
       child.stdout.resume()
+      await this.fileIsolation?.assert(abort.signal)
       const response = await this.rawRequest('/global/health', { method: 'GET' }, abort.signal)
       try {
         const health = object(await response.json())
@@ -413,8 +431,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         else resolve(url!)
       }
       const data = (chunk: Buffer | string) => {
-        text = (text + String(chunk)).slice(-64_000)
-        const match = text.match(/opencode server listening on (http:\/\/127\.0\.0\.1:\d+)/)
+        const received = text + String(chunk)
+        this.fileIsolation?.observe(received)
+        text = received.slice(-64_000)
+        const match = received.match(/opencode server listening on (http:\/\/127\.0\.0\.1:\d+)/)
         if (match?.[1]) finish(undefined, match[1])
       }
       const failed = (error: Error) => finish(error)
