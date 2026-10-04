@@ -139,7 +139,8 @@ export class PostgresScheduleDispatcher {
         (fact->>'scheduleRevision')::bigint,fact->>'status',fact->>'reason',fact,$2::timestamptz
       from jsonb_array_elements($1::jsonb) fact
       on conflict (workflow_id,due_at) do nothing`, [JSON.stringify(facts), now])
-    await this.repository.advanceCursor(client, schedule, schedule.revision,
+    await this.repository.advanceCursor(client, { workspaceId: schedule.workspaceId, workflowId: schedule.workflowId },
+      schedule.revision,
       steps[0]!.dueAt, steps.at(-1)!.nextDueAt)
   }
   private async prepare(observed: WorkflowSchedule,
