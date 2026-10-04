@@ -47,6 +47,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       ] : []),
       'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
       'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
+      'Return and handoff-limit notice metadata must also fit that limit. The backend checks delivery size before accepting success; keep deliverables concise or use artifact references.',
       'End GraphQL work-handoff result contract.',
     ].join('\n')
     return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract

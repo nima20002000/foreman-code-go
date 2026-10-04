@@ -3,20 +3,23 @@ import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema, type ExecutionResult } from '@graphql/contracts'
 import {
-  WorkReturnSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
+  WorkReturnSchema, WorkNoticeSchema, WorkHandoffResultSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
   canonicalGraphJson, type WorkHandoffResult,
 } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
-import { repeatDigest } from '../src/modules/runs/repeatResolution.js'
+import { assertWorkHandoffDeliveryLocked } from '../src/modules/runs/workHandoffDelivery.js'
+import { createWorkLimitNotice } from '../src/modules/runs/workHandoffNotice.js'
+import { repeatDigest, repeatId } from '../src/modules/runs/repeatResolution.js'
 import { nim2691TaskDatabase as taskDatabase } from './helpers/nim2691Database.js'
 
 const text = (value: unknown) => canonicalGraphJson(value, 4 * 1024 * 1024)
 
 // Start at the committed terminal-acceptance boundary. Native settlement and
 // publication are fixture ports; return correlation and persistence use real SQL.
-async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult) {
+async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
+  options: { reviewAccepted: boolean } = { reviewAccepted: true }) {
   const fixture = makeCurrentWorkflowFixture('review-delivery')
   const [source, reviewer] = fixture.version.definition.nodes
   assert.ok(source && reviewer && source.kind !== 'job' && reviewer.kind !== 'job')
@@ -65,8 +68,9 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult) {
       agentId: node.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
       attempt: 1, input: {}, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
-      values($1,$2,$3,$4,1,true,$5::jsonb,$6)`, [executionId, run.id, node.id, node.agentId, text(execution), activationId])
-    await pool.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+      values($1,$2,$3,$4,1,$5,$6::jsonb,$7)`,
+      [executionId, run.id, node.id, node.agentId, index ? options.reviewAccepted : true, text(execution), activationId])
+    if (!index || options.reviewAccepted) await pool.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
       values($1,$2,$3,$4,$5,$6)`, [executionId, run.id, activationId, text(result), repeatDigest(result), fixture.createdAt])
     executions.push(execution)
   }
@@ -87,6 +91,20 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult) {
     completeRunLocked: async () => { throw new Error('Run lifecycle belongs to the settlement fixture') },
   }) }
   return { fixture, version, run, host, request, executions }
+}
+
+function returnPreview(t: Awaited<ReturnType<typeof acceptedReview>>, output: WorkHandoffResult) {
+  assert.equal(output.routing.kind, 'return')
+  if (output.routing.kind !== 'return') throw new Error('Return fixture required')
+  const returnId = repeatId('work-return', 'review-execution')
+  return { scope: t.fixture.scope, returnId, requestId: t.request.requestId,
+    sourceActivationId: t.request.destinationActivationId, sourceExecutionId: 'review-execution',
+    requesterActivationId: t.request.requesterActivationId,
+    ...(output.routing.outcome === 'needs_changes'
+      ? { continuationActivationId: repeatId('work-activation', returnId) } : {}),
+    acceptedResultDigest: repeatDigest(t.executions[1]!.result), outcome: output.routing.outcome,
+    latestDeliverable: output.data.latestDeliverable, remainingFindings: output.data.remainingFindings,
+    returnedAt: t.fixture.createdAt }
 }
 
 const postgresDescribe = describe.skipIf(process.env.NIM2691_POSTGRES !== '1')
@@ -121,4 +139,84 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       } finally { await owner.release() }
     })
   }, 120000)
+  it.each([false, true])('delivers a boundary-sized review return and last-handoff notice (restart=%s)', async (restart) => {
+    await taskDatabase(async (pool) => {
+      await applyApplicationMigrations(pool)
+      const output: WorkHandoffResult = { routing: { kind: 'return', requestId: 'review-request', outcome: 'needs_changes' },
+        data: { latestDeliverable: '', remainingFindings: [{ id: 'needs-revision' }] } }
+      const t = await acceptedReview(pool, output, { reviewAccepted: false })
+      const returned = returnPreview(t, output)
+      const preview = createWorkLimitNotice({ scope: t.fixture.scope, version: t.version, now: t.fixture.createdAt }, {
+        cause: { kind: 'last_return', returnId: returned.returnId },
+        requesterActivationId: t.request.requesterActivationId, requesterNodeId: t.request.requesterNodeId,
+        continuationActivationId: returned.continuationActivationId!, relationshipId: t.request.relationshipId,
+        destinationNodeId: t.request.destinationNodeId, used: 1, maximum: 1,
+        latestDeliverable: '', remainingFindings: output.data.remainingFindings,
+      }, [])
+      const metadataBytes = Buffer.byteLength(canonicalGraphJson({ ...preview,
+        delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8')
+      output.data.latestDeliverable = 'x'.repeat(65536 - metadataBytes)
+      const candidate = HarnessExecutionSchema.parse({ ...t.executions[1], result: { outcome: 'succeeded', output } })
+      WorkHandoffResultSchema.parse(output)
+      let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+      assert.ok(owner)
+      try {
+        await owner.oneShotConnection().transaction(async (sql) => {
+          await assertWorkHandoffDeliveryLocked({ sql, scope: t.fixture.scope, version: t.version,
+            now: t.fixture.createdAt }, candidate, t.request.destinationActivationId, output)
+          await sql.query('update harness_executions set record=$2::jsonb,accepted=true where id=$1',
+            [candidate.id, text(candidate)])
+          await sql.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+            values($1,$2,$3,$4,$5,$6)`, [candidate.id, t.run.id, t.request.destinationActivationId,
+            text(candidate.result), repeatDigest(candidate.result), t.fixture.createdAt])
+        })
+        if (restart) {
+          await owner.release()
+          owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+          assert.ok(owner)
+        }
+        const store = new RepeatRunRepository(owner, t.host, t.version)
+        const delivered = await store.returnWork(candidate.id)
+        expect(delivered.value.latestDeliverable).toEqual(output.data.latestDeliverable)
+        const notices = (await pool.query('select record from run_work_notices where run_id=$1', [t.run.id])).rows
+        expect(notices).toHaveLength(1)
+        const notice = WorkNoticeSchema.parse(notices[0]!.record)
+        expect(notice.latestDeliverable).toEqual(output.data.latestDeliverable)
+        expect(notice.remainingFindings).toEqual(output.data.remainingFindings)
+        expect(notice.cause).toEqual({ kind: 'last_return', returnId: delivered.value.returnId })
+        expect((await store.returnWork(candidate.id)).replayed).toBe(true)
+        expect((await pool.query('select record from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(1)
+        expect((await pool.query('select return_id from run_work_returns where run_id=$1', [t.run.id])).rowCount).toBe(1)
+      } finally { await owner.release() }
+    })
+  }, 120000)
+
+  it.each(['accepted', 'needs_changes'] as const)(
+    'rejects a result whose derived %s envelope cannot be delivered before accepting it', async (outcome) => {
+      await taskDatabase(async (pool) => {
+        await applyApplicationMigrations(pool)
+        const output: WorkHandoffResult = { routing: { kind: 'return', requestId: 'review-request', outcome },
+          data: { latestDeliverable: 'x'.repeat(65000), remainingFindings: [] } }
+        WorkHandoffResultSchema.parse(output)
+        const t = await acceptedReview(pool, output, { reviewAccepted: false })
+        const execution = t.executions[1]!
+        expect(Buffer.byteLength(text(execution.result), 'utf8')).toBeLessThanOrEqual(65536)
+        const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+        assert.ok(owner)
+        try {
+          await expect(owner.oneShotConnection().transaction(async (sql) => {
+            await assertWorkHandoffDeliveryLocked({ sql, scope: t.fixture.scope, version: t.version,
+              now: t.fixture.createdAt }, execution, t.request.destinationActivationId, output)
+            await sql.query('update harness_executions set accepted=true where id=$1', [execution.id])
+          })).rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+          expect((await pool.query('select accepted from harness_executions where id=$1', [execution.id])).rows[0]?.accepted)
+            .toBe(false)
+          expect((await pool.query('select 1 from run_work_results where execution_id=$1', [execution.id])).rowCount).toBe(0)
+          expect((await pool.query('select 1 from run_work_returns where run_id=$1', [t.run.id])).rowCount).toBe(0)
+          expect((await pool.query('select 1 from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(0)
+        } finally { await owner.release() }
+      })
+    }, 120000,
+  )
+
 })

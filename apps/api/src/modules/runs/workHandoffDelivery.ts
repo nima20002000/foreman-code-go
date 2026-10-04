@@ -1,0 +1,83 @@
+import { z } from 'zod'
+import type { HarnessExecution } from '@graphql/contracts'
+import {
+  WorkRequestSchema, WorkReturnSchema, WorkNoticeSchema,
+  type WorkHandoffResult, type WorkflowVersionV3,
+} from '@graphql/contracts/wave25'
+import type { GraphTransactionSql } from '../run-graph/connection.js'
+import { repeatConflict, repeatDigest, repeatId, type RepeatScope } from './repeatResolution.js'
+import {
+  availableWorkAlternativesLocked, createWorkLimitNotice, type WorkLimitNoticeInput,
+} from './workHandoffNotice.js'
+import { selectedWorkHandoffRoutes } from './workHandoffRouting.js'
+
+interface DeliveryContext {
+  sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3; now: string
+}
+
+async function assertNoticeFits(context: DeliveryContext, input: WorkLimitNoticeInput): Promise<void> {
+  const alternatives = await availableWorkAlternativesLocked(context, input.requesterNodeId, input.relationshipId)
+  const notice = createWorkLimitNotice(context, input, alternatives)
+  // After acceptance counters can grow and an acknowledgement adds metadata.
+  // Routes can only become exhausted; none can be added to the pinned workflow.
+  WorkNoticeSchema.parse({ ...notice, delivery: 'delivered', acknowledgementId: 'a'.repeat(200),
+    alternatives: alternatives.map((item) => ({ ...item,
+      used: item.maxWorkHandoffsPerRun === null ? 2147483647 : item.maxWorkHandoffsPerRun - 1,
+    })) })
+}
+
+async function assertReturnFits(context: DeliveryContext, execution: HarnessExecution,
+  activationId: string, result: WorkHandoffResult): Promise<void> {
+  const routing = result.routing
+  if (routing.kind !== 'return') return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+  const row = (await context.sql.query<{ record: unknown }>(
+    'select record from run_work_requests where run_id=$1 and request_id=$2 for share',
+    [context.scope.runId, routing.requestId])).rows[0]
+  if (!row) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
+  const request = WorkRequestSchema.parse(row.record)
+  const returnId = repeatId('work-return', execution.id)
+  const continuationActivationId = routing.outcome === 'needs_changes' ? repeatId('work-activation', returnId) : undefined
+  WorkReturnSchema.parse({ scope: context.scope, returnId, requestId: request.requestId,
+    sourceActivationId: activationId, sourceExecutionId: execution.id,
+    requesterActivationId: request.requesterActivationId,
+    ...(continuationActivationId ? { continuationActivationId } : {}),
+    acceptedResultDigest: repeatDigest(execution.result, 64 * 1024), outcome: routing.outcome,
+    latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings,
+    returnedAt: context.now })
+  const edge = context.version.definition.edges.find((item) => item.id === request.relationshipId)
+  if (continuationActivationId && edge?.maxWorkHandoffsPerRun !== undefined) {
+    await assertNoticeFits(context, { cause: { kind: 'last_return', returnId },
+      requesterActivationId: request.requesterActivationId, requesterNodeId: request.requesterNodeId,
+      continuationActivationId, relationshipId: request.relationshipId, destinationNodeId: request.destinationNodeId,
+      used: edge.maxWorkHandoffsPerRun, maximum: edge.maxWorkHandoffsPerRun,
+      latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings })
+  }
+}
+
+/** Validate derived envelopes under the Run lock, before committing terminal acceptance. */
+export async function assertWorkHandoffDeliveryLocked(context: DeliveryContext, execution: HarnessExecution,
+  activationId: string, result: WorkHandoffResult): Promise<void> {
+  try {
+    if (result.routing.kind === 'return') return await assertReturnFits(context, execution, activationId, result)
+    const routes = selectedWorkHandoffRoutes(context.version.definition, execution.workflowNodeId, result)
+    for (const relationshipId of routes) {
+      const edge = context.version.definition.edges.find((item) => item.id === relationshipId)
+      if (!edge || edge.kind !== 'execution') return repeatConflict('WORK_REQUEST_ROUTE_FORBIDDEN')
+      if (edge.maxWorkHandoffsPerRun === undefined) continue
+      const destinationNodeId = edge.source === execution.workflowNodeId ? edge.target : edge.source
+      const requestId = repeatId('work-request', context.scope.runId, execution.id, edge.id)
+      const denialId = repeatId('work-denial', requestId)
+      await assertNoticeFits(context, { cause: { kind: 'limit_denial', denialId },
+        requesterActivationId: activationId, requesterNodeId: execution.workflowNodeId,
+        continuationActivationId: repeatId('work-activation', denialId), relationshipId,
+        destinationNodeId, used: edge.maxWorkHandoffsPerRun, maximum: edge.maxWorkHandoffsPerRun,
+        latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings })
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError && error.issues.some((issue) =>
+      issue.message === 'HANDOFF_RETURN_TOO_LARGE' || issue.message === 'HANDOFF_NOTICE_TOO_LARGE')) {
+      return repeatConflict('WORK_HANDOFF_DELIVERY_TOO_LARGE')
+    }
+    throw error
+  }
+}

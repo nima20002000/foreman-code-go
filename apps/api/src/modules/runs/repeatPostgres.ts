@@ -33,6 +33,7 @@ import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputL
   type WorkRequestAdmission, type WorkReturnReceipt } from './workHandoffAdmission.js'
 import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
   markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
+import { assertWorkHandoffDeliveryLocked } from './workHandoffDelivery.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
@@ -315,7 +316,8 @@ export class RepeatRunRepository {
       if (stored.execution.result.outcome !== 'succeeded') return repeatConflict('WORK_SELECTED_EXECUTION_FAILED')
       await this.assertArtifactOutputs(context, stored.execution)
       const result = AcceptedCurrentNodeResultSchema.parse(stored.execution.result)
-      parseWorkHandoffResult(result)
+      const workResult = parseWorkHandoffResult(result)
+      await assertWorkHandoffDeliveryLocked(context, stored.execution, stored.workActivationId, workResult)
       const resultJson = canonicalGraphJson(result, 64 * 1024), resultDigest = repeatDigest(result, 64 * 1024)
       await this.effect(context, 'terminal.accept', executionId,
         { execution: stored.execution, resultDigest, workActivationId: stored.workActivationId },
