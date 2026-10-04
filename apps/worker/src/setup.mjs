@@ -31,7 +31,9 @@ export async function setupCompanion({ home, node, artifact, approvedManifestSha
   const launcher = join(root, 'graphql-companion');
   await publish(launcher, `#!/bin/sh\nunset NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED\nexport HOME='${home}'\nexport PATH='${path}'\nexec '${node}' '${root}/current/src/companion.mjs' --state '${state}' "$@"\n`, 0o700);
   const desktop = join(home, '.local/share/applications/graphql-companion.desktop');
-  await publish(desktop, `[Desktop Entry]\nType=Application\nName=GraphQL Companion\nComment=Computer connection and diagnostics\nExec=${launcher} --desktop\nTerminal=false\nCategories=Utility;\n`, 0o600);
+  const icon = join(home, '.local/share/icons/hicolor/scalable/apps/graphql-companion.svg');
+  await publish(icon, await readFile(join(root, 'current/artifacts/graphql.svg')), 0o644);
+  await publish(desktop, `[Desktop Entry]\nType=Application\nName=GraphQL Companion\nComment=Computer connection and diagnostics\nExec=${launcher} --desktop\nIcon=${icon}\nTerminal=false\nCategories=Utility;\n`, 0o600);
   const proposedService = join(root, 'graphql-worker.service');
   await publish(proposedService, unit, 0o600);
   return { ...result, root, state, launcher, appMcpLauncher, desktop, proposedService, serviceActivation: 'not-requested' };

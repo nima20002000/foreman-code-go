@@ -22,6 +22,7 @@
     "test:integration": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
     "test:acceptance": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api test:acceptance\"",
     "test:production": "node scripts/heavy-job.mjs -- node scripts/production-smoke.mjs",
-    "build": "node scripts/heavy-job.mjs -- corepack pnpm -r --if-present build"
+    "build": "node scripts/heavy-job.mjs -- corepack pnpm -r --if-present build",
+    "production:install": "node scripts/local-production.mjs install"
   }
 }

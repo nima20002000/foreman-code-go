@@ -9,6 +9,7 @@ import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { buildProductionApp } from './production.js'
+import { registerBuiltWeb } from './builtWeb.js'
 import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
 import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
 import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
@@ -79,6 +80,7 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
+    if (process.env.GRAPHQL_WEB_DIST) await registerBuiltWeb(app, process.env.GRAPHQL_WEB_DIST)
     registerFileStorage()
     await database.ping()
     stopIfClosing()

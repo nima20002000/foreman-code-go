@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "files": ["dist"],
   "exports": {
     "./subagents": { "types": "./dist/subagents.d.ts", "import": "./dist/subagents.js" },
     ".": {
