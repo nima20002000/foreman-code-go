@@ -216,7 +216,8 @@ export class PostgresOperatorConversationRepository {
       coalesce((select jsonb_agg(a.record || jsonb_build_object('sequence',a.sequence::text,'revision',a.revision) order by a.sequence)
         from (select record,sequence,revision from operator_conversation_activity where conversation_id=c.id order by sequence desc limit 100) a),'[]'::jsonb) as activities,
       case when exists(select 1 from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 100 limit 1)
-        then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
+        then (select sequence::text from operator_conversation_activity where conversation_id=c.id
+          order by operator_conversation_activity.sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
         from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)

@@ -16,7 +16,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       // authentication and denial auditing use the real PostgreSQL services.
       const services: OperatorServices = f.services
       Object.assign(services, {
-        workerExecution: {}, harnessQualifications: {}, operatorChat: {}, agentChat: {}, interactions: {},
+        workerExecution: {}, buildComputers: {}, harnessQualifications: {}, operatorChat: {}, agentChat: {}, interactions: {},
         resourceTelemetry: { reads: {}, selectors: {} },
         sources: {}, devices: {}, trustedConnections: {}, jobs: {}, jobRuntimeProfiles: {},
         fileReferences: {}, fileRetention: {},
@@ -41,6 +41,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
         'workspace_folders_delete', 'harness_list', 'harness_qualification_run', 'execution_readiness_get',
         'harness_mcp_servers_list', 'codex_plugins_list', 'harness_instances_list', 'harness_instance_save',
         'agent_defaults_get', 'workspace_defaults_update', 'worker_execution_settings_get',
+        'build_computer_get', 'build_computer_update',
         'operator_chat_get', 'operator_chat_send', 'operator_chat_cancel', 'agent_chat_read',
         'workflow_create', 'agent_get', 'agent_create', 'workspace_restore', 'workflow_versions_list',
         'runner_list', 'run_get', 'run_start', 'run_subagents_list_v1', 'run_summaries_list',

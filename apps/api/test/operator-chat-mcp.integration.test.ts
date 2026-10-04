@@ -192,6 +192,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(snapshot.hasEarlierMessages).toBe(true)
     expect(snapshot.activities).toHaveLength(100)
     expect(snapshot.activityNextCursor).not.toBeNull()
+    expect(snapshot.activityNextCursor).toBe(snapshot.activities![0]!.sequence)
     const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
     expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining([
       'operator_chat_history_get', 'operator_chat_activity_get',
@@ -213,18 +214,24 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     } while (before)
     expect(messages).toEqual(contents)
 
-    const activities: string[] = []
-    do {
-      const reply = await owner.client.callTool({ name: 'operator_chat_activity_get', arguments: {
-        conversationId: conversation.id, limit: 17, ...(before ? { before } : {}),
-      } })
-      expect(reply.isError).not.toBe(true)
-      const page = OperatorActivityPageSchema.parse(reply.structuredContent)
-      expect(page.nextCursor === null || page.nextCursor !== before).toBe(true)
-      activities.unshift(...page.activities.map((activity) => activity.id))
-      before = page.nextCursor
-    } while (before)
-    expect(activities).toEqual(activityIds)
+    for (const initial of [
+      { activities: [], before: null },
+      { activities: snapshot.activities!.map(activity => activity.id), before: snapshot.activityNextCursor! },
+    ]) {
+      const activities: string[] = [...initial.activities]
+      let activityBefore: string | null = initial.before
+      do {
+        const reply = await owner.client.callTool({ name: 'operator_chat_activity_get', arguments: {
+          conversationId: conversation.id, limit: 17, ...(activityBefore ? { before: activityBefore } : {}),
+        } })
+        expect(reply.isError).not.toBe(true)
+        const page = OperatorActivityPageSchema.parse(reply.structuredContent)
+        expect(page.nextCursor === null || page.nextCursor !== activityBefore).toBe(true)
+        activities.unshift(...page.activities.map(activity => activity.id))
+        activityBefore = page.nextCursor
+      } while (activityBefore)
+      expect(activities).toEqual(activityIds)
+    }
     expect(manager.turns).toBe(0)
 
     const foreign = await issue(['operator_chat:read', 'operator_chat:write'])
