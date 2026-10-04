@@ -4,6 +4,8 @@ This journal is a worker-side durability boundary, not a scheduler and not a dat
 
 Main migration `284401` and `remote/persistence.ts` persist accepted receipt sequences through the existing Run owner transaction, recheck live authority before commit, retain only 32 hashed rejected reports per operation, and expose original-host readback. Owner reconciliation is separate append-only evidence, preserving W08-A's immutable initial dispatch. These files do not establish that a native two-host Run has executed.
 
+Worker startup creates the native output store during first installation or upgrade while holding the worker service lock. Subsequent starts verify its installation marker, private filesystem and budget journal, preserving outstanding reservations. Missing or corrupted established output state requires recovery. Native output tools still require Main authorization and native sandbox qualification.
+
 | Phase | Durable fact | Permitted next action |
 | --- | --- | --- |
 | received | exact original intent accepted | one serialized entry reservation, or Stop fence |

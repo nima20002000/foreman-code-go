@@ -28,7 +28,7 @@ import { CanonicalNativeArtifactResults } from '../../files/distributed/nativeRe
 import { NativeArtifactOutputs, type NativeArtifactOutput } from './nativeArtifactOutputs.js'
 import { DomainError } from '../../errors.js'
 import { createInstalledNativeOutputs } from './installedNativeOutput.js'
-import { createInstalledWorkflowNativeOutputFactory, initializeInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
+import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
 import type { InstalledWorkflowNativeOutputContext } from './installedWorkflowHost.js'
 import { WorkflowNativeArtifactResults } from './workflowNativeArtifactResults.js'
 
@@ -130,7 +130,7 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
   const agentId = t.placement.payload.agentId
   const binding: DeviceSessionBinding = { ...t.context, connectionGeneration: 1 }
   const pairing = { ...t.context, protocolVersion: 1 } as unknown as WorkerPairingConfiguration
-  await initializeInstalledWorkflowOutputStore(t.root, pairing)
+  await ensureInstalledWorkflowOutputStore(t.root, pairing)
   const publications = new WorkflowNativeArtifactResults(t.placement, t.intent)
   const q: CodexNativeOutputQualificationInput = {
     configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low', sandbox: 'workspace-write', serviceTier: 'standard' },
@@ -143,8 +143,8 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
     nativeTurnId: t.f.context.turnId!, assertCurrent: vi.fn() }
   const context: InstalledWorkflowNativeOutputContext = {
     intent: t.intent, placement: t.placement, binding,
-    materialization: { receipt: { binding: { rootId: t.rootBinding.rootId, bindingRevision: t.rootBinding.rootBindingRevision } } }
-      as InstalledWorkflowNativeOutputContext['materialization'],
+    materialization: { receipt: { binding: { rootId: t.rootBinding.rootId,
+      bindingRevision: t.rootBinding.rootBindingRevision } } } as InstalledWorkflowNativeOutputContext['materialization'],
     assertCurrent: vi.fn(async () => {}),
     // Recorded native qualification/closure boundaries only; no native process is claimed by this fixture.
     qualifyNativeOutput: vi.fn(async () => {}), closeNativeOutputWriters: vi.fn(async () => {}),
@@ -305,8 +305,7 @@ describe('original worker-native artifact sender', () => {
   it('refuses a missing or replacement output store and absent native qualification', async () => {
     const t = await fixture()
     const producer = await installedProducer(t)
-    await expect(initializeInstalledWorkflowOutputStore(t.root, producer.pairing))
-      .rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_STORE_EXISTS' })
+    await expect(ensureInstalledWorkflowOutputStore(t.root, producer.pairing)).resolves.toBeUndefined()
     vi.mocked(producer.context.qualifyNativeOutput).mockRejectedValue(new Error('Native write denial absent'))
     await expect(producer.prepare()).rejects.toThrow('Native write denial absent')
     expect(t.links.size).toBe(0)
@@ -317,7 +316,7 @@ describe('original worker-native artifact sender', () => {
     await expect(producer.prepare()).rejects.toThrow()
     expect(t.links.size).toBe(0)
     await rm(join(t.root, 'workflow-native-outputs'), { recursive: true })
-    await expect(initializeInstalledWorkflowOutputStore(t.root, producer.pairing)).rejects.toMatchObject({ code: 'EEXIST' })
+    await expect(ensureInstalledWorkflowOutputStore(t.root, producer.pairing)).rejects.toMatchObject({ code: 'ENOENT' })
   })
   it('transfers real tool-created bytes, verifies receipt and publishes exact canonical pins', async () => {
     const t = await fixture(), reply = await t.publish()

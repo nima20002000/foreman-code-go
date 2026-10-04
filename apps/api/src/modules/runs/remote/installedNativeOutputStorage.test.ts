@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
@@ -8,6 +8,7 @@ import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, createNativeOutputBudgetLedger,
   type InstalledNativeOutputStorageInput } from './installedNativeOutputStorage.js'
+import { ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -32,6 +33,65 @@ async function fixture() {
     budget: { reserve: vi.fn(async () => ({ assertCurrent: reservationCurrent, release })) } }
   return { root, input, release, reservationCurrent, request: { artifactId: randomUUID(), ...limits } }
 }
+
+async function startupFixture() {
+  const f = await fixture()
+  const binding = f.input.owner.binding
+  const pairing = { ...binding, formatVersion: 1 as const, endpoint: 'wss://unit.invalid/device',
+    mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }
+  const installation = { mainId: binding.mainId, deviceId: binding.deviceId,
+    workerInstallationId: binding.workerInstallationId }
+  const limits = { maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
+    maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
+    maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
+  const open = () => createNativeOutputBudgetLedger({
+    rootDirectory: join(f.root, 'workflow-native-outputs', 'budget'), installation, limits })
+  return { ...f, pairing, limits, open }
+}
+
+describe('worker startup output store', () => {
+  it('creates an upgrade store automatically and preserves outstanding budgets on repeated startup', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const original = { owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits }
+    await (await f.open()).reserve(original)
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const recovered = await f.open()
+    await (await recovered.reserve(original)).assertCurrent()
+    await expect(recovered.reserve({ ...original, artifactId: randomUUID() })).rejects.toThrow()
+  })
+
+  it('rejects another installation and an exposed marker before using the established store', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    await expect(ensureInstalledWorkflowOutputStore(f.root,
+      { ...f.pairing, workerInstallationId: randomUUID() })).rejects.toMatchObject({
+      code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+    await chmod(join(f.root, 'workflow-native-outputs-initialized.json'), 0o644)
+    await expect(ensureInstalledWorkflowOutputStore(f.root, f.pairing)).rejects.toMatchObject({
+      code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+  })
+
+  it('requires recovery for missing established budget state instead of resetting outstanding charges', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    await rm(join(f.root, 'workflow-native-outputs', 'budget', '.native-output-budget.json'))
+    await expect(ensureInstalledWorkflowOutputStore(f.root, f.pairing)).rejects.toMatchObject({ code: 'ENOENT' })
+    await rm(join(f.root, 'workflow-native-outputs'), { recursive: true })
+    await expect(ensureInstalledWorkflowOutputStore(f.root, f.pairing)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('preserves pre-existing output state that has no installation marker', async () => {
+    const f = await startupFixture()
+    const directory = join(f.root, 'workflow-native-outputs')
+    await mkdir(directory, { mode: 0o700 })
+    await writeFile(join(directory, 'unreconciled'), 'retained bytes', { mode: 0o600 })
+    await expect(ensureInstalledWorkflowOutputStore(f.root, f.pairing)).rejects.toMatchObject({
+      code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+    expect(await readFile(join(directory, 'unreconciled'), 'utf8')).toBe('retained bytes')
+  })
+})
 
 describe('explicit qualified native storage adapter, no native acceptance', () => {
   it('never substitutes directory mode for qualification or reserves after denial', async () => {

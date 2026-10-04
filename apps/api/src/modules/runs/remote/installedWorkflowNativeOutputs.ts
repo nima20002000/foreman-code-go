@@ -46,26 +46,41 @@ async function outputDirectories(stateDirectory: string, options: { initialize?:
   } finally { await state.close() }
 }
 
-/** Explicit installer action; startup cannot replace a missing budget journal. */
-export async function initializeInstalledWorkflowOutputStore(stateDirectory: string, pairing: WorkerPairingConfiguration) {
+/** Called under the worker service lock; established budgets are verified and retained. */
+export async function ensureInstalledWorkflowOutputStore(stateDirectory: string, pairing: WorkerPairingConfiguration) {
   const state = await openPrivateRoot(stateDirectory)
+  let initialize = false
   try {
-    const existing = await lstat(anchored(state, 'workflow-native-outputs')).catch(error => {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined
-      throw error
-    })
-    if (existing) throw new DomainError('WORKER_NATIVE_OUTPUT_STORE_EXISTS',
-      'The installed native output store already exists.', 409)
-    // The marker survives a lost store. An interrupted or established installation cannot be initialized again.
-    const marker = await open(anchored(state, 'workflow-native-outputs-initialized.json'),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-    try { await marker.writeFile(JSON.stringify(installation(pairing))); await marker.sync() }
-    finally { await marker.close() }
-    await state.sync()
+    const markerPath = anchored(state, 'workflow-native-outputs-initialized.json')
+    let marker: Awaited<ReturnType<typeof open>> | undefined
+    try {
+      marker = await open(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+      const existing = await lstat(anchored(state, 'workflow-native-outputs')).catch(error => {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined
+        throw error
+      })
+      if (existing) throw unavailable()
+      marker = await open(markerPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+      try { await marker.writeFile(JSON.stringify(installation(pairing))); await marker.sync() }
+      finally { await marker.close(); marker = undefined }
+      await state.sync()
+      initialize = true
+    }
+    if (marker) {
+      try {
+        const stat = await marker.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.uid !== process.getuid?.()
+          || stat.size > 4096) throw unavailable()
+        if (!isDeepStrictEqual(JSON.parse(await marker.readFile('utf8')), installation(pairing))) throw unavailable()
+      } finally { await marker.close() }
+    }
   } finally { await state.close() }
-  const store = await outputDirectories(stateDirectory, { initialize: true })
+  const store = await outputDirectories(stateDirectory, initialize ? { initialize: true } : {})
   await createNativeOutputBudgetLedger({ rootDirectory: join(store.rootDirectory, 'budget'),
-    installation: installation(pairing), limits, initializeNewStore: true })
+    installation: installation(pairing), limits, ...(initialize ? { initializeNewStore: true } : {}) })
 }
 
 function qualificationIdentity(input: CodexNativeOutputQualificationInput) {

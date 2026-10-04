@@ -15,7 +15,7 @@ import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 import { fileURLToPath } from 'node:url';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
-import { createInstalledWorkflowNativeOutputFactory, initializeInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
+import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
 
 export { createWorkerConnection };
 export { approvedRootExtensions, createWorkerExecutionDomains };
@@ -39,7 +39,6 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
   await prepareWorkerState(stateDirectory);
   const unlock = await acquireWorkerLock(stateDirectory);
   try {
-    const pairing = await loadWorkerPairing(stateDirectory);
     const journals = ['workflow-operations.json', 'job-runtime-operations.json'];
     for (const name of journals) {
       const existing = await lstat(join(stateDirectory, name)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -53,15 +52,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
       const journal = await RemoteOperationJournal.open(join(stateDirectory, name), { initializeNewInstallation: true });
       await journal.close();
     }
-    await initializeInstalledWorkflowOutputStore(stateDirectory, pairing);
   } finally { await unlock(); }
-}
-
-export async function initializeInstalledNativeOutputs(stateDirectory) {
-  await prepareWorkerState(stateDirectory);
-  const unlock = await acquireWorkerLock(stateDirectory);
-  try { await initializeInstalledWorkflowOutputStore(stateDirectory, await loadWorkerPairing(stateDirectory)); }
-  finally { await unlock(); }
 }
 
 // Only supplied, actual domain registrations enter the authenticated transport.
@@ -90,6 +81,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
+    await ensureInstalledWorkflowOutputStore(stateDirectory, pairing);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
       if (!rsync) {
