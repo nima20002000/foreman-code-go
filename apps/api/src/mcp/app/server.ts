@@ -62,8 +62,8 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
         idempotentHint: false,
         openWorldHint: true,
       },
-    }, async (input, extra) => invokeAppTool(context, 'interaction_respond', () => context.interactions.respond(
-      context.principal, input, { signal: context.signal ? AbortSignal.any([context.signal, extra.signal]) : extra.signal },
+    }, async (input) => invokeAppTool(context, 'interaction_respond', () => context.interactions.respond(
+      context.principal, input, { signal: context.signal },
     )))
   }
 }
