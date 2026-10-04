@@ -82,6 +82,19 @@ describe('OpenCode exact-parent child control transport', () => {
       })
     } finally { await f.native.dispose() }
   })
+  it('preserves a named default variant recorded in the child user message', async () => {
+    const f = await fixture()
+    try {
+      f.server.sessionInfos.get('ses_child')!.model = {
+        providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'default',
+      }
+      f.server.messages.get('ses_child')![0]!.info.model = {
+        providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash', variant: 'default',
+      }
+      await f.native.subagentControl(f.record, () => {})!.sendInput!(receipt(), 'Keep working')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body?.variant).toBe('default')
+    } finally { await f.native.dispose() }
+  })
   it('checks ownership after asynchronous child history reads', async () => {
     const f = await fixture()
     try {

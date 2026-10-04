@@ -62,6 +62,25 @@ it('does not accept the default sentinel for a pinned named variant', async () =
   }
 })
 
+it('retains an advertised named variant whose name is default', async () => {
+  const server = new FixtureServer()
+  server.providers = { all: [{ id: 'opencode-go', models: {
+    'deepseek-v4.1-flash': { variants: { default: {} } },
+  } }] }
+  const harness = { ...configuration(), variant: 'default' }
+  const original = manager(server)
+  const restarted = manager(server)
+  try {
+    const session = await sessionFor(original, harness)
+    assert.deepEqual(await restarted.attachSession(session, {
+      request: request(harness), environment: environment(),
+    }), session)
+  } finally {
+    await restarted.dispose()
+    await original.dispose()
+  }
+})
+
 it('sends the explicit unnamed choice even when the native agent has a named default', async () => {
   const server = new FixtureServer()
   server.agents = [{ name: 'custom', variant: 'max',

@@ -1006,7 +1006,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const persisted = object(native.model)
     const model = Object.keys(persisted).length ? {
       providerID: persisted.providerID, modelID: persisted.id,
-      variant: persisted.variant === 'default' ? '' : persisted.variant,
+      variant: persisted.variant === 'default' && object(userInfo.model).variant !== 'default' ? '' : persisted.variant,
     } : object(userInfo.model)
     const variant = model.variant ?? ''
     if (typeof agent !== 'string' || !agent || typeof model.providerID !== 'string' || !model.providerID
@@ -1484,8 +1484,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (typeof native.agent === 'string' && native.agent !== configuration.nativeAgent) throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted native Agent differs from its pinned configuration.')
     const model = object(native.model)
     const [providerID, ...modelID] = configuration.model.split('/')
-    // OpenCode stores its unnamed variant as "default" in session metadata.
-    const variant = model.variant === 'default' ? '' : (model.variant ?? '')
+    // OpenCode's "default" sentinel also matches an explicitly unnamed selection.
+    const variant = configuration.variant === '' && model.variant === 'default' ? '' : (model.variant ?? '')
     if (Object.keys(model).length && (model.providerID !== providerID || model.id !== modelID.join('/') || variant !== configuration.variant)) {
       throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted native model or variant differs from its pinned configuration.')
     }
