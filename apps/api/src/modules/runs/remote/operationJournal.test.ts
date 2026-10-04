@@ -1,4 +1,6 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -6,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { RemoteOperationJournal } from './operationJournal.js'
 import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
 import type { RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
+import { bootIdentity, processIdentity, identityAlive } from '../../harnesses/recovery/linuxIdentity.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 afterEach(async () => { await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -119,5 +122,83 @@ describe('durable remote ownership', () => {
     await entered.acknowledgeControl(stop)
     expect(await entered.controlDelivery(stop)).toBe('acknowledged')
     expect(await entered.enterControlDelivery(stop)).toBe(false)
+  })
+  it('recovers a killed service while fencing its surviving native descendant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'journal-crash-'))
+    roots.push(root)
+    const path = join(root, 'journal.json')
+    const moduleUrl = new URL('./operationJournal.ts', import.meta.url).href
+    const script = `
+      import { spawn } from 'node:child_process';
+      import { RemoteOperationJournal } from ${JSON.stringify(moduleUrl)};
+      const journal = await RemoteOperationJournal.open(process.argv[1], { initializeNewInstallation: true });
+      await journal.accept(${JSON.stringify(intent)}, ${JSON.stringify(connection)}, ${JSON.stringify(randomUUID())});
+      await journal.reserveEntry('operation');
+      await journal.acknowledgeStart('operation', ${JSON.stringify(native)});
+      const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      descendant.unref();
+      process.send(descendant.pid);
+      setInterval(() => {}, 1000);
+    `
+    const worker = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, path], {
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    })
+    let descendantPid: number | undefined
+    try {
+      const pid = await new Promise<unknown>((resolve, reject) => {
+        worker.once('message', resolve)
+        worker.once('error', reject)
+        worker.once('exit', () => reject(new Error('Journal worker exited before reporting its descendant')))
+      })
+      descendantPid = Number(pid)
+      const descendant = processIdentity(descendantPid)
+      expect(descendant).toBeDefined()
+      const killed = once(worker, 'exit')
+      worker.kill('SIGKILL')
+      await killed
+      const recovered = await RemoteOperationJournal.open(path)
+      journals.push(recovered)
+      expect(descendant && identityAlive(descendant)).toBe(true)
+      expect(await recovered.status(intent.operationId)).toMatchObject({
+        status: 'known', receipt: { native, phase: 'start_acknowledged', entryAttempted: true },
+      })
+      expect((await recovered.reserveEntry(intent.operationId)).reserved).toBe(false)
+      await expect(recovered.accept({ ...intent, operationId: 'replacement' }, connection, randomUUID()))
+        .rejects.toThrow('already bound')
+      expect((await readdir(root)).filter(name => name.includes('.retired-owner-'))).toHaveLength(1)
+    } finally {
+      worker.kill('SIGKILL')
+      if (descendantPid) process.kill(descendantPid, 'SIGKILL')
+    }
+  })
+  it('reconciles a prior boot service lock without promoting native ownership to closed', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.close()
+    const service = processIdentity(process.pid)!
+    const owner = { version: 1, ownerId: randomUUID(), bootId: randomUUID(),
+      pid: service.pid, startTicks: service.startTicks }
+    expect(owner.bootId).not.toBe(bootIdentity())
+    await writeFile(`${path}.owner-lock`, JSON.stringify(owner), { mode: 0o600 })
+    const recovered = await RemoteOperationJournal.open(path)
+    journals.push(recovered)
+    expect(await recovered.status(intent.operationId)).toMatchObject({
+      status: 'known', receipt: { native, phase: 'start_acknowledged' },
+    })
+    expect((await recovered.reserveEntry(intent.operationId)).reserved).toBe(false)
+    expect(JSON.parse(await readFile(`${path}.retired-owner-${owner.ownerId}.json`, 'utf8'))).toEqual(owner)
+  })
+  it('refuses a live service identity or unidentifiable legacy lock even without a kernel holder', async () => {
+    const { path, journal } = await setup()
+    await journal.close()
+    const service = processIdentity(process.pid)!
+    await writeFile(`${path}.owner-lock`, JSON.stringify({ version: 1, ownerId: randomUUID(),
+      bootId: bootIdentity(), pid: service.pid, startTicks: service.startTicks }))
+    await expect(RemoteOperationJournal.open(path)).rejects.toMatchObject({ code: 'EEXIST' })
+    await writeFile(`${path}.owner-lock`, randomUUID())
+    await expect(RemoteOperationJournal.open(path)).rejects.toThrow()
+    expect(await readFile(`${path}.owner-lock`, 'utf8')).toMatch(/^[a-f0-9-]{36}$/)
   })
 })

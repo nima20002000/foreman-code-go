@@ -1,5 +1,4 @@
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
-import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
@@ -18,6 +17,7 @@ import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRu
 import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
+import { acquireJournalOwner } from './journalOwner.js'
 
 const ControlDeliverySchema = z.object({
   operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),
@@ -34,15 +34,13 @@ export class RemoteOperationJournal {
   private closed = false
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
-  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
+  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: Awaited<ReturnType<typeof acquireJournalOwner>>) {}
   static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number } = {}) {
     const capacity = options.capacity ?? 1000
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Invalid journal capacity')
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    // A crashed owner leaves a fence. W11/operator reconciliation must establish safe lock disposition.
-    const lock = await open(`${path}.owner-lock`, 'wx', 0o600)
+    const lock = await acquireJournalOwner(path)
     try {
-      await lock.writeFile(randomUUID()); await lock.sync()
       let data: z.infer<typeof JournalSchema>
       try {
         if ((await stat(path)).size > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
@@ -50,14 +48,14 @@ export class RemoteOperationJournal {
         if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
-        if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
+        if (lock.recovered || !options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
         data = { schemaVersion: 1, controlDeliveries: [], receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
       if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
       await journal.persist(data)
       return journal
-    } catch (error) { await lock.close(); await unlink(`${path}.owner-lock`); throw error }
+    } catch (error) { await lock.close(); throw error }
   }
   async close() {
     if (this.closed) return
@@ -65,7 +63,6 @@ export class RemoteOperationJournal {
     await this.tail
     this.faulted = true
     await this.lock.close()
-    await unlink(`${this.path}.owner-lock`)
   }
   private async persist(data: z.infer<typeof JournalSchema>) {
     const serialized = JSON.stringify(JournalSchema.parse(data))
