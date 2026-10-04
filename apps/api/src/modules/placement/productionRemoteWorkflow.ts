@@ -190,18 +190,22 @@ export function createProductionRemoteWorkflow(input: {
     async afterReviewCommit(executionId: string) {
       const pending = reviewAcknowledgments.get(executionId)
       if (!pending) return
-      for (const [original, sql] of [...pending].slice(0, 32)) {
-        if (!didGraphTransactionCommit(sql)) { pending.delete(original); continue }
+      let attempts = 0
+      for (const [original, sql] of [...pending]) {
+        if (attempts >= 32) break
+        pending.delete(original)
+        if (!didGraphTransactionCommit(sql)) continue
         try {
           await physical.acknowledge(original)
-          pending.delete(original)
           retained.get(executionId)?.delete(original.sourceDigest)
         } catch (error) {
           if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
-            pending.delete(original)
             retained.get(executionId)?.delete(original.sourceDigest)
+            continue
           }
+          pending.set(original, sql)
         }
+        attempts++
       }
       if (!pending.size) reviewAcknowledgments.delete(executionId)
     },

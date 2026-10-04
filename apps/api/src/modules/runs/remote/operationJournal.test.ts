@@ -20,6 +20,36 @@ const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: di
 const stop: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: 'operation', attemptId: 'attempt', executionId: 'execution', bindingHash: digest, owner: intent.owner, action: { kind: 'stop' } }
 async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal); return { path, journal } }
 describe('durable remote ownership', () => {
+  it('enters Stop delivery for the acknowledged review turn while preserving the original workflow identity', async () => {
+    const { journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.reserveTurn(intent.operationId, { correlationId: 'execution:execution', promptDigest: digest })
+    await journal.acknowledgeTurn(intent.operationId, native.turnId)
+    await journal.markRunning(intent.operationId)
+    await journal.retainReviewer(intent.operationId, { agentId: 'reviewer', expiresAt: '2099-01-01T00:00:00.000Z' },
+      { events: [], pendingInteractions: [], nativeTurnId: native.turnId,
+        terminalTurn: { correlationId: 'execution:execution', providerId: native.turnId,
+          result: { outcome: 'succeeded' } } })
+    const assignment = { jobId: 'review-job', interactionId: 'interaction', reviewerAgentId: 'reviewer',
+      correlationId: 'review:review-job', session: { harness: 'codex' as const,
+        providerVersion: '0.154.0', nativeSessionId: native.sessionId } }
+    await journal.reserveReviewTurn(intent.operationId, assignment, digest, -1)
+    await journal.enterReviewTurn(intent.operationId, assignment.correlationId)
+    await journal.acknowledgeReviewTurn(intent.operationId, assignment.correlationId, 'review-turn')
+    await expect(journal.control({ ...stop, commandId: 'stale-workflow-stop', native })).rejects.toThrow('target')
+    const command = { ...stop, native: { ...native, turnId: 'review-turn' },
+      nativeTarget: { kind: 'session' as const, sessionId: native.sessionId, turnId: 'review-turn' } }
+    expect((await journal.control(command)).dispatch).toBe(true)
+    expect(await journal.enterControlDelivery(command)).toBe(true)
+    await journal.acknowledgeControl(command)
+    expect(await journal.enterControlDelivery(command)).toBe(false)
+    expect(await journal.status(intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      native, stopFence: true, reviewTurns: [{ providerId: 'review-turn' }],
+    } })
+  })
+
   it('duplicate delivery and concurrent reservations authorize one entry', async () => {
     const { journal } = await setup()
     const receipt = await journal.accept(intent, connection, randomUUID())

@@ -138,11 +138,13 @@ describe('positive installed native closure consumption',()=>{
     await f.journal.revokeFence(f.intent.operationId)
     f.closeOwner.mockResolvedValue(true)
     const result = await settleInstalledWorkflowNativeOwner({ ...f,
+      artifactDigests: ['a'.repeat(64)],
       history: { events: [], pendingInteractions: [], terminalTurn: {
         correlationId: 'assigned-review', providerId: 'review-turn', result: { outcome: 'succeeded' },
       } } })
     expect(result).toMatchObject({ kind: 'cancelled' })
     expect(result?.result).toBeUndefined()
+    expect(result?.artifactDigests).toBeUndefined()
     expect(f.close).toHaveBeenCalledExactlyOnceWith(f.session)
     expect(f.closeOwner).toHaveBeenCalledExactlyOnceWith(`execution:${f.intent.executionId}`)
   })
