@@ -105,6 +105,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
   assertAdoptedArtifacts(sql:GraphTransactionSql,owner:RunOwnership,original:VerifiedRemoteOriginalSource):Promise<void>
 } {
   const prepared = new WeakMap<object, Prepared>(), bound = new WeakMap<object, Bound>()
+  const histories = new Map<string, Prepared>()
   const terminals=new WeakMap<WorkflowNativeCapture,{original:VerifiedRemoteOriginalSource;capture:Bound;proof:WorkflowNativeProofRecord;sql:GraphTransactionSql}>()
   return {
     async prefetch(receipt, placement, source, signal) {
@@ -112,6 +113,20 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (placement.hostRef.kind !== 'device' || !placement.registration || !receipt.native) return unavailable('remote_placement')
       const endpoint = input.endpoint(), captured = endpoint.captureRequest(placement.hostRef.deviceId, 'execution-v1')
       if (!captured) return unavailable('device_connection')
+      const retained = histories.get(receipt.intent.operationId)
+      const retainedSource = retained && (source.type === 'history'
+        ? same(source.history, retained.readout.history)
+        : source.type === 'event' && retained.readout.history?.events.some(event =>
+          same({ ...event, executionId: receipt.intent.executionId }, source.event)))
+      if (retained && retainedSource && same(retained.readout.receipt, receipt)
+        && same(retained.placement, placement) && same(retained.binding, captured.binding)
+        && Date.parse(retained.readout.expiresAt) > Date.now()) {
+        retained.assertCurrent()
+        assertSource(retained.readout, source)
+        const result = Object.freeze({ kind: 'original-remote-physical' as const })
+        prepared.set(result, { ...retained, source: structuredClone(source) })
+        return result
+      }
       let expiresAt=Date.now()+60_000
       const assertCurrent = () => {
         signal?.throwIfAborted()
@@ -131,7 +146,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
       assertSource(readout, source)
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      prepared.set(result, { binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
+      const observation: Prepared = { binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
         acknowledge:async(sourceDigest)=>{
           assertCurrent()
           const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
@@ -140,7 +155,15 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           assertCurrent()
           if(ack.operationId!==receipt.intent.operationId||ack.receiptSequence!==receipt.sequence||ack.sourceDigest!==sourceDigest)return unavailable('ack_identity')
           return ack
-        } })
+        } }
+      prepared.set(result, observation)
+      if (readout.history) {
+        // Events already present in one authenticated history share its bounded
+        // physical observation; every publication still checks its original lease.
+        histories.delete(receipt.intent.operationId)
+        histories.set(receipt.intent.operationId, observation)
+        if (histories.size > 16) histories.delete(histories.keys().next().value!)
+      }
       return result
     },
     bind(original, proof, owner, lifetime) {
