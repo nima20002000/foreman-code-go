@@ -257,6 +257,52 @@ describe('actual worker native-port adapter', () => {
     await host.control(command); await host.control(command)
     expect(state.responds).toBe(1)
   })
+  it.each(['stop', 'respond'] as const)('retries %s after failed authorization before native delivery', async kind => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await f.host.drain()
+    const option = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
+    f.manager.pending = async () => ({ session: f.session,
+      turn: { nativeTurnId: 'native-turn', nativeRequestId: 'question' },
+      nativeRequestType: 'approval', request: {}, responseOptions: [option] })
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Missing original receipt')
+    const action = kind === 'stop' ? { kind: 'stop' as const } : {
+      kind: 'respond' as const, interactionId: 'interaction', interactionRevision: '1',
+      nativeInteractionId: 'question', response: option,
+    }
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'control',
+      operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+      executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
+      owner: f.intent.owner, native: status.receipt.native, action }
+    let authorizations = 0
+    f.ports.authorize = async () => {
+      if (++authorizations === 2) throw new Error('Temporary authorization failure')
+    }
+    await expect(f.host.control(command)).rejects.toThrow('Temporary authorization failure')
+    expect(f.state.cancels + f.state.responds).toBe(0)
+    await f.host.control(command)
+    await f.host.control(command)
+    expect(f.state.cancels + f.state.responds).toBe(1)
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(1)
+  })
+  it('does not repeat Stop after the native cancellation acknowledgement is lost', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    f.manager.cancel = async () => { f.state.cancels++; throw new Error('Lost acknowledgement') }
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
+      operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+      executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
+      owner: f.intent.owner, action: { kind: 'stop' } }
+    await f.host.control(command)
+    await f.host.control(command)
+    expect(f.state.cancels).toBe(1)
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'uncertain', stopFence: true },
+    })
+  })
   it('revocation fences and requests physical cancellation without inventing closure', async () => { const { host, journal, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); state.allowed = false; await host.refreshAuthority(); expect(state.cancels).toBe(1); const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true); expect(status.status === 'known' && status.receipt.phase).toBe('stop_requested') })
   it.each(['permission revoked', 'source changed', 'root changed', 'harness changed'])('cancels the original turn after %s', async reason => {
     const f = await setup()

@@ -340,8 +340,10 @@ export class RemoteExecutionHost {
       for (const controller of this.inspections.get(command.operationId) ?? []) controller.abort()
       return this.ports.journal.status(command.operationId)
     }
-    const previous = await this.ports.journal.status(command.operationId)
-    if (previous.status === 'known' && previous.receipt.controls.some(value => value.commandId === command.commandId)) { await this.ports.journal.control(command); return this.ports.journal.status(command.operationId) }
+    const delivery = await this.ports.journal.controlDelivery(command)
+    if (delivery === 'entered' || delivery === 'acknowledged') {
+      return this.ports.journal.status(command.operationId)
+    }
     if (command.action.kind === 'respond') {
       const pending = await resident.manager.pending(resident.session)
       if (!pending || pending.turn.nativeRequestId !== command.action.nativeInteractionId || pending.session.nativeSessionId !== command.native?.sessionId || pending.turn.nativeTurnId !== command.native?.turnId) throw new Error('Original native question no longer pending')
@@ -350,11 +352,13 @@ export class RemoteExecutionHost {
       await this.ports.journal.interaction(command.operationId, { interactionId: command.action.interactionId, interactionRevision: command.action.interactionRevision, nativeInteractionId: command.action.nativeInteractionId, native: command.native! })
     }
     const recorded = await this.ports.journal.control(command)
-    if (!recorded.dispatch) return this.ports.journal.status(command.operationId)
+    if (!recorded.dispatch && delivery !== 'reserved') return this.ports.journal.status(command.operationId)
     await this.ports.authorize(resident.intent, resident.placement, action)
+    if (!await this.ports.journal.enterControlDelivery(command)) return this.ports.journal.status(command.operationId)
     try {
       if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, recorded.receipt.native?.turnId) }
       else await resident.manager.respond(resident.session, command.action.nativeInteractionId, ApprovalResponseOptionSchema.parse(command.action.response))
+      await this.ports.journal.acknowledgeControl(command)
       await this.settle(resident, `execution:${resident.intent.executionId}`)
     } catch { await this.ports.journal.uncertain(command.operationId, 'Native control acknowledgment unavailable') }
     return this.ports.journal.status(command.operationId)

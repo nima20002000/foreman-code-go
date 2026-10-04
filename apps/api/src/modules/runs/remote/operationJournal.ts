@@ -19,7 +19,10 @@ import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } fr
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+const ControlDeliverySchema = z.object({
+  operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),
+}).strict()
+const JournalSchema = z.object({ schemaVersion: z.literal(1), controlDeliveries: z.array(ControlDeliverySchema).default([]), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
@@ -48,7 +51,7 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
+        data = { schemaVersion: 1, controlDeliveries: [], receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
       if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
@@ -200,9 +203,41 @@ export class RemoteOperationJournal {
       }
       if (receipt.controls.length >= 128) throw new Error('Control journal full')
       receipt.controls.push(command)
+      data.controlDeliveries.push({ operationId: command.operationId, commandId: command.commandId, phase: 'reserved' })
       if (command.action.kind === 'stop') { receipt.stopFence = true; if (receipt.phase !== 'confirmed_terminal') receipt.phase = 'stop_requested' }
       receipt.sequence++
       return { dispatch: receipt.phase !== 'confirmed_terminal' && receipt.native !== undefined, receipt }
+    })
+  }
+  async controlDelivery(command: RemoteOwnerControl) {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    const receipt = this.receipt(this.data, command.operationId)
+    const prior = receipt.controls.find(value => value.commandId === command.commandId)
+    if (!prior) return undefined
+    if (!same(prior, command)) throw new Error('Control command conflict')
+    // Older records reserved and entered in one step; their native effects may have happened.
+    return this.data.controlDeliveries.find(value => value.operationId === command.operationId
+      && value.commandId === command.commandId)?.phase ?? 'entered'
+  }
+  enterControlDelivery(command: RemoteOwnerControl) {
+    return this.change(data => {
+      const receipt = this.receipt(data, command.operationId)
+      const prior = receipt.controls.find(value => value.commandId === command.commandId)
+      if (!prior || !same(prior, command)) throw new Error('Original control reservation required')
+      const delivery = data.controlDeliveries.find(value => value.operationId === command.operationId
+        && value.commandId === command.commandId)
+      if (!delivery || delivery.phase !== 'reserved' || receipt.terminal || !receipt.native) return false
+      delivery.phase = 'entered'
+      return true
+    })
+  }
+  acknowledgeControl(command: RemoteOwnerControl) {
+    return this.change(data => {
+      const delivery = data.controlDeliveries.find(value => value.operationId === command.operationId
+        && value.commandId === command.commandId)
+      if (!delivery || delivery.phase === 'reserved') throw new Error('Control delivery entry required')
+      delivery.phase = 'acknowledged'
     })
   }
   revokeFence(operationId: string) {
