@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue,
+import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue,
   type GraphEditIntentV3, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { queryKeys } from '../../../shared/api/query'
@@ -52,11 +52,11 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   // Without exact local evidence, a remote Discard says nothing about this form.
   if (intent.state === 'discarded' && !submission) return current
   const submittedHere = editSnapshotSubmitted(draftKey, current, intent.stageCommandId)
-  const exactSubmittedForm = !!submission && sameExecutableWorkflow(current.graph, submission.target)
+  const exactSubmittedForm = !!submission && sameAuthoredWorkflow(current.graph, submission.target)
     && sameWorkflowValue(current.agentEdits ?? {}, submission.agentTarget ?? {})
   const exactRemoteForm = intent.state === 'saved' && !!current.remoteEditIntent
     && sameWorkflowValue(current.remoteEditIntent, remoteLineage(intent)) && remoteBaseMatches(current, intent)
-    && sameExecutableWorkflow(current.graph, intent.stagedDraft.graph)
+    && sameAuthoredWorkflow(current.graph, intent.stagedDraft.graph)
     && sameWorkflowValue(current.agentEdits ?? {}, remoteAgents(intent))
   const cleanRemoteForm = !hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
     && !Object.keys(current.agentForms ?? {}).length
@@ -269,7 +269,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
   const intent = query.data?.intent
   const locked = activeEditIntent(intent) || outboxPending || mutation.isPending
   return { query, mutation, intent, locked, storageError, outboxPending,
-    sameDisplayedPayload: !intent || sameExecutableWorkflow(edit.graph, intent.stagedDraft.graph)
+    sameDisplayedPayload: !intent || sameAuthoredWorkflow(edit.graph, intent.stagedDraft.graph)
       && sameWorkflowValue(referencedAgentEdits(edit.graph, edit.agentEdits),
         Object.fromEntries((intent.stagedDraft.stagedAgents ?? []).map((item) => [item.agent.id, item.agent]))),
     save: () => mutation.mutateAsync({ action: 'save' }),

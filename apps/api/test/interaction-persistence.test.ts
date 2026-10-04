@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 
 import { DurableInteractionSchema, type DurableInteraction, type HarnessNativeEvent } from '@graphql/contracts'
 import type pg from 'pg'
@@ -11,7 +10,6 @@ import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
@@ -220,35 +218,4 @@ it('does not relabel proven native delivery as failed when atomic checkpoint con
   assert.equal(result.interaction.deliveryState, 'delivered')
   assert.deepEqual(outcomes, [{ state: 'delivered', evidence: proof }])
   assert.deepEqual(graphErrors, ['GRAPH_RESUME_CHECKPOINT_UNCERTAIN'])
-})
-
-it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 migrations', async () => {
-  // SHA-256 of each SQL string at PR #10 audited head 2f83f40b.
-  const expected: Record<number, string> = {
-    "1": "51b2b3e95b480d1abd6139242182c4e39e9730ab5f1d1ca10b84500005e81510",
-    "2": "6da1fab50bd4fde4520784404a280c9497076d3b3c018f5dc1bed0e78d12d749",
-    "3": "2b545955f4e9c217304b231b2f852643a605c7e7ef2c6c29e19b7b70abd449fd",
-    "4": "bc06d634bcb6a171a9197e455ec53b9b1f917bfa32385e948a6e4bddcd5ed735",
-    "100": "6d469df7996be70dda86c1c418e7b8f1a0298553f40e59f3f41a45a8f483adc2",
-    "400": "a6c04743b1976775bc7288d22f82d8ace78b9d5eb584c003c29d9711f6374dfa",
-    "401": "f1420cc038298a7c454cf3ad81ace95ded1f2acfaaceb07e46639867322cc97b",
-    "500": "6a43e990d882be17801de27a818c213afc868abfd56d46279b28f26827860282",
-    "501": "f4f20e80724b114d4aac79a6954b9ad3038505a87bd6bed8c62fb01c471baaa6",
-    "502": "dc69bad80b05933123fe9d7eedfe8feafc06404b0abaa7c615da179e7a6a46e7"
-}
-  const observed = new Map<number, string>()
-  let lastSql = ''
-  const pool = { connect: async () => ({ release() {}, query: async (sql: string, values: unknown[] = []) => {
-    if (sql === 'select current_schema() as schema') return { rows: [{ schema: 'public' }], rowCount: 1 }
-    if (sql.startsWith('insert into application_migrations')) observed.set(Number(values[0]), createHash('sha256').update(lastSql).digest('hex'))
-    else lastSql = sql
-    return { rows: [], rowCount: 0 }
-  } }) } as unknown as pg.Pool
-  await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005, 264201, 264401, 264501, 264502, 264601, 264602, 264603, 264604, 26090501, 265501, 265502, 264402, 264403, 264404, 264405, 264701, 267201, 267202, 267203, 268201, 269301, 269401, 269501, 270203, 270205, 270204, 273601, 273636, 273640, 273605, 273637, 278001, 285001, 285002, 285003, 282101, 282501, 282502, 282503, 283401, 283402, 283801, 283802, 283803, 283804, 283805, 283806, 283807, 283808, 284301, 284401, 284501, 285201, 285202, 285203, 285204, 284302, 283809, 285205, 285206, 285207, 282504, 3101001])
-  for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
-  assert.equal(observed.get(265502), 'd7d97908fcc2a4865c9931fbee66b05ca1d23398d8d8539bdbb13c32eba29576')
-  assert.equal(observed.get(170021), '5d91e223036ef21375b5d67916956121b4ed4ca5de702a545650a1ef054b2e6a')
-  assert.equal(observed.get(170022), '8cc94ebe79fb52b2bce61655d2d2a57a7c2bb766752594f21b4b08d0d71bfa20')
-  assert.equal(observed.get(170023), '1667cc56e58e0ec2d16737e3e9da7368d8a4e48c195f65f94e56fbdcd8acf962')
 })

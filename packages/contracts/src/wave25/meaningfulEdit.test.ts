@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { executableNodeContent, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowExceptGeometry } from './meaningfulEdit.js'
+import { executableNodeContent, preserveWorkflowGeometry, sameAuthoredWorkflow,
+  sameExecutableWorkflow, sameWorkflowExceptGeometry } from './meaningfulEdit.js'
 
 const fixture = () => ({
-  id: 'workflow', workspaceId: 'workspace', version: 7, executionSemanticsVersion: 2,
+  id: 'workflow', workspaceId: 'workspace', version: 7, executionSemanticsVersion: 3,
   createdAt: '2026-09-24T00:00:00Z', updatedAt: '2026-09-24T00:00:00Z',
   nodes: [{ id: 'worker', agentId: 'agent', initialPrompt: 'Before', position: { x: 1, y: 2 } }],
   edges: [{ id: 'edge', source: 'worker', target: 'other', kind: 'execution' }],
   executionPolicy: { maxParallelism: 4, maxNodeExecutions: 10 }, approval: { handler: 'user' },
 })
 
-describe('NIM-2642 shared executable/presentation boundary', () => {
-  it('exempts positions and server stamps from dirtiness, but nothing else', () => {
+describe('shared executable/presentation boundary', () => {
+  it('exempts positions and server stamps from execution comparisons', () => {
     const before = fixture(), after = structuredClone(before)
     after.version++; after.updatedAt = '2026-09-24T01:00:00Z'; after.nodes[0]!.position = { x: 700, y: -100 }
     expect(sameExecutableWorkflow(before, after)).toBe(true)
@@ -35,6 +36,15 @@ describe('NIM-2642 shared executable/presentation boundary', () => {
     expect(sameExecutableWorkflow(before, resized)).toBe(true)
     expect(preserveWorkflowGeometry(before, before)).toBe(before)
     expect(preserveWorkflowGeometry(before, resized).nodes[0]).toMatchObject({ width: 600, height: 320 })
+  })
+  it.each(['name', 'label'])('keeps node %s edits dirty without changing execution', (field) => {
+    const before = fixture()
+    const renamed = { ...before, nodes: [{ ...before.nodes[0]!, [field]: 'Renamed worker' }] }
+    expect(sameExecutableWorkflow(before, renamed)).toBe(true)
+    expect(sameAuthoredWorkflow(before, renamed)).toBe(false)
+    expect(sameWorkflowExceptGeometry(before, renamed)).toBe(false)
+    expect(executableNodeContent(renamed.nodes[0]!)).toHaveProperty(field, 'Renamed worker')
+    expect(before.nodes[0]).not.toHaveProperty(field)
   })
   it('preserves independent positions on mixed discard without reviving removed nodes', () => {
     const before = fixture(), displayed = { ...before, nodes: [

@@ -1,7 +1,7 @@
 /**
  * The executable/presentation boundary used by authoring and save admission.
- * Only board geometry (position and the UI card's width/height) and server
- * version stamps are omitted. New fields remain meaningful until explicitly
+ * Node display names, board geometry and server version stamps are omitted
+ * from execution comparisons. New fields remain meaningful until explicitly
  * classified. Viewport, selection and panel collapse are not workflow fields.
  * This is content comparison, not workflow validation or execution authority.
  */
@@ -16,7 +16,7 @@ export function sameWorkflowValue(left: unknown, right: unknown): boolean {
     && keys.every((key) => sameWorkflowValue(a[key], b[key]))
 }
 
-type PresentedNode = { id: string; position?: unknown; width?: unknown; height?: unknown }
+type PresentedNode = { id: string; name?: unknown; label?: unknown; position?: unknown; width?: unknown; height?: unknown }
 const geometryFields = ['position', 'width', 'height'] as const
 
 export function executableNodeContent<T extends PresentedNode>(node: T): Omit<T, 'position' | 'width' | 'height'> {
@@ -34,10 +34,25 @@ type PresentedWorkflow = {
   updatedAt?: unknown
 }
 
-export function executableWorkflowContent<T extends PresentedWorkflow>(graph: T) {
+function authoredWorkflowContent<T extends PresentedWorkflow>(graph: T) {
   const { version, createdAt, updatedAt, ...content } = graph
   void version; void createdAt; void updatedAt
   return { ...content, nodes: graph.nodes.map(executableNodeContent) }
+}
+
+export function executableWorkflowContent<T extends PresentedWorkflow>(graph: T) {
+  const authored = authoredWorkflowContent(graph)
+  const nodes = authored.nodes.map((node) => {
+    const execution = { ...node }
+    delete execution.name
+    delete execution.label
+    return execution
+  })
+  return { ...authored, nodes }
+}
+
+export function sameAuthoredWorkflow(left: PresentedWorkflow, right: PresentedWorkflow): boolean {
+  return sameWorkflowValue(authoredWorkflowContent(left), authoredWorkflowContent(right))
 }
 
 /** Acknowledgements may differ in geometry, not scope, version stamps or other

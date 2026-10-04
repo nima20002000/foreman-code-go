@@ -47,6 +47,7 @@ async function readRunSummaries(client: pg.PoolClient, workspaceId: string) {
         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
         or r.id in (select recent.id from runs recent where recent.workspace_id=$1
           and recent.record->'executionSemanticsVersion'='3'::jsonb
+          and recent.execution_state='completed'
           order by recent.created_at desc,recent.id desc limit 20))
     order by r.created_at desc,r.id desc limit 2001`, [workspaceId, new Date().toISOString()])).rows
   if (rows.length > 2000) {

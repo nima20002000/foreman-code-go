@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import { SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
@@ -11,8 +12,18 @@ describe('workspace Run summaries', () => {
     try {
       const repository = new PostgresWorkspaceRepository(f.db.pool, f.workflows, f.runs)
       const historicalIds: string[] = []
-      for (const semantics of [1, 2, undefined, '3']) {
-        const historical = { ...f.f.run, id: `historical-${randomUUID()}`, executionSemanticsVersion: semantics }
+      const historicalVersions: string[] = []
+      for (const [index, semantics] of [1, 2, undefined].entries()) {
+        const version = { ...f.f.version, id: `historical-version-${randomUUID()}`, version: index + 2,
+          executionSemanticsVersion: semantics ?? 1,
+          definition: { ...f.f.version.definition, executionSemanticsVersion: semantics ?? 1, version: index + 2 } }
+        historicalVersions.push(version.id)
+        await f.db.pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,
+          execution_semantics_version,record) values($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+        [version.id, version.workspaceId, version.workflowId, version.version, version.entryNodeId,
+          version.executionSemanticsVersion, JSON.stringify(version)])
+        const historical = { ...f.f.run, id: `historical-${randomUUID()}`, workflowVersionId: version.id,
+          executionSemanticsVersion: semantics }
         historicalIds.push(historical.id)
         await f.db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
           values($1,$2,$3,$4,'queued',$5::jsonb)`, [historical.id, historical.workspaceId,
@@ -26,12 +37,44 @@ describe('workspace Run summaries', () => {
       expect(accepted.run.id).toBe(f.f.run.id)
       expect(accepted.run.workflowVersionId).toBe(f.f.run.workflowVersionId)
       for (const runId of historicalIds) {
-        expect(await f.services.runs.history.snapshot(f.writer.principal, {
+        const scope = {
           workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId, runId,
-        })).toEqual({ snapshot: { workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId,
-          runId, kind: 'unavailable', reason: 'legacy_run' } })
+        }
+        const snapshot = { snapshot: { ...scope, kind: 'unavailable', reason: 'legacy_run' } }
+        expect(await f.services.runs.history.snapshot(f.writer.principal, scope)).toEqual(snapshot)
+        expect((await f.client.callTool({ name: 'run_board_snapshot_get', arguments: scope })).structuredContent)
+          .toEqual(snapshot)
       }
-      expect((await f.db.pool.query('select id from runs where id=any($1::text[])', [historicalIds])).rowCount).toBe(4)
+      const records = (await f.db.pool.query('select id,record from runs where id=any($1::text[]) order by id',
+        [historicalIds])).rows
+      const versions = (await f.db.pool.query('select id,record from workflow_versions where id=any($1::text[]) order by id',
+        [historicalVersions])).rows
+      expect(records).toHaveLength(3)
+      await applyApplicationMigrations(f.db.pool)
+      expect((await f.db.pool.query('select id,record from runs where id=any($1::text[]) order by id',
+        [historicalIds])).rows).toEqual(records)
+      expect((await f.db.pool.query('select id,record from workflow_versions where id=any($1::text[]) order by id',
+        [historicalVersions])).rows).toEqual(versions)
+      await expect(f.db.pool.query("update workflow_versions set record=record || '{\"altered\":true}'::jsonb where id=$1",
+        [historicalVersions[0]])).rejects.toMatchObject({ code: '23514' })
+      const invalid = { ...f.f.run, id: `invalid-${randomUUID()}`, executionSemanticsVersion: '3' }
+      await expect(f.db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+        values($1,$2,$3,$4,'queued',$5::jsonb)`, [invalid.id, invalid.workspaceId, invalid.workflowId,
+        invalid.workflowVersionId, JSON.stringify(invalid)])).rejects.toMatchObject({ code: 'P0001' })
+      const invalidStart = { commandId: randomUUID(), workflowVersionId: historicalVersions[0],
+        executionSemanticsVersion: 1, expectedWorkflowRevision: 1, expectedLocationRevision: 1,
+        expectedAgentConfigurationVersionIds: f.f.run.agentConfigurationVersionIds, input: {} }
+      const blocked = await f.app.inject({ method: 'POST',
+        url: `/api/management/workspaces/${f.f.run.workspaceId}/workflows/${f.f.run.workflowId}/runs`,
+        headers: { authorization: `Bearer ${f.writer.token}` }, payload: invalidStart })
+      expect(blocked.statusCode).toBe(400)
+      const denial = await f.client.callTool({ name: 'run_start', arguments: {
+        workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId, ...invalidStart,
+      } }).then(result => ({ result }), (error: unknown) => ({ error }))
+      if ('error' in denial) expect(denial.error).toMatchObject({ code: -32602 })
+      else expect(denial.result.isError).toBe(true)
+      expect((await f.db.pool.query('select id,record from runs where id=any($1::text[]) order by id',
+        [historicalIds])).rows).toEqual(records)
     } finally {
       await f.close()
     }
@@ -47,8 +90,8 @@ describe('workspace Run summaries', () => {
         error: { code: 'REVIEW_FAILED', message: 'Review failed' }, recordedAt: finishedAt } as const
       const completed = SavedWorkflowRunSchema.parse({ ...f.f.run, executionState: 'completed',
         outcome: 'succeeded', result: { outcome: 'succeeded', output: {} }, finishedAt, stopCause })
-      await f.db.pool.query("update runs set execution_state='completed',record=$2::jsonb where id=$1",
-        [completed.id, JSON.stringify(completed)])
+      await f.db.pool.query("update runs set execution_state='completed',record=$2::jsonb,stop_cause=$3::jsonb where id=$1",
+        [completed.id, JSON.stringify(completed), JSON.stringify(stopCause)])
       const query = vi.spyOn(pg.Client.prototype, 'query')
       try {
         const short = await repository.getDetails(completed.workspaceId, f.writer.principal)
@@ -59,11 +102,11 @@ describe('workspace Run summaries', () => {
           const historical = { ...completed, id: `completed-${randomUUID()}`,
             createdAt: new Date(Date.parse(completed.createdAt) - index * 1000).toISOString() }
           await f.db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,
-            record,created_at,runner_id,working_directory,location_revision)
-            values($1,$2,$3,$4,'completed',$5::jsonb,$6::timestamptz,$7,$8,$9)`,
+            record,created_at,runner_id,working_directory,location_revision,stop_cause)
+            values($1,$2,$3,$4,'completed',$5::jsonb,$6::timestamptz,$7,$8,$9,$10::jsonb)`,
           [historical.id, historical.workspaceId, historical.workflowId, historical.workflowVersionId,
             JSON.stringify(historical), historical.createdAt, historical.executionLocation!.runnerId,
-            historical.executionLocation!.rootPath, historical.executionLocation!.locationRevision])
+            historical.executionLocation!.rootPath, historical.executionLocation!.locationRevision, JSON.stringify(stopCause)])
         }
         const longQuery = vi.spyOn(pg.Client.prototype, 'query')
         try {

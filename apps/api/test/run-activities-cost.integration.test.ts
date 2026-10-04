@@ -18,8 +18,8 @@ const occurredAt = '2026-10-02T00:00:00.000Z'
 async function addExecutions(pool: pg.Pool, fixture: GraphFixture, first: number, last: number) {
   const node = agentWorkflowNode(fixture.version.definition.nodes[0])
   await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-    select $1||'-execution-'||n,$1,$2,$3,n,jsonb_build_object(
-      'id',$1||'-execution-'||n,'runId',$1,'workflowNodeId',$2,'agentId',$3,'attempt',n,
+    select $1||'-execution-'||n,$1,$2::text,$3::text,n,jsonb_build_object(
+      'id',$1||'-execution-'||n,'runId',$1,'workflowNodeId',$2::text,'agentId',$3::text,'attempt',n,
       'agentConfigurationVersionId',$4::text,'state','completed','input','{}'::jsonb,
       'result',jsonb_build_object('outcome','succeeded'),
       'createdAt',$5::text,'startedAt',$5::text,'finishedAt',$5::text,

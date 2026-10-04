@@ -1,4 +1,4 @@
-import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
+import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
 import type { JobDefinition } from '@graphql/contracts/jobs'
@@ -300,7 +300,7 @@ export function mergeAcknowledgement(current: WorkflowDefinitionV3, sent: Workfl
 }
 
 export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefinitionV3): boolean {
-  return !sameExecutableWorkflow(context.draft.graph, graph)
+  return !sameAuthoredWorkflow(context.draft.graph, graph)
 }
 
 /** Discard affects staged meaning only. It never dispatches a Run command. */

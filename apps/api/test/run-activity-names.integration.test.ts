@@ -32,26 +32,40 @@ it('keeps admission-time Agent names in the Run board and Activities after prese
         runnerId: 'runner-local', rootPath: directory,
       })
       const definitionUrl = `/api/management/workspaces/${fixture.scope.workspaceId}/workflows/${fixture.scope.workflowId}/definition`
-      async function rename(names: string[]) {
+      async function rename(names: string[], source: 'http' | 'mcp') {
         const stored = (await pool.query<{ record: unknown; revision: string }>(
           'select record,revision::text from workflows where id=$1 and workspace_id=$2',
           [fixture.scope.workflowId, fixture.scope.workspaceId])).rows[0]!
         const graph = WorkflowDefinitionV3Schema.parse(stored.record)
         graph.nodes.forEach((node, index) => { node.name = names[index]! })
-        const response = await fixture.app.inject({ method: 'PUT', url: definitionUrl,
-          headers: graphHeaders(fixture.writer.token), payload: {
-            workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
-            executionSemanticsVersion: 3, expectedRevision: Number(stored.revision),
-            expectedWorkflowVersionId: fixture.version.id, expectedLocationRevision: location.value.locationRevision,
-            expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds, graph,
-          } })
-        expect(response.statusCode, response.body).toBe(200)
-        const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
+        const input = {
+          workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
+          executionSemanticsVersion: 3, expectedRevision: Number(stored.revision),
+          expectedWorkflowVersionId: fixture.version.id, expectedLocationRevision: location.value.locationRevision,
+          expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds, graph,
+        }
+        let result: unknown
+        if (source === 'http') {
+          const response = await fixture.app.inject({ method: 'PUT', url: definitionUrl,
+            headers: graphHeaders(fixture.writer.token), payload: input })
+          expect(response.statusCode, response.body).toBe(200)
+          result = response.json()
+        } else {
+          const response = await graphRpc(app, fixture.writer.token, 'tools/call', {
+            name: 'workflow_save_v3', arguments: input,
+          })
+          expect(response.result?.isError).not.toBe(true)
+          result = graphRpcValue(response.result)
+        }
+        const saved = CurrentWorkflowSaveResultSchema.parse(result).value
         expect(saved.version.id).toBe(fixture.version.id)
+        const readback = await fixture.workflows.get(fixture.writer.principal,
+          fixture.scope.workspaceId, fixture.scope.workflowId)
+        expect(readback.workflow.nodes.map(node => node.name)).toEqual(names)
         return saved
       }
       const admittedNames = ['Admission worker', 'Admission reviewer']
-      const saved = await rename(admittedNames)
+      const saved = await rename(admittedNames, 'http')
       const started = await admitRepeatRun(pool, locations, fixture.writer.principal, 'http', {
         ...fixture.accepted.snapshot.request, commandId: randomUUID(), expectedWorkflowRevision: saved.revision,
         expectedLocationRevision: location.value.locationRevision,
@@ -70,7 +84,22 @@ it('keeps admission-time Agent names in the Run board and Activities after prese
         values($1,'backend','node_state_changed',$2,$3,'{"state":"running","actorName":"Forged payload name"}'::jsonb),
           ($1,'backend','work_requester_reactivated',null,$3,$4::jsonb)`,
       [run.id, executionId, run.createdAt, JSON.stringify({ requesterNodeId: requester.id, subjectName: 'Forged subject name' })])
-      await rename(['Later worker', 'Later reviewer'])
+      await rename(['Later worker', 'Later reviewer'], 'mcp')
+      const reader = await fixture.credential([{ actions: ['workflows:read', 'graph:read', 'agents:read',
+        'workspace_locations:read'], scope: { workspaceIds: [run.workspaceId] } }])
+      const current = await fixture.workflows.get(fixture.writer.principal, run.workspaceId, run.workflowId)
+      const deniedRename = { workspaceId: run.workspaceId, workflowId: run.workflowId, commandId: randomUUID(),
+        executionSemanticsVersion: 3, expectedRevision: current.revision, expectedWorkflowVersionId: fixture.version.id,
+        expectedLocationRevision: location.value.locationRevision,
+        expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+        graph: { ...current.workflow, nodes: current.workflow.nodes.map(node => ({ ...node, name: 'Denied rename' })) } }
+      expect((await fixture.app.inject({ method: 'PUT', url: definitionUrl,
+        headers: graphHeaders(reader.token), payload: deniedRename })).statusCode).toBe(403)
+      const deniedSave = await graphRpc(app, reader.token, 'tools/call', {
+        name: 'workflow_save_v3', arguments: deniedRename,
+      })
+      expect(deniedSave.error || deniedSave.result?.isError).toBeTruthy()
+      expect(await fixture.workflows.get(fixture.writer.principal, run.workspaceId, run.workflowId)).toEqual(current)
 
       const boardScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id }
       const snapshot = await runs.history.snapshot(fixture.writer.principal, boardScope)

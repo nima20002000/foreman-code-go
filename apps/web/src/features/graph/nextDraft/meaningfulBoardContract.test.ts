@@ -27,6 +27,20 @@ describe('frozen board edit classification', () => {
     expect(draftOperations(context, moved)).toEqual([])
   })
 
+  it('keeps an unsaved node name in Save operations and undo history', () => {
+    const context = fixture()
+    const graph = { ...context.draft.graph, nodes: context.draft.graph.nodes.map((node, index) => index === 0
+      ? { ...node, name: 'Renamed worker' } : node) }
+    const edit = editNextDraft(newNextDraft(context, 'node-name'), () => graph)
+    expect(hasLocalChanges(context, graph)).toBe(true)
+    expect(nextDraftDirty(edit)).toBe(true)
+    expect(draftOperations(context, graph)).toContainEqual(expect.objectContaining({
+      type: 'node.replace_v3', node: expect.objectContaining({ name: 'Renamed worker' }),
+    }))
+    expect(nextDraftDirty(undoNextDraft(edit))).toBe(false)
+    expect(nextDraftDirty(redoNextDraft(undoNextDraft(edit)))).toBe(true)
+  })
+
   it('does not push Undo for identical values, undefined wrappers or server stamps', () => {
     const base = newNextDraft(fixture(), 'no-op')
     for (const update of [structuredClone(base.graph), { ...base.graph, description: undefined },
