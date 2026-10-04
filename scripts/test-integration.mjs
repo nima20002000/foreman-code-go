@@ -10,6 +10,19 @@ import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGr
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
+// These files measure bounded startup/latency while exercising shared host resources.
+const exclusiveFiles = [startupFile,
+  'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
+  'apps/api/test/operator-chat.integration.test.ts',
+  'apps/api/test/production-lifecycle.integration.test.ts',
+]
+
+export function partitionIntegrationFiles(files) {
+  return {
+    exclusive: exclusiveFiles.filter(file => files.includes(file)),
+    parallel: files.filter(file => !exclusiveFiles.includes(file)),
+  }
+}
 
 export function isIntegrationTestPath(file) {
   if (!file.startsWith('apps/api/test/') || !file.endsWith('.integration.test.ts')) return false
@@ -403,15 +416,19 @@ async function main() {
         return { code: 1, error, slotUnavailable: slot.unavailable }
       }
     }
-    const firstStartup = selected.includes(startupFile)
-    if (firstStartup) {
-      phase = 'startup (exclusive)'
-      await runSafely(slots[0], startupFile)
-      if (interrupted) { skipped = selected.length - 1; return }
+    const partition = partitionIntegrationFiles(selected)
+    for (const [index, file] of partition.exclusive.entries()) {
+      phase = `bounded resource checks (exclusive): ${file}`
+      const slot = slots.find(slot => !slot.unavailable)
+      if (!slot) {
+        recordUnexecuted([...partition.exclusive.slice(index), ...partition.parallel])
+        return
+      }
+      await runSafely(slot, file)
+      if (interrupted) { skipped = selected.length - index - 1; return }
     }
     phase = 'first pass'
-    const parallel = selected.filter((file) => file !== startupFile)
-    const result = await scheduleFiles(parallel, slots.filter((slot) => !slot.unavailable),
+    const result = await scheduleFiles(partition.parallel, slots.filter((slot) => !slot.unavailable),
       runSafely, () => Boolean(interrupted))
     skipped = interrupted ? result.skipped : 0
     if (!interrupted) recordUnexecuted(result.unexecuted)
@@ -445,16 +462,18 @@ async function main() {
       if (!interrupted) {
         phase = 'retest'
         reportProgress()
-        const retestStartup = toRetest.includes(startupFile)
-        if (retestStartup && retestSlots.length) {
-          phase = 'retest startup (exclusive)'
-          await runSafely(retestSlots[0], startupFile, 'retest')
+        const retestPartition = partitionIntegrationFiles(toRetest)
+        for (const file of retestPartition.exclusive) {
+          if (interrupted) break
+          const slot = retestSlots.find(slot => !slot.unavailable)
+          if (!slot) { recordUnexecuted([file], 'retest'); continue }
+          phase = `retest bounded resource checks (exclusive): ${file}`
+          await runSafely(slot, file, 'retest')
         }
         phase = 'retest'
-        const retestParallel = toRetest.filter((file) => file !== startupFile || !retestSlots.length)
-        const retestResult = await scheduleFiles(retestParallel, retestSlots.filter((slot) => !slot.unavailable),
+        const retestResult = await scheduleFiles(retestPartition.parallel, retestSlots.filter((slot) => !slot.unavailable),
           (slot, file) => runSafely(slot, file, 'retest'), () => Boolean(interrupted))
-        retest.skipped = interrupted ? retestResult.skipped : 0
+        retest.skipped = interrupted ? toRetest.length - retest.passed - retest.failed : 0
         if (!interrupted) recordUnexecuted(retestResult.unexecuted, 'retest')
       }
     }

@@ -34,6 +34,10 @@ For focused verification, use `corepack pnpm test:files scripts|unit|integration
 followed by explicit repository-relative test file paths. Empty lists and unknown
 integration files are rejected. Integration uses the same disposable slots and
 fails on skipped cases; its report identifies a selected-file run.
+The startup probe, repository latency benchmark, Operator chat fixture, and
+production runtime lifecycle fixture run in exclusive phases. Their bounded
+setup and wall-clock checks need shared host resources without concurrent fixture
+migrations. Other integration files use the configured disposable slots.
 
 Native acceptance uses dedicated authentication. Set `GRAPHQL_TEST_CODEX_AUTH_FILE`
 and/or `GRAPHQL_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
