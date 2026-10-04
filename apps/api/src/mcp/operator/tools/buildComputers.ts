@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server'
-import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@graphql/contracts/build-computers'
+import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'

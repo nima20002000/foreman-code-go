@@ -1,4 +1,4 @@
-import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
+import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'

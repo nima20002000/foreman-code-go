@@ -2,9 +2,9 @@ import type pg from 'pg'
 import {
   BuildComputerPreferenceSchema, BuildComputerReadSchema, BuildComputerUpdateSchema,
   type BuildComputerPreference, type BuildComputerStatus,
-} from '@graphql/contracts/build-computers'
-import { sameDeviceProvisioningTarget, DeviceProvisioningTargetSchema, type DeviceProvisioningTarget } from '@graphql/contracts/device-resources'
-import type { ManagementPrincipal, ManagementAction } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/build-computers'
+import { sameDeviceProvisioningTarget, DeviceProvisioningTargetSchema, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { ManagementPrincipal, ManagementAction } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -16,7 +16,7 @@ export function buildComputerKey(target: Pick<DeviceProvisioningTarget, 'hostRef
   const host = target.hostRef
   return `${host.mainId}:${host.kind === 'device' ? host.deviceId : 'main'}`
 }
-export function buildComputerTarget(target: Pick<import('@graphql/contracts/jobs').ResolvedJobDefinitionSpec['target'],
+export function buildComputerTarget(target: Pick<import('@foreman-code/contracts/jobs').ResolvedJobDefinitionSpec['target'],
   'hostRef' | 'registration' | 'mainInstallationId'>): DeviceProvisioningTarget {
   return {
     hostRef: target.hostRef,

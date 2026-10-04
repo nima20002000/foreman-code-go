@@ -11,7 +11,7 @@ import { CanonicalJobPreparationSources } from '../src/modules/jobs/sourcePrepar
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { DeviceAccessError } from '../src/modules/devices/access.js'
 import { DomainError } from '../src/modules/errors.js'
-import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
+import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { jobSpec } from './helpers/jobFixture.js'
 
 function fixture() {

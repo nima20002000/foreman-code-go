@@ -6,7 +6,7 @@ import { expect, it } from 'vitest'
 import { server } from '../../mocks/server'
 import { BuildComputerParticipation } from './BuildComputerParticipation'
 import { clearRevisionedFormPersistence } from './revisionedForm'
-import type { BuildComputerUpdate } from '@graphql/contracts/build-computers'
+import type { BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
 const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,

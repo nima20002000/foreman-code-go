@@ -3,11 +3,11 @@ import {
   jobPolicyRequirements,
   type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
   type PreparedJobSpec,
-} from '@graphql/contracts/jobs'
-import type { JobRuntimeProfile } from '@graphql/contracts/job-runtime'
-import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@graphql/contracts/device-resources'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { BuildComputerPreference } from '@graphql/contracts/build-computers'
+} from '@foreman-code/contracts/jobs'
+import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@foreman-code/contracts/device-resources'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { BuildComputerPreference } from '@foreman-code/contracts/build-computers'
 import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } from '../settings/buildComputers.js'
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'

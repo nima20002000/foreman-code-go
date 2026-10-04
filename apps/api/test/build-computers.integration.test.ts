@@ -1,4 +1,4 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { JobSql } from '../src/modules/jobs/repository.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -16,8 +16,8 @@ import { JobService } from '../src/modules/jobs/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
-import { JobAdmissionResultSchema } from '@graphql/contracts/job-admission'
-import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
+import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@foreman-code/contracts/jobs'
 
 // Real settings/command/admission SQL and authenticated transports; runtime/source I/O is a bounded fixture.
 describe.skipIf(!postgresEnabled)('automatic build computer admission and settings parity', () => {

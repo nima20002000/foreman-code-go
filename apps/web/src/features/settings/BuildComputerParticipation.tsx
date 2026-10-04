@@ -1,5 +1,5 @@
-import type { DeviceProvisioningTarget } from '@graphql/contracts/device-resources'
-import type { BuildComputerStatus } from '@graphql/contracts/build-computers'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { BuildComputerStatus } from '@foreman-code/contracts/build-computers'
 import { useBuildComputer, useUpdateBuildComputer } from '../../shared/api/buildComputers'
 import { Alert, Button, Checkbox, LoadingState, TextField } from '../../shared/ui/nocturne'
 import { useRevisionedForm } from './revisionedForm'

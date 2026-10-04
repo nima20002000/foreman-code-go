@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { BuildComputerReadSchema, BuildComputerUpdateSchema } from '@graphql/contracts/build-computers'
+import { BuildComputerReadSchema, BuildComputerUpdateSchema } from '@foreman-code/contracts/build-computers'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { BuildComputerSettings } from '../modules/settings/buildComputers.js'
 

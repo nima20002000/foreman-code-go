@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BuildComputerStatusSchema, BuildComputerUpdateSchema, type BuildComputerUpdate } from '@graphql/contracts/build-computers'
-import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@graphql/contracts/device-resources'
+import { BuildComputerStatusSchema, BuildComputerUpdateSchema, type BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { apiClient, ApiError } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
@@ -9,7 +9,7 @@ export const buildComputerKeys = {
   root: ['build-computers'] as const,
   computer: (target: DeviceProvisioningTarget) => ['build-computers', sessionGeneration(), target] as const,
 }
-function verifyTarget(value: import('@graphql/contracts/build-computers').BuildComputerStatus, target: DeviceProvisioningTarget) {
+function verifyTarget(value: import('@foreman-code/contracts/build-computers').BuildComputerStatus, target: DeviceProvisioningTarget) {
   if (!sameDeviceProvisioningTarget(value.preference.target, target)) {
     throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Build settings belong to another computer installation.' })
   }

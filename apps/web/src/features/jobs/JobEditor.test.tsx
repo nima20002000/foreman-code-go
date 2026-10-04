@@ -6,7 +6,7 @@ import { it, expect, vi } from 'vitest'
 import { server } from '../../mocks/server'
 import { JobEditor } from './JobEditor'
 import { definition } from './fixtures'
-import { jobPolicyRequirements, type JobDefinition } from '@graphql/contracts/jobs'
+import { jobPolicyRequirements, type JobDefinition } from '@foreman-code/contracts/jobs'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 it('restores the saved Auto policy and limits when keeping runtime requirements', async () => {
   const limits = { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 }
