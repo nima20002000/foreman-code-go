@@ -94,8 +94,10 @@ export async function assertOrchestratorGraphAuthority(
          and ($5::text is null or exists (
            select 1 from worker_credential_bindings b where b.principal_id=$5
              and b.execution_id=e.id and b.run_id=e.run_id and b.agent_id=e.agent_id
-             and b.revoked_at is null))`,
-      [r.id, reviewerId, connection.orchestratorNodeId, reviewer.executionId ?? null, reviewer.principalId ?? null],
+             and b.revoked_at is null))
+         and ($6::text is null or e.record->>'nativeSessionId'=$6)`,
+      [r.id, reviewerId, connection.orchestratorNodeId, reviewer.executionId ?? null,
+        reviewer.principalId ?? null, reviewer.nativeSessionId ?? null],
     )
     const bound = HarnessExecutionSchema.safeParse(owner.rows[0]?.record)
     if (owner.rows.length !== 1 || !bound.success || bound.data.id !== owner.rows[0]?.id || bound.data.runId !== r.id
