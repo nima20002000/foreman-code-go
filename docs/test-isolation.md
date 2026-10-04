@@ -37,6 +37,9 @@ these are copied into private homes. API-key authentication can use
 `GRAPHQL_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
 not reused. Do not commit credential files. Acceptance fails when its native
 prerequisites or dedicated authentication are unavailable.
+Native agents do not inherit database selector URLs or test-controller ownership
+and credential variables. Explicit provider authentication stays in their private
+profiles and standard provider variables.
 
 Run full integration verification with `GRAPHQL_INTEGRATION_SHARDS=12 corepack
 pnpm test:integration`. Package integration uses the same runner. Unit and native

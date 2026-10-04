@@ -14,7 +14,8 @@ export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.en
   for (const key of Object.keys(environment)) {
     if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key)
       || (APP_MCP_TOKEN_NAMES as readonly string[]).includes(key)
-      || isDatabaseCredentialVariable(key)) delete environment[key]
+      || isDatabaseCredentialVariable(key) || key.endsWith('DATABASE_URL')
+      || /^(?:GRAPHQL|FOREMAN_CODE)_TEST_/.test(key)) delete environment[key]
   }
   return environment
 }
