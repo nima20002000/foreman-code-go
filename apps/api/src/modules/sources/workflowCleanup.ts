@@ -29,8 +29,7 @@ export async function closeCompletedWorkflowSources(
     join runs r on r.id=e.run_id
     join source_storage_reservations s on s.reservation_id=m.reservation_id
     where (m.state<>'closed' or (
-        m.record#>>'{receipt,binding,deviceId}' is null
-        and s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+        s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
       )) and r.execution_state='completed'
       and not exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
     order by m.materialization_id limit 100`)

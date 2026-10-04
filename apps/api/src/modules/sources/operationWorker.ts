@@ -1,5 +1,6 @@
 /** Worker-safe actual source filesystem operations: Node/shared contracts only. */
 import { constants } from 'node:fs'
+import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -204,7 +205,13 @@ export class SourceOperationWorkerService {
       })
       await this.options.executionTransfersClosed?.(record, context.signal)
       await reauthorize()
-      return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, materializationId: record.receipt.materializationId, operationId: record.operationId, released: true })
+      const binding = record.receipt.binding
+      const retainedBytes = await measureRetainedSourceDirectory(
+        binding.canonicalPath, record.receipt.materializationId, binding.filesystem,
+      )
+      await reauthorize()
+      return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,
+        materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, retainedBytes })
     } finally { if (preparation) this.preparing.delete(preparation); packageReader?.close(); this.active-- }
   }
 }

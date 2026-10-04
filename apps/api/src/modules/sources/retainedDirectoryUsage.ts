@@ -11,9 +11,10 @@ export async function measureRetainedSourceDirectory(
 ): Promise<number> {
   SourceManifestSchema.shape.snapshotId.parse(directoryId)
   const root = await openPrivateRoot(canonicalRoot)
+  const rootFilesystem = await identity(root)
   let snapshot: FileHandle
   try {
-    if (expectedRoot && !isDeepStrictEqual(await identity(root), expectedRoot)) {
+    if (expectedRoot && !isDeepStrictEqual(rootFilesystem, expectedRoot)) {
       throw new SourceError('SOURCE_ROOT_CHANGED', 'Retained source storage identity changed.')
     }
     snapshot = await openChildDirectory(root, directoryId)
@@ -34,16 +35,16 @@ export async function measureRetainedSourceDirectory(
       const handle = await open(anchored(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       try {
         const stat = await handle.stat()
-        if (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0) {
+        if (stat.uid !== process.getuid?.()) {
           throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
         }
         if (stat.isDirectory()) {
-          const child = await openChildDirectory(directory, name)
-          try {
-            bytes += await measure(child, depth + 1)
-          } finally {
-            await child.close()
+          const filesystem = await identity(handle)
+          if (filesystem.device !== rootFilesystem.device || filesystem.mountId !== rootFilesystem.mountId) {
+            throw new SourceError('SOURCE_MOUNT_CHANGED', 'Retained source cannot cross a filesystem or mount boundary.')
           }
+          // The private materialization parent also contains ordinary Git directory modes.
+          bytes += await measure(handle, depth + 1)
         } else {
           if (!stat.isFile() || stat.nlink !== 1) {
             throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source contains an unsupported file.')

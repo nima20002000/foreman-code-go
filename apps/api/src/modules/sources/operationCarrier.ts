@@ -108,10 +108,11 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
       throw new DomainError('SOURCE_PIN_CONFLICT', 'Repository belongs to another exact source snapshot.', 409)
     return response.repository
   }
-  async releaseClaim(record: SourceMaterializationRecord): Promise<void> {
+  async releaseClaim(record: SourceMaterializationRecord): Promise<number> {
     const root = await this.rootFor(record, 'sources.release'), response = await this.call(root, { version: 1, operation: 'sources.release', record })
     if (response.operation !== 'sources.release' || response.materializationId !== record.receipt.materializationId || response.operationId !== record.operationId)
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Closure acknowledgment belongs to another original materialization.', 409)
+    return response.retainedBytes
   }
 }
 /** Main accepts only owner lookup from the authenticated worker. */

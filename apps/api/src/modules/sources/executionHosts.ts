@@ -3,6 +3,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
 import type { SourceManifest } from '@graphql/contracts/source-materialization'
 import { DomainError } from '../errors.js'
+import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
@@ -42,7 +43,7 @@ export interface RemoteSourceMaterializationHost {
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
-  releaseClaim(record: SourceMaterializationRecord): Promise<void>
+  releaseClaim(record: SourceMaterializationRecord): Promise<number>
   privateRepository(record: SourceMaterializationRecord, manifest: SourceManifest): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }>
   reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
 }
@@ -95,9 +96,11 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     return verifyMaterializedWorkingDirectory(record, relativeCwd, () => this.authority.revalidateMaterialization(record), capture ?? undefined)
   }
   /** Main service calls only after exact original physical closure proof. */
-  async releaseClaim(record: SourceMaterializationRecord): Promise<void> {
+  async releaseClaim(record: SourceMaterializationRecord): Promise<number> {
     if (record.receipt.binding.deviceId !== null) return this.remote.releaseClaim(record)
     await releaseMaterializationClaim(record.receipt, async () => 'released')
+    const binding = record.receipt.binding
+    return measureRetainedSourceDirectory(binding.canonicalPath, record.receipt.materializationId, binding.filesystem)
   }
   /** CI-only explicit detached write copy; read-only references cannot acquire
    * write authority or Git working metadata through this helper. */

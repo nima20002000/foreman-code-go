@@ -53,6 +53,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     const initial = makeService(async original => {
       await releaseMaterializationClaim(original.receipt, async () => 'released')
       if (failure === 'lost-acknowledgement') throw new Error('injected lost remote acknowledgement')
+      return measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
     })
     await expect(initial.confirmClosed(record)).rejects.toThrow('injected')
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
@@ -64,6 +65,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
       await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
         "import { releaseMaterializationClaim } from './src/modules/sources/materialization.ts'; await releaseMaterializationClaim(JSON.parse(process.argv[1]), async () => 'released');",
         JSON.stringify(original.receipt)])
+      return measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
     })
     await recovered.confirmClosed(record)
     await recovered.confirmClosed(record)

@@ -209,7 +209,12 @@ it('verifies and creates genuine detached private Git, replays repository receip
   expect(await f.service.handle({ version: 1, operation: 'sources.private-repository', record }, f.context)).toEqual(repository)
   await expect(f.service.handle({ version: 1, operation: 'sources.release', record }, f.context)).rejects.toThrow('positively confirmed')
   f.owner.physicalClosureConfirmed = true
-  expect((await f.service.handle({ version: 1, operation: 'sources.release', record }, f.context)).operation).toBe('sources.release')
+  const released = await f.service.handle({ version: 1, operation: 'sources.release', record }, f.context)
+  expect(released.operation).toBe('sources.release')
+  if (released.operation !== 'sources.release') throw new Error('wrong fixture operation')
+  expect(released.retainedBytes).toBeGreaterThan(0)
+  expect(released.retainedBytes).toBeLessThan(1024 * 1024)
+  expect(await f.service.handle({ version: 1, operation: 'sources.release', record }, f.context)).toEqual(released)
 })
 it('reports bounded repository deadline and incomplete-owner codes without publishing or rebuilding', async () => {
   const f = await fixture(), prepared = await f.service.handle(f.request, f.context)

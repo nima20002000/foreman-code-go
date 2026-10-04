@@ -85,6 +85,16 @@ it('requires the original root identity before measuring closed execution storag
   })).rejects.toMatchObject({ code: 'SOURCE_ROOT_CHANGED' })
 })
 
+it('counts ordinary Git file and directory modes under a private materialization', async () => {
+  const f = await fixture()
+  await chmod(join(f.directory, f.manifest.snapshotId, 'bytes', f.manifest.entries[0]!.path), 0o664)
+  await chmod(join(f.directory, f.manifest.snapshotId, 'bytes'), 0o775)
+  expect(await f.store.retainedCaptureBytes(f.manifest.snapshotId)).toBeGreaterThan(40 * 4096)
+  await chmod(join(f.directory, f.manifest.snapshotId), 0o770)
+  await expect(f.store.retainedCaptureBytes(f.manifest.snapshotId))
+    .rejects.toMatchObject({ code: 'SOURCE_DIRECTORY_NOT_PRIVATE' })
+})
+
 it.each(['replace', 'overwrite'] as const)('rejects a changed manifest after %s even when its size and modification time match', async method => {
   const f = await fixture()
   const entry = f.manifest.entries[0]!

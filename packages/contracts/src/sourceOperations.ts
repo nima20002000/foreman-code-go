@@ -75,7 +75,7 @@ export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
     filesystem: RootFilesystemIdentitySchema, accessMode: z.enum(['read-only', 'exclusive-write']),
     cwdAttestation: SourceCwdAttestationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.private-repository'), repository: PrivateSourceRepositoryResultSchema }).strict(),
-  z.object({ version: z.literal(1), operation: z.literal('sources.release'), materializationId: z.uuid(), operationId: IdSchema, released: z.literal(true) }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('sources.release'), materializationId: z.uuid(), operationId: IdSchema, released: z.literal(true), retainedBytes: z.number().int().nonnegative().max(1024 * 1024 * 1024) }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.reconcile-preparation'), closure: SourcePreparationClosureSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), owner: SourceOperationOwnerSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), intent: TransferIntentSchema }).strict(),
