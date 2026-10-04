@@ -264,8 +264,10 @@ export class WorkflowNativeProofServices {
       const retainedTranscripts = history && !approval
         ? await this.retainedTranscriptsLocked(sql, stored.execution.id, events, capture) : new Set<HarnessNativeEvent>()
       for (const event of events) {
-        if (retainedTranscripts.has(event)) { capture.assertCurrent(); continue }
-        await this.physical(sql, scope, stored, capture, owner)
+        // The original source is locked above and revalidated before commit.
+        // Keep the live capture check while publishing its individual events.
+        capture.assertCurrent()
+        if (retainedTranscripts.has(event)) continue
         await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation)
       }
       if (history?.terminalTurn && capture.lane) {
