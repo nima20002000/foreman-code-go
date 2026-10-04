@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
 import {
-  CodexHarnessConfigurationSchema,
+  CODEX_INTERACTION_SUPPORT, CodexHarnessConfigurationSchema,
   DEFAULT_CODEX_ADVANCED_CONFIGURATION, McpDetectionSchema, NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema, NativeSessionReferenceSchema,
   type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
@@ -33,7 +33,7 @@ import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
-import { translateCodexInteraction } from './codexInteractions.js'
+import { translateCodexInteraction, unsupportedCodexInteraction } from './codexInteractions.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { harnessProfile } from './qualification/profiles.js'
@@ -434,8 +434,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       provider: 'codex', providerVersion: result.providerVersion, persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
       mcpDetection: true,
-      // Generic question choices have no approval semantics in the shared contract.
-      supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile', 'tool_user_input', 'mcp_elicitation'],
+      supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile',
+        'mcp_tool_call_approval_question', 'mcp_confirmation'],
+      interactionSupport: CODEX_INTERACTION_SUPPORT,
     })
   }
 
@@ -2065,9 +2066,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
       await runtime.transport.reject(request.id, -32000, 'Native pending-interaction limit exceeded.'); return
     }
-    if (request.method === 'mcpServer/elicitation/request' && params.turnId === null) {
-      await runtime.transport.reject(request.id, -32601, 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED: the shared approval boundary requires a real native turn.');
-      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'standalone_elicitation' })
+    if (request.method === 'mcpServer/elicitation/request' && (params.turnId === null || params.turnId === undefined)) {
+      await this.settleUnsupportedRequest(runtime, request, signature)
       return
     }
     if (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult) {
@@ -2075,8 +2075,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const translated = this.translateRequest(runtime, request, signature)
     if (!translated) {
-      await runtime.transport.reject(request.id, -32601, 'The request has no qualified approval mapping; generic questions and nonempty elicitation forms are not approval grants.')
-      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'unqualified_approval_shape' })
+      if (await this.settleUnsupportedRequest(runtime, request, signature)) return
+      await runtime.transport.reject(request.id, -32601, 'This native approval request has no supported response mapping.')
       return
     }
     const retainedBytes = [...runtime.interactions.values()].reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry.pending)), 0)
@@ -2090,6 +2090,40 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       nativeRequestId: translated.pending.turn.nativeRequestId, nativeRequestType: request.method,
       turnId: translated.pending.turn.nativeTurnId,
     })
+  }
+
+  private async settleUnsupportedRequest(runtime: Runtime, request: RpcRequest, signature: string): Promise<boolean> {
+    const unsupported = unsupportedCodexInteraction(request)
+    if (!unsupported) return false
+    const key = requestKey(runtime.generation, request.id)
+    const transport = runtime.transport
+    const params = request.params ?? {}
+    if ([...runtime.resolvedRequests.values()].filter((entry) => entry.pending).length >= MAX_INTERACTIONS) {
+      this.handleDisconnect(runtime)
+      await transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
+      return true
+    }
+    const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
+      nativeTurnId: text(params.turnId), method: request.method, generation: runtime.generation, pending: true }
+    // Reserve before writing so duplicate/conflicting callbacks cannot send again.
+    this.rememberResolvedRequest(runtime, key, reservation)
+    const activityId = `unsupported-${createHash('sha256').update(canonical([runtime.connectionId, key])).digest('hex')}`
+    this.record(runtime, 'interaction.unsupported', { threadId: runtime.session.nativeSessionId,
+      turnId: params.turnId ?? null, activityId, nativeMethod: request.method,
+      ...(text(params.itemId) ? { itemId: params.itemId } : {}),
+      code: unsupported.code, message: unsupported.message })
+    try {
+      await transport.respond(request.id, request.method, unsupported.nativeResponse)
+      reservation.pending = false
+      this.record(runtime, 'interaction.unsupported_settlement', { threadId: runtime.session.nativeSessionId,
+        turnId: params.turnId ?? null, activityId, code: unsupported.code, state: 'submitted' })
+    } catch {
+      this.record(runtime, 'interaction.unsupported_settlement', { activityId, code: unsupported.code, state: 'uncertain' })
+      // A possibly written response stays reserved; close rather than send a second response.
+      this.handleDisconnect(runtime)
+      await transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
+    }
+    return true
   }
 
   private async handleFileCall(runtime: Runtime, request: RpcRequest, nativeOutputCall = false): Promise<void> {

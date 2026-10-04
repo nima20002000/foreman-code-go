@@ -1,5 +1,6 @@
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
-import type { AgentHarness, NativeHarnessEvent, OperatorActivity } from '@foreman-code/contracts'
+import { codexUnsupportedInteractionMessage,
+  type AgentHarness, type NativeHarnessEvent, type OperatorActivity } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
 type RecordValue = Record<string, unknown>
@@ -84,6 +85,12 @@ export function openCodeTurnEvents(sessionId: string, turnId: () => string | nul
 export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarness, requestId: string): OperatorActivityChange | undefined {
   if (harness === 'claude') return claudeConversationActivity(event, requestId)
   const payload = event.payload
+  if (harness === 'codex' && event.type === 'interaction.unsupported') {
+    const message = codexUnsupportedInteractionMessage(payload.code)
+    const id = string(payload.activityId)
+    if (!message || !id || !string(payload.turnId)) return
+    return bounded({ id, requestId, kind: 'tool', status: 'failed', title: message, output: message })
+  }
   if (harness === 'codex' && ['item.started', 'item.completed', 'item.snapshot'].includes(event.type)) {
     const item = object(payload.item)
     const id = string(item.id)

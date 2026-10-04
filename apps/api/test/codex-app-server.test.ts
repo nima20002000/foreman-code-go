@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
+import { CODEX_INTERACTION_SUPPORT, CODEX_UNSUPPORTED_INTERACTION_ERRORS,
+  type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
@@ -951,15 +952,34 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await finish(f.directory, session.nativeSessionId); await result
   })
 
-  it('F19: generic tool input is explicitly unsupported, never invented as permission grants', async () => {
+  it('settles unsupported generic questions without supplying answers and exposes a specific error', async () => {
     const session = await manager.createSession(source)
     const { result } = await start(session)
     await inject(session, 'item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null, questions: [{
       id: 'generic', header: 'Question', question: 'Choose', isOther: false, isSecret: false,
       options: ['Decline', 'Cancel'].map((label) => ({ label, description: '' })),
     }] })
-    await until(async () => (await wire()).some((message) => message.id === 4000 && isObject(message.error)))
+    await until(async () => (await wire()).some((message) => message.id === 4000 && isObject(message.result)))
+    assert.deepEqual((await wire()).find((message) => message.id === 4000 && message.result)!.result, { answers: {} })
+    assert((await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'
+      && event.payload.code === 'CODEX_GENERIC_QUESTION_UNSUPPORTED'
+      && event.payload.message === CODEX_UNSUPPORTED_INTERACTION_ERRORS.CODEX_GENERIC_QUESTION_UNSUPPORTED))
     assert.equal(await manager.pending(session), undefined)
+    await finish(f.directory, session.nativeSessionId); await result
+  })
+
+  it('answers the supported MCP approval question only after an explicit offered choice', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null,
+      questions: [{ id: 'mcp_tool_call_approval_tool', header: 'Approve app tool call?', question: 'Allow?',
+        isOther: false, isSecret: false, options: ['Allow', 'Cancel'].map((label) => ({ label, description: '' })) }] })
+    const value = await pending(session)
+    assert.equal((await wire()).filter((message) => message.id === 4000 && (message.result || message.error)).length, 0)
+    await respond(session, value)
+    assert.deepEqual((await wire()).find((entry) => entry.id === 4000 && entry.result)!.result,
+      { answers: { mcp_tool_call_approval_tool: { answers: ['Allow'] } } })
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     await finish(f.directory, session.nativeSessionId); await result
   })
 
@@ -988,21 +1008,71 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await finish(f.directory, session.nativeSessionId); await result
   })
 
-  it('F20/F21: data-entry and standalone elicitations are explicitly rejected, never attached to an old turn', async () => {
+  it('declines standalone elicitations without attaching them to an old turn', async () => {
     const session = await manager.createSession(source)
     for (const afterTurn of [false, true]) {
       if (afterTurn) await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' }))
       const id = afterTurn ? 4001 : 4000
       await emit(f.directory, { id, method: 'mcpServer/elicitation/request', params: { threadId: session.nativeSessionId, turnId: null,
         mode: 'url', url: 'https://example.invalid/', elicitationId: 'standalone', serverName: 'app', message: 'Authorize', _meta: null } })
-      await until(async () => (await wire()).some((entry) => entry.id === id && isObject(entry.error)))
+      await until(async () => (await wire()).some((entry) => entry.id === id && isObject(entry.result)))
+      assert.deepEqual((await wire()).find((entry) => entry.id === id && entry.result)!.result,
+        { action: 'decline', content: null, _meta: null })
+      assert((await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'
+        && event.payload.code === 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED'))
       assert.equal(await manager.pending(session), undefined)
     }
+  })
+
+  it.each(['form', 'openai/form', 'openaiForm'])('declines %s data-entry forms with a specific error and no manufactured data', async (mode) => {
+    const session = await manager.createSession(source)
     const { result } = await start(session)
-    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email', _meta: null,
+    await inject(session, 'mcpServer/elicitation/request', { mode, serverName: 'app', message: 'Enter email', _meta: null,
       requestedSchema: { type: 'object', properties: { email: { type: 'string' } }, required: ['email'] } }, 4002)
-    await until(async () => (await wire()).some((entry) => entry.id === 4002 && isObject(entry.error)))
+    await until(async () => (await wire()).some((entry) => entry.id === 4002 && isObject(entry.result)))
+    assert.deepEqual((await wire()).find((entry) => entry.id === 4002 && entry.result)!.result,
+      { action: 'decline', content: null, _meta: null })
+    assert((await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'
+      && event.payload.code === 'CODEX_MCP_DATA_ENTRY_UNSUPPORTED'
+      && event.payload.message === CODEX_UNSUPPORTED_INTERACTION_ERRORS.CODEX_MCP_DATA_ENTRY_UNSUPPORTED))
     assert.equal(await manager.pending(session), undefined)
+    await finish(f.directory, session.nativeSessionId); await result
+  })
+
+  it('does not resend unsupported settlements for repeated or conflicting callback identities', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const question = { itemId: 'question', isBlocking: true, autoResolutionMs: null, questions: [{
+      id: 'generic', header: 'Question', question: 'Choose', isOther: true, isSecret: false, options: null,
+    }] }
+    await inject(session, 'item/tool/requestUserInput', question)
+    await until(async () => (await wire()).some((entry) => entry.id === 4000 && entry.result))
+    await inject(session, 'item/tool/requestUserInput', question)
+    await inject(session, 'item/tool/requestUserInput', { ...question, itemId: 'conflicting-question' })
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'protocol.conflicting_request_identity'))
+    assert.equal((await wire()).filter((entry) => entry.id === 4000 && (entry.result || entry.error)).length, 1)
+    assert.equal((await manager.history(session)).events.filter((event) => event.type === 'interaction.unsupported').length, 1)
+    await finish(f.directory, session.nativeSessionId); await result
+  })
+
+  it('reads back the supported interaction subsets without advertising generic input support', async () => {
+    const capabilities = await manager.capabilities()
+    assert.deepEqual(capabilities.interactionSupport, CODEX_INTERACTION_SUPPORT)
+    assert(capabilities.supportedInteractionKinds.includes('mcp_tool_call_approval_question'))
+    assert(capabilities.supportedInteractionKinds.includes('mcp_confirmation'))
+    assert(!capabilities.supportedInteractionKinds.includes('tool_user_input'))
+    assert(!capabilities.supportedInteractionKinds.includes('mcp_elicitation'))
+  })
+
+  it.each(['foreign-thread', 'old-turn'])('keeps unsupported settlement behind the %s ownership fence', async (target) => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email',
+      _meta: null, requestedSchema: { type: 'object', properties: { email: { type: 'string' } } },
+      ...(target === 'foreign-thread' ? { threadId: 'foreign-thread' } : { turnId: 'old-turn' }) })
+    await until(async () => (await wire()).some((entry) => entry.id === 4000 && entry.error))
+    assert.equal((await wire()).filter((entry) => entry.id === 4000 && entry.result).length, 0)
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     await finish(f.directory, session.nativeSessionId); await result
   })
 

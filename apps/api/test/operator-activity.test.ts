@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import type { NativeHarnessEvent } from '@foreman-code/contracts'
+import { CODEX_UNSUPPORTED_INTERACTION_ERRORS, type NativeHarnessEvent } from '@foreman-code/contracts'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from '../src/modules/conversations/operatorActivity.js'
 import { nativeAssistantText } from '../src/modules/conversations/operatorText.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
+import { knownNativeActivity } from '../src/modules/conversations/knownNativeActivity.js'
 
 const event = (type: string, payload: Record<string, unknown>): NativeHarnessEvent => ({ type, payload, sequence: 1, occurredAt: '2026-09-19T00:00:00.000Z' })
 
 describe('Operator native activity projection', () => {
+  it.each(Object.entries(CODEX_UNSUPPORTED_INTERACTION_ERRORS))('shows the %s error without native question text', (code, message) => {
+    const projected = operatorActivity(event('interaction.unsupported', {
+      activityId: 'unsupported-request', turnId: 'turn', code, message: 'Untrusted native text',
+    }), 'codex', 'request')
+    expect(projected).toEqual({ id: 'unsupported-request', requestId: 'request', kind: 'tool',
+      status: 'failed', title: message, output: message })
+    expect(knownNativeActivity(event('interaction.unsupported', { threadId: 'thread', turnId: 'turn',
+      activityId: 'unsupported-request', code }), 'codex')).toBeUndefined()
+    expect(operatorActivity(event('interaction.unsupported', { activityId: 'unsupported-request', code }), 'codex', 'request'))
+      .toBeUndefined()
+  })
   it('filters live and replayed OpenCode parts by current parent turn and root session', () => {
     const accepts = openCodeTurnEvents('root', () => 'current')
     for (const info of [

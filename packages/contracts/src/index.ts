@@ -1,4 +1,6 @@
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
+import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
+export * from './nativeInteractionSupport.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 import { changeCodexSandbox } from './harnessEditing.js';
@@ -470,6 +472,7 @@ export const NativeHarnessCapabilitiesSchema = z.object({
   configurationInspection: z.boolean(),
   mcpDetection: z.boolean(),
   supportedInteractionKinds: z.array(z.string().trim().min(1)),
+  interactionSupport: z.array(NativeInteractionSupportSchema).optional(),
 }).strict();
 export type NativeHarnessCapabilities = z.infer<typeof NativeHarnessCapabilitiesSchema>;
 

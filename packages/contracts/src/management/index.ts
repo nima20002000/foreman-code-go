@@ -1,4 +1,5 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
+import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
 import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
@@ -559,6 +560,7 @@ export const HarnessCatalogEntrySchema = z.object({
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
   discoveryError: z.object({ code: z.string(), message: z.string() }).strict().nullable(),
+  interactionSupport: z.array(NativeInteractionSupportSchema).optional(),
 }).strict();
 export const HarnessCatalogSchema = z.array(HarnessCatalogEntrySchema);
 export const HarnessCatalogResultSchema = z.object({ items: HarnessCatalogSchema }).strict();

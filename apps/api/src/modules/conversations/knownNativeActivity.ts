@@ -5,6 +5,8 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 /** Late item settlement never relaxes the owning adapter's root terminal guard. No root/message terminal is returned. */
 export function knownNativeActivity(event: NativeHarnessEvent, harness: NativeSessionReference['harness']):
   { change: Omit<OperatorActivityChange, 'requestId'>; native: ActivityNativeIdentity } | undefined {
+  // App request errors do not settle a previously observed native tool item.
+  if (event.type === 'interaction.unsupported') return undefined
   let normalized = event
   if (event.type === 'native.unlinked_notification') {
     if (event.payload.method !== 'item/completed') return undefined

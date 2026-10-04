@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
-  ApprovalResponseOptionSchema, CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  ApprovalResponseOptionSchema, CODEX_UNSUPPORTED_INTERACTION_ERRORS,
+  CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   PendingNativeInteractionSchema, type ApprovalResponseOption, type CodexHarnessConfiguration,
-  type NativeSessionReference,
+  type NativeSessionReference, type CodexUnsupportedInteractionCode,
 } from '@foreman-code/contracts'
 import { canonical } from './codexProtocol.js'
 import { isObject, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
@@ -105,6 +106,30 @@ export function translateCodexInteraction(context: {
     nativeRequestType: request.method, request: params, responseOptions: options,
   })
   return { pending, responses }
+}
+
+/** Called only after translation has found no supported response. */
+export function unsupportedCodexInteraction(request: RpcRequest): {
+  code: CodexUnsupportedInteractionCode; message: string; nativeResponse: JsonObject
+} | undefined {
+  const params = request.params ?? {}
+  let code: CodexUnsupportedInteractionCode
+  let nativeResponse: JsonObject
+  if (request.method === 'item/tool/requestUserInput') {
+    code = 'CODEX_GENERIC_QUESTION_UNSUPPORTED'
+    // Pinned Codex uses an empty map to release an unanswered user-input wait.
+    nativeResponse = { answers: {} }
+  } else if (request.method === 'mcpServer/elicitation/request') {
+    if (params.turnId === null || params.turnId === undefined) code = 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED'
+    else {
+      const schema = isObject(params.requestedSchema) ? params.requestedSchema : {}
+      const hasFields = isObject(schema.properties) && Object.keys(schema.properties).length > 0
+      const requiresFields = Array.isArray(schema.required) && schema.required.length > 0
+      code = hasFields || requiresFields ? 'CODEX_MCP_DATA_ENTRY_UNSUPPORTED' : 'CODEX_MCP_FORM_SCHEMA_UNSUPPORTED'
+    }
+    nativeResponse = { action: 'decline', content: null, _meta: null }
+  } else return undefined
+  return { code, message: CODEX_UNSUPPORTED_INTERACTION_ERRORS[code], nativeResponse }
 }
 
 function addCommandDecision(
