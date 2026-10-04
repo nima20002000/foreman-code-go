@@ -5,6 +5,11 @@ Run `corepack pnpm db:up` before database-backed tests. It starts only
 `graphql-tests_graphql-test-data`, loopback port 55439, and test-only credentials.
 The application Compose file and its database are independent. `db:down` checks
 test ownership labels before removing only this test project and its volume.
+The disposable server disables crash durability to avoid cluster-wide checkpoint
+stalls while concurrent fixtures create and remove databases. Committed rows
+remain visible across connections and application restarts; host-crash durability
+must be verified against a durable database. Application/production PostgreSQL
+settings are independent of this test-only configuration.
 
 Root and API package test commands provision UUID databases on that instance.
 The root unit command also runs the integration-runner and acceptance safety
