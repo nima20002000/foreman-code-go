@@ -15,6 +15,7 @@ import type { DeviceExtensionRegistration } from '../devices/deviceApplicationCh
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError } from '../errors.js'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Read-only admission fence. This NEVER issues an entry capability, command,
@@ -56,8 +57,17 @@ export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
   const connection = DeviceConnectionIdentitySchema.parse(origin!.connection)
   if (connection.mainId !== authenticated.mainId || connection.deviceId !== authenticated.deviceId
     || connection.workerInstallationId !== authenticated.workerInstallationId || connection.keyRevision !== authenticated.keyRevision
-    || connection.authorizationRevision !== authenticated.authorizationRevision
-    || input.action !== 'read' && (connection.bootId !== authenticated.bootId || connection.connectionGeneration !== authenticated.connectionGeneration)) denied()
+    || connection.authorizationRevision !== authenticated.authorizationRevision) denied()
+  if (input.action !== 'read') {
+    if (connection.bootId !== authenticated.bootId) denied()
+    if (connection.connectionGeneration !== authenticated.connectionGeneration) {
+      const stored = (await sql.query<{ receipt: unknown }>(
+        'select receipt from remote_execution_receipts where operation_id=$1 for share', [current!.operationId])).rows[0]
+      const receipt = RemoteOperationReceiptSchema.safeParse(stored?.receipt)
+      if (input.action === 'start' || !receipt.success || !receipt.data.native
+        || !sameWorkflowValue(receipt.data.intent, current) || !sameWorkflowValue(receipt.data.connection, connection)) denied()
+    }
+  }
   if (input.action === 'start') {
     if (!await readNativePlacement(sql, current!.executionId)) denied()
     if (row!.stopped || !['running', 'waiting'].includes(row!.execution_state)) denied()

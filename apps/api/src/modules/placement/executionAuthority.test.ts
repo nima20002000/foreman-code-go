@@ -31,11 +31,16 @@ function fixture() {
   const connection = { mainId, deviceId: placement.hostRef.deviceId, ...registration,
     bootId: randomUUID(), connectionGeneration: 1 }
   const state = { grant: true, origin: connection, cleanup: false, stopped: false }
+  const receipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
+    phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
+    turnInput: { correlationId: 'execution:execution', promptDigest: digest },
+    native: { sessionId: 'native-session', turnId: 'original-turn', processIdentityDigest: digest } }
   const sql = { query: async (text: string) => {
     if (text.includes('from runs r')) return { rows: [{ authorization_principal_id: 'principal', workspace_id: 'workspace',
       workflow_id: 'workflow', execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup }], rowCount: 1 }
     if (text.includes('execution_dispatch_owner_grants')) return { rows: [], rowCount: state.grant ? 1 : 0 }
     if (text.includes('remote_dispatch_origins')) return { rows: [{ connection: state.origin }], rowCount: 1 }
+    if (text.includes('remote_execution_receipts')) return { rows: [{ receipt }], rowCount: 1 }
     return { rows: [], rowCount: 1 }
   } } as unknown as GraphTransactionSql
   const locations = { revalidateRunAuthorization: vi.fn(async () => {}) }
@@ -47,7 +52,7 @@ function fixture() {
   ports.principal.mockResolvedValue({ id: 'principal' })
   const authorize = (action: 'start' | 'read' | 'control' | 'stop', authenticated = connection) =>
     assertRemoteExecutionAuthority(sql, locations, { version: 1, intent, placement, action }, authenticated, producer)
-  return { authorize, state, locations, pins, connection, intent }
+  return { authorize, state, locations, pins, connection, intent, receipt }
 }
 
 describe('remote cleanup authorization', () => {
@@ -79,5 +84,27 @@ describe('remote cleanup authorization', () => {
     if (defect === 'device') authenticated.deviceId = randomUUID()
     if (defect === 'boot') authenticated.bootId = randomUUID()
     await expect(f.authorize('stop', authenticated)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+})
+
+describe('authenticated original execution reconnection', () => {
+  it('allows existing-owner control on a replacement channel without authorizing new entry', async () => {
+    const f = fixture()
+    const replacement = { ...f.connection, connectionGeneration: 2 }
+    await expect(f.authorize('read', replacement)).resolves.toBeUndefined()
+    await expect(f.authorize('control', replacement)).resolves.toBeUndefined()
+    f.state.cleanup = true
+    await expect(f.authorize('stop', replacement)).resolves.toBeUndefined()
+    await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    expect(f.receipt.connection).toEqual(f.connection)
+  })
+
+  it.each(['native', 'owner', 'origin'])('requires retained original %s evidence before reconnecting control', async defect => {
+    const f = fixture()
+    if (defect === 'native') delete (f.receipt as { native?: unknown }).native
+    if (defect === 'owner') f.receipt.intent = { ...f.intent, owner: { grantId: 'other', epoch: '2' } }
+    if (defect === 'origin') f.receipt.connection = { ...f.connection, connectionGeneration: 2 }
+    const replacement = { ...f.connection, connectionGeneration: 2 }
+    await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 })

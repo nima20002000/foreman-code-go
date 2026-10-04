@@ -202,6 +202,7 @@ interface InstalledOperation {
   reader:QualificationReader
   capture:QualificationCapture
   scope:NativeProcessRecovery
+  host?:RemoteExecutionHost
   manager?:CodexAppServerSessionManager
   launchDisabled?:true
   native?:InstalledWorkflowNativeOwner
@@ -259,13 +260,38 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     if(!owned||!isDeepStrictEqual(owned.intent,intent))unavailable('original_operation_unavailable')
     return owned!
   }
-  const constructOwned=async(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement)=>{
+  const constructOwned=async(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,
+    action: 'read' | 'stop')=>{
     current(context.binding)
     const request=forBinding(context.binding),authorize=workerExecutionAuthorizer(request),readFacts=workerExecutionFactsReader(request)
     let owned=operations.get(intent.executionId)
     if(owned) {
-      if(!isDeepStrictEqual(owned.context.binding,context.binding)||!isDeepStrictEqual(owned.intent,intent)
-        ||!isDeepStrictEqual(owned.placement,placement))unavailable('original_operation_generation_changed')
+      if (!isDeepStrictEqual(owned.intent, intent) || !isDeepStrictEqual(owned.placement, placement)) {
+        unavailable('original_operation_binding_changed')
+      }
+      if (!isDeepStrictEqual(owned.context.binding, context.binding)) {
+        const original = owned.context.binding
+        if (original.bootId !== context.binding.bootId || !owned.host || !owned.native || !owned.session) {
+          unavailable('original_native_reconnection_unavailable')
+        }
+        await authorize(intent, placement, action)
+        const status = await (await journal()).status(intent.operationId)
+        if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, intent)
+          || status.receipt.native?.sessionId !== owned.session.nativeSessionId
+          || status.receipt.native?.processIdentityDigest !== owned.native.native.processIdentityDigest
+          || !isDeepStrictEqual(status.receipt.connection, DeviceConnectionIdentitySchema.parse(owned.capture.binding))) {
+          unavailable('original_native_reconnection_conflict')
+        }
+        const observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
+        if (status.receipt.terminal ? !isDeepStrictEqual(observed, owned.physicalClosure) : observed.lifecycle !== 'active') {
+          unavailable('original_native_reconnection_process_changed')
+        }
+        current(context.binding)
+        if (!isDeepStrictEqual(owned.context.binding, original)) unavailable('original_operation_generation_changed')
+        physical.purge(intent.operationId)
+        owned.context = context
+      }
+      if (owned.host) return owned.host
     } else {
       if(operations.size>=1000)unavailable('operation_retention_full')
       const reader=createInstalledCodexQualificationReader({intent,placement,signal,
@@ -298,7 +324,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         const selection=installations.pin({instanceId:override.instanceId,hostRef:override.target.hostRef,
           harnessInstallationId:override.target.harnessInstallationId,connectionGeneration:installation.connectionGeneration,environmentGeneration:installation.environmentGeneration})
         const dependencies=createInstalledCodexDependencies({reader:actual.reader,codexSuiteRevision:input.codexSuiteRevision})
-        const before=async()=>{if(actual.launchDisabled||closing)unavailable('original_native_owner_closed');await authorize(actual.intent,actual.placement,'start');installations.assertCurrent(selection)}
+        const before=async()=>{if(actual.launchDisabled||closing)unavailable('original_native_owner_closed');
+          await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'start');installations.assertCurrent(selection)}
         const outputContext: InstalledWorkflowNativeOutputContext = {
           intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
           binding: Object.freeze(structuredClone(actual.context.binding)),
@@ -360,7 +387,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       host=new RemoteExecutionHost({journal:log,connection:DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:context.binding.keyRevision,authorizationRevision:context.binding.authorizationRevision,
         bootId:context.binding.bootId,connectionGeneration:context.binding.connectionGeneration}),incarnationId:randomUUID(),managers,
-        authorize:async(intent,placement,action)=>{current(context.binding);await authorize(intent,placement,action)
+        authorize:async(intent,placement,action)=>{const resident=operation(intent)
+          await workerExecutionAuthorizer(forBinding(resident.context.binding))(intent,placement,action)
           if(action==='start')operation(intent).capture=await operation(intent).reader.capture()},
         attestRuntimeLeaf:async(intent,placement,request,executionPlacement)=>{
           const resident=operation(intent),capture=await resident.reader.capture()
@@ -378,7 +406,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           const actual=resident!
           await authorize(actual.intent,actual.placement,'start');actual.capture=await actual.reader.capture()
           if(!isDeepStrictEqual(nativeRequest.configuration,actual.capture.facts.configuration))unavailable('accepted_configuration_conflict')
-          const relay=await prepareWorkerApplicationAccess({request},actual.intent,actual.placement,access,signal)
+          const relay=await prepareWorkerApplicationAccess({request:async(namespace,payload,options)=>
+            forBinding(actual.context.binding)(namespace,payload,options)},actual.intent,actual.placement,access,signal)
           actual.applicationAccess=structuredClone(access)
           actual.relay=relay
           actual.leaseExpiresAt=relay.expiresAt
@@ -392,13 +421,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!resident.manager||!nativeContext||nativeContext.manager!==resident.manager
             ||nativeContext.request.executionId!==intent.executionId)unavailable('native_manager_not_allocated')
           resident.session=structuredClone(session);resident.nativeSignal=nativeContext.signal
-          resident.native=captureInstalledWorkflowNativeOwner(registry,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
-            workerInstallationId:context.binding.workerInstallationId,bootId:context.binding.bootId,keyRevision:context.binding.keyRevision,
-            authorizationRevision:context.binding.authorizationRevision,connectionGeneration:context.binding.connectionGeneration}),intent,session)
+          const captured = captureInstalledWorkflowNativeOwner(registry, DeviceConnectionIdentitySchema.parse(resident.capture.binding), intent, session)
+          if (resident.native && !isDeepStrictEqual(resident.native, captured)) unavailable('original_native_process_changed')
+          resident.native ??= captured
           if(!resident.nativeStart)unavailable('original_native_start_missing')
-          const captured=resident.native
           const lifetime=captureOriginalCodexSession(resident.manager,session,resident.nativeStart!,()=>{
-            nativeContext.signal.throwIfAborted();current(context.binding)
+            nativeContext.signal.throwIfAborted();current(resident.context.binding)
             if(operations.get(intent.executionId)!==resident||resident.launchDisabled)unavailable('original_native_owner_closed')
             const observed=matchingOriginalRegistryLaunch(registry,captured.launch)
             if(observed.lifecycle!=='active'||!isDeepStrictEqual(observed.guardian,captured.launch.guardian)
@@ -428,11 +456,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       })
       hosts.set(generation,host)
     }
+    owned.host = host
     return host
   }
   let construction:Promise<unknown>=Promise.resolve()
-  const construct=(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement)=>{
-    const next=construction.then(()=>constructOwned(context,intent,placement))
+  const construct=(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,action:'read'|'stop')=>{
+    const next=construction.then(()=>constructOwned(context,intent,placement,action))
     construction=next.then(()=>undefined,()=>undefined)
     return next
   }
@@ -442,7 +471,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       const task=(async()=>{
         if(RemoteJobExecutionRpcRequestSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed Codex workflow host has no Job runtime.',409)
         const frame=RemoteExecutionRpcRequestSchema.parse(payload)
-        const host=await construct(context,frame.intent,frame.placement)
+        const action = frame.method === 'control' && frame.command.action.kind === 'stop' ? 'stop' : 'read'
+        const host=await construct(context,frame.intent,frame.placement,action)
         context.signal.throwIfAborted()
         if(frame.method==='physical-readout')return {payload:await physical.read(frame)}
         if(frame.method==='physical-ack')return {payload:await physical.ack(frame)}
@@ -512,14 +542,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       ||record.finalDispatchBindingHash!==owned.capture.facts.executionPlacement.bindingHash
       ||sourceMaterializationDigest(record)!==sourceMaterializationDigest(owned.capture.facts.executionPlacement.materialization))return null
     const native=owned.native,session=owned.session,nativeSignal=AbortSignal.any([signal,owned.nativeSignal])
-    const request=forBinding(owned.context.binding),authorize=workerExecutionAuthorizer(request)
+    const request: ReturnType<typeof forBinding> = (namespace,payload,options)=>
+      forBinding(owned.context.binding)(namespace,payload,options)
+    const authorize=workerExecutionAuthorizer(request)
     const assertCurrent=async()=>{
       nativeSignal.throwIfAborted();current(owned.context.binding)
       if(operations.get(owned.intent.executionId)!==owned||owned.launchDisabled)unavailable('original_source_native_owner_closed')
-      const observed=captureInstalledWorkflowNativeOwner(registry,DeviceConnectionIdentitySchema.parse({mainId:owned.context.binding.mainId,deviceId:owned.context.binding.deviceId,
-        workerInstallationId:owned.context.binding.workerInstallationId,keyRevision:owned.context.binding.keyRevision,authorizationRevision:owned.context.binding.authorizationRevision,
-        bootId:owned.context.binding.bootId,connectionGeneration:owned.context.binding.connectionGeneration}),owned.intent,session)
-      if(observed.launch.launchId!==native.launch.launchId||!isDeepStrictEqual(observed.native,native.native))unavailable('original_source_native_owner_changed')
+      const observed=matchingOriginalRegistryLaunch(registry,native.launch)
+      if(observed.lifecycle!=='active')unavailable('original_source_native_owner_changed')
       await authorize(owned.intent,owned.placement,'read')
       await prepareWorkerApplicationAccess({request},owned.intent,owned.placement,owned.applicationAccess!,nativeSignal)
       const logged=await(await journal()).status(owned.intent.operationId)
