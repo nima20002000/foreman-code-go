@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { AppInteractionGetOutputSchema, AppInteractionListOutputSchema } from '@graphql/contracts'
+import { AppInteractionGetOutputSchema, AppInteractionListOutputSchema } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { selectedMainMcpForward } from '../src/modules/placement/workerMcpRelay.js'

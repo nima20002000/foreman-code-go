@@ -3,8 +3,8 @@ import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import {
   AppInteractionGetOutputSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction,
-} from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresAppInteractionService, decodeInteractionCursor } from '../src/modules/interactions/app.js'
 import {
   interactionMcpGet, INTERACTION_MCP_RESPONSE_BYTES, INTERACTION_MCP_TEXT_BYTES,

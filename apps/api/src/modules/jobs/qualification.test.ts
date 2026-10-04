@@ -123,15 +123,24 @@ describe('qualification metadata and measured observation verification (no nativ
   })
 })
 
-async function retainedPodmanProbe() {
-  const observed=JSON.parse(await readFile(new URL('../../../test/fixtures/podman-qualification-probe.json',import.meta.url),'utf8')) as {containerId:string;probe:Record<string,unknown>}
+async function podmanProbeFixture() {
+  const retained = JSON.parse(await readFile(
+    new URL('../../../test/fixtures/podman-qualification-probe.json', import.meta.url), 'utf8',
+  )) as { containerId: string; probe: Record<string, unknown> }
+  const observed = {
+    ...retained,
+    probe: {
+      ...retained.probe,
+      environment: [...retained.probe.environment as string[], 'FOREMAN_CODE_JOB_INPUT_MANIFEST'].sort(),
+    },
+  }
   const original=candidate(),request=JobQualificationCandidateSchema.parse({...original,backingBytes:34359738368,
     fingerprint:{...original.fingerprint,limits:{cpuLimit:4,memoryBytes:6442450944,pidsLimit:256,diskBytes:34359738368}}})
   const host={hostPidNamespace:'pid:[1]',hostNetworkNamespace:'net:[2]',containerId:observed.containerId,containerHostname:observed.containerId.slice(0,12)}
   return {observed,request,host}
 }
 it('accepts only the managed HOSTNAME bound to original inspection and rejects missing/mismatched values and every other extra variable',async()=>{
-  const {observed,request,host}=await retainedPodmanProbe()
+  const {observed,request,host}=await podmanProbeFixture()
   // The retained old stdout lists HOSTNAME without its value. These controlled values test the new actual-value binding.
   const probe:Record<string,unknown>={...observed.probe,hostname:host.containerHostname}
   expect(()=>validateIsolationMeasurement(probe,request,host)).not.toThrow()
@@ -142,7 +151,7 @@ it('accepts only the managed HOSTNAME bound to original inspection and rejects m
   expect(()=>validateIsolationMeasurement(probe,request,{...host,containerId:'unowned',containerHostname:host.containerHostname})).toThrow()
 })
 it('matches every other retained physical stdout guard with selected limits and keeps environment/namespace/resource refusals',async()=>{
-  const {observed,request,host}=await retainedPodmanProbe()
+  const {observed,request,host}=await podmanProbeFixture()
   const original={...observed.probe,environment:(observed.probe.environment as string[]).filter(name=>name!=='HOSTNAME')}
   expect(()=>validateIsolationMeasurement(original,request,host)).not.toThrow()
   for(const change of [{gitIndexWriteError:null},{memoryMax:'max'},{interfaces:['lo','eth0']},{environment:['API_TOKEN']}])

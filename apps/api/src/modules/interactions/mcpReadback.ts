@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   McpInteractionSummarySchema,
   type DurableInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { z } from 'zod'
 import { toolResult } from '../../mcp/shared/results.js'
 import { DomainError } from '../errors.js'

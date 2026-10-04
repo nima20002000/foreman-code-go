@@ -41,15 +41,15 @@ pnpm test:e2e
 ```
 
 The root scripts delegate to the two workspace packages where scripts exist.
-`pnpm dev` runs `@foreman-code/web`'s Vite server. The web package scripts are:
+`pnpm dev` runs `@graphql/web`'s Vite server. The web package scripts are:
 
 ```sh
-pnpm --filter @foreman-code/web dev
-pnpm --filter @foreman-code/web typecheck
-pnpm --filter @foreman-code/web lint
-pnpm --filter @foreman-code/web test
-pnpm --filter @foreman-code/web build
-pnpm --filter @foreman-code/web test:e2e
+pnpm --filter @graphql/web dev
+pnpm --filter @graphql/web typecheck
+pnpm --filter @graphql/web lint
+pnpm --filter @graphql/web test
+pnpm --filter @graphql/web build
+pnpm --filter @graphql/web test:e2e
 ```
 
 ### Development MSW

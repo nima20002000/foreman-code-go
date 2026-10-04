@@ -32,7 +32,7 @@ export function appendAuthCookies(reply: FastifyReply, cookies: string[]): void 
 
 function createAuth(pool: pg.Pool, config: BrowserAuthConfig) {
   return betterAuth({
-    appName: 'GraphQL',
+    appName: 'Foreman Code',
     baseURL: config.origin,
     basePath: '/api/auth',
     secret: config.secret,
