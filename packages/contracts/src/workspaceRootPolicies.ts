@@ -7,6 +7,15 @@ export const WorkspaceRootHostSchema = z.discriminatedUnion('kind', [
 ])
 const Revision = z.string().regex(/^[1-9][0-9]*$/)
 export const RootFilesystemIdentitySchema = z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict()
+export const WorkspaceLocationIdentitySchema = z.union([
+  RootFilesystemIdentitySchema.pick({ device: true, inode: true }),
+  RootFilesystemIdentitySchema.extend({ hostRef: WorkspaceRootHostSchema, applicationInstallationId: z.uuid(),
+    directoryIdentityHash: SourceHashSchema }).strict().superRefine((identity, context) => {
+    if (identity.hostRef.kind === 'main' && identity.applicationInstallationId !== identity.hostRef.mainId) {
+      context.addIssue({ code: 'custom', message: 'The registered Main location must belong to its Main installation.' })
+    }
+  }),
+])
 export const RootAccessSchema = z.enum(['read-only', 'read-write'])
 export const ApprovedRootAllowlistSchema = z.object({ schemaVersion: z.literal(1), hostRef: WorkspaceRootHostSchema,
   applicationInstallationId: z.uuid(), configurationRevision: Revision,

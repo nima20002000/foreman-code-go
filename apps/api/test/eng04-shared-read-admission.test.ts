@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { sharedFixture } from './eng04-shared-fixture.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration } from '../src/modules/workflows/immutableRead.js'
@@ -75,6 +76,19 @@ describe('ENG04 shared exact immutable SQL readers', () => {
 })
 
 describe('ENG04 shared locked Start read, with synthetic SQL/native-policy seams', () => {
+  it('accepts complete registered folder metadata and fences changes to that metadata', async () => {
+    const t = startSetup()
+    const mainId = randomUUID()
+    const identity = { device: '1', inode: '2', mountId: '3', hostRef: { kind: 'main' as const, mainId },
+      applicationInstallationId: mainId, directoryIdentityHash: 'a'.repeat(64) }
+    t.locationRow.execution_location_identity = identity
+    t.prepared.row.execution_location_identity = structuredClone(identity)
+    const result = await readLockedRepeatStartSnapshot(t.client, t.principal, t.request, t.prepared)
+    expect(result.workspace.location).toEqual(t.location)
+    identity.mountId = '4'
+    await expect(readLockedRepeatStartSnapshot(t.client, t.principal, t.request, t.prepared))
+      .rejects.toMatchObject({ code: 'LOCATION_REVISION_CONFLICT' })
+  })
   it('retains all exact v3 pins, rechecks live grants and writes no Run/receipt/native action', async () => {
     const t = startSetup()
     const result = await readLockedRepeatStartSnapshot(t.client, t.principal, t.request, t.prepared)

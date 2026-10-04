@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { z } from 'zod'
+import { WorkspaceLocationIdentitySchema } from '@graphql/contracts/workspace-root-policies'
 import { ExecutionLocationSchema, type RunExecutionLocation } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
@@ -27,7 +27,6 @@ export interface PreparedRepeatStartLocation {
   location: RunExecutionLocation
   row: LocationRow
 }
-const Identity = z.object({ device: z.string().regex(/^[0-9]+$/), inode: z.string().regex(/^[0-9]+$/) }).strict()
 
 /** Read-only validation inside the existing Start publication transaction.
  * Caller must already hold the command + runner admission locks, must process
@@ -52,7 +51,7 @@ export async function readLockedRepeatStartSnapshot(
     throw new DomainError('LOCATION_REVISION_CONFLICT', 'The prepared workspace location changed before Start.', 409)
   }
   const stored = ExecutionLocationSchema.safeParse(workspace.execution_location)
-  const identity = Identity.safeParse(workspace.execution_location_identity)
+  const identity = WorkspaceLocationIdentitySchema.safeParse(workspace.execution_location_identity)
   if (!stored.success || !identity.success || stored.data.runnerId !== location.runnerId
     || stored.data.rootPath !== location.rootPath || String(location.locationRevision) !== workspace.location_revision
     || location.locationRevision !== input.expectedLocationRevision

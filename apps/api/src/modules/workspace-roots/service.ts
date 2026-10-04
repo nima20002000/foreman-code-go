@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { ExecutionLocationSchema } from '@graphql/contracts'
-import { WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootPolicySchema, type WorkspaceRootSelection, type WorkspaceRootPolicy } from '@graphql/contracts/workspace-root-policies'
+import { WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootPolicySchema, WorkspaceLocationIdentitySchema, type WorkspaceRootSelection, type WorkspaceRootPolicy } from '@graphql/contracts/workspace-root-policies'
 import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationReadbackSchema,
   WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema, type WorkspaceBoundLocationReadback, type WorkspaceBoundLocationSetInput } from '@graphql/contracts/workspace-bound-location'
 import { WorkspaceRootConfigurationAdoptSchema } from '@graphql/contracts/workspace-bound-location'
@@ -171,7 +171,7 @@ export class WorkspaceBoundLocationService {
         const nextRevision = input.expectedLocationRevision + 1
         const executionLocation = ExecutionLocationSchema.parse({ runnerId: selection.hostRef.kind === 'main' ? this.localRunnerId : root.allowlist.applicationInstallationId, rootPath: attestation.canonicalProjectRoot })
         const updated = await sql.query(`update workspaces set execution_location=$2::jsonb,execution_location_identity=$3::jsonb,location_revision=$4 where id=$1 and location_revision=$5`,
-          [input.workspaceId, JSON.stringify(executionLocation), JSON.stringify({ ...attestation.filesystem, hostRef: attestation.hostRef, applicationInstallationId: attestation.applicationInstallationId, directoryIdentityHash: attestation.directoryIdentityHash }), nextRevision, input.expectedLocationRevision])
+          [input.workspaceId, JSON.stringify(executionLocation), JSON.stringify(WorkspaceLocationIdentitySchema.parse({ ...attestation.filesystem, hostRef: attestation.hostRef, applicationInstallationId: attestation.applicationInstallationId, directoryIdentityHash: attestation.directoryIdentityHash })), nextRevision, input.expectedLocationRevision])
         if (updated.rowCount !== 1) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during binding.', 409)
         const binding = WorkspaceRootPolicySchema.parse(await this.roots.bind(sql, principal, root, attestation, nextRevision))
         if (binding.workspaceId !== input.workspaceId || binding.locationRevision !== String(nextRevision) || !sameWorkflowValue(this.projection(binding), executionLocation)
