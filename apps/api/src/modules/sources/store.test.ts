@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { PrivateSourceSnapshotStore } from './store.js'
+import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
+import { identity, openPrivateRoot } from './privateFilesystem.js'
 
 const reads = vi.hoisted(() => ({ manifest: 0 }))
 vi.mock('node:fs/promises', async original => {
@@ -69,6 +71,18 @@ it('refuses to follow a link while measuring quarantined capture bytes', async (
   const f = await fixture()
   await symlink('/etc/passwd', join(f.directory, f.manifest.snapshotId, 'external'))
   await expect(f.store.retainedCaptureBytes(f.manifest.snapshotId)).rejects.toThrow()
+})
+
+it('requires the original root identity before measuring closed execution storage', async () => {
+  const f = await fixture()
+  const root = await openPrivateRoot(f.directory)
+  const filesystem = await identity(root)
+  await root.close()
+  const measured = await measureRetainedSourceDirectory(f.directory, f.manifest.snapshotId, filesystem)
+  expect(measured).toBeGreaterThanOrEqual(40 * 4096)
+  await expect(measureRetainedSourceDirectory(f.directory, f.manifest.snapshotId, {
+    ...filesystem, inode: String(BigInt(filesystem.inode) + 1n),
+  })).rejects.toMatchObject({ code: 'SOURCE_ROOT_CHANGED' })
 })
 
 it.each(['replace', 'overwrite'] as const)('rejects a changed manifest after %s even when its size and modification time match', async method => {

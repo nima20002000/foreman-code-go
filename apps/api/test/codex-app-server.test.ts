@@ -6,6 +6,7 @@ import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
@@ -278,6 +279,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const history = await manager.reconcile(session, 'prospective-turn')
     assert.equal(history.terminalResult, undefined)
     assert.deepEqual(history.pendingInteractions, [])
+    assert.doesNotThrow(() => canonicalGraphJson(history))
     assert.equal((await wire('thread/read')).length, 0)
     assert.equal((await wire('thread/turns/list')).length, 0)
   })

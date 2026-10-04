@@ -14,6 +14,7 @@ import type { PostgresCommandCoordinator } from '../src/modules/commands/postgre
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import type { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
+import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 
 // Owned closure-only SQL fixture. This exercises the unchanged confirmClosed
 // transaction and retention accounting; it does not qualify native closure proof.
@@ -67,8 +68,10 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     await recovered.confirmClosed(record)
     await recovered.confirmClosed(record)
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('closed')
-    expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(reservation.reservedBytes) })
-    expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(reservation.reservedBytes)
+    const retainedBytes = await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem) + 16 * 1024
+    expect(retainedBytes).toBeLessThan(reservation.reservedBytes)
+    expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
+    expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(retainedBytes)
     expect(await readFile(join(root, receipt.materializationId, 'tree/app.ts'))).toEqual(bytes)
   } finally {
     await pool.end(); await admin.query(`drop database "${database}"`); await admin.end(); await rm(root, { recursive: true, force: true })

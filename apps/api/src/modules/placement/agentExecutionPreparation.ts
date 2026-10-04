@@ -47,8 +47,12 @@ export class AgentExecutionPreparation {
     const relativeCwd = posix.relative(placement.destination.canonicalProjectRoot, placement.destination.canonicalCwd)
     let native: NativeExecutionPlacement
     if (accepted.previous) {
-      const tree = await this.sources.verifyWorkingDirectory({ principal, record: accepted.previous.materialization, relativeCwd })
-      if (!sameWorkflowValue(tree, accepted.previous.workingTree)) this.conflict()
+      // Remote result reads attest the original directories and closed process together.
+      // Requiring a live source owner here would prevent reading a completed turn.
+      if (placement.hostRef.kind !== 'device' || !execution.nativeSessionId) {
+        const tree = await this.sources.verifyWorkingDirectory({ principal, record: accepted.previous.materialization, relativeCwd })
+        if (!sameWorkflowValue(tree, accepted.previous.workingTree)) this.conflict()
+      }
       native = accepted.previous
     } else {
       const attempt = { executionId: intent.executionId, attemptId: intent.attemptId,
@@ -75,8 +79,13 @@ export class AgentExecutionPreparation {
       runId: run.id, executionSemanticsVersion: 3 as const }
     return { workingDirectory: native.workingTree.canonicalCwd,
       runtimeDirectory: repeatRuntimeDirectory(placement.destination.managedRuntimeRoot, scope, execution),
-      revalidate: async () => { await assertCurrent(); const tree = await this.sources.verifyWorkingDirectory({ principal, record: native.materialization, relativeCwd });
-        if (!sameWorkflowValue(tree, native.workingTree)) this.conflict() } }
+      revalidate: async () => {
+        await assertCurrent()
+        // The Worker checks directories on native entry and every physical result read.
+        if (placement.hostRef.kind === 'device') return
+        const tree = await this.sources.verifyWorkingDirectory({ principal, record: native.materialization, relativeCwd })
+        if (!sameWorkflowValue(tree, native.workingTree)) this.conflict()
+      } }
   }
   private conflict(): never { throw new DomainError('EXECUTION_PLACEMENT_CONFLICT', 'Exact accepted source/attempt preparation is required before native entry.', 409) }
 }

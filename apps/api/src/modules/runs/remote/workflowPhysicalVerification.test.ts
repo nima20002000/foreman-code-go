@@ -129,6 +129,7 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
     inputBound:true,inputCanonical:true,entryCanonical:true,inputEffectDigest:repeatDigest('original input.bind')}
   const query=vi.fn(async(text:string,args:unknown[]=[])=>{
     if(['begin isolation level read committed','commit','rollback'].includes(text))return {rows:[],rowCount:0}
+    if(text.includes('select r.id from runs r'))return {rows:[{id:f.intent.runId}],rowCount:1}
     if(text.includes('from execution_dispatch_intents'))return {rows:[{...f.intent,operation_id:f.intent.operationId,execution_id:f.intent.executionId,run_id:f.intent.runId,
       node_id:f.intent.nodeId,binding_hash:f.intent.bindingHash,attempt_id:f.intent.attemptId,record:f.intent}],rowCount:1}
     if(text.includes('remote_execution_owner_reconciliations'))return {rows:[],rowCount:0}

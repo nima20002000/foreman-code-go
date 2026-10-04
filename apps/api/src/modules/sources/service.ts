@@ -26,6 +26,7 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourcePreparationReconciliation } from './preparationReconciliation.js'
 import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
 import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
@@ -364,12 +365,16 @@ export class PostgresSourceService implements SourceAdmissionPort {
     if (!await this.closure.confirmedClosed(record)) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original execution physical closure is not confirmed.', 409)
     await this.executions.releaseClaim(record)
     await this.lifecycle.closed?.(record)
+    const binding = record.receipt.binding
+    const retainedBytes = binding.deviceId === null
+      ? await measureRetainedSourceDirectory(binding.canonicalPath, record.receipt.materializationId, binding.filesystem) + 16 * 1024
+      : undefined
     await this.transaction(async sql => {
       const row = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 for update', [record.receipt.materializationId])).rows[0]
       if (!row || !isDeepStrictEqual(row.record, record)) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Closure does not match the original materialization.', 409)
       await sql.query(`update source_execution_materializations set state='closed' where materialization_id=$1`, [record.receipt.materializationId])
       const reservation = (await sql.query<{ record: SourceReservation }>('select record from source_storage_reservations where reservation_id=$1', [record.reservationId])).rows[0]!.record
-      await this.reservations.retain(sql, reservation, 'retained')
+      await this.reservations.retain(sql, reservation, 'retained', retainedBytes)
     })
   }
 }
