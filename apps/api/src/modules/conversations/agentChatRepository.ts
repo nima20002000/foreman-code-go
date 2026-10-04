@@ -447,7 +447,7 @@ export class PostgresAgentChatRepository {
       const updated = await client.query(`update operator_conversation_turns set delivery='accepted',native_turn_id=$3,delivery_error=null,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId])
       if (!updated.rowCount && row.active_native_turn_id === nativeTurnId && row.record.startupDelivered
-        && row.record.startupReceipt?.requestId === requestId) {
+        && row.record.startupReceipt?.nativeSessionId === row.native_session_id) {
         await client.query('commit')
         return false
       }

@@ -184,6 +184,34 @@ beforeEach(async () => {
 })
 
 describe('selected-Agent chat service', { timeout: 60_000 }, () => {
+  it('keeps later accepted-turn reconciliation idempotent while preserving the initial startup receipt', async () => {
+    const { service } = makeService()
+    const first = request(codexNode, 'first', null)
+    const initial = await service.send(writer, fixture.scope.workspaceId, first)
+    const id = initial.state.conversation!.id
+    const read = () => service.read(writer, fixture.scope.workspaceId, query(codexNode))
+    await settled(service, read)
+    const native = FakeNative.all[0]!
+    native.hold = true
+    try {
+      await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later', id))
+      const active = await settled(service, read, state => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
+      const repository = new PostgresAgentChatRepository(pool)
+      const before = (await repository.get(id))!
+      expect(before.record.startupReceipt).toEqual({ requestId: first.requestId, nativeSessionId: before.native_session_id })
+      expect(active.activeTurn!.requestId).not.toBe(first.requestId)
+      for (let observation = 0; observation < 2; observation++) {
+        expect(await repository.accepted(id, active.activeTurn!.requestId, active.activeTurn!.nativeTurnId!)).toBe(false)
+      }
+      const after = (await repository.get(id))!
+      expect(after.revision).toBe(before.revision)
+      expect(after.updated_at).toEqual(before.updated_at)
+      expect(after.record.startupReceipt).toEqual(before.record.startupReceipt)
+      expect((await repository.turn(id, active.activeTurn!.requestId))?.delivery).toBe('accepted')
+      expect(native.prompts).toHaveLength(2)
+    } finally { await service.shutdown() }
+  })
+
   it('creates exactly one native session on first send and continues it after completion', async () => {
     const { service } = makeService()
     const empty = await service.read(writer, fixture.scope.workspaceId, query(codexNode))
