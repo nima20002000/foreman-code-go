@@ -81,11 +81,17 @@ export function jobComputerCapacity(profile: JobRuntimeProfile): JobRuntimeProfi
     diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, runtime.quota.workloadHardLimitBytes) }
 }
 
+const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
+      and e.record #> '{process,processStopped}'='true'::jsonb
+      and e.record->>'publication' not in ('pending','collecting')
+      and exists(select 1 from source_execution_materializations m
+        where m.operation_id=e.operation_id and m.execution_id=e.id and m.state='closed')
+      and not exists(select 1 from source_storage_reservations r
+        where r.owner_kind='materialization' and r.owner_id=e.operation_id
+          and r.state in ('preparing','owned','uncertain')))`
+
 const closedJobComputerSql = `(
-      exists(select 1 from job_executions e join source_execution_materializations m on m.operation_id=e.operation_id
-        where e.id=s.execution_id and m.state='closed' and e.record #>> '{process,phase}'='terminal'
-        and e.record #> '{process,processStopped}'='true'::jsonb
-        and e.record->>'publication' not in ('pending','collecting'))
+      exists(select 1 from job_executions e where e.id=s.execution_id and ${closedJobExecutionSql})
       or exists(select 1 from source_preparation_reconciliations c
         where c.operation_id=s.operation_id and c.status='closed' and c.closure is not null
         and not exists(select 1 from job_executions e where e.id=s.execution_id)))`
@@ -253,7 +259,7 @@ export async function jobComputerHasCapacity(sql: JobSql,
     where not exists(select 1 from job_computer_selections s where s.execution_id=e.id)
       and e.accepted_spec #>> '{target,hostRef,mainId}'=$2
       and coalesce(e.accepted_spec #>> '{target,hostRef,deviceId}','main')=$3
-      and (e.record #>> '{process,phase}'<>'terminal' or e.record #> '{process,processStopped}'<>'true'::jsonb)`,
+      and not ${closedJobExecutionSql}`,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile)

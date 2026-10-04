@@ -10,6 +10,8 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { JobService } from '../src/modules/jobs/service.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
+import { jobComputerHasCapacity } from '../src/modules/jobs/computerSelection.js'
+import { jobExecution } from './helpers/jobFixture.js'
 import { JobOwnership } from '../src/modules/jobs/ownership.js'
 import { SOURCE_AGGREGATE_LIMITS, PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
@@ -309,6 +311,41 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect((await restarted.getQueueTicket(reader.principal, f.workspaceId, second.id)).state).toBe('waiting')
     expect((await restarted.getExecution(reader.principal, f.workspaceId, first.executionId)).transport).toBe('unknown')
     expect(f.accept).toHaveBeenCalledTimes(1)
+  })
+  it('counts a historical execution until publication and source cleanup finish without a selection record', async () => {
+    const f = await fixture()
+    const computer = f.computers[0]!
+    const definition = await f.save(computer.candidate.spec)
+    const identity = { executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() }
+    const prepared = await f.accept(database.pool, f.principal, f.workspaceId, computer.candidate.spec, identity)
+    const execution = { ...jobExecution(), id: identity.executionId, workspaceId: f.workspaceId,
+      attemptId: identity.attemptId, operationId: identity.operationId,
+      acceptedSpec: { ...jobExecution().acceptedSpec, ...prepared,
+        definitionId: definition.id, definitionVersionId: definition.versionId } }
+    await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+      values($1,$2,1,$3,1,$4::jsonb)`, [computer.candidate.profile.id, f.workspaceId,
+      computer.candidate.profile.root.binding.rootId, JSON.stringify(computer.candidate.profile)])
+    await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
+      [computer.candidate.profile.id, JSON.stringify(computer.candidate.profile)])
+    await database.pool.query(`insert into job_executions
+      (id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by)
+      values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`, [execution.id, f.workspaceId,
+      definition.versionId, execution.operationId, execution.attemptId, JSON.stringify(execution),
+      JSON.stringify(execution.acceptedSpec), f.principal.id])
+    const capacity = () => jobComputerHasCapacity(database.pool, computer.candidate.spec.target, computer.candidate.profile)
+    expect(await capacity()).toBe(false)
+    const fence = { attemptId: execution.attemptId, owner: execution.owner }
+    await f.worker.settleProcess(f.workspaceId, execution.id, fence, {
+      process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
+      startedAt: execution.createdAt, finishedAt: new Date().toISOString(),
+    })
+    expect(await capacity()).toBe(false)
+    await f.worker.publication(f.workspaceId, execution.id, fence, { state: 'complete', issue: null })
+    expect(await capacity()).toBe(false)
+    await f.complete(execution.id)
+    expect(await capacity()).toBe(true)
+    expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1',
+      [execution.id])).rowCount).toBe(0)
   })
   it('keeps an explicit disabled target blocked while another computer admits an Auto Job', async () => {
     const f = await fixture({ computerCount: 2 })
