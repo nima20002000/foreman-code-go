@@ -174,7 +174,7 @@ export class ReviewerDispatcher {
         : reviewPreflightIdentity(priorLane, workflowCorrelationId)
       const attached = await guard.wait(this.nativeRuntime.attachOwnedSession({
         harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
-        ...identity,
+        ...identity, reviewJob: job,
       }, { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
       await guard.check()
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
@@ -267,6 +267,7 @@ export class ReviewerDispatcher {
           message: 'The designated Orchestrator requested native approval during its review. The accepted workflow has no distinct authority for that request. No approval was sent and the handler was not changed.',
         }, pending, requests)
         try {
+          await this.nativeRuntime.prepareReviewTurn?.(executionId!, session, job, lane, lane.guard.signal)
           maintenance = await lane.guard.wait(this.nativeRuntime.maintainReviewCredential?.(
             executionId!, session, lane.guard.signal, check,
           ) ?? Promise.resolve(undefined))
@@ -311,6 +312,7 @@ export class ReviewerDispatcher {
                 nativeCapture: this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
                   { type: 'event', event: original, pending: pending ? safe.value(pending) : null }),
               })
+              await this.nativeRuntime.afterReviewCommit?.(executionId!)
               if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
               if (pending) return await approvalFailure(pending)
             }
@@ -340,6 +342,7 @@ export class ReviewerDispatcher {
               writer: lane.fence, live: false,
               terminalReady: false, nativeCapture,
             })
+            await this.nativeRuntime.afterReviewCommit?.(executionId!)
           }
           const evidence = tracker.snapshot()
           if (evidence.providerId) lane.providerId = evidence.providerId
@@ -429,8 +432,12 @@ export class ReviewerDispatcher {
           }),
         })
     } finally {
-      await guard.stop()
-      await finalizeCapturedReview()
+      try {
+        await guard.stop()
+        await finalizeCapturedReview()
+      } finally {
+        if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
+      }
     }
   }
 }

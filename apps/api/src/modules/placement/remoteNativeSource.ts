@@ -44,10 +44,13 @@ export function createRemoteNativeSourceChannel(): {
       assertOriginalProducer()
       const copy = JSON.parse(canonicalGraphJson(source, 4 * 1024 * 1024)) as WorkflowOriginalNativeSource
       const id = verified.receipt.intent.executionId, key = digest(copy), native = verified.receipt.native
+      const correlation = copy.type === 'history' ? copy.history.correlationId : undefined
+      const review = verified.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlation)
+      const providerId = review ? review.providerId : native.turnId
       if (copy.type === 'session_created' && copy.session.nativeSessionId !== native.sessionId
         || copy.type === 'event' && copy.event.executionId !== id
-        || copy.type === 'history' && (copy.history.correlationId !== undefined && copy.history.correlationId !== `execution:${id}`
-          || copy.history.nativeTurnId !== undefined && copy.history.nativeTurnId !== native.turnId)) return conflict()
+        || copy.type === 'history' && (correlation !== undefined && correlation !== `execution:${id}` && !review
+          || copy.history.nativeTurnId !== undefined && copy.history.nativeTurnId !== providerId)) return conflict()
       const entries = observations.get(id) ?? new Map<string, VerifiedRemoteOriginalSource>()
       const generation = generations.get(id) ?? Object.freeze({})
       generations.set(id, generation)

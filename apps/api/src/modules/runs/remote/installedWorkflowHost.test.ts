@@ -118,6 +118,41 @@ async function closureFixture() {
   return {...f,journal,captured,manager,close,closeOwner,closeRegistration,history}
 }
 describe('positive installed native closure consumption',()=>{
+  it('retains the original physical owner after the Orchestrator workflow turn settles', async () => {
+    const f = await closureFixture()
+    expect(await settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() + 60_000).toISOString() } })).toBeNull()
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+    const status = await f.journal.status(f.intent.operationId)
+    expect(status).toMatchObject({ status: 'known', receipt: {
+      retainedReviewer: { agentId: 'agent', workflowTurnId: 'original-turn', result: { outcome: 'succeeded' } },
+      native: { sessionId: f.session.nativeSessionId, processIdentityDigest: f.captured.native.processIdentityDigest },
+    } })
+    expect(status.status === 'known' && status.receipt.terminal).toBeUndefined()
+  })
+  it('closes the retained original owner on Run disposition without replacing its workflow result', async () => {
+    const f = await closureFixture()
+    await settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() + 60_000).toISOString() } })
+    await f.journal.revokeFence(f.intent.operationId)
+    f.closeOwner.mockResolvedValue(true)
+    const result = await settleInstalledWorkflowNativeOwner({ ...f,
+      history: { events: [], pendingInteractions: [], terminalTurn: {
+        correlationId: 'assigned-review', providerId: 'review-turn', result: { outcome: 'succeeded' },
+      } } })
+    expect(result).toMatchObject({ kind: 'cancelled' })
+    expect(result?.result).toBeUndefined()
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(f.session)
+    expect(f.closeOwner).toHaveBeenCalledExactlyOnceWith(`execution:${f.intent.executionId}`)
+  })
+  it('does not retain a closed physical owner or an expired reviewer lifetime', async () => {
+    const f = await closureFixture()
+    await expect(settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() - 1).toISOString() } })).rejects.toThrow()
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+  })
   it.each(['intent', 'connection', 'session', 'turn', 'process'] as const)('refuses foreign %s output cleanup before closing a native owner', async kind => {
     const f = await closureFixture()
     const binding = { ...f.connection, connectionEpoch: randomUUID() }

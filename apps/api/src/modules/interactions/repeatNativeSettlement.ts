@@ -13,6 +13,7 @@ import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'
 import { assertWorkflowNativeNotSubmittedLocked, readWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryRecord } from '../runs/workflowNativeEntry.js'
 import { assertRepeatNativeClosure, repeatNativePending } from './repeatNativeEvidence.js'
+import { readRetainedRemoteReviewer, retainRemoteReviewerCredential } from './retainedRemoteReviewer.js'
 
 interface SessionRow { reference: unknown; finalized: boolean }
 interface ClosedExecution { execution: HarnessExecution; session: NativeSessionReference; generation: string; finalized: boolean }
@@ -22,6 +23,7 @@ export interface RepeatNativeSettlementCheckpoint {
   execution: HarnessExecution
   session: NativeSessionReference | null
   generation: string | null
+  retainedReviewerPrincipalId?: string
   noSubmission?: WorkflowNativeEntryRecord
   unbound?: UnboundWorkflowClosure
 }
@@ -95,8 +97,10 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
   const ordered = [...executions.values()].sort((left, right) => left.id.localeCompare(right.id))
   const closed: ClosedExecution[] = []
   const unbound: RepeatNativeSettlementCheckpoint[] = []
+  const retained: RepeatNativeSettlementCheckpoint[] = []
   for (const execution of ordered) {
-    await assertExecutionResourcesSettled(sql, runId, execution.id)
+    const reviewer = await readRetainedRemoteReviewer(sql, execution)
+    await assertExecutionResourcesSettled(sql, runId, execution.id, reviewer?.principalId)
     const native = (await sql.query<SessionRow>(
       `select reference,workflow_finalized_at is not null as finalized
        from execution_native_sessions where execution_id=$1 for update`, [execution.id])).rows[0]
@@ -130,6 +134,13 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
     if (configuration?.pinned !== true || configuration.agent_id !== execution.agentId || configuration.harness !== session.harness) {
       return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
     }
+    if (reviewer) {
+      await sql.query(`update execution_native_sessions set workflow_finalized_at=coalesce(workflow_finalized_at,clock_timestamp())
+        where execution_id=$1 and reference=$2::jsonb`, [execution.id, JSON.stringify(session)])
+      await retainRemoteReviewerCredential(sql, execution, reviewer)
+      retained.push({ execution, session, generation: reviewer.generation, retainedReviewerPrincipalId: reviewer.principalId })
+      continue
+    }
     // Recheck even a previously finalized workflow: a subsequent reviewer
     // preflight invalidates that older close before it can start a new process.
     const generation = assertRepeatNativeClosure(execution, session, await readWorkflowClosure(sql, execution))
@@ -150,7 +161,7 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
     [item.execution.id, JSON.stringify(item.session)])
     if (updated.rowCount !== 1) return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
   }
-  return [...closed.map(({ execution, session, generation }) => structuredClone({ execution, session, generation })), ...unbound]
+  return [...closed.map(({ execution, session, generation }) => structuredClone({ execution, session, generation })), ...unbound, ...retained]
 }
 
 async function readExecution(sql: GraphTransactionSql, runId: string, id: string): Promise<HarnessExecution> {
@@ -163,10 +174,12 @@ async function readExecution(sql: GraphTransactionSql, runId: string, id: string
   return execution
 }
 
-async function assertExecutionResourcesSettled(sql: GraphTransactionSql, runId: string, executionId: string): Promise<void> {
+async function assertExecutionResourcesSettled(sql: GraphTransactionSql, runId: string, executionId: string,
+  retainedPrincipalId?: string): Promise<void> {
   const row = (await sql.query<{ outstanding: boolean }>(`select (
     exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
-      where b.execution_id=$1 and (b.run_id is distinct from $2 or b.revoked_at is null or p.id is null or p.revoked_at is null))
+      where b.execution_id=$1 and b.principal_id is distinct from $3
+        and (b.run_id is distinct from $2 or b.revoked_at is null or p.id is null or p.revoked_at is null))
     or exists(select 1 from approval_execution_state a where a.execution_id=$1
       and (a.graph_thread_id is distinct from $2 or a.active_started_at is not null or a.approval_wait_started_at is not null))
     or exists(select 1 from review_jobs j where j.execution_id=$1 and
@@ -174,7 +187,7 @@ async function assertExecutionResourcesSettled(sql: GraphTransactionSql, runId: 
         or (j.state='failed' and j.record->'cleanup'->>'completedAt' is null)
         or j.record->'cleanup'->>'nativeState'='pending'
         or j.record->'cleanup'->>'credentialState'='pending'))
-    ) as outstanding`, [executionId, runId])).rows[0]
+    ) as outstanding`, [executionId, runId, retainedPrincipalId ?? null])).rows[0]
   if (row?.outstanding !== false) return repeatNativePending()
 }
 

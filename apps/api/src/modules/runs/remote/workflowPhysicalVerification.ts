@@ -21,6 +21,8 @@ import { repeatExecutionIdentity,repeatDigest } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest,remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import { DomainError } from '../../errors.js'
+import { assertRemoteReviewerReceipt } from '../../placement/remoteReviewerAuthority.js'
+import type { ReviewNativeProofRecord } from '../../interactions/reviewNativeProof.js'
 import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
 import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
@@ -34,6 +36,7 @@ export interface RemoteWorkflowMainLifetime {
   lifetimeGeneration: number
   closureGeneration: string
   lane: { id: string; token: string; connectionGeneration: number; providerId: string | null } | null
+  review?: { jobId: string; correlationId: string }
   assertCurrent(): void
 }
 /** Descriptor only: the producer's private WeakMap is the authority. */
@@ -136,7 +139,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
           || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
             workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
-            bootId:current.bootId,connectionGeneration:current.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
+            bootId:current.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
       }
       assertCurrent()
       const reply = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
@@ -316,6 +319,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       }
       check()
       const current = await readReconciledDispatchIntent(sql, intent.operationId, true)
+      if (lifetime.review) await assertRemoteReviewerReceipt(sql, receipt)
       const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
       const rawNative = await readNativePlacement(sql, intent.executionId)
       if (!current || !placement || !rawNative || !same(current, intent) || !same(placement, capture.placement)) return unavailable('dispatch_binding')
@@ -394,8 +398,11 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           || lane.native_session_id !== readout.session.nativeSessionId) return unavailable('writer_lane_session')
         if (lane.token !== lifetime.lane.token && !releasedAfterClosure) return unavailable('writer_lane_token')
         if (lane.generation !== String(lifetime.lane.connectionGeneration)) return unavailable('writer_lane_generation')
-        if (lane.correlation !== `execution:${intent.executionId}`) return unavailable('writer_lane_correlation')
-        if (receipt.native?.turnId !== undefined && lane.provider_id !== receipt.native.turnId) {
+        const correlation = lifetime.review?.correlationId ?? `execution:${intent.executionId}`
+        const providerId = lifetime.review
+          ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === lifetime.review!.jobId)?.providerId : receipt.native?.turnId
+        if (lane.correlation !== correlation) return unavailable('writer_lane_correlation')
+        if (providerId !== undefined && lane.provider_id !== providerId) {
           return unavailable('writer_lane_receipt_turn')
         }
         if (lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) {
@@ -410,6 +417,18 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         where execution_id=$1 and run_id=$2 and record->'original'=$3::jsonb limit 1`, [intent.executionId,intent.runId,canonicalGraphJson(original.source,4*1024*1024)])
       if(proofs.rows.some(row=>row.record.execution.executionId===intent.executionId&&same(row.record.session,readout.session)
         &&same(row.record.original,original.source)))capture.publications.add(sql)
+      if (lifetime.review) {
+        const records = await sql.query<{ record: ReviewNativeProofRecord }>(`select record from review_native_proofs
+          where execution_id=$1 and run_id=$2 and job_id=$3`, [intent.executionId, intent.runId, lifetime.review.jobId])
+        const matches = records.rows.some(({ record }) => {
+          let source: WorkflowOriginalNativeSource = { type: 'boundary' }
+          if (record.original.type === 'event') source = { type: 'event', event: { ...record.original.event, executionId: intent.executionId } }
+          if (record.original.type === 'history') source = { type: 'history', history: record.original.history }
+          return record.job.correlationId === lifetime.review!.correlationId
+            && same(record.session, readout.session) && same(source, original.source)
+        })
+        if (matches) capture.publications.add(sql)
+      }
       if(readout.history) {
         const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
         const events=await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs

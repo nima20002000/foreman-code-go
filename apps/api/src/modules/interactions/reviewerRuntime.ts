@@ -24,6 +24,10 @@ export interface ReviewCleanupSession {
 
 /** Reviewer-only hooks; the shared workflow/Operator runtime port is unchanged. */
 export interface ReviewerNativeRuntime extends InteractionNativeRuntime {
+  prepareReviewTurn?(executionId: string, session: NativeSessionReference, job: ReviewJob,
+    lane: SessionWriteLease, signal: AbortSignal): Promise<void>
+  releaseReviewSession?(executionId: string): Promise<void>
+  afterReviewCommit?(executionId: string): Promise<void>
   captureReviewNative(executionId: string, session: NativeSessionReference, job: ReviewJob,
     lane: SessionWriteLease, source: ReviewOriginalNativeSource): ReviewNativeCapture
   /** Capture the exact assignment and local connection before dispatch. A late

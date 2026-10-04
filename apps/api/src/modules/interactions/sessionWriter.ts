@@ -180,6 +180,14 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   capabilities: NativeHarnessSessionManager['capabilities'] = (signal) => this.manager.capabilities(signal)
+  get retainsReviewerSession() { return this.manager.retainsReviewerSession === true }
+  prepareReview: NonNullable<NativeHarnessSessionManager['prepareReview']> = async (session, job, signal) => {
+    await this.manager.prepareReview?.(session, job, signal)
+  }
+  originalApplicationAccess: NonNullable<NativeHarnessSessionManager['originalApplicationAccess']> = (session, signal) => {
+    if (!this.manager.originalApplicationAccess) throw new Error('Original application lease recovery is unavailable')
+    return this.manager.originalApplicationAccess(session, signal)
+  }
   inspectMcp: NativeHarnessSessionManager['inspectMcp'] = (signal) => this.manager.inspectMcp(signal)
   pending: NativeHarnessSessionManager['pending'] = (session, signal) => this.manager.pending(session, signal)
   history: NativeHarnessSessionManager['history'] = (session, signal) => this.manager.history(session, signal)

@@ -14,6 +14,7 @@ import type {
   NativeSessionReference,
   PendingNativeInteraction,
   OperatorConfigurationVersion,
+  ReviewJob,
 } from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
@@ -134,6 +135,10 @@ export interface NativeSubagentHistoryPage {
 
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
+  readonly retainsReviewerSession?: boolean
+  prepareReview?(session: NativeSessionReference, job: ReviewJob, signal?: AbortSignal): Promise<void>
+  originalApplicationAccess?(session: NativeSessionReference, signal?: AbortSignal):
+    Promise<import('@graphql/contracts/remote-execution').RemoteApplicationAccess>
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

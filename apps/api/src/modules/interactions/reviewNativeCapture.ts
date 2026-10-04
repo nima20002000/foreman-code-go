@@ -3,6 +3,7 @@ import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import type { SessionWriteLease, SingleWriterSessionManager } from './sessionWriter.js'
+import type { RunOwnership } from '../runs/ownership.js'
 
 /** Private companion to the existing reviewer writer, not an HTTP/MCP proof
  * schema. Entry is command intent only. Event/history retain the original source
@@ -22,8 +23,10 @@ export interface ReviewNativeCaptureInput {
   closureGeneration: string
   source: ReviewOriginalNativeSource
   assertCurrent(): void
+  owner?: RunOwnership
 }
 export interface CapturedReviewNativeSource {
+  owner?: RunOwnership
   execution: HarnessExecution
   session: NativeSessionReference
   job: ReviewJob
@@ -68,6 +71,7 @@ export function createReviewNativeCaptureChannel(): { capture: ReviewNativeCaptu
       check()
       const value = Object.freeze({ executionId: execution.id })
       values.set(value, Object.freeze({ execution, session, job, lane, source,
+        ...(input.owner ? { owner: input.owner } : {}),
         lifetimeGeneration: input.lifetimeGeneration, closureGeneration: input.closureGeneration,
         observedAt: new Date().toISOString(), assertCurrent: check }))
       return value

@@ -15,6 +15,7 @@ import type { DeviceExtensionRegistration } from '../devices/deviceApplicationCh
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError } from '../errors.js'
+import { assertRemoteReviewAssignment, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
 import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
@@ -75,6 +76,13 @@ export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
     const entry = await sql.query("select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered' for share", [current!.executionId, current!.runId])
     if (entry.rowCount !== 1) denied()
   }
+  if (input.action === 'retain-reviewer' || input.action === 'review') {
+    if (row!.stopped || row!.cleanup || !['running', 'waiting'].includes(row!.execution_state)) denied()
+    if (input.action === 'review') {
+      if (!input.review) denied()
+      await assertRemoteReviewAssignment(sql, input.intent, input.review!)
+    }
+  }
 }
 export function createExecutionAuthorityExtension(pool: pg.Pool,
   locations: ExecutionRunAuthorityPort, producer: AgentPlacementProducer): DeviceExtensionRegistration {
@@ -96,8 +104,13 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         const harness = await producer.harnessFacts(sql, placement!)
         return { payload: ExecutionFactsResultSchema.parse({ version: 1, intent: input.intent, placement, executionPlacement: native, configuration, harness }) }
       }
+      const policy = input.action === 'retain-reviewer' || input.action === 'review'
+        ? await remoteReviewerPolicy(sql, input.intent) : undefined
       return { payload: ExecutionAuthorityResultSchema.parse({ version: 1, action: input.action,
-        operationId: input.intent.operationId, attemptId: input.intent.attemptId, bindingHash: input.intent.bindingHash, owner: input.intent.owner }) }
+        operationId: input.intent.operationId, attemptId: input.intent.attemptId, bindingHash: input.intent.bindingHash,
+        owner: input.intent.owner,
+        ...(policy ? { reviewer: { agentId: policy.execution.agentId,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() } } : {}) }) }
     }))
   } }
 }

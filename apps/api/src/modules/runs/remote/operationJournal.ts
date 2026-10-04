@@ -3,6 +3,8 @@ import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { remoteActiveNative, RemoteReviewerAssignmentSchema, type RemoteReviewerAssignment } from '@foreman-code/contracts/remote-execution'
+import type { NativeHistory } from '../../harnesses/port.js'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@foreman-code/contracts/jobs'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
@@ -261,6 +263,92 @@ export class RemoteOperationJournal {
       receipt.native.turnId = turnId; receipt.sequence++; return receipt
     })
   }
+  retainReviewer(operationId: string, policy: { agentId: string; expiresAt: string }, history: NativeHistory) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const terminal = history.terminalTurn
+      if (receipt.stopFence || receipt.terminal || !receipt.native?.turnId || !terminal
+        || terminal.correlationId !== receipt.turnInput?.correlationId || terminal.providerId !== receipt.native.turnId
+        || terminal.result.outcome !== 'succeeded' || history.pendingInteractions.length || history.pendingInteraction
+        || Date.parse(policy.expiresAt) <= Date.now()) throw new Error('Reviewer workflow settlement mismatch')
+      const retained = { ...policy, workflowTurnId: terminal.providerId, result: terminal.result }
+      if (receipt.retainedReviewer && !same({ ...receipt.retainedReviewer, expiresAt: policy.expiresAt }, retained))
+        throw new Error('Retained reviewer identity changed')
+      receipt.retainedReviewer = retained
+      receipt.sequence++
+      return receipt
+    })
+  }
+  renewReviewer(operationId: string, policy: { agentId: string; expiresAt: string }) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!receipt.retainedReviewer || receipt.retainedReviewer.agentId !== policy.agentId
+        || receipt.stopFence || receipt.terminal || Date.parse(policy.expiresAt) <= Date.now())
+        throw new Error('Retained reviewer renewal mismatch')
+      receipt.retainedReviewer.expiresAt = policy.expiresAt
+      receipt.sequence++
+      return receipt
+    })
+  }
+  reserveReviewTurn(operationId: string, assignment: RemoteReviewerAssignment, promptDigest: string, afterSequence: number) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      assignment = RemoteReviewerAssignmentSchema.parse(assignment)
+      if (!receipt.retainedReviewer || receipt.retainedReviewer.agentId !== assignment.reviewerAgentId
+        || receipt.native?.sessionId !== assignment.session.nativeSessionId || receipt.stopFence || receipt.terminal
+        || Date.parse(receipt.retainedReviewer.expiresAt) <= Date.now()) throw new Error('Reviewer lifetime unavailable')
+      const turns = receipt.reviewTurns ??= []
+      const prior = turns.find(turn => turn.assignment.correlationId === assignment.correlationId
+        || turn.assignment.jobId === assignment.jobId)
+      if (prior) {
+        if (!same(prior.assignment, assignment) || prior.promptDigest !== promptDigest) throw new Error('Review turn input conflict')
+        return { reserved: !prior.entered, receipt }
+      }
+      if (turns.length >= 128 || turns.some(turn => !turn.settled)) throw new Error('Reviewer turn capacity unavailable')
+      turns.push({ assignment, promptDigest, afterSequence, entered: false, settled: false })
+      receipt.sequence++
+      return { reserved: true, receipt }
+    })
+  }
+  enterReviewTurn(operationId: string, correlationId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlationId)
+      if (!turn || receipt.stopFence || receipt.terminal) throw new Error('Reviewer entry unavailable')
+      if (turn.entered) return false
+      turn.entered = true
+      receipt.sequence++
+      return true
+    })
+  }
+  acknowledgeReviewTurn(operationId: string, correlationId: string, providerId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlationId)
+      if (!turn || !providerId || turn.providerId && turn.providerId !== providerId)
+        throw new Error('Review turn acknowledgement mismatch')
+      if (turn.providerId === providerId) return receipt
+      turn.providerId = providerId
+      receipt.sequence++
+      return receipt
+    })
+  }
+  settleReviewTurn(operationId: string, history: NativeHistory) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const terminal = history.terminalTurn
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === terminal?.correlationId)
+      if (!turn || !terminal || turn.providerId !== terminal.providerId
+        || history.pendingInteraction || history.pendingInteractions.length) throw new Error('Review turn settlement mismatch')
+      if (turn.settled && !same(turn.result, terminal.result)) throw new Error('Review result conflict')
+      if (!turn.settled) {
+        turn.settled = true
+        turn.result = terminal.result
+        receipt.sequence++
+      }
+      return receipt
+    })
+  }
   confirmRecovered(operationId: string, native: RemoteNativeIdentity) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
@@ -298,8 +386,8 @@ export class RemoteOperationJournal {
       if (receipt.intent.attemptId !== command.attemptId || receipt.intent.executionId !== command.executionId
         || receipt.intent.bindingHash !== command.bindingHash || !same(receipt.intent.owner, command.owner)) throw new Error('Stale control ownership')
       if (command.nativeTarget && (command.nativeTarget.kind !== 'session' || command.nativeTarget.sessionId !== receipt.native?.sessionId
-        || (command.nativeTarget.turnId && command.nativeTarget.turnId !== receipt.native?.turnId))) throw new Error('Wrong explicit native target')
-      if (command.native && !same(command.native, receipt.native)) throw new Error('Wrong native control target')
+        || (command.nativeTarget.turnId && command.nativeTarget.turnId !== remoteActiveNative(receipt)?.turnId))) throw new Error('Wrong explicit native target')
+      if (command.native && !same(command.native, remoteActiveNative(receipt))) throw new Error('Wrong native control target')
       if (command.action.kind === 'respond') {
         const target = receipt.interaction
         if (receipt.stopFence || receipt.phase !== 'running' || !target || target.interactionId !== command.action.interactionId

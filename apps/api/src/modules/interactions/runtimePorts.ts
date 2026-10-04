@@ -2,12 +2,13 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
-import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference, ReviewJob } from '@foreman-code/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { RunOwnership } from '../runs/ownership.js'
 
 export interface NativeManagerOwnershipContext {
+  reviewJob?: ReviewJob
   purpose?: 'reviewer'
   correlationId?: string
   nativeTurnId?: string

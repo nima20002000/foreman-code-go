@@ -4,6 +4,7 @@ import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
 import { fail } from './context.js'
+import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
 
 type Purpose = 'workflow' | 'reviewer'
 export async function credentialAuthority(sql: GraphSqlClient, executionId: string, purpose: Purpose) {
@@ -79,10 +80,20 @@ export async function assertWave25WorkerBinding(sql: GraphSqlClient, principalId
   if (row.purpose === 'reviewer' && row.approval_review_job_id) {
     const epoch = await sql.query(`select 1 from review_jobs where id=$1 and execution_id=$2 and lease_fence=$3::bigint`,
     [row.approval_review_job_id, row.execution_id, row.approval_review_lease_fence])
-    if (epoch.rowCount !== 1) return fail('AUTH_REVOKED')
+    if (epoch.rowCount !== 1) {
+      const execution = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1',
+        [row.execution_id])).rows[0]
+      const retained = execution && await readRetainedRemoteReviewer(sql, HarnessExecutionSchema.parse(execution.record))
+      if (retained?.principalId === principalId) return fail('REVIEWER_BINDING_REBIND_REQUIRED')
+      return fail('AUTH_REVOKED')
+    }
   }
   const authority = await credentialAuthority(sql, row.execution_id, row.purpose)
   if (authority.run.id !== row.run_id || authority.run.workspaceId !== row.workspace_id || authority.run.workflowId !== row.workflow_id
     || authority.execution.agentId !== row.agent_id || authority.nativeSessionId !== row.approval_native_session_id
-    || authority.generation !== row.approval_connection_generation) return fail('AUTH_REVOKED')
+    || authority.generation !== row.approval_connection_generation) {
+    const retained = row.purpose === 'reviewer' && await readRetainedRemoteReviewer(sql, authority.execution)
+    if (retained && retained.principalId === principalId) return fail('REVIEWER_BINDING_REBIND_REQUIRED')
+    return fail('AUTH_REVOKED')
+  }
 }

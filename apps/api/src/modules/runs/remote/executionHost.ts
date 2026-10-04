@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
-import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
+import { RemoteOwnerControlSchema, RemoteReviewerAssignmentSchema, remoteActiveNative, type RemoteReviewerRequest,
+  type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { NativeSessionManagerResolver, NativeManagerResolutionContext } from '../../interactions/runtimePorts.js'
@@ -20,6 +21,7 @@ export interface RemoteExecutionHostPorts {
   incarnationId: string
   managers: NativeSessionManagerResolver
   authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop'): Promise<void>
+  authorizeReview?(intent: DispatchIntent, placement: AcceptedNodePlacement, review: RemoteReviewerRequest): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
   attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest, executionPlacement?: NativeExecutionPlacement): Promise<RuntimeLeafAttestation>
   preflight(request: HarnessExecutionRequest, applicationAccess?: RemoteApplicationAccess): Promise<ChildProcessEnvironment | void>
@@ -29,7 +31,7 @@ export interface RemoteExecutionHostPorts {
   verifyRecovery?(receipt: RemoteOperationReceipt, session: NativeSessionReference, evidenceDigest: string): Promise<void>
   settle(intent: DispatchIntent, history: NativeHistory, owner: { manager: NativeHarnessSessionManager; session: NativeSessionReference; request: HarnessExecutionRequest }): Promise<RemoteTerminalEvidence | null>
 }
-interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void>; settlementTask?: Promise<void>; settlementHistory?: NativeHistory; settlementEvidence?: RemoteTerminalEvidence }
+interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void>; settlementTask?: Promise<void>; settlementHistory?: NativeHistory; workflowHistory?: NativeHistory; settlementEvidence?: RemoteTerminalEvidence }
 /** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
 export class RemoteExecutionHost {
   private closing = false
@@ -94,7 +96,7 @@ export class RemoteExecutionHost {
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
     let action: 'start' | 'read' | 'control' | 'stop' = 'read'
     if (frame.method === 'control') action = frame.command.action.kind === 'stop' ? 'stop' : 'control'
-    else if (frame.method === 'prepare' || frame.method === 'start-turn') action = 'start'
+    else if (frame.method === 'prepare' || frame.method === 'start-turn' && !frame.review) action = 'start'
     await this.ports.authorize(frame.intent, placement, action)
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
@@ -106,14 +108,22 @@ export class RemoteExecutionHost {
       return { ...pageNativeHistory(history), status: await this.ports.journal.status(frame.intent.operationId) }
     }
     if (frame.method === 'control') return this.control(frame.command, frame)
-    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId)
+    if (frame.method === 'prepare-review') {
+      const resident = await this.resident(frame.intent.operationId, 'read')
+      await this.authorizeReview(resident, frame.review)
+      return this.ports.journal.status(frame.intent.operationId)
+    }
+    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId, frame.review)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
     if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
+    if (frame.method === 'get-application-access') throw new Error('Application lease recovery requires the installed physical owner')
     if (frame.method === 'history') {
-      const result = await this.read(frame.intent.operationId, 'history') as {
+      const result = await this.read(frame.intent.operationId, 'history', frame.correlationId) as {
         history: NativeHistory; status: Awaited<ReturnType<RemoteOperationJournal['status']>>
       }
-      return { ...pageNativeHistory(result.history, frame.afterSequence), status: result.status }
+      const after = result.status.status === 'known' && frame.correlationId
+        ? result.status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === frame.correlationId)?.afterSequence : undefined
+      return { ...pageNativeHistory(result.history, frame.afterSequence ?? after), status: result.status }
     }
     return this.read(frame.intent.operationId, frame.method)
   }
@@ -277,11 +287,18 @@ export class RemoteExecutionHost {
     await this.ports.authorize(resident.intent, resident.placement, action)
     return resident
   }
-  startTurn(operationId: string, prompt: string, correlationId: string) {
-    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId))
+  private async authorizeReview(resident: Resident, review: RemoteReviewerRequest) {
+    if (!this.ports.authorizeReview || resident.request.configuration.productRole !== 'orchestrator'
+      || !isDeepStrictEqual(resident.session, review.session)
+      || resident.request.configuration.agentId !== review.reviewerAgentId) throw new Error('Reviewer session binding mismatch')
+    await this.ports.authorizeReview(resident.intent, resident.placement, review)
   }
-  private async startTurnOwned(operationId: string, prompt: string, correlationId: string) {
-    const resident = await this.resident(operationId, 'start')
+  startTurn(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest) {
+    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId, review))
+  }
+  private async startTurnOwned(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest) {
+    const resident = await this.resident(operationId, review ? 'read' : 'start')
+    if (review) return this.startReviewTurn(resident, prompt, correlationId, review)
     if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
     const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })
     if (!reserved.reserved) return this.ports.journal.status(operationId)
@@ -297,15 +314,48 @@ export class RemoteExecutionHost {
     })()
     return this.ports.journal.status(operationId)
   }
+  private async startReviewTurn(resident: Resident, prompt: string, correlationId: string, review: RemoteReviewerRequest) {
+    if (review.correlationId !== correlationId || !prompt || prompt.length > 1_000_000)
+      throw new Error('Reviewer correlation mismatch')
+    await this.authorizeReview(resident, review)
+    const operationId = resident.intent.operationId
+    const before = await resident.manager.history(resident.session)
+    const afterSequence = before.nextSequence === undefined ? before.events.at(-1)?.sequence ?? -1 : before.nextSequence - 1
+    const reserved = await this.ports.journal.reserveReviewTurn(operationId,
+      RemoteReviewerAssignmentSchema.strip().parse(review), createHash('sha256').update(prompt).digest('hex'), afterSequence)
+    if (!reserved.reserved) return this.ports.journal.status(operationId)
+    await this.authorizeReview(resident, review)
+    if (!await this.ports.journal.enterReviewTurn(operationId, correlationId)) return this.ports.journal.status(operationId)
+    delete resident.settlementHistory
+    resident.turn = (async () => {
+      try {
+        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId,
+          onSubmitted: async providerId => {
+            await this.ports.journal.acknowledgeReviewTurn(operationId, correlationId, providerId)
+            const status = await this.ports.journal.status(operationId)
+            if (status.status === 'known' && status.receipt.stopFence)
+              await resident.manager.cancel(resident.session, undefined, providerId)
+          } }, resident.controller.signal)) { void event }
+        const history = await resident.manager.reconcile(resident.session, correlationId)
+        await this.ports.journal.settleReviewTurn(operationId, history)
+      } catch {
+        await this.ports.journal.uncertain(operationId, 'Original review turn acknowledgement or settlement unavailable')
+      }
+    })()
+    return this.ports.journal.status(operationId)
+  }
   private settle(resident: Resident, correlationId: string): Promise<void> {
     if (resident.settlementTask) return resident.settlementTask
     const task = (async () => {
       const status = await this.ports.journal.status(resident.intent.operationId)
       if (status.status === 'known' && status.receipt.terminal) return
-      const history = resident.settlementHistory ?? await resident.manager.reconcile(resident.session, correlationId)
+      const history = resident.settlementHistory ?? resident.workflowHistory ?? await resident.manager.reconcile(resident.session, correlationId)
       // Preserve the actual last provider snapshot before a closure producer removes its runtime.
       if (history.terminalTurn?.correlationId === correlationId || (history.correlationId === correlationId && history.terminalResult)) resident.settlementHistory = structuredClone(history)
       const evidence = resident.settlementEvidence ?? await this.ports.settle(resident.intent, history, resident)
+      const retained = await this.ports.journal.status(resident.intent.operationId)
+      if (retained.status === 'known' && retained.receipt.retainedReviewer
+        && correlationId === `execution:${resident.intent.executionId}`) resident.workflowHistory = structuredClone(history)
       if (evidence) {
         resident.settlementHistory = structuredClone(history)
         resident.settlementEvidence = structuredClone(evidence)
@@ -316,11 +366,47 @@ export class RemoteExecutionHost {
     void task.then(() => { if (resident.settlementTask === task) delete resident.settlementTask }, () => { if (resident.settlementTask === task) delete resident.settlementTask })
     return task
   }
-  async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp') {
+  async closeRetainedReviewer(operationId: string): Promise<void> {
+    const resident = this.residents.get(operationId)
+    const status = await this.ports.journal.status(operationId)
+    if (!resident || status.status !== 'known' || !status.receipt.retainedReviewer
+      || status.receipt.terminal || !isDeepStrictEqual(status.receipt.intent, resident.intent))
+      throw new Error('Original retained reviewer owner unavailable')
+    await this.ports.journal.revokeFence(operationId)
+    resident.controller.abort()
+    await resident.manager.cancel(resident.session)
+    await this.settle(resident, `execution:${resident.intent.executionId}`)
+  }
+  async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp', correlationId?: string) {
     const resident = await this.resident(operationId, 'read')
+    const status = await this.ports.journal.status(operationId)
+    const correlation = correlationId ?? (status.status === 'known'
+      ? status.receipt.reviewTurns?.at(-1)?.assignment.correlationId : undefined) ?? `execution:${resident.intent.executionId}`
+    if (correlation !== `execution:${resident.intent.executionId}` && (status.status !== 'known'
+      || !status.receipt.reviewTurns?.some(turn => turn.assignment.correlationId === correlation)))
+      throw new Error('Unknown reviewer reconciliation correlation')
     if (resident.settlementEvidence) await this.settle(resident, `execution:${resident.intent.executionId}`)
-    if (method === 'history') return { history: resident.settlementHistory ? structuredClone(resident.settlementHistory)
-      : await resident.manager.reconcile(resident.session, `execution:${resident.intent.executionId}`), status: await this.ports.journal.status(operationId) }
+    if (method === 'history') {
+      const workflow = correlation === `execution:${resident.intent.executionId}` && status.status === 'known'
+        ? status.receipt.retainedReviewer : undefined
+      let history: NativeHistory
+      if (workflow) {
+        if (!resident.workflowHistory) throw new Error('Original workflow history requires durable recovery')
+        history = structuredClone(resident.workflowHistory)
+      } else {
+        history = resident.settlementHistory ? structuredClone(resident.settlementHistory)
+          : await resident.manager.reconcile(resident.session, correlation)
+      }
+      if (!workflow && correlation === `execution:${resident.intent.executionId}` && history.terminalTurn?.correlationId === correlation)
+        await this.settle(resident, correlation)
+      const review = status.status === 'known'
+        ? status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlation) : undefined
+      if (review && history.correlationId === correlation && history.nativeTurnId) {
+        await this.ports.journal.acknowledgeReviewTurn(operationId, correlation, history.nativeTurnId)
+        if (history.terminalTurn?.correlationId === correlation) await this.ports.journal.settleReviewTurn(operationId, history)
+      }
+      return { history, status: await this.ports.journal.status(operationId) }
+    }
     if (method === 'pending') return resident.settlementHistory
       ? resident.settlementHistory.pendingInteraction ?? resident.settlementHistory.pendingInteractions[0] : resident.manager.pending(resident.session)
     return resident.manager[method]()
@@ -364,7 +450,7 @@ export class RemoteExecutionHost {
     await this.ports.authorize(resident.intent, resident.placement, action)
     if (!await this.ports.journal.enterControlDelivery(command)) return this.ports.journal.status(command.operationId)
     try {
-      if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, recorded.receipt.native?.turnId) }
+      if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, remoteActiveNative(recorded.receipt)?.turnId) }
       else await resident.manager.respond(resident.session, command.action.nativeInteractionId, ApprovalResponseOptionSchema.parse(command.action.response))
       await this.ports.journal.acknowledgeControl(command)
       await this.settle(resident, `execution:${resident.intent.executionId}`)

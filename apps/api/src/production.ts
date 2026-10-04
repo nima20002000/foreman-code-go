@@ -87,6 +87,7 @@ import { randomUUID } from 'node:crypto'
 import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from './modules/interactions/reviewNativeCapture.js'
 import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
+import { readRetainedRemoteReviewer } from './modules/interactions/retainedRemoteReviewer.js'
 import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatReviewer.js'
 import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
 import { createProductionWorkflowArtifactResultSource } from './modules/runs/remote/workflowArtifactResultProduction.js'
@@ -406,7 +407,8 @@ export function buildProductionApp(
       return undefined
     },
   }
-  const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify)
+  const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify,
+    (sql, capture) => remoteWorkflow.assertReviewPhysical(sql, capture))
   const repository = new PostgresInteractionRepository(database.pool, reviewNativeProofs)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
   const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
@@ -706,6 +708,25 @@ export function buildProductionApp(
   })
   const credentials = new WorkerCredentialService(database.pool, access)
   const launchCredentials: ExecutionCredentialProvider = {
+    async recoverRemote(executionId, applicationAccess, job) {
+      const execution = await runs.getExecution(executionId)
+      const binding = remoteWorkflow.binding(executionId)
+      const retained = execution && await readRetainedRemoteReviewer(database.pool, execution)
+      if (!execution || !binding || !retained || applicationAccess.executionId !== executionId
+        || applicationAccess.operationId !== binding.intent.operationId || applicationAccess.attemptId !== binding.intent.attemptId
+        || applicationAccess.bindingHash !== binding.intent.bindingHash || applicationAccess.agentId !== execution.agentId)
+        throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The original process credential cannot be recovered.', 409)
+      if (job) await credentials.bindReviewerJob(executionId, { principalId: retained.principalId }, job)
+      const principal = await access.authenticate(applicationAccess.token, 'worker')
+      if (principal.id !== retained.principalId || principal.agentId !== execution.agentId)
+        throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The original process credential changed.', 409)
+      return { principalId: principal.id, expiresAt: principal.expiresAt,
+        environment: { agentId: execution.agentId, variables: { GRAPHQL_MCP_TOKEN: applicationAccess.token } } }
+    },
+    async bindReviewerJob(executionId, credential, job, lane) {
+      await credentials.bindReviewerJob(executionId, credential, job, lane)
+      await appRoutes.refresh()
+    },
     async prepare(input) {
       await validateContinuation(input.executionId, input.signal)
       const execution = await runs.getExecution(input.executionId)
@@ -781,7 +802,11 @@ export function buildProductionApp(
       const evidence = workflowCapture.capture.capture(input)
       remoteWorkflow!.capture(input, workflowCapture.verify.read(evidence))
       return evidence
-    } }, reviewCapture.capture,
+    } }, { capture(input) {
+      const evidence = reviewCapture.capture.capture(input)
+      remoteWorkflow.captureReview(reviewCapture.verify.read(evidence))
+      return evidence
+    } },
     async (executionId, signal) => {
       signal.throwIfAborted()
       const placement = await readExecutionPlacement(database.pool, executionId)
@@ -799,6 +824,7 @@ export function buildProductionApp(
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
     context => remoteWorkflow!.prepareContext(context),
+    executionId => remoteWorkflow.afterReviewCommit(executionId),
   )
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()

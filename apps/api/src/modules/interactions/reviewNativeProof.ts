@@ -10,6 +10,7 @@ import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { repeatDigest, repeatExecutionIdentity, sameRepeatValue, type RepeatNodeRef, type RepeatScope } from '../runs/repeatResolution.js'
 import type { CapturedReviewNativeSource, ReviewNativeCapture, ReviewNativeVerificationPort } from './reviewNativeCapture.js'
+import { readExecutionPlacement } from '../placement/persistence.js'
 import { ReviewEvidenceTracker } from './reviewerEvidence.js'
 import { requireLeaseAtCommit } from './wave25/context.js'
 import { readWorkflowClosure } from './workflowClosure.js'
@@ -66,11 +67,18 @@ export function reviewSourceReadiness(record: Pick<ReviewNativeProofRecord, 'ori
 
 /** Paired with the real coordinator channel during production construction. */
 export class ReviewNativeProofServices {
-  constructor(private readonly captures: ReviewNativeVerificationPort) {}
+  constructor(private readonly captures: ReviewNativeVerificationPort,
+    private readonly verifyRemote?: (sql: GraphTransactionSql, capture: CapturedReviewNativeSource) => Promise<void>) {}
 
   private async verifyLocked(publication: RunGraphPublication, job: ReviewJob, capture: CapturedReviewNativeSource) {
+    const sql = publication.sql
+    const placement = await readExecutionPlacement(sql, capture.execution.id)
+    if (placement?.hostRef.kind === 'device') {
+      if (!this.verifyRemote) return fail('REMOTE_REVIEW_PHYSICAL_COMPOSITION_REQUIRED')
+      await this.verifyRemote(sql, capture)
+    }
     capture.assertCurrent()
-    const sql = publication.sql, snapshot = await readAcceptedRepeatRunLocked(sql, publication.scope.runId)
+    const snapshot = await readAcceptedRepeatRunLocked(sql, publication.scope.runId)
     const stored = await readRepeatExecutionLocked(sql, snapshot, capture.execution.id)
     if (!sameRepeatValue(repeatExecutionIdentity(stored.execution), repeatExecutionIdentity(capture.execution))
       || !sameRepeatValue(jobIdentity(job), jobIdentity(capture.job)) || job.leaseToken !== capture.job.leaseToken) return fail()

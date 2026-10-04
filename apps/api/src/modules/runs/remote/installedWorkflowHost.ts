@@ -11,7 +11,8 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
-import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
+import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteReviewerRequest,
+  type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -31,7 +32,7 @@ import { normalizeHarnessVersion } from '../../harnesses/qualification/profiles.
 import { NativeProcessRegistry, type NativeLaunchObservation, type NativeProcessRecovery } from '../../harnesses/recovery/processRegistry.js'
 import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
-import { workerExecutionAuthorizer, workerExecutionFactsReader } from '../../placement/executionAuthorityClient.js'
+import { workerExecutionAuthorizer, workerExecutionFactsReader, workerReviewerAuthorizer } from '../../placement/executionAuthorityClient.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { readPlacement } from '../../placement/binding.js'
@@ -116,19 +117,26 @@ export async function closeInstalledNativeOutputWriters(input: {
 /** Only matched provider history plus positive original registry closure can settle. Manager/process cleanup errors retain the original uncertainty. */
 export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOperationJournal;registry:NativeProcessRegistry;
   intent:DispatchIntent;history:NativeHistory;captured:InstalledWorkflowNativeOwner;
-  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactDigests?:string[]}):Promise<RemoteTerminalEvidence|null> {
+  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactDigests?:string[];
+  retainReviewer?: { agentId: string; expiresAt: string }}):Promise<RemoteTerminalEvidence|null> {
   const status=await input.journal.status(input.intent.operationId)
   if(status.status!=='known'||!isDeepStrictEqual(status.receipt.intent,input.intent)||!status.receipt.native
     ||status.receipt.native.sessionId!==input.session.nativeSessionId||input.captured.native.sessionId!==input.session.nativeSessionId
     ||status.receipt.native.processIdentityDigest!==input.captured.native.processIdentityDigest
     ||input.captured.owner!==`execution:${input.intent.executionId}`)unavailable('native_closure_binding_conflict')
   if(status.receipt.terminal)return status.receipt.terminal
-  const terminal=input.history.terminalTurn
+  const terminal=status.receipt.retainedReviewer && status.receipt.stopFence ? undefined : input.history.terminalTurn
   if(terminal&&(terminal.correlationId!==status.receipt.turnInput?.correlationId
     ||terminal.providerId!==status.receipt.native.turnId
     ||input.history.nativeTurnId!==undefined&&input.history.nativeTurnId!==status.receipt.native.turnId))unavailable('native_result_correlation_conflict')
   if(!terminal&&!status.receipt.stopFence)return null
   const result=terminal?ExecutionResultSchema.parse(terminal.result):undefined
+  if (input.retainReviewer && result?.outcome === 'succeeded' && !status.receipt.stopFence) {
+    if (matchingOriginalRegistryLaunch(input.registry, input.captured.launch).lifecycle !== 'active')
+      unavailable('original_reviewer_process_closed')
+    await input.journal.retainReviewer(input.intent.operationId, input.retainReviewer, input.history)
+    return null
+  }
   await input.manager.close(input.session)
   await input.registry.closeRegistration(input.registry.scope(input.captured.owner),input.captured.launch.launchId)
   if(!await input.registry.closeOwner(input.captured.owner))return null
@@ -264,6 +272,9 @@ interface InstalledOperation {
   runtimeRoots?:ApprovedRootAllowlist
   retainedHistory?:NativeHistory
   physicalClosure?:NativeLaunchObservation
+  reviewTimer?:ReturnType<typeof setTimeout>
+  reviewAssignment?:RemoteReviewerRequest
+  reviewFailure?:unknown
   artifacts: WorkflowNativeArtifactResults
 }
 /** A configured extension is code support, not qualified readiness. Every new operation consumes genuine Main facts before opening a journal or allocating a manager. */
@@ -308,6 +319,36 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     const owned=operations.get(intent.executionId)
     if(!owned||!isDeepStrictEqual(owned.intent,intent))unavailable('original_operation_unavailable')
     return owned!
+  }
+  const refreshReviewer = (resident: InstalledOperation): void => {
+    if (resident.reviewTimer || closing) return
+    resident.reviewTimer = setTimeout(() => {
+      delete resident.reviewTimer
+      const check = (async () => {
+        const log = await journal()
+        const status = await log.status(resident.intent.operationId)
+        if (status.status !== 'known' || !status.receipt.retainedReviewer || status.receipt.terminal) return
+        try {
+          const policy = await workerReviewerAuthorizer(forBinding(resident.context.binding))(resident.intent, resident.placement)
+          if (!policy) unavailable('reviewer_run_finished')
+          await log.renewReviewer(resident.intent.operationId, policy!)
+        } catch (error) {
+          resident.reviewFailure = error
+          if (Date.parse(status.receipt.retainedReviewer.expiresAt) <= Date.now()) {
+            await resident.host!.closeRetainedReviewer(resident.intent.operationId)
+            delete resident.reviewFailure
+            return
+          }
+        }
+        refreshReviewer(resident)
+      })()
+      active.add(check)
+      void check.finally(() => active.delete(check)).catch(error => {
+        resident.reviewFailure = error
+        refreshReviewer(resident)
+      })
+    }, 10_000)
+    resident.reviewTimer.unref()
   }
   const constructOwned=async(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,
     action: 'read' | 'stop')=>{
@@ -382,7 +423,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           harnessInstallationId:override.target.harnessInstallationId,connectionGeneration:installation.connectionGeneration,environmentGeneration:installation.environmentGeneration})
         const dependencies=createInstalledCodexDependencies({reader:actual.reader,codexSuiteRevision:input.codexSuiteRevision})
         const before=async()=>{if(actual.launchDisabled||closing)unavailable('original_native_owner_closed');
-          await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'start');installations.assertCurrent(selection)}
+          if (actual.reviewAssignment) {
+            await workerReviewerAuthorizer(forBinding(actual.context.binding))(actual.intent, actual.placement, actual.reviewAssignment)
+          } else await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'start')
+          installations.assertCurrent(selection)}
         const outputContext: InstalledWorkflowNativeOutputContext = {
           intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
           binding: Object.freeze(structuredClone(actual.context.binding)),
@@ -471,6 +515,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         authorize:async(intent,placement,action)=>{const resident=operation(intent)
           await workerExecutionAuthorizer(forBinding(resident.context.binding))(intent,placement,action)
           if(action==='start')operation(intent).capture=await operation(intent).reader.capture()},
+        authorizeReview: async (intent, placement, review) => {
+          const resident = operation(intent)
+          current(resident.context.binding)
+          const policy = await workerReviewerAuthorizer(forBinding(resident.context.binding))(intent, placement, review)
+          if (!policy || policy.agentId !== review.reviewerAgentId) unavailable('original_review_assignment_denied')
+          await log.renewReviewer(intent.operationId, policy!)
+          resident.reviewAssignment = structuredClone(review)
+        },
         attestRuntimeLeaf:async(intent,placement,request,executionPlacement)=>{
           const resident=operation(intent),capture=await resident.reader.capture()
           if(!executionPlacement||executionPlacement.bindingHash!==capture.facts.executionPlacement.bindingHash
@@ -526,17 +578,24 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           const artifacts = history.terminalTurn ? resident.artifacts.read(history.terminalTurn.result) : undefined
           resident.retainedHistory=structuredClone(history)
           const state=await log.status(intent.operationId)
-          if(state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
+          const reviewer = state.status === 'known' && !state.receipt.stopFence
+            && resident.capture.facts.configuration.productRole === 'orchestrator'
+            && history.terminalTurn?.result.outcome === 'succeeded'
+            ? await workerReviewerAuthorizer(forBinding(resident.context.binding))(intent, resident.placement) : undefined
+          if(!reviewer&&state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
             &&history.terminalTurn.providerId===state.receipt.native?.turnId))resident.launchDisabled=true
           const terminal=await settleInstalledWorkflowNativeOwner({journal:log,registry,intent,history,captured:resident.native,
             manager:owner.manager,session:owner.session,
+            ...(reviewer ? { retainReviewer: reviewer } : {}),
             ...(artifacts?.output.kind === 'published-artifacts' ? { artifactDigests: artifacts.artifactDigests } : {})})
           if(terminal) {
+            if (resident.reviewTimer) clearTimeout(resident.reviewTimer)
             const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
             if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
             resident.physicalClosure=observation
             await resident.mcp?.close()
           }
+          if (reviewer) refreshReviewer(resident)
           return terminal
         },
       })
@@ -620,6 +679,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         context.signal.throwIfAborted()
         const log = await journal()
         if (await log.isRetired(frame.intent.operationId)) return retiredReply(frame, context, log)
+        if (frame.method === 'get-application-access') {
+          const resident = operation(frame.intent)
+          await workerExecutionAuthorizer(forBinding(resident.context.binding))(frame.intent, resident.placement, 'read')
+          if (!resident.applicationAccess || !isDeepStrictEqual(resident.session, frame.session)
+            || !resident.native || matchingOriginalRegistryLaunch(registry, resident.native.launch).lifecycle !== 'active')
+            unavailable('original_application_lease_owner_missing')
+          return { payload: { status: await log.status(frame.intent.operationId),
+            applicationAccess: structuredClone(resident.applicationAccess!) } }
+        }
         if(frame.method==='physical-readout')return {payload:await physical.read(frame)}
         if(frame.method==='physical-ack') {
           const resident = operation(frame.intent)
@@ -734,6 +802,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   }
   const close=()=>shutdown??=(async()=>{
     closing=true;lifetime.abort(new Error('Installed workflow host is closing.'))
+    for (const resident of operations.values()) if (resident.reviewTimer) clearTimeout(resident.reviewTimer)
     physical.clear()
     const results=await Promise.allSettled([...hosts.values()].map(host=>host.shutdown()))
     await Promise.allSettled([...active])

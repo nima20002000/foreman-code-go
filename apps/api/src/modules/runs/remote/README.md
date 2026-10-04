@@ -79,3 +79,24 @@ Integration dependencies remain: HRT outside-G1 response effects; an explicit or
 `NativeArtifactOutputs` composes W09's `CanonicalNativeArtifactResults`, the accepted publication authority, an immutable output repository, and `ArtifactEdgeService`. `acceptOutput(accepted, outputKey, commandId)` binds the original producer attempt/output key to its publication command, native session/turn/message, publication identity, exact file/revision/hash/size and original transfer receipt. Missing/pending publication is an error. `readOutput` always rereads that original command and validates every persisted identity; a later publication or current revision cannot replace it. `pinEdge` fills publication/pins/scope exclusively from this record and leaves sender/receiver authorization with the existing edge service.
 
 `NativeArtifactOutputRepository.bind` must atomically preserve its first complete record and reject a conflicting retry. Its `authorize(FileQuery)` callback must run with accepted grant/native/attempt locks in the persistence transaction. Integration owns choosing existing persistence or the minimal mapping schema, SQL implementation, exact finalized canonical file/revision/publication locks, current retention after waits, and DB tests. Execution/attempt/output namespace must be verified against current accepted rows, not assumed globally unique. HRT owns common factory mounting and supplying accepted native identity plus persisted command. This adapter does not claim native completion, discover outputs from text, allocate publications, or replace physical/artifact evidence. Focused tests use real canonical file bytes/publication readback and an atomic repository contract double; they do not establish PostgreSQL or physical acceptance.
+
+## Designated Orchestrator review turns
+
+A remotely placed designated Orchestrator keeps its original native owner after
+its successful workflow turn. That workflow result, session, process digest and
+turn identity remain fixed. Later review turns have separate journal entries
+bound to Main's claimed review job, interaction, writer lane and Run grant.
+Main rechecks the assignment before provider entry; entered or uncertain turns
+are observed rather than submitted again.
+
+Retention uses a renewable 60-second Main authorization lease and a bounded
+128-turn journal. The original sandbox and scoped application credential stay
+in place. Main restart recovery observes the surviving session and restores
+that same credential through the authenticated private worker channel; tokens
+are never added to the operation journal. Review events and terminal history
+require the original physical readout alongside Main's job and lane proofs.
+
+Run disposition closes the original owner with positive registry closure.
+Failure to renew retention expires that owner locally. A missing original
+process or unavailable original history remains a recovery failure; it cannot
+start another provider turn or manufacture physical closure.

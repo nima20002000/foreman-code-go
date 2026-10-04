@@ -22,6 +22,8 @@ const retryability: Readonly<Record<string, boolean>> = {
   'source-repository-uncertain': false,
   AUTH_REVOKED: false,
   REMOTE_AUTHORITY_DENIED: false,
+  REMOTE_REVIEWER_DENIED: false,
+  REVIEWER_BINDING_REBIND_REQUIRED: true,
   REMOTE_CONTROL_UNAVAILABLE: false,
   REMOTE_DISPATCH_UNAVAILABLE: true,
   REMOTE_BINDING_CONFLICT: false,
