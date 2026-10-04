@@ -161,21 +161,23 @@ export class InstalledWorkflowPhysicalReadouts {
     if (previous) {
       if (!isDeepStrictEqual(previous.receipt,receipt)||!isDeepStrictEqual(previous.source, source)
         ||!isDeepStrictEqual(previous.readout.launch,readout.launch)||!isDeepStrictEqual(previous.readout.runtimeLeaf,readout.runtimeLeaf)
-        ||!isDeepStrictEqual(previous.readout.source,readout.source))return unavailable()
-      return
+        ||!isDeepStrictEqual(previous.readout.source,readout.source)
+        ||!isDeepStrictEqual(previous.placement,placement))return unavailable()
     }
     const aliases=source.type==='history'?(readout.history?.events??[]).map(event=>{
       const source:WorkflowOriginalNativeSource=freezeTree({type:'event',event:{...event,executionId:receipt.intent.executionId}})
       return {key:this.key(receipt.sequence,remoteWorkflowSourceDigest(source)),source}
     }):[]
     const bytes = Buffer.byteLength(canonicalGraphJson({ readout, source, placement,aliases }, 4 * 1024 * 1024))
-    if (entries.size >= 128 || this.byteSize + bytes > 8 * 1024 * 1024) throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
+    const nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
+    if ((!previous && entries.size >= 128) || nextByteSize > 8 * 1024 * 1024) throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
     const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,
       assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
     entries.set(key,retained)
-    this.originals.set(receipt.intent.operationId, entries); this.byteSize += bytes
+    this.originals.set(receipt.intent.operationId, entries); this.byteSize = nextByteSize
     const events=this.events.get(receipt.intent.operationId)??new Map<string,{retained:Retained;source:WorkflowOriginalNativeSource}>()
-    for(const alias of aliases)if(!events.has(alias.key))events.set(alias.key,{retained,source:alias.source})
+    // Each fresh, authenticated history refreshes its exact event observations.
+    for(const alias of aliases)events.set(alias.key,{retained,source:alias.source})
     if(events.size)this.events.set(receipt.intent.operationId,events)
   }
   async read(input: { intent: DispatchIntent; placement: AcceptedNodePlacement; receiptSequence: number; sourceDigest: string }): Promise<RemoteWorkflowPhysicalReadout> {

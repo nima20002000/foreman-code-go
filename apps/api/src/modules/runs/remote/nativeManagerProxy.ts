@@ -110,7 +110,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
       const receipt = await this.status(value.status)
       if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
-      for (const event of value.history.events) { if (event.sequence > sequence) { sequence = event.sequence; await this.options.observeOriginalSource?.(receipt, { type: 'event', event: { ...event, executionId: this.intent.executionId } }); yield event } }
+      for (const event of value.history.events) {
+        if (event.sequence <= sequence) continue
+        sequence = event.sequence
+        // A caller may refresh history between yields. Use its current original
+        // receipt; the Worker still verifies this exact event in that history.
+        await this.options.observeOriginalSource?.(this.receipt!, {
+          type: 'event', event: { ...event, executionId: this.intent.executionId },
+        })
+        yield event
+      }
       if (value.history.terminalTurn?.correlationId === input.clientCorrelationId || receipt.phase === 'confirmed_terminal') return
       if (receipt.phase === 'uncertain') throw new Error('Original remote execution requires reconciliation')
       await delay(100, undefined, { signal })
