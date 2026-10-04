@@ -75,9 +75,11 @@ export class PostgresWorkspaceRepository {
   }
   private async currentSummaries(workspaceId: string, principal: ManagementPrincipal) {
     const rows = (await this.pool.query<{ id: string }>(
-      `select r.id from runs r where r.workspace_id=$1 and (r.execution_state<>'completed'
+      `select r.id from runs r where r.workspace_id=$1 and r.record->>'executionSemanticsVersion'='3'
+        and (r.execution_state<>'completed'
         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
-        or r.id in (select recent.id from runs recent where recent.workspace_id=$1 order by recent.created_at desc,recent.id desc limit 20))
+        or r.id in (select recent.id from runs recent where recent.workspace_id=$1
+          and recent.record->>'executionSemanticsVersion'='3' order by recent.created_at desc,recent.id desc limit 20))
        order by r.created_at desc,r.id desc limit 2001`, [workspaceId])).rows
     if (rows.length > 2000) throw new DomainError('WORKSPACE_RUN_READ_TOO_LARGE', 'Use the bounded management Run pages for this workspace.', 409)
     const summaries = []
