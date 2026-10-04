@@ -30,6 +30,11 @@ export type DeviceApplicationFrame =
   | { type: 'application-cancel'; id: string }
   | { type: 'application-reject'; id: string; code: 'backpressure' }
 export interface DeviceApplicationResult { payload: unknown; bytes?: Uint8Array }
+export interface DeviceApplicationFailure {
+  code: string
+  /** Availability hint; operation retries still require their owner and idempotency checks. */
+  retryable: boolean
+}
 
 export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescriptor[] {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid device extensions')

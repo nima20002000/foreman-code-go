@@ -4,6 +4,7 @@ import { DEVICE_APPLICATION_CHUNK_WINDOW, negotiateDeviceExtensions } from '@for
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 import { deriveDispatch, freezePlacement } from '../src/modules/placement/binding.js'
+import { DomainError } from '../src/modules/errors.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -158,6 +159,65 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(launched).not.toHaveBeenCalled()
       await expect(pair.main.request('execution-v1', { grant: 'exact-operation' })).resolves.toEqual({ payload: 'receipt' })
       expect(launched).toHaveBeenCalledOnce()
+    } finally { await pair.close() }
+  })
+  it.each([
+    ['PLACEMENT_BINDING_CONFLICT', false],
+    ['REMOTE_AUTHORITY_DENIED', false],
+    ['AUTH_REVOKED', false],
+    ['REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', true],
+    ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', false],
+    ['WORKER_WORKFLOW_UNAVAILABLE', false],
+    ['backpressure', true],
+    ['job-publication-pending', true],
+    ['source-repository-uncertain', false],
+  ] as const)('preserves supported %s and safe retryability from worker to Main', async (code, retryable) => {
+    const secret = 'private-token-and-process-path'
+    const pair = setup(async () => {
+      throw new DomainError(code, secret, 409, { reason: secret, token: secret, retryable: !retryable })
+    })
+    try {
+      await expect(pair.main.request('execution-v1', {})).rejects.toMatchObject({ code, retryable })
+      const chunks = pair.rawWorker.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
+        .filter(frame => frame.type === 'application-chunk')
+      const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
+      expect(reply).toEqual({ code, retryable })
+      expect(JSON.stringify(reply)).not.toContain(secret)
+      expect(pair.rawMain.closed).toBe(false)
+    } finally { await pair.close() }
+  })
+  it.each([
+    { code: 'private_secret_token', message: 'secret', retryable: true },
+    { code: 'UNKNOWN_PROVIDER_FAILURE', details: { token: 'secret' } },
+    new Error('secret'),
+  ])('redacts unsupported exception codes and contents', async error => {
+    const pair = setup(async () => { throw error })
+    try {
+      await expect(pair.main.request('execution-v1', {})).rejects.toMatchObject({
+        code: 'extension-rejected', retryable: false,
+      })
+      const chunks = pair.rawWorker.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
+        .filter(frame => frame.type === 'application-chunk')
+      const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
+      expect(reply).toEqual({ code: 'extension-rejected', retryable: false })
+    } finally { await pair.close() }
+  })
+  it('validates received error codes instead of trusting arbitrary worker error payloads', async () => {
+    const pair = setup(async () => { throw { code: 'forbidden' } })
+    const send = pair.rawWorker.send.bind(pair.rawWorker)
+    pair.rawWorker.send = text => {
+      const frame = JSON.parse(text) as { type: string; data?: string }
+      if (frame.type === 'application-chunk') {
+        const payload = Buffer.from(frame.data!, 'base64').toString().replace('forbidden', 'sensitive')
+        frame.data = Buffer.from(payload).toString('base64')
+      }
+      send(JSON.stringify(frame))
+    }
+    try {
+      await expect(pair.main.request('execution-v1', {})).rejects.toMatchObject({
+        code: 'extension-rejected', retryable: false,
+      })
+      expect(pair.rawMain.closed).toBe(false)
     } finally { await pair.close() }
   })
   it('cancellation fences a late noncooperative handler response and releases its slot', async () => {

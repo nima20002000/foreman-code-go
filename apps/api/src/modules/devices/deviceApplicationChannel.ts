@@ -9,7 +9,7 @@ import {
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
-import { DeviceApplicationError } from './deviceApplicationError.js'
+import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
@@ -102,12 +102,13 @@ export class DeviceApplicationChannel {
     const parsed = RemoteExecutionRpcRequestSchema.safeParse(payload)
     if (!parsed.success || parsed.data.method !== 'control' || parsed.data.command.action.kind !== 'stop') return false
     const { intent, placement, command } = parsed.data
-    return placement.hostRef.kind === 'device'
-      && intent.mainId === this.binding.mainId && placement.mainId === intent.mainId
+    if (placement.hostRef.kind !== 'device' || !placement.registration) return false
+    const registration = placement.registration
+    return intent.mainId === this.binding.mainId && placement.mainId === intent.mainId
       && placement.hostRef.deviceId === this.binding.deviceId
-      && placement.registration?.workerInstallationId === this.binding.workerInstallationId
-      && placement.registration.keyRevision === this.binding.keyRevision
-      && placement.registration.authorizationRevision === this.binding.authorizationRevision
+      && registration.workerInstallationId === this.binding.workerInstallationId
+      && registration.keyRevision === this.binding.keyRevision
+      && registration.authorizationRevision === this.binding.authorizationRevision
       && placement.runId === intent.runId && placement.nodeId === intent.nodeId
       && placement.bindingHash === intent.bindingHash && command.bindingHash === intent.bindingHash
       && command.operationId === intent.operationId && command.executionId === intent.executionId
@@ -144,7 +145,7 @@ export class DeviceApplicationChannel {
     // Observe rejection immediately while the request bytes are still uploading.
     void result.catch(() => undefined)
     try {
-      await this.sendPacket(id, namespace, extension.version, 'request', payload, options.bytes, abort.signal, stop)
+      await this.sendPacket(id, namespace, extension.version, 'request', payload, options.bytes, abort.signal, { stop })
       return await result
     } catch (error) {
       this.trySendCancel(id)
@@ -174,9 +175,9 @@ export class DeviceApplicationChannel {
       if (!receipts.size) this.acknowledgements.delete(id)
     }
   }
-  private async sendChunk(id: string, offset: number, chunk: Buffer, signal: AbortSignal, stop: boolean) {
+  private async sendChunk(id: string, offset: number, chunk: Buffer, signal: AbortSignal, admission: { stop: boolean }) {
     // A channel-wide window also bounds queued socket bytes across concurrent uploads.
-    while (this.chunkTransmissions.size >= DEVICE_APPLICATION_CHUNK_WINDOW + (stop ? 1 : 0)) {
+    while (this.chunkTransmissions.size >= DEVICE_APPLICATION_CHUNK_WINDOW + (admission.stop ? 1 : 0)) {
       await withDeviceDeadline(Promise.race(this.chunkTransmissions), signal, 10_000)
     }
     this.current()
@@ -189,8 +190,9 @@ export class DeviceApplicationChannel {
     try { await transmission }
     finally { this.chunkTransmissions.delete(finished) }
   }
-  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal, stop = false) {
+  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal, admission = { stop: false }) {
     this.current()
+    const { stop } = admission
     const extension = this.extensions.find((item) => item.namespace === namespace)!
     const json = Buffer.from(JSON.stringify(payload === undefined ? null : payload))
     if (json.byteLength > extension.maxJsonBytes || (bytes?.byteLength ?? 0) > extension.maxBinaryBytes) throw new DeviceApplicationError('payload-too-large')
@@ -209,7 +211,7 @@ export class DeviceApplicationChannel {
       for (let start = 0; start < packet.byteLength; start += windowBytes) {
         const chunks: Promise<void>[] = []
         for (let offset = start; offset < Math.min(start + windowBytes, packet.byteLength); offset += DEVICE_APPLICATION_CHUNK_BYTES) {
-          chunks.push(this.track(this.sendChunk(id, offset, packet.subarray(offset, offset + DEVICE_APPLICATION_CHUNK_BYTES), upload.signal, stop)))
+          chunks.push(this.track(this.sendChunk(id, offset, packet.subarray(offset, offset + DEVICE_APPLICATION_CHUNK_BYTES), upload.signal, admission)))
         }
         await Promise.all(chunks)
       }
@@ -292,7 +294,7 @@ export class DeviceApplicationChannel {
         if (assembly.abort.signal.aborted) return
         const pending = this.pending.get(id)
         if (pending) {
-          if (assembly.kind === 'error') pending.reject(new DeviceApplicationError(typeof (payload as { code?: unknown })?.code === 'string' ? (payload as { code: string }).code : 'extension-rejected'))
+          if (assembly.kind === 'error') pending.reject(new DeviceApplicationError(deviceApplicationFailure(payload).code))
           else pending.resolve({ payload, ...(bytes ? { bytes } : {}) })
         }
         return
@@ -317,14 +319,13 @@ export class DeviceApplicationChannel {
       } catch (error) {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
         componentLogger('devices').error({ err: error, namespace: assembly.namespace }, 'Device extension request failed')
-        const proposed = (error as { code?: unknown })?.code
-        const code = typeof proposed === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(proposed) ? proposed : 'extension-rejected'
-        await this.sendPacket(id, assembly.namespace, registration.version, 'error', { code }, undefined, assembly.abort.signal, assembly.stop); return
+        const failure = deviceApplicationFailure(error)
+        await this.sendPacket(id, assembly.namespace, registration.version, 'error', failure, undefined, assembly.abort.signal, { stop: assembly.stop }); return
       }
       if (!assembly.abort.signal.aborted) {
-        try { await this.sendPacket(id, assembly.namespace, registration.version, 'response', result.payload, result.bytes, assembly.abort.signal, assembly.stop) } catch (error) {
+        try { await this.sendPacket(id, assembly.namespace, registration.version, 'response', result.payload, result.bytes, assembly.abort.signal, { stop: assembly.stop }) } catch (error) {
           if (!(error instanceof DeviceApplicationError) || assembly.abort.signal.aborted) throw error
-          await this.sendPacket(id, assembly.namespace, registration.version, 'error', { code: error.code }, undefined, assembly.abort.signal, assembly.stop)
+          await this.sendPacket(id, assembly.namespace, registration.version, 'error', deviceApplicationFailure(error), undefined, assembly.abort.signal, { stop: assembly.stop })
         }
       }
     } catch (error) {
