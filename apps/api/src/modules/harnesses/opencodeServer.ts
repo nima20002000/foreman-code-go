@@ -289,7 +289,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ permission: nativePolicy(configuration) }),
         }, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(response.id)}`, directory, combined))
-        this.verifyAttachedSession(native, response.id, directory, configuration)
+        await this.verifyAttachedSession(native, response.id, directory, configuration, combined)
         await this.applyMcpControls(configuration, directory, combined)
         this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
@@ -314,7 +314,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.validateReference(session)
         await this.assertConfiguration(configuration, directory, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
-        this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
+        await this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration, combined)
         await this.applyMcpControls(configuration, directory, combined)
         combined.throwIfAborted()
         const state = newState(directory, configuration, instructions)
@@ -613,7 +613,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const native = object(await read(`/session/${encodeURIComponent(owner)}`))
         if (native.id !== owner || native.directory !== state.directory) return unavailable('identity_mismatch')
         if (owner === session.nativeSessionId) {
-          try { this.verifyAttachedSession(native, owner, state.directory, state.configuration) }
+          try {
+            await this.verifyAttachedSession(native, owner, state.directory, state.configuration, combined, async () => {
+              const messages = await read(`/session/${encodeURIComponent(owner!)}/message`)
+              if (!Array.isArray(messages)) throw new Error('Invalid native message history.')
+              return object(object([...messages].reverse().find(message => object(object(message).info).role === 'user')).info)
+            })
+          }
           catch { return unavailable('unqualified') }
           break
         }
@@ -994,27 +1000,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async childPromptSettings(native: JsonObject, directory: string, signal: AbortSignal,
     assertCurrent: () => void): Promise<JsonObject> {
-    let cursor: string | undefined
-    let userInfo: JsonObject = {}
-    const seen = new Set<string>()
-    while (true) {
-      const page = await this.messagePage(String(native.id), directory, cursor, signal)
-      assertCurrent()
-      if (page.messages.some(message => message.info.sessionID !== native.id)) {
-        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history contains another native session.')
-      }
-      const user = [...page.messages].reverse().find(message => message.info.role === 'user')
-      if (user) {
-        userInfo = user.info
-        break
-      }
-      if (!page.nextCursor) break
-      if (seen.has(page.nextCursor)) {
-        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history repeated its paging cursor.')
-      }
-      seen.add(page.nextCursor)
-      cursor = page.nextCursor
-    }
+    const userInfo = await this.lastUserInfo(String(native.id), directory, signal, assertCurrent)
     const agent = native.agent ?? userInfo.agent
     const persisted = object(native.model)
     const model = Object.keys(persisted).length ? {
@@ -1029,6 +1015,32 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     return { agent, model: { providerID: model.providerID, modelID: model.modelID }, variant,
       ...(userInfo.system !== undefined ? { system: userInfo.system } : {}) }
+  }
+
+  private async lastUserInfo(id: string, directory: string, signal: AbortSignal,
+    assertCurrent: () => void = () => signal.throwIfAborted()): Promise<JsonObject> {
+    let cursor: string | undefined
+    let userInfo: JsonObject = {}
+    const seen = new Set<string>()
+    while (true) {
+      const page = await this.messagePage(id, directory, cursor, signal)
+      assertCurrent()
+      if (page.messages.some(message => message.info.sessionID !== id)) {
+        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history contains another native session.')
+      }
+      const user = [...page.messages].reverse().find(message => message.info.role === 'user')
+      if (user) {
+        userInfo = user.info
+        break
+      }
+      if (!page.nextCursor) break
+      if (seen.has(page.nextCursor)) {
+        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history repeated its paging cursor.')
+      }
+      seen.add(page.nextCursor)
+      cursor = page.nextCursor
+    }
+    return userInfo
   }
 
   async subagentHistory(session: NativeSessionReference, cursor?: string, signal?: AbortSignal) {
@@ -1498,15 +1510,26 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)
   }
 
-  private verifyAttachedSession(native: JsonObject, id: string, directory: string, configuration: OpenCodeHarnessConfiguration): void {
+  private async verifyAttachedSession(native: JsonObject, id: string, directory: string,
+    configuration: OpenCodeHarnessConfiguration, signal: AbortSignal,
+    lastUser: () => Promise<JsonObject> = () => this.lastUserInfo(id, directory, signal)): Promise<void> {
     if (native.id !== id) throw new HarnessExecutionError('OPENCODE_SESSION_ID_MISMATCH', 'OpenCode returned a different persisted session identity.')
     if (native.directory !== directory) throw new HarnessExecutionError('OPENCODE_SESSION_DIRECTORY_MISMATCH', 'The persisted session belongs to a different directory.')
     if (!isDeepStrictEqual(native.permission ?? [], nativePolicy(configuration))) throw new HarnessExecutionError('OPENCODE_SESSION_PERMISSION_MISMATCH', 'The complete ordered persisted permission policy differs from the accepted policy. No implicit policy update was performed.')
     if (typeof native.agent === 'string' && native.agent !== configuration.nativeAgent) throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted native Agent differs from its pinned configuration.')
     const model = object(native.model)
     const [providerID, ...modelID] = configuration.model.split('/')
-    // OpenCode's "default" sentinel also matches an explicitly unnamed selection.
-    const variant = configuration.variant === '' && model.variant === 'default' ? '' : (model.variant ?? '')
+    let variant = model.variant ?? ''
+    if (model.variant === 'default' && configuration.variant === '') {
+      const user = await lastUser()
+      const userModel = object(user.model)
+      if (user.role !== 'user' || userModel.providerID !== providerID || userModel.modelID !== modelID.join('/')) {
+        throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH',
+          'The persisted variant requires matching native user-message configuration.')
+      }
+      // Native metadata uses "default" for both an omitted variant and a named variant.
+      variant = userModel.variant ?? ''
+    }
     if (Object.keys(model).length && (model.providerID !== providerID || model.id !== modelID.join('/') || variant !== configuration.variant)) {
       throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted native model or variant differs from its pinned configuration.')
     }

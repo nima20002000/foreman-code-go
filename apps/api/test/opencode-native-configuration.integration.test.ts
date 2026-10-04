@@ -155,3 +155,27 @@ function childReceipt(child: RunSubagent, generation: string): RunSubagentComman
     nativeCorrelationId: nativeMessageId(randomUUID()), state: 'dispatching',
     acceptedAt: '2026-10-04T00:00:00.000Z', updatedAt: '2026-10-04T00:00:00.000Z' }
 }
+
+it('rejects named default variant metadata when reattaching an unnamed configuration after restart', async () => {
+  const f = await nativeConfigurationFixture()
+  try {
+    const { native, server } = f.allocate()
+    const named = { ...f.harness, variant: 'default' }
+    const session = await native.createSession(f.start(named))
+    for await (const event of native.startTurn(session, {
+      prompt: 'Use the named default variant', clientCorrelationId: 'named-default',
+    })) void event
+    const stored = await nativeJson(server, f.directory,
+      `/session/${session.nativeSessionId}/message/${nativeMessageId('named-default')}`)
+    assert.equal(object(object(stored.info).model).variant, 'default')
+    assert.equal(object((await nativeJson(server, f.directory, `/session/${session.nativeSessionId}`)).model).variant,
+      'default')
+    await native.dispose()
+    const restarted = f.allocate()
+    await assert.rejects(restarted.native.attachSession(session, f.start()),
+      { code: 'OPENCODE_SESSION_CONFIGURATION_MISMATCH' })
+    assert.deepEqual(await restarted.native.attachSession(session, f.start(named)), session)
+  } finally {
+    await f.close()
+  }
+}, 90_000)

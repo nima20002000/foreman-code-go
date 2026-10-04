@@ -44,7 +44,7 @@ export async function nativeConfigurationFixture() {
       provider: { fixture: { npm: '@ai-sdk/openai-compatible', name: 'Configuration fixture',
         options: { baseURL: `${origin}/v1`, apiKey: 'loopback-fixture' },
         models: Object.fromEntries(['parent', 'child'].map(name => [name, {
-          name, limit: { context: 1_000_000, output: 1000 }, variants: { focused: { temperature: 0.1 } },
+          name, limit: { context: 1_000_000, output: 1000 }, variants: { focused: { temperature: 0.1 }, default: { temperature: 0.2 } },
         }])),
       } },
       agent: {
