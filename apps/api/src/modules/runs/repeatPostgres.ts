@@ -29,7 +29,7 @@ import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissio
   type RepeatNativeEvidence, type RepeatNativeLockedHooks } from './repeatNativeRepository.js'
 import { inactiveRepeatResolution, prepareRepeatNativeUpdate, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
 import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputLocked,
-  recordUnresolvedWorkLocked, returnWorkHandoffLocked,
+  recordUnresolvedWorkLocked, returnWorkHandoffLocked, resolveWaitingWorkJoinsLocked,
   type WorkRequestAdmission, type WorkReturnReceipt } from './workHandoffAdmission.js'
 import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
   markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
@@ -211,6 +211,11 @@ export class RepeatRunRepository {
     return this.transaction((context) => recordUnresolvedWorkLocked({ ...context,
       assertActive: () => this.active(context),
     }, sourceExecutionId, 'finish_with_findings'))
+  }
+  resolveWaitingWorkJoins(): Promise<string[]> {
+    return this.transaction((context) => resolveWaitingWorkJoinsLocked({ ...context,
+      assertActive: () => this.active(context),
+    }))
   }
   ensureWorkEntry(): Promise<string> {
     return this.transaction((context) => ensureWorkEntryLocked({ ...context,

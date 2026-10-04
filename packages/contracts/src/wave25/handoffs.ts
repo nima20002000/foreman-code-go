@@ -149,7 +149,7 @@ export const WorkActivationInputSchema = z.object({
       notice: WorkNoticeSchema }).strict(),
     z.object({ kind: z.literal('join'), activation: WorkActivationIdentitySchema,
       sources: z.array(z.object({ request: WorkRequestSchema,
-        acceptedSourceResult: ExecutionResultSchema }).strict()).min(2).max(1000) }).strict(),
+        acceptedSourceResult: ExecutionResultSchema }).strict()).min(1).max(1000) }).strict(),
   ]),
 }).strict().superRefine((value, context) => {
   const { work } = value

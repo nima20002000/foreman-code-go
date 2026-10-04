@@ -23,6 +23,7 @@ describe('NIM-2691 workflow activation routing', () => {
     })
     const calls: string[] = []
     const store = {
+      resolveWaitingWorkJoins: async () => [],
       admitWorkActivation: async () => ({ execution, reused: true }),
       acceptWorkTerminal: async () => ({ kind: 'accepted' as const, execution, replayed: true }),
       admitWorkRequest: async (_executionId: string, relationshipId: string) => {
@@ -65,6 +66,7 @@ describe('NIM-2691 workflow activation routing', () => {
     const observed: string[] = [], attempts: number[] = [], requests: string[] = []
     let terminalCalls = 0
     const store = {
+      resolveWaitingWorkJoins: async () => [],
       admitWorkActivation: async () => ({ execution: first, reused: true }),
       acceptWorkTerminal: async (_id: string, candidate: (attempt: number) => unknown) => {
         terminalCalls++
@@ -119,6 +121,7 @@ describe('NIM-2691 workflow activation routing', () => {
     })
     const unresolved: string[] = []
     const store = {
+      resolveWaitingWorkJoins: async () => [],
       admitWorkActivation: async () => ({ execution, reused: true }),
       acceptWorkTerminal: async () => ({ kind: 'accepted' as const, execution, replayed: true }),
       admitWorkRequest: async () => { throw new Error('Finishing with findings must not launch another destination.') },

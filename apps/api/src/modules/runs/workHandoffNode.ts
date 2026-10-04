@@ -9,10 +9,10 @@ import { repeatConflict } from './repeatResolution.js'
 export function workHandoffNodeAction(input: {
   version: WorkflowVersionV3
   store: Pick<RepeatRunRepository, 'admitWorkActivation' | 'acceptWorkTerminal' | 'admitWorkRequest'
-    | 'returnWork' | 'recordWorkUnresolved'>
+    | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins'>
   driver: RepeatExecutionDriver; limiter: ExecutionLimiter; signal: AbortSignal
 }) {
-  return async (activationId: string): Promise<readonly string[]> => {
+  const execute = async (activationId: string): Promise<readonly string[]> => {
     input.signal.throwIfAborted()
     const admitted = await input.store.admitWorkActivation(activationId,
       (nodeId) => input.driver.candidate({ nodeId, occurrence: null }, 1))
@@ -63,5 +63,10 @@ export function workHandoffNodeAction(input: {
       }
       return [...new Set(selected)]
     }
+  }
+  return async (activationId: string): Promise<readonly string[]> => {
+    const selected = await execute(activationId)
+    const joined = await input.store.resolveWaitingWorkJoins()
+    return [...new Set([...selected, ...joined])]
   }
 }
