@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile, access,rename } from 'node:fs/promises'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -804,12 +805,57 @@ it('cannot retain an expired original application lease or use prefetched proof 
 })
 
 describe('original physical directory revalidation after native closure',()=>{
+  it.each(['', 'src'])('bounds authorization requests and their injected latency for cwd %j', async relativeCwd => {
+    const f = await physicalFixture(relativeCwd)
+    let authorizationLatency = 0
+    const authorize = vi.fn(async () => {
+      authorizationLatency += 25
+      await new Promise(resolve => setTimeout(resolve, 25))
+    })
+    const assertCurrent = vi.fn(() => {})
+    const started = performance.now()
+    await assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: new AbortController().signal,
+      assertCurrent, authorize })
+    const elapsed = performance.now() - started
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(authorizationLatency).toBe(50)
+    expect(elapsed).toBeGreaterThanOrEqual(45)
+    expect(assertCurrent.mock.calls.length).toBeGreaterThan(20)
+    await f.sqlConnection.close()
+  })
+  it.each(['connection', 'abort'] as const)('stops a physical inspection when its local %s fence changes', async defect => {
+    const f = await physicalFixture('src')
+    const controller = new AbortController()
+    const authorize = vi.fn(async () => {})
+    let checks = 0
+    const assertCurrent = () => {
+      if (++checks === 4) {
+        if (defect === 'abort') controller.abort(new Error('Original readout aborted'))
+        else throw new Error('Original connection changed during filesystem inspection')
+      }
+    }
+    await expect(assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: controller.signal,
+      assertCurrent, authorize })).rejects.toThrow()
+    expect(authorize).toHaveBeenCalledOnce()
+    await f.sqlConnection.close()
+  })
+  it('refuses the inspection when Main denies its initial authorization', async () => {
+    const f = await physicalFixture()
+    const authorize = vi.fn(async () => { throw new Error('Original Main read authority revoked') })
+    await expect(assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: new AbortController().signal,
+      assertCurrent: () => {}, authorize })).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+    expect(authorize).toHaveBeenCalledOnce()
+    await f.sqlConnection.close()
+  })
   it('keeps original W09 identities while observing edited bytes without granting mutable continuation',async()=>{
     const f=await physicalFixture('src'),authorize=vi.fn(async()=>{})
     await writeFile(join(f.readout.source.workingTree.canonicalCwd,'source.ts'),'Actual allowed native-edited output bytes\n')
     await assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize})
-    expect(authorize.mock.calls.length).toBeGreaterThan(2)
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize})
+    expect(authorize).toHaveBeenCalledTimes(2)
     // The original strict-byte W09 mode remains fenced; physical directory readback never changes its ownership or byte policy.
     await expect(f.sources.handle({version:1,operation:'sources.verify',record:f.nativePlacement.materialization,relativeCwd:'src'},f.context)).rejects.toThrow()
     await f.sqlConnection.close()
@@ -826,14 +872,15 @@ describe('original physical directory revalidation after native closure',()=>{
       await rename(path,`${path}-original`);await mkdir(path,{mode:0o700})
     }
     await expect(assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize:async()=>{}})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize:async()=>{}})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
     await f.sqlConnection.close()
   })
-  it('rechecks authority after opening original FDs and never turns lost authority into a readback capability',async()=>{
+  it('rechecks authority before releasing a physical readout',async()=>{
     const f=await physicalFixture('src'),authorize=vi.fn(async()=>{})
     authorize.mockImplementationOnce(async()=>{}).mockImplementationOnce(async()=>{throw new Error('Original Main read authority revoked after FD open')})
     await expect(assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+    expect(authorize).toHaveBeenCalledTimes(2)
     await f.sqlConnection.close()
   })
 })

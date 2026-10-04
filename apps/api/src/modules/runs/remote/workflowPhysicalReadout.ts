@@ -55,8 +55,10 @@ export function matchingOriginalRegistryLaunch(registry: NativeProcessRegistry, 
 /** Physical readback only. It neither verifies mutable source bytes nor grants
  * continuation after closure; W09's original owner gate stays authoritative. */
 export async function assertOriginalPhysicalDirectories(input:{source:RemoteWorkflowPhysicalReadout['source'];runtimeLeaf:RemoteWorkflowPhysicalReadout['runtimeLeaf'];
-  placement:AcceptedNodePlacement;approvedRoots:ApprovedRootAllowlist;signal:AbortSignal;authorize():Promise<void>}):Promise<void> {
-  const check=async()=>{input.signal.throwIfAborted();await input.authorize();input.signal.throwIfAborted()}
+  placement:AcceptedNodePlacement;approvedRoots:ApprovedRootAllowlist;signal:AbortSignal;
+  assertCurrent():void;authorize():Promise<void>}):Promise<void> {
+  const check=()=>{input.signal.throwIfAborted();input.assertCurrent();input.signal.throwIfAborted()}
+  const authorize=async()=>{check();await input.authorize();check()}
   const {source,runtimeLeaf,approvedRoots,placement}=input,receipt=source.record.receipt,cwd=source.workingTree.cwdAttestation
   if(!isDeepStrictEqual(approvedRoots.hostRef,placement.hostRef)||approvedRoots.applicationInstallationId!==placement.registration?.workerInstallationId
     ||approvedRoots.managedRuntimeRoot!==placement.destination.managedRuntimeRoot
@@ -65,51 +67,54 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
     ||source.workingTree.canonicalCwd!==cwd.canonicalCwd||cwd.canonicalCwd!==join(source.workingTree.canonicalProjectRoot,cwd.relativeCwd)
     ||cwd.attestationDigest!==sourceCwdAttestationDigest(cwd))return unavailable()
   const inspectSource=async()=>{
-    await check()
+    check()
     let directory=await openPrivateRoot(receipt.binding.canonicalPath)
     try {
-      await check()
+      check()
       if(await realpath(receipt.binding.canonicalPath)!==receipt.binding.canonicalPath
         ||!isDeepStrictEqual(await identity(directory),receipt.binding.filesystem))return unavailable()
-      await check()
+      check()
       for(const [index,part] of [receipt.materializationId,'tree',...(cwd.relativeCwd?cwd.relativeCwd.split('/'):[])].entries()) {
         const child=await openChildDirectory(directory,part)
         await directory.close();directory=child
-        await check()
+        check()
         if(index===1&&!isDeepStrictEqual(await identity(directory),receipt.localTreeIdentity))return unavailable()
-        await check()
+        check()
       }
       if(!isDeepStrictEqual(await identity(directory),cwd.filesystem)||await realpath(cwd.canonicalCwd)!==cwd.canonicalCwd)return unavailable()
-      await check()
+      check()
     } finally {await directory.close()}
   }
   const inspectRuntime=async()=>{
-    await check()
+    check()
     const base=await openPrivateRoot(approvedRoots.managedRuntimeRoot)
     try {
-      await check()
+      check()
       if(!isDeepStrictEqual(await identity(base),approvedRoots.runtimeFilesystem))return unavailable()
-      await check()
+      check()
       const directory=await openPrivateRoot(runtimeLeaf.canonicalRuntimeDirectory)
       try {
-        await check()
+        check()
         if(await realpath(runtimeLeaf.canonicalRuntimeDirectory)!==runtimeLeaf.canonicalRuntimeDirectory
           ||commandInputHash(await identity(directory)).slice('sha256:'.length)!==runtimeLeaf.directoryIdentityHash)return unavailable()
-        await check()
+        check()
         const marker=await open(anchored(directory,'.graphql-workflow-runtime.json'),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK)
         try {
-          await check()
+          check()
           const stat=await marker.stat()
           if(!stat.isFile()||stat.nlink!==1||stat.size>4096||stat.mode&0o077||stat.uid!==process.getuid?.())return unavailable()
-          await check()
+          check()
           if(!isDeepStrictEqual(RuntimeLeafAttestationSchema.parse(JSON.parse((await marker.readFile()).toString('utf8'))),runtimeLeaf))return unavailable()
-          await check()
+          check()
         } finally {await marker.close()}
       } finally {await directory.close()}
     } finally {await base.close()}
   }
   try {if(cwd.relativeCwd)sourcePath(cwd.relativeCwd);assertRuntimeLeafPath(runtimeLeaf.canonicalRuntimeDirectory,placement)
-    await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime();await check()}
+    // Main authorizes the whole inspection; local fences guard each filesystem step.
+    await authorize()
+    await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime()
+    await authorize()}
   catch(error){if(error instanceof DomainError)throw error;input.signal.throwIfAborted();return unavailable()}
 }
 interface Retained {

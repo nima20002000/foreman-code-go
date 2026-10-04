@@ -585,11 +585,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
             physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:observationExpiresAt,assertOwnerCurrent,
               assertCurrent:async()=>{
-                await assertOwnerCurrent()
                 const approvedRoots=ApprovedRootAllowlistSchema.parse(receipt.stopFence
                   ? resident.runtimeRoots : await input.approvedRoots())
                 await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
-                  authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,receipt.stopFence?'stop':'read');current(context.binding)}})
+                  assertCurrent:()=>current(context.binding),authorize:assertOwnerCurrent})
                 if(!receipt.stopFence&&!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
                 current(context.binding)},
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
