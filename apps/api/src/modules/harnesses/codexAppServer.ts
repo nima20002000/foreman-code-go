@@ -778,7 +778,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
     let nativeSubmissionAttempted = false
-    let operationFailure: NativeDeliveryError | undefined
+    let operationFailure: Error | undefined
     let cleaningUp = false
     try {
       try {
@@ -873,7 +873,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       } catch (error) {
         if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
         if (!subscriberSignal.aborted) {
-          operationFailure = new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
+          const restart = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
+          operationFailure = restart ? signal.reason
+            : new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
           throw operationFailure
         }
       } finally {

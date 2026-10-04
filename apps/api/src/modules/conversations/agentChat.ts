@@ -1032,14 +1032,16 @@ export class AgentChatService {
       // Reconciliation can prove completion while OpenCode's SSE stays alive. Its observer
       // is detached only after finish() commits; this is neither failed delivery nor cancel.
       if (this.closing || observer.signal.aborted) return // Restart recovery reconciles in-flight work.
-      if (creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
+      const current = await this.repository.get(id)
+      const uncertainCodexCreation = creatingSession && current?.harness === 'codex'
+      const unavailable = uncertainCodexCreation ? false : await this.markNativeUnavailable(id, error)
+      if (!unavailable && creatingSession && current?.record.sessionCreation) {
         // No reliable identity/commit means read-only, not another create/fork attempt.
         await this.repository.abandon(id, turn.requestId, 'Native session creation or binding is unconfirmed.')
         this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
         return
       }
-      const unavailable = await this.markNativeUnavailable(id, error)
       if (!submitted && !initialOffered && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
         const current = await this.repository.get(id)
         if (error instanceof NativeDeliveryError && nativeErrorCode(error) === 'CODEX_APP_SERVER_DISCONNECTED') {

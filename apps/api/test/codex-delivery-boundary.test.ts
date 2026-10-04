@@ -13,15 +13,34 @@ function boundary(operation: NativeDeliveryError['operation'], delivery: NativeD
     && error.operation === operation && error.delivery === delivery
 }
 
+function chatInput(directory: string) {
+  const source = input(directory)
+  delete source.environment
+  return source
+}
+
 describe('Codex creation and prompt write boundaries', () => {
   let f: Awaited<ReturnType<typeof deliveryFixture>>
   beforeEach(async () => { f = await deliveryFixture() })
   afterEach(async () => { await f.close() })
 
+  it('refuses workflow credentials in chat before creating a thread', async () => {
+    const manager = f.makeManager()
+    await assert.rejects(manager.createSession(input(f.directory)), (error: unknown) => {
+      assert(error instanceof NativeDeliveryError)
+      assert.equal(error.operation, 'session_creation')
+      assert.equal(error.delivery, 'not_sent')
+      assert.equal(error.result.error?.code, 'CODEX_APP_MCP_UNAVAILABLE')
+      return true
+    })
+    assert.equal((await f.wire('thread/start')).length, 0)
+    assert.equal((await f.wire('turn/start')).length, 0)
+  })
+
   for (const fault of ['auth', 'model', 'initialize'] as const) {
     it(`${fault} failure before thread/start permits one explicit creation retry`, async () => {
       const manager = f.makeManager()
-      const source = input(f.directory)
+      const source = chatInput(f.directory)
       if (fault === 'auth') await f.flag('logged-out')
       if (fault === 'model') await f.json('models.json', { models: [] })
       if (fault === 'initialize') await f.flag('reject-initialize')
@@ -41,7 +60,7 @@ describe('Codex creation and prompt write boundaries', () => {
     const manager = f.makeManager(undefined, {
       id: () => { throw new HarnessExecutionError('CODEX_ACTIVATION_FAILED', 'Cannot assign the local connection.') },
     })
-    const source = input(f.directory)
+    const source = chatInput(f.directory)
     await assert.rejects(manager.createSession(source), boundary('session_creation', 'unknown'))
     await assert.rejects(manager.createSession(source), /may already exist/)
     assert.equal((await f.wire('thread/start')).length, 1)
@@ -50,7 +69,7 @@ describe('Codex creation and prompt write boundaries', () => {
 
   it('an idle process exit leaves the next prompt definitely unsent', async () => {
     const manager = f.makeManager()
-    const source = input(f.directory)
+    const source = chatInput(f.directory)
     const session = await manager.createSession(source)
     await f.flag('idle-exit')
     await until(async () => (await calls(f.directory)).some((entry) => entry.exited) || undefined)
@@ -81,7 +100,7 @@ describe('Codex creation and prompt write boundaries', () => {
         },
       }
       const manager = f.makeManager(files)
-      const session = await manager.createSession(input(f.directory))
+      const session = await manager.createSession(chatInput(f.directory))
       await assert.rejects(collect(manager.startTurn(session, {
         prompt: 'Use the attachment', clientCorrelationId: 'unsent', onSubmitted: async () => assert.fail('Unexpected write'),
       })), boundary('turn_submission', 'not_sent'))
@@ -98,7 +117,7 @@ describe('Codex creation and prompt write boundaries', () => {
 
   it('a connection failure after the prompt write remains uncertain', async () => {
     const manager = f.makeManager()
-    const session = await manager.createSession(input(f.directory))
+    const session = await manager.createSession(chatInput(f.directory))
     await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId: 'written' })),
       boundary('turn_submission', 'unknown'))
     assert.equal((await f.wire('turn/start')).length, 1)
@@ -124,7 +143,7 @@ describe('Codex creation and prompt write boundaries', () => {
       },
     }
     const manager = f.makeManager(files)
-    const session = await manager.createSession(input(f.directory))
+    const session = await manager.createSession(chatInput(f.directory))
     try {
       await assert.rejects(collect(manager.startTurn(session, {
         prompt: 'Use the attachment', clientCorrelationId: 'cleanup-failure', onSubmitted: async () => assert.fail('Unexpected write'),
@@ -144,7 +163,7 @@ describe('Codex creation and prompt write boundaries', () => {
   })
 
   it('the admitted lookup recovers only the original late creation without allocation or replay', async () => {
-    const source = input(f.directory)
+    const source = chatInput(f.directory)
     let allocations = 0
     const admitted = createAdmittedNativeManager('codex', async () => {
       allocations++
