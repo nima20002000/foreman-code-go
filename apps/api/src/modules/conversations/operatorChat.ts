@@ -294,6 +294,7 @@ export class OperatorChatService {
     await this.assertAccess(id, principal)
     const page = await this.repository.history(id, query)
     if (!page) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
     return page
   }
 
@@ -304,7 +305,9 @@ export class OperatorChatService {
 
   async activityPage(id: string, principal: ManagementPrincipal, input: Partial<OperatorActivityQuery>) {
     await this.assertAccess(id, principal)
-    return this.repository.activity.page(id, input)
+    const { activities, nextCursor } = await this.repository.activity.page(id, input)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    return { activities, nextCursor }
   }
 
   private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {

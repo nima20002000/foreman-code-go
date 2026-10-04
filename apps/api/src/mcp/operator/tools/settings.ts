@@ -1,9 +1,11 @@
 import { registerOperatorControlTools } from './operatorControls.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
+import { IdSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema,
+  OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
-import { OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@foreman-code/contracts/operator-chat'
+import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
+  OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@foreman-code/contracts/operator-chat'
 
 import {
   WorkerExecutionSettingsSchema,
@@ -35,10 +37,28 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'operator_chat_create', async () => ({ conversation: await context.services.operatorChat!.create(context.principal, input.title) })))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_get')) server.registerTool('operator_chat_get', {
-    description: 'Read an owned Operator conversation, including its harness handoff parent and persisted messages. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
+    description: 'Read an owned Operator conversation snapshot, including its harness handoff parent and recent persisted messages and activities. Use operator_chat_history_get and operator_chat_activity_get to page older records. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1) }).strict(), outputSchema: GetOperatorConversationResponseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ conversationId }) => invokeOperatorTool(context, 'operator_chat_get', () => context.services.operatorChat!.get(conversationId, context.principal)))
+  if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_history_get')) {
+    server.registerTool('operator_chat_history_get', {
+      description: 'Page the persisted messages and acceptance receipts of an owned Operator conversation, including messages omitted from operator_chat_get. Pages are oldest-first; pass nextCursor as before to read older records. Cursors are decimal strings bound to this conversation. Requires global operator_chat:read.',
+      inputSchema: OperatorConversationHistoryQuerySchema.extend({ conversationId: IdSchema }),
+      outputSchema: OperatorConversationHistoryPageSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, async ({ conversationId, ...query }) => invokeOperatorTool(context, 'operator_chat_history_get', () =>
+      context.services.operatorChat!.history(conversationId, context.principal, query)))
+  }
+  if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_activity_get')) {
+    server.registerTool('operator_chat_activity_get', {
+      description: 'Page persisted activity of an owned Operator conversation, including records omitted from operator_chat_get. Pages are oldest-first; pass nextCursor as before to read older records. Cursors are decimal strings bound to this conversation. Requires global operator_chat:read.',
+      inputSchema: OperatorActivityQuerySchema.extend({ conversationId: IdSchema }),
+      outputSchema: OperatorActivityPageSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, async ({ conversationId, ...query }) => invokeOperatorTool(context, 'operator_chat_activity_get', () =>
+      context.services.operatorChat!.activityPage(conversationId, context.principal, query)))
+  }
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_send')) server.registerTool('operator_chat_send', {
     description: 'Send an owned Operator message and return protected conversation state. Reserve configurationVersionId from operator_chat_get. For a different harness, also supply forkExpectedRevision and defaultsRevision from agent_defaults_get; existing chats retain their access policy. Reuse the exact request ID and command fields after a lost response. Set recovery to receipt to read acceptance without starting or retrying native work; OPERATOR_RECEIPT_NOT_FOUND is not proof of non-delivery. Requires operator_chat:read and operator_chat:write, including receipt-only recovery.',
     inputSchema: z.object({ conversationId: z.string().min(1), request: SendOperatorMessageRequestSchema }).strict(),

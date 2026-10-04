@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SendOperatorMessageResponseSchema } from '@graphql/contracts'
+import { GetOperatorConversationResponseSchema, OperatorActivityPageSchema,
+  SendOperatorMessageResponseSchema } from '@graphql/contracts'
+import { OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
 import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -137,5 +139,102 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(result.state.activities?.[0]?.output).toBe('Private tool output')
     expect(await repository.get(conversation.id)).toEqual(before)
     expect(manager.turns).toBe(0)
+  })
+
+  it('pages owned messages and activities omitted from snapshots with scoped cursors and denied callers', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write', 'capabilities:read'])
+    const conversation = await chat.create(owner.principal)
+    const contents: string[] = []
+    const activityIds: string[] = []
+    for (let turn = 0; turn < 40; turn++) {
+      const requestId = `history-${turn}`
+      const content = `Message ${turn}`
+      contents.push(content)
+      await repository.beginTurn(conversation.id, { requestId, content }, owner.principal.id)
+      for (let index = 0; index < 3; index++) {
+        const id = `activity-${turn}-${index}`
+        activityIds.push(id)
+        await repository.activity.append(conversation.id, requestId, {
+          id, requestId, kind: 'tool', status: 'completed', title: id,
+        })
+      }
+      await repository.finish(conversation.id, requestId, { outcome: 'succeeded' })
+    }
+    const snapshotReply = await owner.client.callTool({ name: 'operator_chat_get', arguments: {
+      conversationId: conversation.id,
+    } })
+    const snapshot = GetOperatorConversationResponseSchema.parse(snapshotReply.structuredContent)
+    expect(snapshot.messages).toHaveLength(32)
+    expect(snapshot.hasEarlierMessages).toBe(true)
+    expect(snapshot.activities).toHaveLength(100)
+    expect(snapshot.activityNextCursor).not.toBeNull()
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining([
+      'operator_chat_history_get', 'operator_chat_activity_get',
+    ]) })
+
+    const messages: string[] = []
+    let before: string | null = null
+    do {
+      const reply = await owner.client.callTool({ name: 'operator_chat_history_get', arguments: {
+        conversationId: conversation.id, limit: 7, ...(before ? { before } : {}),
+      } })
+      expect(reply.isError).not.toBe(true)
+      const page = OperatorConversationHistoryPageSchema.parse(reply.structuredContent)
+      expect(page.revision).toBe(snapshot.revision)
+      expect(page.entries.every((entry) => entry.receipt?.outcome === 'succeeded')).toBe(true)
+      expect(page.nextCursor === null || page.nextCursor !== before).toBe(true)
+      messages.unshift(...page.entries.map((entry) => entry.message.content))
+      before = page.nextCursor
+    } while (before)
+    expect(messages).toEqual(contents)
+
+    const activities: string[] = []
+    do {
+      const reply = await owner.client.callTool({ name: 'operator_chat_activity_get', arguments: {
+        conversationId: conversation.id, limit: 17, ...(before ? { before } : {}),
+      } })
+      expect(reply.isError).not.toBe(true)
+      const page = OperatorActivityPageSchema.parse(reply.structuredContent)
+      expect(page.nextCursor === null || page.nextCursor !== before).toBe(true)
+      activities.unshift(...page.activities.map((activity) => activity.id))
+      before = page.nextCursor
+    } while (before)
+    expect(activities).toEqual(activityIds)
+    expect(manager.turns).toBe(0)
+
+    const foreign = await issue(['operator_chat:read', 'operator_chat:write'])
+    const other = await chat.create(foreign.principal)
+    const otherTurn = { requestId: randomUUID(), content: 'Another owner message' }
+    await repository.beginTurn(other.id, otherTurn, foreign.principal.id)
+    const otherActivity = await repository.activity.append(other.id, otherTurn.requestId, {
+      id: 'other-tool', requestId: otherTurn.requestId, kind: 'tool', status: 'completed', title: 'Other activity',
+    })
+    const otherPage = await repository.history(other.id)
+    await repository.finish(other.id, otherTurn.requestId, { outcome: 'succeeded' })
+    for (const [name, cursor] of [
+      ['operator_chat_history_get', otherPage!.entries[0]!.sequence],
+      ['operator_chat_activity_get', otherActivity!.activity.sequence],
+    ] as const) {
+      const wrongCursor = await owner.client.callTool({ name, arguments: {
+        conversationId: conversation.id, before: cursor,
+      } })
+      expect(wrongCursor.isError).toBe(true)
+      expect(JSON.stringify(wrongCursor)).toContain('CURSOR_SCOPE_CONFLICT')
+      const wrongOwner = await owner.client.callTool({ name, arguments: { conversationId: other.id } })
+      expect(wrongOwner.isError).toBe(true)
+      expect(JSON.stringify(wrongOwner)).toContain('CONVERSATION_NOT_FOUND')
+    }
+    const ungranted = await issue(['operator_chat:write'])
+    const scoped = await issue(['operator_chat:read'], { workspaceIds: [randomUUID()] })
+    for (const caller of [ungranted, scoped]) {
+      const names = (await caller.client.listTools()).tools.map((tool) => tool.name)
+      for (const name of ['operator_chat_history_get', 'operator_chat_activity_get']) {
+        expect(names).not.toContain(name)
+        await denied(caller.client, name, { conversationId: conversation.id })
+      }
+    }
+    expect((await repository.get(conversation.id))?.revision).toBe(snapshot.revision)
+    expect((await repository.history(conversation.id))?.entries).toHaveLength(40)
   })
 })
