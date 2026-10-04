@@ -310,21 +310,22 @@ export class JobService {
     }
     return readTicket()
   }
-  wakeQueue(): Promise<void> {
+  async wakeQueue(): Promise<void> {
     if (!this.queuePreparation) return Promise.resolve()
     this.queueConfiguration()
     if (this.queueWake) {
       this.queueRescanRequested = true
-      return this.queueWake
+    } else if (!this.queueClosing) {
+      const preparation = this.queuePreparation
+      this.queueWake = (async () => {
+        do {
+          this.queueRescanRequested = false
+          await preparation.scan()
+        } while (this.queueRescanRequested && !this.queueClosing)
+      })().finally(() => { this.queueWake = undefined })
     }
-    const preparation = this.queuePreparation
-    this.queueWake = (async () => {
-      do {
-        this.queueRescanRequested = false
-        await preparation.wake()
-      } while (this.queueRescanRequested && !this.queueClosing)
-    })().finally(() => { this.queueWake = undefined })
-    return this.queueWake
+    await this.queueWake
+    await this.queuePreparation.waitForWork()
   }
   requestQueueWake(): void {
     if (this.queueClosing) return
@@ -344,6 +345,7 @@ export class JobService {
     this.queueTimer = undefined
     this.queueClosing = true
     await this.queueWake
+    await this.queuePreparation?.waitForWork()
   }
   async start(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobStart) {
     const input=parse(JobStartSchema,raw)

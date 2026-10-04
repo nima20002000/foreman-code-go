@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { JobDefinition } from '@graphql/contracts/jobs'
 import { JobPendingAdmissionSchema, JobQueueTicketSchema } from '@graphql/contracts/job-admission'
@@ -240,6 +240,44 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(execution).toMatchObject({ id: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId })
     expect(execution.acceptedSpec.target).toEqual(f.computers[0]!.candidate.spec.target)
     expect(new Set(f.accept.mock.calls.map(call => call[4].operationId)).size).toBe(1)
+  })
+  it('admits another computer while preparation is pending and waits for that preparation on shutdown', async () => {
+    const f = await fixture({ computerCount: 2 })
+    const first = await submit(f, await f.save(f.computers[0]!.candidate.spec))
+    await f.jobs.wakeQueue()
+    const prepare = f.accept.getMockImplementation()!
+    let resume!: () => void
+    let entered!: () => void
+    const paused = new Promise<void>(resolve => { resume = resolve })
+    const preparing = new Promise<void>(resolve => { entered = resolve })
+    f.accept.mockImplementationOnce(async (...args) => {
+      entered()
+      await paused
+      return prepare(...args)
+    })
+    f.online(0)
+    f.online(1)
+    const pending = f.jobs.wakeQueue()
+    await preparing
+    let closed = false
+    let closing: Promise<void> | undefined
+    try {
+      const second = await submit(f, await f.save(f.computers[1]!.candidate.spec))
+      await vi.waitFor(async () => {
+        expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, second.id)).state).toBe('accepted')
+      })
+      expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, first.id)).state).toBe('claimed')
+      expect(f.accept).toHaveBeenCalledTimes(2)
+      closing = f.jobs.closeQueue().then(() => { closed = true })
+      await Promise.resolve()
+      expect(closed).toBe(false)
+    } finally {
+      resume()
+      await pending
+      await closing
+    }
+    expect(closed).toBe(true)
+    expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, first.id)).state).toBe('accepted')
   })
   it('expires waiting from the original enqueue time and enforces pending limits', async () => {
     let now = new Date()

@@ -38,10 +38,11 @@ interface QueuePreparationPorts {
 /** Claims capacity in queue order, then prepares on the original attempt outside SQL locks. */
 export class JobQueuePreparation {
   private readonly repository = new JobRepository()
+  private readonly work = new Map<string, Promise<void>>()
   constructor(private readonly pool: pg.Pool, private readonly ports: QueuePreparationPorts,
     private readonly clock: () => Date) {}
 
-  async wake(): Promise<void> {
+  async scan(): Promise<void> {
     const order = await JobOwnership.acquire(this.pool, 'job-admission-order', () => {})
     if (!order) return
     const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
@@ -56,6 +57,7 @@ export class JobQueuePreparation {
       recoveries = accepted.rows.map(row => JobExecutionSchema.parse(row.record))
       for (const pendingTicket of pending) {
         order.assertOwned()
+        if (this.work.has(pendingTicket.executionId)) continue
         const owner = await JobOwnership.acquire(this.pool, pendingTicket.executionId, () => {})
         if (!owner) continue
         let retained = false
@@ -100,10 +102,24 @@ export class JobQueuePreparation {
     } finally {
       await order.release()
     }
-    const results = await Promise.allSettled([
-      ...claimed.map(({ ticket, owner }) => this.prepare(ticket, owner)),
-      ...recoveries.map(execution => this.ports.wake(execution)),
-    ])
+    for (const { ticket, owner } of claimed) {
+      this.track(ticket.executionId, () => this.prepare(ticket, owner))
+    }
+    for (const execution of recoveries) {
+      this.track(execution.id, () => this.ports.wake(execution))
+    }
+  }
+
+  private track(executionId: string, run: () => Promise<void>): void {
+    if (this.work.has(executionId)) return
+    const task = run().finally(() => { this.work.delete(executionId) })
+    this.work.set(executionId, task)
+    // Scans continue while source I/O is pending; retain failures for callers awaiting this work.
+    void task.catch(error => componentLogger('jobs').error({ err: error, executionId }, 'Job queue work failed'))
+  }
+
+  async waitForWork(): Promise<void> {
+    const results = await Promise.allSettled([...this.work.values()])
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
   }
