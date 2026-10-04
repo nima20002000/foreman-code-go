@@ -26,6 +26,7 @@ const actions: Record<WorkflowScheduleToolName, ManagementAction> = {
   workflow_schedule_disable: 'workflows:update', workflow_schedule_clear: 'workflows:update',
 }
 const scheduleTimeContract = 'Calendar time input requires the caller device\'s IANA timezone, never the server timezone. New Once settings are normalized to UTC; weekly weekday/time intent retains its source timezone for DST. All nextOccurrenceAt, anchorAt and dueAt values are canonical UTC instants; format those instants in the viewing device timezone without reinterpreting them. Read or unchanged saves must preserve existing weekly calendar intent; an intentional weekday/time edit may choose the editing device timezone.'
+const scheduleCursorContract = 'Saving unchanged enabled settings or enabling an already-enabled schedule preserves its occurrence cursor, including an exhausted Once, while updating the revision and owner binding.'
 
 /** SCH-02 omitted discovery names. This exact additive composition is API-local pending contract follow-up. */
 const CapabilityToolName = z.enum([...CurrentOperatorToolNameSchema.options, ...WORKFLOW_SCHEDULE_TOOLS])
@@ -44,7 +45,7 @@ export function workflowScheduleToolAvailable(context: OperatorRequestContext, n
 export function workflowScheduleCapabilities(context: OperatorRequestContext, resource: AuthorizedResource) {
   return WORKFLOW_SCHEDULE_TOOLS.filter((name) => workflowScheduleToolAvailable(context, name, resource))
     .map((name) => ({ name, actions: [actions[name]],
-      detail: 'Exact workspace/workflow scope; live authority is rechecked, including command replay. Saving does not immediately start a Run. The API dispatcher attempts only the latest due within five minutes, skips overlapping scheduled Runs, and pins the latest saved workflow. Admission requires the bound human owner\'s current runs:start and workspace_locations:read rights within the captured writer grant ceiling. Clear and occurrence paging use provisional SCH-03 compositions. ' + scheduleTimeContract }))
+      detail: 'Exact workspace/workflow scope; live authority is rechecked, including command replay. Saving does not immediately start a Run. The API dispatcher attempts only the latest due within five minutes, skips overlapping scheduled Runs, and pins the latest saved workflow. Admission requires the bound human owner\'s current runs:start and workspace_locations:read rights within the captured writer grant ceiling. Clear and occurrence paging use provisional SCH-03 compositions. ' + scheduleTimeContract + ' ' + scheduleCursorContract }))
 }
 
 export function registerWorkflowScheduleTools(server: McpServer, context: OperatorRequestContext): void {
@@ -57,11 +58,11 @@ export function registerWorkflowScheduleTools(server: McpServer, context: Operat
     inputSchema: ScheduleGetInputSchema, outputSchema: ScheduleGetResultSchema, annotations: read,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_get', () => service.get(context.principal, input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_save')) server.registerTool('workflow_schedule_save', {
-    description: 'Create or replace weekly, elapsed interval (whole seconds, minutes or hours, at least one second), or future Once settings. Use revision 0 for absence, otherwise the read revision, and retain commandId for retries. Policy is latest_saved. Saving does not immediately start a Run. Enabled saves bind the writer\'s root human owner and grant ceiling for server-side dispatch. At dispatch the owner must still have runs:start and workspace_locations:read. Older unbound schedules require a new save or enable; read occurrence history for outcomes. ' + scheduleTimeContract,
+    description: 'Create or replace weekly, elapsed interval (whole seconds, minutes or hours, at least one second), or Once settings. New or changed Once settings must be in the future. Use revision 0 for absence, otherwise the read revision, and retain commandId for retries. Policy is latest_saved. Saving does not immediately start a Run. Enabled saves bind the writer\'s root human owner and grant ceiling for server-side dispatch. At dispatch the owner must still have runs:start and workspace_locations:read. Older unbound schedules require a new save or enable; read occurrence history for outcomes. ' + scheduleTimeContract + ' ' + scheduleCursorContract,
     inputSchema: ScheduleSaveInputSchema, outputSchema: ScheduleSaveResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_save', () => service.save(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_enable')) server.registerTool('workflow_schedule_enable', {
-    description: 'Enable existing saved settings with commandId and expectedRevision. Past Once settings cannot be enabled. This binds the enabling caller\'s root human owner and grant ceiling for future server dispatch; it does not immediately start a Run. Live owner Run and location rights are rechecked at dispatch.',
+    description: 'Enable existing saved settings with commandId and expectedRevision. Disabled past Once settings cannot be enabled. This binds the enabling caller\'s root human owner and grant ceiling for future server dispatch; it does not immediately start a Run. Live owner Run and location rights are rechecked at dispatch. ' + scheduleCursorContract,
     inputSchema: ScheduleEnableInputSchema, outputSchema: ScheduleEnableResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_enable', () => service.enable(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_disable')) server.registerTool('workflow_schedule_disable', {

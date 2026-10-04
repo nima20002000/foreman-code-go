@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -44,6 +45,14 @@ function configuration(value: WorkflowSchedule): ScheduleConfiguration {
     case 'interval': return { ...settings, mode: value.mode, every: value.every, unit: value.unit, anchorAt: value.anchorAt }
     case 'once': return { ...settings, mode: value.mode, localDate: value.localDate, time: value.time }
   }
+}
+function sameRecurrence(current: WorkflowSchedule, settings: ScheduleConfiguration): boolean {
+  const saved = normalizeConfiguration(configuration(current))
+  if (saved.mode === 'interval' && settings.mode === 'interval') {
+    // Interval timezone is display metadata; elapsed recurrence uses the UTC anchor.
+    return saved.every === settings.every && saved.unit === settings.unit && saved.anchorAt === settings.anchorAt
+  }
+  return isDeepStrictEqual(saved, settings)
 }
 function checkRevision(slot: ScheduleSlot | null, expected: number): void {
   const currentRevision = slot?.value?.revision ?? 0
@@ -118,11 +127,18 @@ export class WorkflowScheduleService {
         checkRevision(slot, input.expectedRevision)
         // After receipt lookup AND after waiting for the workflow lock. Never use the caller's clock.
         const now = this.clock().toISOString()
-        const accepted = parseRequest(() => parseScheduleSaveInput(input, now))
-        const settings = scheduleConfigurationToUtc(accepted.schedule)
+        const settings = parseRequest(() => scheduleConfigurationToUtc(input.schedule))
+        const current = slot?.value
+        let nextOccurrenceAt: string | null
+        if (current?.enabled && settings.enabled && sameRecurrence(current, settings)) {
+          nextOccurrenceAt = current.nextOccurrenceAt
+        } else {
+          parseRequest(() => parseScheduleSaveInput(input, now))
+          nextOccurrenceAt = nextOccurrences(settings, now, 1)[0] ?? null
+        }
         const value = WorkflowScheduleSchema.parse({ ...settings,
           workspaceId: input.workspaceId, workflowId: input.workflowId, revision: nextRevision(slot),
-          nextOccurrenceAt: nextOccurrences(settings, now, 1)[0] ?? null,
+          nextOccurrenceAt,
         })
         await this.repository.put(client, value, principal.id)
         await captureScheduleAuthority(client, value, principal.id)
@@ -154,11 +170,16 @@ export class WorkflowScheduleService {
         checkRevision(slot, input.expectedRevision)
         const current = requiredValue(slot)
         const now = this.clock().toISOString()
-        const settings = { ...configuration(current), enabled }
-        // Disable is allowed after Once elapsed. Enabling is a fresh future admission preference.
-        if (enabled) parseRequest(() => parseScheduleSaveInput({ ...input, schedule: settings }, now))
+        let nextOccurrenceAt = current.nextOccurrenceAt
+        if (!enabled) {
+          nextOccurrenceAt = null
+        } else if (!current.enabled) {
+          const settings = { ...configuration(current), enabled }
+          parseRequest(() => parseScheduleSaveInput({ ...input, schedule: settings }, now))
+          nextOccurrenceAt = nextOccurrences(settings, now, 1)[0] ?? null
+        }
         const value = WorkflowScheduleSchema.parse({ ...current, enabled, revision: nextRevision(slot),
-          nextOccurrenceAt: enabled ? nextOccurrences(settings, now, 1)[0] ?? null : null,
+          nextOccurrenceAt,
         })
         await this.repository.put(client, value, principal.id)
         await captureScheduleAuthority(client, value, principal.id)
