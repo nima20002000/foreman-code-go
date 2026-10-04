@@ -529,7 +529,9 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(SavedRunDetailsSchema.parse(readback.structuredContent).activitySnapshot).toEqual(detail.activitySnapshot)
     const activity = await f.call('run_activities_get_v1', { workspaceId: detail.run.workspaceId, runId: detail.run.id, limit: 10 })
     expect(activity.isError).not.toBe(true)
-    expect(activity.structuredContent).toMatchObject({ activitySnapshot: { scope: detail.activitySnapshot!.scope } })
+    expect(activity.structuredContent).toMatchObject({ scope: { workspaceId: detail.run.workspaceId,
+      workflowId: detail.run.workflowId, runId: detail.run.id, workflowVersionId: detail.run.workflowVersionId } })
+    expect(activity.structuredContent).not.toHaveProperty('activitySnapshot')
     const denied = await f.call('run_get', { workspaceId: detail.run.workspaceId, runId: detail.run.id }, f.denied.token)
     expect(denied.isError).toBe(true)
     await f.access.revoke(f.writer.principal.id)

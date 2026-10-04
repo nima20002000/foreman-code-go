@@ -1,14 +1,17 @@
+import type pg from 'pg'
 import { expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { buildApp } from '../src/app.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
+import { withCurrentRunRead } from '../src/modules/runs/currentRead.js'
+import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
 import { graphFixture, graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { RunActivitiesPageSchema } from '@graphql/contracts/wave25'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 
-it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['running', 'completed'])('bounds 1000 %s native items independently of limit and audit cursors over HTTP/MCP', async (status) => {
+it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['running', 'completed'])('pages public history independently of 1000 %s native items over HTTP/MCP', async (status) => {
   await nim2691TaskDatabase(async (pool, directory) => {
     await applyApplicationMigrations(pool)
     const db = { pool, directory, schema: 'public', close: async () => {} } as Awaited<ReturnType<typeof currentDatabase>>
@@ -36,12 +39,18 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['running', 'completed'])('
       expect(http.statusCode, http.body).toBe(200)
       const first = RunActivitiesPageSchema.parse(http.json())
       expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThanOrEqual(128 * 1024)
-      expect(first.activitySnapshot?.page.hasMore).toBe(true)
-      expect(first.activitySnapshot?.hasMoreActiveWork).toBe(status === 'running' ? true : undefined)
-      const tools = first.activitySnapshot!.activities.filter((item) => item.kind === 'tool')
-      expect(tools.length).toBeGreaterThan(0)
-      expect(tools.length).toBeLessThan(1000)
+      expect(first).not.toHaveProperty('activitySnapshot')
+      const snapshot = await withCurrentRunRead(pool, t.writer.principal, args.workspaceId, args.runId,
+        'runs:read', (sql, { version }) => readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>, {
+          workspaceId: args.workspaceId, workflowId: t.scope.workflowId,
+          runId: args.runId, workflowVersionId: t.version.id,
+        }, version))
+      const tools = snapshot.activities.filter((item) => item.kind === 'tool')
+      expect(tools).toHaveLength(1000)
       expect(tools.at(-1)?.native?.itemId).toBe('tool-1000')
+      expect(tools.every((item) => item.status === status)).toBe(true)
+      expect(snapshot.active.filter((item) => item.ref.kind === 'tool'))
+        .toHaveLength(status === 'running' ? 1000 : 0)
       expect(first.items).toHaveLength(1)
       const mcp = await graphRpc(app, t.writer.token, 'tools/call', { name: 'run_activities_get_v1', arguments: args })
       expect(mcp.result?.isError).not.toBe(true)

@@ -37,7 +37,10 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   }, async (input) => invokeOperatorTool(context, 'run_handoffs_get_v1',
     () => context.services.runs.handoffs.read(context.principal, input)))
   if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
-    description: 'Read a bounded, redacted Activities page for an exact authorized Run. Use nextCursor for live catch-up and olderCursor for earlier retained history; an expired cursor requires a fresh initial read. Pending approvals remain in the authorized inbox.',
+    description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
+      + 'Pages contain public items and cursors; use run_get for execution and normalized activity snapshots. '
+      + 'Use nextCursor for incremental catch-up and olderCursor for earlier retained history; '
+      + 'an expired cursor requires a fresh initial read. Pending approvals remain in the authorized inbox.',
     inputSchema: RunActivitiesInputSchema, outputSchema: RunActivitiesPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_activities_get_v1',

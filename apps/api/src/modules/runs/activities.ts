@@ -1,8 +1,6 @@
-import { readRunActivitySnapshot } from './activitySnapshot.js'
 import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ActivitySnapshotV1 } from '@graphql/contracts'
 import { GraphSequenceSchema, RunActivitiesInputSchema, RunActivitiesPageSchema,
   canonicalGraphJson, type RunActivitiesPage } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -110,33 +108,6 @@ function decodeCursor(value: string): CursorValue {
   } catch { return invalid('ACTIVITIES_CURSOR_INVALID', 'The Activities cursor is invalid.', 400) }
 }
 
-/** Audit cursors do not page the native roster. Budget its latest items and their
- * matching active refs together, preserving exact identities and partial coverage. */
-function boundedNativeSnapshot(snapshot: ActivitySnapshotV1): ActivitySnapshotV1 {
-  const native = snapshot.activities.filter((item) => item.source.system === 'harness_native_events')
-  const ids = new Set(native.map((item) => item.id))
-  const nativeActive = new Map(snapshot.active.flatMap((entry) =>
-    (entry.ref.kind === 'tool' || entry.ref.kind === 'subagent') && ids.has(entry.ref.itemId)
-      ? [[entry.ref.itemId, entry] as const] : []))
-  const base = { ...snapshot, activities: snapshot.activities.filter((item) => !ids.has(item.id)),
-    active: snapshot.active.filter((entry) => (entry.ref.kind !== 'tool' && entry.ref.kind !== 'subagent') || !ids.has(entry.ref.itemId)) }
-  // Leave room for coverage flags, the audit page and its transport cursors.
-  let available = 64 * 1024 - 128 - Buffer.byteLength(JSON.stringify(base))
-  const retained = new Set<string>()
-  let omittedActive = false
-  for (const item of native.toReversed()) {
-    const active = nativeActive.get(item.id)
-    const bytes = Buffer.byteLength(JSON.stringify(item)) + (active ? Buffer.byteLength(JSON.stringify(active)) : 0) + 2
-    if (bytes > available) { omittedActive ||= Boolean(active); continue }
-    retained.add(item.id); available -= bytes
-  }
-  if (retained.size === native.length) return snapshot
-  return { ...base, activities: [...base.activities, ...native.filter((item) => retained.has(item.id))],
-    active: [...base.active, ...[...nativeActive].filter(([id]) => retained.has(id)).map(([, entry]) => entry)],
-    ...(omittedActive ? { hasMoreActiveWork: true as const } : {}),
-    page: { ...snapshot.page, hasMore: true } }
-}
-
 export class RunActivitiesService {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -192,9 +163,7 @@ export class RunActivitiesService {
           workflowVersionId: version.id, mode: 'newer',
           position: mode === 'newer' && hasMore && last ? last : through,
           through: mode === 'newer' && hasMore ? through : '0' })
-        const activitySnapshot = boundedNativeSnapshot(await readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>,
-          { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId }, version))
-        const page = RunActivitiesPageSchema.parse({ scope, items, mode, activitySnapshot,
+        const page = RunActivitiesPageSchema.parse({ scope, items, mode,
           highWater: through, retainedFrom: bounds.retained_from, nextCursor, olderCursor, hasMore })
         canonicalGraphJson(page, 128 * 1024)
         return page
