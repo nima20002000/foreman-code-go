@@ -105,8 +105,15 @@ describe('actual worker native-port adapter', () => {
       observeReceipt: async receipt => { order.push(`receipt:${receipt.phase}`) },
       observeOriginalSource: async (_receipt, source) => { expect(f.state.starts).toBe(1); order.push(`source:${source.type}`) },
       controlFor: async () => { throw new Error('unused') } })
-    await proxy.createSession({ request: f.request, correlationId: 'execution:execution' }); order.push('returned')
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' }); order.push('returned')
     expect(order).toEqual(['receipt:start_acknowledged', 'source:session_created', 'returned'])
+    order.length = 0
+    await proxy.observeBoundary(session)
+    await proxy.observeBoundary(session)
+    expect(order).toEqual(['receipt:start_acknowledged', 'source:boundary',
+      'receipt:start_acknowledged', 'source:boundary'])
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(0)
   })
   it('retains uncertainty when physical source verification fails after the worker created its session', async () => {
     const f = await setup()

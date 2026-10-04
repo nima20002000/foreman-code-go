@@ -406,6 +406,24 @@ export class PostgresInteractionCoordinationRepository {
     if (result.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer is no longer owned.', 409)
   }
 
+  async acknowledgeLaneTurn(fence: WriterFence, correlationId: string, providerId: string): Promise<void> {
+    IdSchema.parse(correlationId)
+    IdSchema.parse(providerId)
+    const result = await this.queryConnection.query(
+      `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
+       record=jsonb_set(jsonb_set(record, '{revision}', to_jsonb((revision+1)::bigint)),
+         '{currentTurnOrMessageId}', to_jsonb($4::text))
+       where id=$1 and record->>'leaseToken'=$2
+         and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
+         and record->>'correlationId'=$3
+         and (record->>'currentTurnOrMessageId' is null or record->>'currentTurnOrMessageId'=$4)`,
+      [fence.id, fence.token, correlationId, providerId],
+    )
+    if (result.rowCount === 1) return
+    await this.assertLaneLease(fence.id, fence.token)
+    throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT', 'The acknowledged turn differs from the owned writer.', 409)
+  }
+
   async assertLaneLease(id: string, token: string): Promise<void> {
     const result = await this.queryConnection.query(
       `select id from native_session_lanes where id=$1 and record->>'leaseToken'=$2

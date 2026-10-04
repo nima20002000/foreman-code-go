@@ -466,6 +466,11 @@ export class ApprovalExecutionCoordinator {
   async nativeBoundaryEvidence(executionId: string, owner: RunOwnership): Promise<RepeatNativeEvidence> {
     const execution = await this.runs.getExecution(executionId, owner)
     if (!execution) throw new DomainError('EXECUTION_NOT_FOUND', 'The exact execution is unavailable.', 404)
+    const owned = this.ownedSessions.get(executionId)
+    if (owned?.session) {
+      this.managers.adoptOwner?.(executionId, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+      await owned.manager.observeBoundary(owned.session, owned.controller.signal)
+    }
     return this.captureNative(owner, execution, { type: 'boundary' }, 'recovery')
   }
 
@@ -1502,6 +1507,11 @@ export class ApprovalExecutionCoordinator {
             lane.providerId = observed.terminalTurn!.providerId
           } else if (observed.correlationId === `execution:${execution.id}` && providerId) {
             lane.providerId = providerId
+          }
+          if (lane.providerId) {
+            await this.interactions.coordination.acknowledgeLaneTurn(
+              lane.fence, `execution:${execution.id}`, lane.providerId,
+            )
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
           const captured = this.captureNative(input.owner, execution,

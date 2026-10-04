@@ -187,6 +187,14 @@ class CoordinationFake {
     this.lane.correlationId = correlation
     delete this.lane.currentTurnOrMessageId
   }
+  async acknowledgeLaneTurn(fence: WriterFence, correlation: string, providerId: string) {
+    await this.assertLaneLease(fence.id, fence.token)
+    if (this.lane.correlationId !== correlation
+      || this.lane.currentTurnOrMessageId && this.lane.currentTurnOrMessageId !== providerId) {
+      throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT', 'Different native turn.', 409)
+    }
+    this.lane.currentTurnOrMessageId = providerId
+  }
   async renewLane(id: string, token: string, ms: number) {
     if (this.failLaneRenewal) throw new DomainError('SESSION_LANE_LEASE_LOST', 'lost', 409)
     await this.assertLaneLease(id, token)

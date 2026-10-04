@@ -140,6 +140,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })
     return history
   }
+  async observeBoundary(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
+    this.assertSession(session)
+    const receipt = await this.status(await this.request('status', {}, signal))
+    await this.options.observeOriginalSource?.(receipt, { type: 'boundary' })
+  }
   private projectHistory(history: z.infer<typeof HistorySchema>): NativeHistory {
     return { events: history.events, pendingInteractions: history.pendingInteractions,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),

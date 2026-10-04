@@ -147,6 +147,9 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   inspectMcp: NativeHarnessSessionManager['inspectMcp'] = (signal) => this.manager.inspectMcp(signal)
   pending: NativeHarnessSessionManager['pending'] = (session, signal) => this.manager.pending(session, signal)
   history: NativeHarnessSessionManager['history'] = (session, signal) => this.manager.history(session, signal)
+  observeBoundary: NonNullable<NativeHarnessSessionManager['observeBoundary']> = async (session, signal) => {
+    await this.manager.observeBoundary?.(session, signal)
+  }
   reconcile: NativeHarnessSessionManager['reconcile'] = (session, correlation, signal) => this.manager.reconcile(session, correlation, signal)
   reconcileResponse: NonNullable<NativeHarnessSessionManager['reconcileResponse']> = (session, response, signal) =>
     this.manager.reconcileResponse ? this.manager.reconcileResponse(session, response, signal) : this.manager.history(session, signal)
@@ -341,6 +344,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           await lease.guard.check()
           evidence.acknowledge(receipt.nativeMessageId)
           if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT', 'Initial receipt conflicts with its writer lane.', 409)
+          await this.coordination.acknowledgeLaneTurn(lease.fence, input.clientCorrelationId, receipt.nativeMessageId)
           lease.providerId = receipt.nativeMessageId
           await input.onMessageSubmitted?.(receipt)
           await lease.guard.check()
@@ -390,6 +394,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           evidence.acknowledge(receipt.nativeMessageId)
           if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT',
             'The provider returned conflicting message identities. Native work will not be replayed.', 409)
+          await this.coordination.acknowledgeLaneTurn(lease.fence, input.clientCorrelationId, receipt.nativeMessageId)
           lease.providerId = receipt.nativeMessageId
           await input.onMessageSubmitted?.(receipt)
           await lease.guard.check()
@@ -399,6 +404,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           evidence.acknowledge(providerId)
           if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT',
             'The provider returned conflicting turn identities. Native work will not be replayed.', 409)
+          await this.coordination.acknowledgeLaneTurn(lease.fence, input.clientCorrelationId, providerId)
           lease.providerId = providerId
           await input.onSubmitted?.(providerId)
           await lease.guard.check()

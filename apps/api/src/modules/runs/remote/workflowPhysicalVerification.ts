@@ -52,7 +52,7 @@ interface Prepared {
 interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
 const unavailable = (reason: string): never => {
   throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE',
-    'Actual authenticated original native and source evidence is required.', 409, { reason })
+    `Remote native verification failed (${reason}).`, 409, { reason })
 }
 function same(left: unknown, right: unknown) { return isDeepStrictEqual(left, right) }
 function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource) {

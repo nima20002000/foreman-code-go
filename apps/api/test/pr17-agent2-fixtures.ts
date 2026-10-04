@@ -107,6 +107,12 @@ export function reviewCoordination(initial = reviewJob()) {
       return structuredClone(lane)
     },
     async bindLaneTurn(_fence: WriterFence, correlation: string) { lane.correlationId = correlation; delete lane.currentTurnOrMessageId },
+    async acknowledgeLaneTurn(fence: WriterFence, correlation: string, providerId: string) {
+      assert.equal(fence.token, lane.leaseToken)
+      assert.equal(correlation, lane.correlationId)
+      assert.ok(!lane.currentTurnOrMessageId || lane.currentTurnOrMessageId === providerId)
+      lane.currentTurnOrMessageId = providerId
+    },
   }
   return { repository: value as unknown as PostgresInteractionCoordinationRepository, captureReviewNative,
     transitions, get job() { return structuredClone(job) }, get lane() { return structuredClone(lane) },

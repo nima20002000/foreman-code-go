@@ -146,6 +146,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   stopAutomaticResponses?(session: NativeSessionReference): void
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean>
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
+  /** Refresh authenticated remote ownership before a coordinator boundary check. */
+  observeBoundary?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */

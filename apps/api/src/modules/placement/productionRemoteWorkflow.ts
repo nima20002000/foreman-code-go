@@ -157,7 +157,7 @@ export function createProductionRemoteWorkflow(input: {
       const binding = bindings.get(capture.execution.id)
       if (binding?.placement.hostRef.kind !== 'device') return
       const entries = retained.get(capture.execution.id)
-      const entry = capture.source.type === 'boundary' ? entries?.get(latest.get(capture.execution.id) ?? '') : entries?.get(sourceKey(capture.source))
+      const entry = entries?.get(sourceKey(capture.source))
       if (!entry || !capture.closureGeneration) throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The authenticated original remote source is unavailable at the actual native lifetime boundary.', 409)
       if (!entry.evidence) {
         entry.evidence = channel.capture(capture.execution.id, entry.source)

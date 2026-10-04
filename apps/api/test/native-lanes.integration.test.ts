@@ -31,10 +31,22 @@ it('round-trips claimed and renewed lane leases through PostgreSQL and the share
   const renewed = NativeSessionLaneSchema.parse((await pool.query('select record from native_session_lanes where id=$1', [lane.id])).rows[0].record)
   expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(Date.now())
   await repository.bindLaneTurn({ id: lane.id, token: 'token' }, 'workflow-turn')
+  const fence = { id: lane.id, token: 'token' }
+  await repository.acknowledgeLaneTurn(fence, 'workflow-turn', 'native-turn')
+  await repository.acknowledgeLaneTurn(fence, 'workflow-turn', 'native-turn')
+  expect(await repository.getLane('codex', 'session')).toMatchObject({
+    currentTurnOrMessageId: 'native-turn', correlationId: 'workflow-turn', leaseToken: 'token',
+  })
+  await expect(repository.acknowledgeLaneTurn(fence, 'another-workflow-turn', 'native-turn'))
+    .rejects.toMatchObject({ code: 'NATIVE_TURN_IDENTITY_CONFLICT' })
+  await expect(repository.acknowledgeLaneTurn(fence, 'workflow-turn', 'different-native-turn'))
+    .rejects.toMatchObject({ code: 'NATIVE_TURN_IDENTITY_CONFLICT' })
   const released = await repository.releaseLane(lane.id, 'token', {
     observedStatus: 'idle', currentTurnOrMessageId: 'native-turn',
   })
   expect(released.correlationId).toBe('workflow-turn')
   expect(released.currentTurnOrMessageId).toBe('native-turn')
   await expect(repository.assertLaneLease(lane.id, 'token')).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+  await expect(repository.acknowledgeLaneTurn(fence, 'workflow-turn', 'native-turn'))
+    .rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
 })

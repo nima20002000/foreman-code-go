@@ -52,6 +52,14 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
       lane.correlationId = correlationId
       delete lane.currentTurnOrMessageId
     },
+    async acknowledgeLaneTurn(fence: WriterFence, correlationId: string, providerId: string) {
+      const lane = owned(fence.id, fence.token)
+      if (lane.correlationId !== correlationId
+        || lane.currentTurnOrMessageId && lane.currentTurnOrMessageId !== providerId) {
+        throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT', 'Different native turn.', 409)
+      }
+      lane.currentTurnOrMessageId = providerId
+    },
     async releaseLane(id: string, token: string, observed: Pick<NativeSessionLane, 'observedStatus' | 'currentTurnOrMessageId'>) {
       const lane = owned(id, token)
       Object.assign(lane, observed, { revision: lane.revision + 1 })
