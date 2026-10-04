@@ -136,7 +136,12 @@ export async function createInstalledWorkerDomains(input: {
       transfers: receiver.receiver,
       transferContext: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'The source transfer generation changed.', 409); return transferContextForBinding(context.binding) },
       nativeOwnerFor: record => native?.kind === 'configured' ? native.nativeOwnerFor(record) : Promise.resolve(null),
-      preparationNativeClosed: async operationId => input.jobConfiguration ? (await (await jobJournal()).jobNativeOwner(operationId)) === null : false,
+      preparationNativeClosed: async (operationId, owner) => {
+        if (owner.preparationKind === 'workflow') {
+          return native?.kind === 'configured' ? native.preparationClosed(owner) : false
+        }
+        return input.jobConfiguration ? (await (await jobJournal()).jobNativeOwner(operationId)) === null : false
+      },
       ...(rsync.kind === 'configured' ? {
         preparationTransfersClosed: (closure, signal) => rsync.backend.retirePreparation(closure, signal),
         executionTransfersClosed: (record, signal) => rsync.backend.retireMaterialization(record, signal),

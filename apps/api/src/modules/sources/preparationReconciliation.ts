@@ -17,6 +17,7 @@ import { authorizeSource } from './authority.js'
 import { sourceBindingHash } from './bindingHash.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { SourceExecutionHostPort } from './service.js'
+import { assertWorkflowPreparationClosed, loadWorkflowPreparation } from './workflowPreparationCleanup.js'
 
 async function load(sql: GraphSqlClient, workspaceId: string, operationId: string) {
   const row = (await sql.query<{ execution_id: string; attempt_id: string; principal_id: string; start_command_id: string; definition: unknown; created_at: Date;
@@ -28,7 +29,7 @@ async function load(sql: GraphSqlClient, workspaceId: string, operationId: strin
     left join source_execution_materializations m on m.operation_id=j.operation_id
     left join source_preparation_reconciliations c on c.operation_id=j.operation_id
     where j.workspace_id=$1 and j.operation_id=$2 for share of j,r`, [workspaceId, operationId])).rows[0]
-  if (!row) throw new DomainError('SOURCE_PREPARATION_NOT_FOUND', 'The original Job source preparation reservation was not found in this workspace.', 404)
+  if (!row) return loadWorkflowPreparation(sql, workspaceId, operationId)
   const definition = JobDefinitionSchema.parse(row.definition)
   const record = row.materialization === null ? null : SourceMaterializationRecordSchema.parse(row.materialization)
   const roots = (await sql.query<{ record: unknown }>(`select record from source_root_bindings
@@ -52,7 +53,7 @@ async function load(sql: GraphSqlClient, workspaceId: string, operationId: strin
     || !isDeepStrictEqual(definition.spec.target.hostRef, root.selection.hostRef) || !isDeepStrictEqual(definition.spec.target.registration, root.registration)
     || definition.spec.target.destination.attestationHash !== root.attestationDigest)
     throw new DomainError('SOURCE_PIN_CONFLICT', 'The original preparation does not own this exact root/source.', 409)
-  return { ...row, root, attempt, record, definition, operationId, workspaceId }
+  return { ...row, kind: 'job' as const, root, attempt, record, definition, operationId, workspaceId }
 }
 type State = Awaited<ReturnType<typeof load>>
 function metadata(state: State) {
@@ -64,6 +65,7 @@ function metadata(state: State) {
     closure: state.closure })
 }
 async function admissionClosed(sql: GraphSqlClient, state: State) {
+  if (state.kind === 'workflow') return assertWorkflowPreparationClosed(sql, state)
   const lock = (await sql.query<{locked: boolean}>('select pg_try_advisory_xact_lock(hashtext($1)) as locked',
     [`command:${state.principal_id}:job.start:${state.start_command_id}`])).rows[0]
   if (!lock?.locked) throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'The original Job Start command is still active.', 409)
@@ -103,7 +105,8 @@ export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient,
   const state = await load(sql, row.workspace_id, row.operation_id)
   await admissionClosed(sql, state); await hostAuthority(sql, state)
   const owner = SourceOperationOwnerSchema.parse(row.owner)
-  if (!isDeepStrictEqual(owner.root, state.root) || !isDeepStrictEqual(owner.attempt, state.attempt)
+  if ((owner.preparationKind === 'workflow') !== (state.kind === 'workflow')
+    || !isDeepStrictEqual(owner.root, state.root) || !isDeepStrictEqual(owner.attempt, state.attempt)
     || !isDeepStrictEqual(owner.record, state.record) || owner.identity.operationId !== state.operationId
     || owner.identity.ownerPrincipalId !== principal.id || Date.parse(owner.identity.expiresAt) <= Date.now())
     throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original reconciliation authority changed.', 409)
@@ -154,7 +157,8 @@ export class PostgresSourcePreparationReconciliation {
           }
           const reconciliationId = randomUUID(), owner: SourceOperationOwner = { identity: { operationId: input.operationId,
             ownerPrincipalId: live.id, expiresAt: live.expiresAt }, root: state.root, attempt: state.attempt,
-            source: state.root.source, record: state.record, physicalClosureConfirmed: false, preparationClosed: true }
+            source: state.root.source, record: state.record, physicalClosureConfirmed: false, preparationClosed: true,
+            ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const } : {}) }
           await sql.query(`insert into source_preparation_reconciliations(operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner)
             values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)`, [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
           return { reconciliationId, owner }

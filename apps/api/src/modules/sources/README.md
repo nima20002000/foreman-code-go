@@ -53,3 +53,10 @@ no limits are raised. Reconciled preparations cannot regain execution authority.
 This operation requires the original installed worker closure journal. Main-host
 preparations are explicitly unsupported here. Already-admitted Jobs must use
 their original execution cancellation/reconciliation path.
+
+Workflow preparations can be addressed by `operationId` after the Run and its
+execution have stopped and Main has confirmed closure without a native session.
+The same HTTP and Operator MCP operations apply. Main fences new worker
+construction before requesting cleanup. The worker joins earlier construction
+and requires its protected journal and process registry to contain no native
+owner for that attempt. An allocated or uncertain worker lifetime remains held.

@@ -14,7 +14,9 @@ import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperati
 import { RemoteWorkflowPhysicalReadoutSchema } from '@graphql/contracts/remote-workflow-physical'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
-import { SourceOperationResponseSchema } from '@graphql/contracts/source-operations'
+import { SourceOperationResponseSchema, type SourceOperationOwner } from '@graphql/contracts/source-operations'
+import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
+import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
 import { DomainError } from '../../errors.js'
 import { captureOriginalCodexSession } from '../../harnesses/originalCodexSession.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../harnesses/port.js'
@@ -475,7 +477,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       })()
       active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task))
       return task
-    }}]
+    }},
+    { ...EXECUTION_AUTHORITY_EXTENSION, role: 'client' },
+    { ...WORKER_MCP_EXTENSION, role: 'client' },
+  ]
   const nativeOwnerFor=async(record:SourceMaterializationRecord):Promise<SourceInstalledNativeOwner|null>=>{
     const owned=operations.get(record.receipt.executionId)
     if(!owned?.native||!owned.session||!owned.nativeSignal||!owned.applicationAccess||owned.launchDisabled||owned.nativeSignal.aborted
@@ -523,5 +528,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     if(failures.length)throw new AggregateError(failures,'Original installed workflow cleanup remains unconfirmed; the journal owner is retained.')
     if(journalOpening&&!input.journal)await(await journalOpening).close()
   })()
-  return {kind:'configured' as const,extensions,nativeOwnerFor,close}
+  const preparationClosed = async (owner: SourceOperationOwner): Promise<boolean> => {
+    if (owner.preparationKind !== 'workflow' || owner.preparationClosed !== true) return false
+    // Main has fenced future construction. Join any earlier fact lookup before checking its installed owner.
+    await construction
+    if (operations.has(owner.attempt.executionId)) return false
+    const status = await (await journal()).status(owner.identity.operationId)
+    if (status.status !== 'unknown') return false
+    return !registry.snapshot().launches.some(launch => launch.owner === `execution:${owner.attempt.executionId}`)
+  }
+  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,close}
 }

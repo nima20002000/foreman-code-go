@@ -38,7 +38,7 @@ export interface SourceOperationWorkerOptions {
   /** Actual original installed native manager/session; no caller-supplied flag. */
   nativeOwnerFor?: SourceInstalledNativeOwnerReader
   /** Original protected installed Job journal. Missing evidence fails closed. */
-  preparationNativeClosed?(operationId: string): Promise<boolean>
+  preparationNativeClosed?(operationId: string, owner: SourceOperationOwner): Promise<boolean>
   preparationTransfersClosed?(closure: SourcePreparationClosure, signal: AbortSignal): Promise<void>
   executionTransfersClosed?(record: SourceMaterializationRecord, signal: AbortSignal): Promise<void>
 }
@@ -123,7 +123,7 @@ export class SourceOperationWorkerService {
       if (request.operation === 'sources.reconcile-preparation') {
         if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
         const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
-          () => this.options.preparationNativeClosed!(owner.identity.operationId), reauthorize)
+          () => this.options.preparationNativeClosed!(owner.identity.operationId, owner), reauthorize)
         await this.options.preparationTransfersClosed?.(closure, context.signal)
         await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
       }

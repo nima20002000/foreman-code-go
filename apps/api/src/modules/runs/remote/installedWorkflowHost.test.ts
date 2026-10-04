@@ -24,6 +24,9 @@ import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
+import { negotiateDeviceExtensions } from '@graphql/contracts/device-application'
+import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
+import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
 import type { HarnessExecution } from '@graphql/contracts'
 import type pg from 'pg'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
@@ -196,16 +199,27 @@ describe('lazy installed worker host qualification boundary',()=>{
     const options:InstalledWorkflowHostOptions={stateDirectory:f.root,pairing:{formatVersion:1,mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId,
       workerInstallationId:f.context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,endpoint:'wss://unit.invalid/device',mainPublicKeyFingerprint:'a'.repeat(64),credential:'b'.repeat(64),expiresAt:'2099-01-01T00:00:00.000Z'},
       bootId:f.context.binding.bootId,configuration:{path:file,ownerUid:process.getuid!()},currentBinding,captureRequest:()=>({binding:f.context.binding,request:readMain}),
-      sources:f.sources,approvedRoots:async()=>f.approvedRoots,codexSuiteRevision:'codex-live-4',signal:new AbortController().signal}
+      sources:f.sources,approvedRoots:async()=>f.approvedRoots,codexSuiteRevision:'codex-live-4',signal:new AbortController().signal,
+      initializeNewInstallation: true}
     const host=await createInstalledWorkflowHost(options)
     expect(host.kind).toBe('configured')
     if(host.kind!=='configured')throw new Error('Expected unit configured code support')
     try {
+      const negotiated = negotiateDeviceExtensions([
+        { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server' },
+        { ...WORKER_MCP_EXTENSION, role: 'server' },
+      ], host.extensions)
+      expect(negotiated).toEqual([
+        expect.objectContaining({ namespace: 'execution-authority-v1', workerCanRequest: true, mainCanRequest: false }),
+        expect.objectContaining({ namespace: 'worker-mcp-v1', workerCanRequest: true, mainCanRequest: false }),
+      ])
       const handler=host.extensions[0]!.handle!
       await expect(handler({method:'prepare',intent:f.intent,placement:f.placement,request:f.request,executionPlacement:f.nativePlacement},f.context)).rejects.toThrow('Actual Main qualification is unavailable')
       expect(readMain).toHaveBeenCalledOnce()
       expect(reserve).not.toHaveBeenCalled();expect(create).not.toHaveBeenCalled()
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
+      expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
+      expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
       currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
       await expect(handler({method:'status',intent:f.intent,placement:f.placement},f.context)).rejects.toMatchObject({code:'WORKER_WORKFLOW_UNAVAILABLE'})
     } finally {await host.close()}

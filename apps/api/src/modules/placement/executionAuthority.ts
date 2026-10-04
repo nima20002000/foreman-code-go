@@ -69,6 +69,8 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
       const verify = () => assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer)
       await verify(); beforeGraphCommit(sql, verify)
       if (facts.success) {
+        if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1 for share',
+          [input.intent.operationId])).rowCount) denied()
         const placement = await readExecutionPlacement(sql, input.intent.executionId)
         const native = await readNativePlacement(sql, input.intent.executionId)
         if (!placement || !native || placement.payload.kind !== 'agent') denied()
