@@ -328,6 +328,7 @@ async function main() {
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
     heartbeat = setInterval(reportProgress, 30_000)
+    if (files) console.log('[integration] REQUESTED files only; skipped cases still fail this run.')
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
     if (files) console.log('[integration] Selected-file run; results cover only the requested files.')
