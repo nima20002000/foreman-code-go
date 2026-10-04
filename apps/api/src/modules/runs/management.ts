@@ -1,4 +1,4 @@
-import type { SubagentNativeRecoverySource } from '../subagents/types.js'
+import type { SubagentNativeRecoverySource, SubagentControlResolver } from '../subagents/types.js'
 import { recoverSubagentCommands } from '../subagents/recovery.js'
 import { RunSubagentService } from '../subagents/service.js'
 import { RunActivitySchema } from '@graphql/contracts'
@@ -41,8 +41,9 @@ export class RunManagementService {
     private readonly locations: WorkspaceLocationService,
     private readonly currentProduction?: CurrentRunProductionBinding,
     subagentRecovery?: SubagentNativeRecoverySource,
+    subagentControls?: SubagentControlResolver,
   ) {
-    this.subagents = new RunSubagentService(pool, undefined, subagentRecovery)
+    this.subagents = new RunSubagentService(pool, subagentControls, subagentRecovery)
     this.history = new RunHistoryService(pool)
     this.inspection = new RunInspectionService(pool)
     this.activities = new RunActivitiesService(pool)

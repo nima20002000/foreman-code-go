@@ -11,14 +11,29 @@ import { reconcileRunSubagents } from './projection.js'
 import { backfillRunSubagents } from './recovery.js'
 import type { SubagentNativeRecoverySource, SubagentControlResolver } from './types.js'
 import { executeSubagentCommand } from './commands.js'
+import { componentLogger } from '../../infrastructure/logger.js'
+
+export interface SubagentRecoveryFailure {
+  workspaceId: string; runId: string; executionId?: string; code: string
+}
+const recoveryLogger = componentLogger('harness')
 
 export interface SubagentReadScope { sql: pg.PoolClient; principal: ManagementPrincipal; stopped: boolean; workflowId: string; workflowVersionId: string }
 export class RunSubagentService {
   private readonly backfills = new Map<string, Promise<void>>()
-  constructor(readonly pool: pg.Pool, readonly controls: SubagentControlResolver = () => undefined, readonly nativeRecovery?: SubagentNativeRecoverySource) {}
+  constructor(readonly pool: pg.Pool, readonly controls: SubagentControlResolver = () => undefined, readonly nativeRecovery?: SubagentNativeRecoverySource,
+    private readonly onRecoveryFailure: (failure: SubagentRecoveryFailure) => void = failure => recoveryLogger.error(failure, 'Run subagent recovery failed')) {}
+  reportRecoveryFailure(failure: SubagentRecoveryFailure) {
+    // Diagnostics must not turn detached recovery into an unhandled rejection.
+    // Log identifiers/codes only; native errors may contain prompts or secrets.
+    try { this.onRecoveryFailure(failure) }
+    catch { recoveryLogger.error({ ...failure, code: 'SUBAGENT_RECOVERY_REPORT_FAILED' }, 'Run subagent recovery diagnostic failed') }
+  }
   scheduleRecovery(principal: ManagementPrincipal, input: { workspaceId: string; runId: string }) {
     if (!this.nativeRecovery || this.backfills.has(input.runId)) return
-    const task = backfillRunSubagents(this, principal, input).catch(() => undefined).finally(() => { this.backfills.delete(input.runId) })
+    const task = backfillRunSubagents(this, principal, input)
+      .catch(() => { this.reportRecoveryFailure({ ...input, code: 'SUBAGENT_RECOVERY_FAILED' }) })
+      .finally(() => { this.backfills.delete(input.runId) })
     this.backfills.set(input.runId, task)
   }
   async close() { await Promise.allSettled(this.backfills.values()) }

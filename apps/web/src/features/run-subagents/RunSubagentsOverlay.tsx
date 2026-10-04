@@ -40,6 +40,6 @@ export function RunSubagentsOverlay({ snapshot }: { snapshot: Extract<RunBoardSn
           {circles.length < children.length && <span>Some attachments await parent evidence.</span>}
         </>}
       </div>}
-    {selected && <SubagentPanel key={`${snapshot.runId}:${selected}`} scope={scope} subagentId={selected} onClose={() => select(null)} />}
+    {!query.isError && selected && <SubagentPanel key={`${snapshot.runId}:${selected}`} scope={scope} subagentId={selected} onClose={() => select(null)} />}
   </>
 }

@@ -89,6 +89,8 @@ beforeEach(() => {
   editorMounted.mockClear(); editorUnmounted.mockClear(); authoringShortcut.mockClear()
   installFlowLayout()
   server.use(
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
+      HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })),
     http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),

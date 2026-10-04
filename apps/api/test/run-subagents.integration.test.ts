@@ -18,6 +18,7 @@ import { registerRunSubagentRoutes } from '../src/routes/runSubagents.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
+import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 
 // Explicit loopback admin connection and a random OWNED schema. Never read TEST_DATABASE_URL or migrate public.
 describe('durable per-Run children over SQL and authenticated MCP', () => {
@@ -207,6 +208,55 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     expect((await f.service.get(f.reader.principal, { ...f.input, subagentId: f.child.id })).subagent.status).toBe('running')
     await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [f.input.runId])
     await expect(f.service.interrupt(f.writer.principal, 'http', { ...input, commandId: randomUUID() })).rejects.toMatchObject({ code: 'RUN_STOPPED' })
+  })
+  it('rechecks uncertain delivery using exact readback without resending or holding the Run transaction', async () => {
+    const f = await qualifiedFixture()
+    f.send.mockRejectedValueOnce(new Error('lost ACK'))
+    const first = await f.service.input(f.writer.principal, 'http', f.command)
+    expect(first.state).toBe('uncertain')
+    const reconcile = vi.fn(async () => {
+      // This second scoped connection needs the same advisory lock. It must
+      // not deadlock behind a transaction held over native IO.
+      await f.service.get(f.reader.principal, { ...f.input, subagentId: f.child.id })
+      return 'acknowledged' as const
+    })
+    f.lease.reconcile = reconcile
+    const retry = await f.service.input(f.writer.principal, 'mcp', f.command)
+    expect(retry).toMatchObject({ id: first.id, state: 'acknowledged' })
+    expect(retry.reasonCode).toBeUndefined()
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(first)
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect((await f.service.input(f.writer.principal, 'http', f.command)).state).toBe('acknowledged')
+    expect(reconcile).toHaveBeenCalledTimes(1)
+  })
+  it('does not accept readback from a replacement control generation', async () => {
+    const f = await qualifiedFixture()
+    f.send.mockRejectedValueOnce(new Error('lost ACK'))
+    const first = await f.service.input(f.writer.principal, 'http', f.command)
+    f.lease.reconcile = async () => { f.lease.generation = 'replacement'; return 'acknowledged' }
+    expect((await f.service.input(f.writer.principal, 'mcp', f.command)).state).toBe('uncertain')
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(first.state).toBe('uncertain')
+  })
+  it('persists definite native refusal as rejected and never retries it', async () => {
+    const f = await qualifiedFixture()
+    f.send.mockRejectedValueOnce(new SubagentDispatchRejectedError())
+    const first = await f.service.input(f.writer.principal, 'http', f.command)
+    expect(first).toMatchObject({ state: 'rejected', reasonCode: 'SUBAGENT_NATIVE_REJECTED' })
+    expect(await f.service.input(f.writer.principal, 'mcp', f.command)).toEqual(first)
+    expect(f.send).toHaveBeenCalledTimes(1)
+  })
+  it('rechecks authorization even when native receipt readback fails', async () => {
+    const f = await qualifiedFixture()
+    f.send.mockRejectedValueOnce(new Error('lost ACK'))
+    await f.service.input(f.writer.principal, 'http', f.command)
+    f.lease.reconcile = async () => {
+      await pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.writer.principal.id,
+        JSON.stringify([{ actions: ['runs:read'], scope: { runIds: [f.input.runId] } }])])
+      throw new Error('native readback disconnected')
+    }
+    await expect(f.service.input(f.writer.principal, 'mcp', f.command)).rejects.toMatchObject({ status: 403 })
+    expect(f.send).toHaveBeenCalledTimes(1)
   })
   it('rejects cross-Run/workspace ownership and conflicting source identities', async () => {
     const f = await fixture(); const original = await f.discover()

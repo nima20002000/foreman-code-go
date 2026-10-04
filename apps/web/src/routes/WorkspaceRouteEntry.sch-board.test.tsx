@@ -14,6 +14,7 @@ import { page, runA, runB } from '../features/runs-selector/testFixtures'
 import { bindMockInstallation } from '../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
+import { base as subagentsRoute, child, detail } from '../features/run-subagents/testFixtures'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const key = nextDraftKey(scope.workspaceId, scope.workflowId)
@@ -65,6 +66,7 @@ beforeEach(() => {
   installFlowLayout(1000, 720)
   const fixture = getMockFixture(scope.workspaceId)!
   server.use(
+    http.get(subagentsRoute, () => HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })),
     http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
       evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
       executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
@@ -103,6 +105,26 @@ afterEach(() => {
 })
 
 describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () => {
+  it('mounts native children through the product route and opens the exact child panel', async () => {
+    const record = child({ ...scope, runId: 'run-a', name: 'Run child' })
+    const reads: string[] = []
+    server.use(
+      http.get(subagentsRoute, ({ request }) => {
+        reads.push(new URL(request.url).pathname)
+        return HttpResponse.json({ items: [detail(record)], nextCursor: null, projection: 'caught-up' })
+      }),
+      http.get(`${subagentsRoute}/:subagentId`, () => HttpResponse.json(detail(record))),
+      http.get(`${subagentsRoute}/:subagentId/messages`, () => HttpResponse.json({ items: [], nextCursor: null, coverage: record.coverage })),
+      http.get(`${subagentsRoute}/:subagentId/tools`, () => HttpResponse.json({ items: [], nextCursor: null, coverage: record.coverage })),
+    )
+    const { router } = await mount(runsUrl('run-a', scope))
+    await savedY()
+    await userEvent.click(await screen.findByRole('button', { name: 'Run child, codex, running' }))
+    expect(await screen.findByRole('dialog', { name: 'Run child' })).toBeVisible()
+    expect(reads).toEqual([`/api/management/workspaces/${scope.workspaceId}/runs/run-a/subagents`])
+    expect(router.history.location.hash).toContain('selectedSubagentId=child-1')
+    expect(writes).toEqual([])
+  })
   it('shows A read-only, fences hidden authoring actions, and restores the SAME unsaved editor', async () => {
     const { router } = await mount()
     const editor = await authoring()

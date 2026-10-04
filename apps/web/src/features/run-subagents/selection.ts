@@ -1,10 +1,10 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import { defaultParseSearch, defaultStringifySearch, useRouter } from '@tanstack/react-router'
 import { RunSubagentGetInputSchema } from '@graphql/contracts/subagents'
-import { readRunSelection } from '../runs-selector/search'
+import { readRunSelection, SELECTED_SUBAGENT_FRAGMENT_PARAM } from '../runs-selector/search'
 import type { SubagentsScope } from './query'
 
-export const SUBAGENT_SEARCH_PARAM = 'selectedSubagentId'
+export const SUBAGENT_SEARCH_PARAM = SELECTED_SUBAGENT_FRAGMENT_PARAM
 /** URL fragment selection keeps the frozen, strict Board search contract unchanged. */
 export function useSelectedSubagent(scope: SubagentsScope) {
   const router = useRouter()

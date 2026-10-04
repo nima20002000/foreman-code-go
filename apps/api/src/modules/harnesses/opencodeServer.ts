@@ -47,6 +47,9 @@ import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 import { harnessProfile } from './qualification/profiles.js'
+import type { RunSubagent, RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import type { SubagentControlLease } from '../subagents/types.js'
+import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -150,6 +153,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private healthVersion: string | undefined
   private readonly knownSecrets = new Set<string>()
   private readonly responseReceipts = new Map<string, NativeResponseDeliveryEvidence>()
+  private readonly childCommandAttempts = new Set<string>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.chatFiles && options.appMcpAccess !== 'none') {
@@ -885,6 +889,85 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       // A general history page has no requested turn identity. Do not invent a terminal result.
+    }
+  }
+
+  subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
+    // Workflow allocations own one root. Never guess among shared sessions or
+    // advertise active-turn steering for OpenCode's session-wide prompt API.
+    if (child.provider !== 'opencode' || child.nativeMode !== 'opencode-task' || this.sessions.size !== 1
+      || child.parentAgentId !== this.options.ownerAgentId || child.profile.providerVersion !== this.healthVersion
+      || !['pending', 'running', 'waiting', 'completed'].includes(child.status) || !child.native.childSessionId) return undefined
+    const [root, state] = [...this.sessions.entries()][0]!
+    const target = child.native.childSessionId, generation = this.generation
+    const idle = ['waiting', 'completed'].includes(child.status)
+    if (target === root) return undefined
+    const signal = this.signal(AbortSignal.timeout(10000))
+    const current = () => {
+      assertOwner(); this.lifetime.signal.throwIfAborted()
+      if (this.sessions.get(root) !== state || this.generation !== generation || this.readyGeneration !== generation) {
+        throw new OpenCodeNativeDeliveryError('SUBAGENT_OWNER_STALE', 'The exact child control owner changed.', 'uncertain')
+      }
+    }
+    const ancestry = async () => {
+      let id = target
+      const visited = new Set<string>()
+      while (id !== root && visited.size < 32 && !visited.has(id)) {
+        current(); visited.add(id)
+        const info = object(await this.json(`/session/${encodeURIComponent(id)}`, state.directory, signal))
+        current()
+        if (info.id !== id || info.directory !== state.directory || typeof info.parentID !== 'string'
+          || id === target && info.parentID !== child.native.parentSessionId) break
+        id = info.parentID
+      }
+      if (id !== root) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'The exact admitted parent does not own this child.')
+    }
+    const checkReceipt = (receipt: RunSubagentCommandReceipt) => {
+      current()
+      if (receipt.subagentId !== child.id || receipt.runId !== child.runId || receipt.workspaceId !== child.workspaceId
+        || receipt.nativeTurnId !== null || receipt.operation !== 'run_subagent_input_v1') {
+        throw new HarnessExecutionError('SUBAGENT_COMMAND_IDENTITY_INVALID', 'The receipt does not address this idle child.')
+      }
+    }
+    return {
+      generation: `${state.connectionId}:${generation}`, nativeTurnId: idle ? null : child.native.currentTurnId ?? null,
+      matches: other => {
+        try { current(); return other.id === child.id && other.parentExecutionId === child.parentExecutionId
+          && other.parentAttemptKey === child.parentAttemptKey && isDeepStrictEqual(other.native, child.native)
+          && isDeepStrictEqual(other.profile, child.profile) && ['pending', 'running', 'waiting', 'completed'].includes(other.status) }
+        catch { return false }
+      },
+      assertCurrent: current,
+      ...(idle ? { sendInput: (receipt: RunSubagentCommandReceipt, text: string) => this.exclusive(async () => {
+        try {
+          checkReceipt(receipt); signal.throwIfAborted()
+          await ancestry()
+          if (await this.sessionStatus(target, state.directory, signal) !== 'idle') throw new SubagentDispatchRejectedError()
+          current()
+        } catch { throw new SubagentDispatchRejectedError() }
+        if (this.childCommandAttempts.has(receipt.id) || this.childCommandAttempts.size >= 4096) {
+          throw new HarnessExecutionError('SUBAGENT_COMMAND_NOT_REPLAYABLE', 'The command cannot be dispatched again.')
+        }
+        this.childCommandAttempts.add(receipt.id)
+        // Preserve the child's native agent/model/system defaults. Do not
+        // overwrite them with the parent's configuration or adopt its turn.
+        try {
+          await this.mutate(withDirectory(`/session/${encodeURIComponent(target)}/prompt_async`, state.directory), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ messageID: receipt.nativeCorrelationId, parts: [{ type: 'text', text }] }),
+          }, signal)
+        } catch (error) {
+          if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') throw new SubagentDispatchRejectedError()
+          throw error
+        }
+        current()
+      }) } : {}),
+      reconcile: async receipt => {
+        checkReceipt(receipt); signal.throwIfAborted(); await ancestry()
+        const message = await this.message(target, receipt.nativeCorrelationId, state.directory, signal)
+        current()
+        return message?.info.role === 'user' ? 'acknowledged' : 'uncertain'
+      },
     }
   }
 

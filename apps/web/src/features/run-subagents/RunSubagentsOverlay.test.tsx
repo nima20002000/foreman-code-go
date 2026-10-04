@@ -1,14 +1,17 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useLayoutEffect } from 'react'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
-import { ReactFlow, ReactFlowProvider } from '@xyflow/react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { subagentCapabilities } from '@graphql/contracts/subagents'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
-import { runA, runsUrl } from '../run-board/testFixtures'
+import { runA, runB, runsUrl, reply } from '../run-board/testFixtures'
+import { RunBoardSlot } from '../run-board/RunBoardSlot'
+import { useSelectedRun } from '../runs-selector/useSelectedRun'
 import { installFlowLayout } from '../run-board/testFlowLayout'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
-import { RunSubagentsOverlay } from './RunSubagentsOverlay'
 import { subagentsKey } from './query'
 import { base, child, detail, message, scope, tool } from './testFixtures'
 import { layoutSubagents } from './layout'
@@ -18,6 +21,8 @@ afterEach(() => { clients.forEach((client) => client.clear()); clients.length = 
 beforeEach(() => {
   installFlowLayout()
   server.use(
+    http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot',
+      ({ params }) => HttpResponse.json(reply(String(params.runId)))),
     http.get(base, () => HttpResponse.json({ items: [detail(), detail(child({ id: 'nested', name: 'Nested', parentSubagentId: 'child-1' }))], nextCursor: null, projection: 'caught-up' })),
     http.get(`${base}/:subagentId`, () => HttpResponse.json(detail())),
     http.get(`${base}/:subagentId/messages`, () => HttpResponse.json({ items: [message()], nextCursor: null, coverage: child().coverage })),
@@ -27,10 +32,11 @@ beforeEach(() => {
 async function mount(entry = runsUrl('run-a')) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
+  let selectRun: ReturnType<typeof useSelectedRun>['selectRun'] = async () => { throw new Error('Run selector is not mounted') }
   function Canvas() {
-    return <div style={{ width: 800, height: 600 }}><ReactFlowProvider><ReactFlow nodes={[]} edges={[]}>
-      <RunSubagentsOverlay snapshot={runA} />
-    </ReactFlow></ReactFlowProvider></div>
+    const selection = useSelectedRun(scope)
+    useLayoutEffect(() => { selectRun = selection.selectRun }, [selection.selectRun])
+    return <RunBoardSlot selection={selection}><p>Current workflow editor</p></RunBoardSlot>
   }
   const root = createRootRoute({ component: Outlet })
   const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId', validateSearch: RunsSelectorSearchSchema, component: Canvas })
@@ -38,7 +44,7 @@ async function mount(entry = runsUrl('run-a')) {
   await router.load()
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   await screen.findByRole('button', { name: 'Research, codex, running' })
-  return { client, router }
+  return { client, router, selectRun: (runId: string | null) => selectRun(runId) }
 }
 describe('Run subagent overlays', () => {
   it('attaches circles to saved parents and nested children to their immediate child', async () => {
@@ -97,12 +103,83 @@ describe('Run subagent overlays', () => {
   })
   it('removes cached circles after a denied refresh', async () => {
     const { client } = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Research, codex, running' }))
+    await screen.findByText('Child answer')
     server.use(http.get(base, () => HttpResponse.json({ error: { code: 'DENIED', message: 'Denied' } }, { status: 403 })))
     await act(async () => { await client.invalidateQueries({ queryKey: subagentsKey(scope) }) })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Research, codex, running' })).not.toBeInTheDocument())
     expect(screen.getByText('Subagents unavailable.')).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('Child answer')).not.toBeInTheDocument()
+  })
+  it('keeps a selected child on its exact Run across Run changes and browser history', async () => {
+    server.use(http.get(base, ({ params }) => HttpResponse.json({
+      items: [detail(child(params.runId === 'run-b'
+        ? { id: 'child-b', name: 'B child', runId: runB.runId, workflowVersionId: runB.workflowVersionId }
+        : {}))], nextCursor: null, projection: 'caught-up',
+    })))
+    const { router, selectRun } = await mount(`${runsUrl('run-a')}#view=tools`)
+    fireEvent.click(screen.getByRole('button', { name: 'Research, codex, running' }))
+    await screen.findByText('Child answer')
+    await act(async () => { await selectRun('run-b') })
+    await screen.findByRole('button', { name: 'B child, codex, running' })
+    expect(router.history.location.hash).toBe('#view=tools')
+    expect(screen.queryByRole('button', { name: 'Research, codex, running' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('Child answer')).not.toBeInTheDocument()
+    await act(async () => { router.history.back() })
+    await screen.findByText('Child answer')
+    expect(screen.queryByRole('button', { name: 'B child, codex, running' })).not.toBeInTheDocument()
+    await act(async () => { router.history.forward() })
+    await screen.findByRole('button', { name: 'B child, codex, running' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+  it('pages messages and tools within the selected child and closes with Escape', async () => {
+    const requested: string[] = []
+    server.use(
+      http.get(`${base}/:subagentId/messages`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        requested.push(`messages:${cursor}`)
+        return HttpResponse.json({ items: [message(cursor ? 'message-2' : 'message-1', cursor ? 'Older answer' : 'Child answer')],
+          nextCursor: cursor ? null : 'messages-2', coverage: child().coverage })
+      }),
+      http.get(`${base}/:subagentId/tools`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        requested.push(`tools:${cursor}`)
+        return HttpResponse.json({ items: [{ ...tool(), id: cursor ? 'tool-2' : 'tool-1', name: cursor ? 'second_tool' : 'read_file' }],
+          nextCursor: cursor ? null : 'tools-2', coverage: child().coverage })
+      }),
+    )
+    const { router } = await mount()
+    const trigger = screen.getByRole('button', { name: 'Research, codex, running' })
+    trigger.focus()
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more messages' }))
+    await screen.findByText('Older answer')
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more tool calls' }))
+    await screen.findByText('second_tool · completed')
+    expect(requested).toEqual(expect.arrayContaining(['messages:messages-2', 'tools:tools-2']))
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(router.history.location.hash).not.toContain('selectedSubagentId')
+    await waitFor(() => expect(trigger).toHaveFocus())
   })
   it('does not attach orphans or cyclic evidence to a guessed parent', () => {
     expect(layoutSubagents(runA.nodes, [child({ parentSubagentId: 'missing' }), child({ id: 'cycle', parentSubagentId: 'cycle' })])).toEqual([])
+  })
+  it('allows text editing in the child panel without triggering saved-graph keyboard guards', async () => {
+    const capabilities = subagentCapabilities('opencode-task', '1.18.33')
+    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json({
+      subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
+      availableActions: { sendInput: true, interrupt: false, blockedReason: null },
+    })))
+    const user = userEvent.setup()
+    await mount()
+    await user.click(screen.getByRole('button', { name: 'Research, codex, running' }))
+    const input = await screen.findByRole('textbox', { name: 'Message to subagent' })
+    await user.type(input, 'abc{Backspace}')
+    expect(input).toHaveValue('ab')
+    expect(fireEvent.keyDown(input, { key: 's', ctrlKey: true })).toBe(false)
   })
 })

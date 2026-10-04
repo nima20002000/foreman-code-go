@@ -140,6 +140,7 @@ import { AgentChatService, type AgentChatManagerFactory } from './modules/conver
 import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
+import { productionSubagentControls } from './modules/subagents/productionControls.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { FileCompatibilityCache } from './modules/harnesses/compatibility/cache.js'
 import { scopedCompatibilityProbe } from './modules/harnesses/compatibility/scopedProbe.js'
@@ -1034,7 +1035,7 @@ export function buildProductionApp(
       const page = await owned.manager.subagentHistory(session, cursor, signal)
       owned.assertCurrent()
       return page
-    }),
+    }, productionSubagentControls(managers)),
     commands,
     interactions: new OperatorInteractionService(interactions),
     // Reads and lifecycle mutations share the same canonical V3 journal.

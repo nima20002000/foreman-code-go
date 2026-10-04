@@ -5,6 +5,8 @@ import { RunSubagentCommandReceiptSchema, RunSubagentInputSchema, RunSubagentInt
 import { DomainError } from '../errors.js'
 import { subagentAvailableActions } from './capabilities.js'
 import { reconcileRunSubagents } from './projection.js'
+import { reconcileSubagentCommand } from './recovery.js'
+import { SubagentDispatchRejectedError } from './controlErrors.js'
 import type { RunSubagentService, SubagentReadScope } from './service.js'
 
 async function updateReceipt(scope: SubagentReadScope, receipt: RunSubagentCommandReceipt) {
@@ -46,7 +48,8 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
     return receipt
   })
   // Retries only read receipts. In-flight or uncertain commands are never dispatched a second time.
-  if (!isNew) return accepted
+  if (!isNew) return accepted.state === 'uncertain'
+    ? await reconcileSubagentCommand(service, principal, { ...input, receiptId: accepted.id }, source) ?? accepted : accepted
   const dispatching = { ...accepted, state: 'dispatching' as const, updatedAt: new Date().toISOString() }
   await service.scoped(principal, input, action, async scope => { await updateReceipt(scope, dispatching) })
   const dispatch = await service.scoped(principal, input, action, async scope => {
@@ -67,7 +70,10 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
       if (operation === 'run_subagent_input_v1' && 'text' in input && typeof input.text === 'string') await dispatch.sendInput!(dispatching, input.text)
       else await dispatch.interrupt!(dispatching)
       state = 'acknowledged'; reasonCode = undefined
-    } catch { state = 'uncertain'; reasonCode = 'SUBAGENT_NATIVE_DELIVERY_UNCERTAIN' }
+    } catch (error) {
+      state = error instanceof SubagentDispatchRejectedError ? 'rejected' : 'uncertain'
+      reasonCode = state === 'rejected' ? 'SUBAGENT_NATIVE_REJECTED' : 'SUBAGENT_NATIVE_DELIVERY_UNCERTAIN'
+    }
   }
   const outcome = RunSubagentCommandReceiptSchema.parse({ ...dispatching, state, updatedAt: new Date().toISOString(), ...(reasonCode ? { reasonCode } : {}) })
   // This is server-owned delivery evidence. A grant revoked during native IO must not erase it or cause replay.

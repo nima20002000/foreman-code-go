@@ -5,6 +5,7 @@ import type { RunSelection } from './selectionGeneration'
 
 /** Deliberately NOT `runId`: that frozen Board field requires version/semantics pins. */
 export const SELECTED_RUN_PARAM = 'selectedRunId'
+export const SELECTED_SUBAGENT_FRAGMENT_PARAM = 'selectedSubagentId'
 const runIdSchema = RunBoardSnapshotGetInputSchema.shape.runId
 export const RunsSelectorSearchSchema = WorkspaceBoardSearchSchema.safeExtend({
   selectedRunId: runIdSchema.optional(),

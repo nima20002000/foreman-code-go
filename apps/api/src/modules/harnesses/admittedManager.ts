@@ -50,6 +50,8 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       if (!current.subagentHistory) throw new DomainError('SUBAGENT_HISTORY_UNAVAILABLE', 'The admitted driver has no child history reader.', 409)
       return current.subagentHistory(session, cursor, signal)
     },
+    subagentControl: (child, assertOwner) => lifetime.signal.aborted ? undefined
+      : allocation?.manager.subagentControl?.(child, () => { lifetime.signal.throwIfAborted(); assertOwner() }),
     history: async (session, signal) => (await actual(signal)).history(session, signal),
     reconcile: async (session, correlationId, signal) => (await actual(signal)).reconcile(session, correlationId, signal),
     reconcileResponse: async (session, response, signal) => {
