@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import type { HostHarnessOverride, HostHarnessProfileEvidence, HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import { HarnessInstallationRegistry } from '../harnesses/installationRegistry.js'
+import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../harnesses/instanceRegistry.js'
 import { qualificationIdentity } from '../harnesses/qualification/identity.js'
 import { readPlacementHarnessFacts } from './harnessFacts.js'
@@ -16,7 +16,7 @@ function fixture() {
   const fingerprint = 'a'.repeat(64)
   const suiteRevision = 'codex-live-fixture'
   const configuration = DEFAULT_HARNESS_DEFAULTS.codex
-  const installation: HostHarnessInstallationDto = {
+  const installation: HarnessInstallationRecord = {
     hostRef, harnessInstallationId: 'installed-codex', installationFingerprint: fingerprint,
     driverId: 'codex', driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
     environmentGeneration: 'environment', connectionGeneration: 'connection', observedVersion: null,
