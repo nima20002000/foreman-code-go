@@ -238,6 +238,9 @@ async function main() {
     process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code ?? 1)) })
     return
   }
+  const contractsBuild = spawnSync('corepack', ['pnpm', '--dir', 'packages/contracts', 'build'],
+    { cwd: root, stdio: 'inherit' })
+  if (contractsBuild.status !== 0) throw new Error('Integration contracts build failed')
   const allFiles = discoverFiles()
   let selected = selectFiles(allFiles, startAt)
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
