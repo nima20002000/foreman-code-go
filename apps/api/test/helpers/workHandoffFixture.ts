@@ -80,7 +80,7 @@ export async function workHandoffFixture(pool: pg.Pool, suffix: string,
       await sql.query("update run_work_activations set state='completed' where activation_id=$1", [activationId])
     })
     await owner!.oneShotConnection().transaction((sql) => markWorkNoticeDeliveredLocked({
-      sql, scope: fixture.scope, version, now: fixture.createdAt,
+      sql, scope: fixture.scope, version, now: new Date().toISOString(),
     }, activationId, execution.id))
     return execution
   }

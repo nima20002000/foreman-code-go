@@ -116,7 +116,7 @@ describe.skipIf(!postgresEnabled)('work join routing and rounds', () => {
       const t = await workHandoffFixture(db.pool, `join-rework-${recover}`, (version) => ({ ...version,
         definition: { ...version.definition, handoffs: { contractVersion: 1 },
           executionPolicy: { maxParallelism: 3, maxNodeExecutions: 30 },
-          nodes: [...version.definition.nodes, { id: 'reviewer', agentId: version.definition.nodes[3]!.agentId }],
+          nodes: [...version.definition.nodes, { id: 'reviewer', name: 'Reviewer', agentId: version.definition.nodes[3]!.agentId }],
           edges: [...version.definition.edges,
             { id: 'a-reviewer', kind: 'execution', source: version.entryNodeId, target: 'reviewer' }],
         } }))
