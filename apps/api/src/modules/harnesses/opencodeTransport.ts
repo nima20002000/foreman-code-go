@@ -58,6 +58,7 @@ export interface OpenCodeServerController {
   requestResident?(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined>
   dispose(): Promise<void>
   restart?(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void>
+  startObservation?(signal?: AbortSignal): Promise<void>
 }
 
 export interface ManagedOpenCodeServerOptions {
@@ -121,6 +122,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private fileIsolation: OpenCodeVaultIsolation | undefined
   private conversationId: string | undefined
   private conversationStorage: OpenCodeConversationStorage | undefined
+  private observationOnly = false
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
     this.ownedFileRoot = options.managedFileRoot ? join(options.managedFileRoot, randomUUID()) : undefined
@@ -165,7 +167,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       && this.baseUrl && this.password ? this.generation : undefined
   }
   get disabledAppMcpServerName(): string | undefined {
-    return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
+    return this.observationOnly || this.options.appMcpAccess === 'none'
+      ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }
 
   get credentialEnvironmentFingerprint(): string | undefined {
@@ -295,6 +298,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   async restart(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
+    if (this.observationOnly) throw new HarnessExecutionError('OPENCODE_OBSERVATION_ONLY',
+      'An observation process cannot receive management credentials.')
     const next = this.validateEnvironment(environment)
     signal?.throwIfAborted()
     const epoch = this.epoch
@@ -304,6 +309,19 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       await this.stopLiveProcess()
       // Desired validated credentials survive failed process creation and health checks.
       this.desiredEnvironment = next
+      await this.start()
+    }), signal)
+  }
+
+  async startObservation(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    const epoch = this.epoch
+    await waitFor(this.exclusive(async () => {
+      signal?.throwIfAborted()
+      if (epoch !== this.epoch) throw new Error('OpenCode observation was invalidated by disposal.')
+      await this.stopLiveProcess()
+      this.observationOnly = true
+      this.desiredEnvironment = { agentId: this.options.ownerAgentId, variables: {} }
       await this.start()
     }), signal)
   }

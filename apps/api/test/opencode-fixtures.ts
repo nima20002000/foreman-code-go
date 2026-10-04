@@ -119,6 +119,14 @@ export class FixtureServer implements OpenCodeServerController {
     this.generation += 1
     this.resetInstance()
   }
+  async startObservation() {
+    this.environment = undefined
+    this.config = { ...this.config, mcp: { ...object(this.config.mcp),
+      graphql: { ...object(object(this.config.mcp).graphql), enabled: false },
+    } }
+    this.generation += 1
+    this.resetInstance()
+  }
   private resetInstance() {
     this.statuses.clear()
     this.permissions = []

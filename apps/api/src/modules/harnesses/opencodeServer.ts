@@ -110,6 +110,7 @@ interface SessionState {
   turn: OwnedTurn | undefined
   admissionPending?: AbortController
   recoveryCorrelationId?: string
+  observationOnly?: boolean
 }
 interface MessagePage { messages: OpenCodeMessage[]; nextCursor?: string }
 
@@ -315,6 +316,16 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    return this.attachSavedSession(session, input, { purpose: 'execution' }, signal)
+  }
+
+  attachSessionForObservation(session: NativeSessionReference, input: NativeSessionStart,
+    signal?: AbortSignal): Promise<NativeSessionReference> {
+    return this.attachSavedSession(session, input, { purpose: 'observation' }, signal)
+  }
+
+  private attachSavedSession(session: NativeSessionReference, input: NativeSessionStart,
+    options: { purpose: 'execution' | 'observation' }, signal?: AbortSignal): Promise<NativeSessionReference> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       try {
@@ -325,16 +336,30 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
-        await this.bindEnvironment(input.environment, combined)
+        if (options.purpose === 'observation') {
+          if (!this.options.server.startObservation) throw new HarnessExecutionError(
+            'OPENCODE_OBSERVATION_UNAVAILABLE', 'The server controller has no observation lifecycle.')
+          await this.options.server.startObservation(combined)
+          this.readyGeneration = undefined
+          this.healthVersion = undefined
+        } else {
+          await this.bindEnvironment(input.environment, combined)
+        }
         await this.ready(combined)
         this.validateReference(session)
         await this.assertConfiguration(configuration, directory, combined)
         await this.options.server.importFileSession?.(session.nativeSessionId, directory, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
         await this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration, combined)
-        await this.applyMcpControls(configuration, directory, combined)
+        if (options.purpose === 'execution') await this.applyMcpControls(configuration, directory, combined)
+        else assertOpenCodeChatMcpDisabled(await this.json('/config', directory, combined),
+          await this.json('/mcp', directory, combined), this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)
         combined.throwIfAborted()
         const state = newState(directory, configuration, instructions)
+        if (options.purpose === 'observation') {
+          state.observationOnly = true
+          state.autoReplies.stop()
+        }
         if (input.correlationId) state.recoveryCorrelationId = input.correlationId
         this.sessions.set(session.nativeSessionId, state)
         this.restartClosures.delete(session.nativeSessionId)
@@ -355,6 +380,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
     onSubmitted?: (nativeTurnId: string) => Promise<void>): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
+    if (state.observationOnly && prompt !== undefined) throw new HarnessExecutionError(
+      'OPENCODE_OBSERVATION_ONLY', 'An observation attachment cannot submit prompts.')
     if (state.admissionPending) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This session already has pending turn admission.')
     const admission = new AbortController()
     state.admissionPending = admission
@@ -401,7 +428,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             idleObserved: false, scopedError: undefined, terminalResult: undefined,
           }
           state.turn = turn
-          state.autoReplies.resume()
+          if (!state.observationOnly) state.autoReplies.resume()
         }
         turn.observing = true
         turn.observerAbort = admission
@@ -1460,6 +1487,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     // MCP controls are directory-instance state, so restore once per retained directory.
     const restored = new Set<string>()
     for (const state of this.sessions.values()) {
+      if (state.observationOnly) continue
       if (restored.has(state.directory)) continue
       await this.applyMcpControls(state.configuration, state.directory, signal)
       restored.add(state.directory)

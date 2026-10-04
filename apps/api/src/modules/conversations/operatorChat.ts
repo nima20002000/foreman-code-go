@@ -103,7 +103,7 @@ interface Runtime {
   creationInput?: NativeSessionStart
   environment?: ChildProcessEnvironment
   disposal?: Promise<void>
-  /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
+  /** Recovery attachment cannot launch another turn. */
   observationOnly?: boolean
 }
 function failure(error: unknown): ExecutionResult {
@@ -503,7 +503,9 @@ export class OperatorChatService {
     const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     this.runtimes.set(id, runtime)
     if (!runtime.session) {
-      runtime.session = await runtime.manager.attachSession({ harness: row.harness,
+      const observationAttach = runtime.manager.attachSessionForObservation?.bind(runtime.manager)
+      const attach = observationAttach ?? runtime.manager.attachSession.bind(runtime.manager)
+      runtime.session = await attach({ harness: row.harness,
         providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id }, {
         kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id), configuration,
         workingDirectory: this.workingDirectory,
@@ -511,13 +513,13 @@ export class OperatorChatService {
         // This is deliberately NOT an issued credential: the App rejects it.
         // Do not mint fresh owner authority merely to inspect/stop old work.
         environment: { agentId: configuration.operatorId,
-          variables: fileInputs && configuration.harness.harness === 'claude'
+          variables: observationAttach || fileInputs && configuration.harness.harness === 'claude'
             ? {} : { [APP_MCP_TOKEN]: 'operator-cleanup-disabled' } },
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }
     runtime.configuration = configuration
-    // A detached, dummy-credential attach cannot be reused to launch another turn.
+    // Recovery must reacquire live launch authority before another turn.
     runtime.observationOnly = true
     // OpenCode history reads can consume automatic permissions. Stop that local
     // responder before any cleanup read, including immediately after reattachment.
