@@ -42,6 +42,7 @@ export interface PassiveRemoteNativeOwner {
   nativeOwner: string; native: RemoteNativeIdentity; binding: Readonly<DeviceSessionBinding>; assertCurrent(): void
 }
 interface Prepared {
+  expiresAt: number
   binding: Readonly<DeviceSessionBinding>
   readout: RemoteWorkflowPhysicalReadout
   placement: AcceptedNodePlacement
@@ -120,7 +121,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           same({ ...event, executionId: receipt.intent.executionId }, source.event)))
       if (retained && retainedSource && same(retained.readout.receipt, receipt)
         && same(retained.placement, placement) && same(retained.binding, captured.binding)
-        && Date.parse(retained.readout.expiresAt) > Date.now()) {
+        && retained.expiresAt > Date.now()) {
         retained.assertCurrent()
         assertSource(retained.readout, source)
         const result = Object.freeze({ kind: 'original-remote-physical' as const })
@@ -146,7 +147,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
       assertSource(readout, source)
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      const observation: Prepared = { binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
+      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
         acknowledge:async(sourceDigest)=>{
           assertCurrent()
           const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
