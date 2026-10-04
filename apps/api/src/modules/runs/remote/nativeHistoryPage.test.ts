@@ -9,6 +9,13 @@ function event(sequence: number, text = 'event'): NativeHarnessEvent {
 }
 
 describe('byte-bounded native history pages', () => {
+  it('identifies the missing range when the requested sequence falls behind retention', () => {
+    const reply = pageNativeHistory({ events: [event(50), event(51)], pendingInteractions: [],
+      firstRetainedSequence: 50, nextSequence: 52 }, 10)
+    expect(reply.history.gap).toEqual({ fromSequence: 11, toSequence: 49, reason: 'retention' })
+    expect(reply.history.firstRetainedSequence).toBe(50)
+  })
+
   it('delivers a history larger than the carrier limit once, in chronological UTF-8 bounded pages', () => {
     const events = Array.from({ length: 90 }, (_, sequence) => event(sequence, '漢😀"\\'.repeat(2000)))
     const history: NativeHistory = { events, pendingInteractions: [], firstRetainedSequence: 0, nextSequence: 90 }

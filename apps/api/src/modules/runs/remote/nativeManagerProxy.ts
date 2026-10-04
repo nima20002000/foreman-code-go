@@ -112,9 +112,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     let submitted = false
     while (true) {
       signal?.throwIfAborted()
+      const requestedSequence = sequence
       const value = HistoryResponseSchema.parse(await this.request('history', { afterSequence: sequence }, signal))
       const receipt = await this.status(value.status)
-      if (value.history.gap) {
+      const retainedFloor = value.history.firstRetainedSequence ?? 0
+      if (value.history.gap || sequence + 1 < retainedFloor) {
         throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native events are unavailable; reload durable history.')
       }
       if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
@@ -122,6 +124,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       try {
         for (const event of value.history.events) {
           if (event.sequence <= sequence) continue
+          if (event.sequence !== sequence + 1) {
+            throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native event sequences are discontinuous.')
+          }
           sequence = event.sequence
           // A caller may refresh history between yields. Use its current original
           // receipt; the Worker still verifies this exact event in that history.
@@ -138,12 +143,14 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       } finally {
         this.streamHistory = undefined
       }
-      if (value.page.hasMore) {
-        if (value.page.nextAfterSequence <= sequence && value.history.events.length === 0) {
-          throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native history continuation did not advance.')
-        }
-        continue
+      const continuationMatches = value.page.nextAfterSequence === sequence
+      const continuationAdvances = !value.page.hasMore || sequence > requestedSequence
+      const remainingMatches = value.history.nextSequence === undefined
+        || value.page.hasMore === (sequence + 1 < value.history.nextSequence)
+      if (!continuationMatches || !continuationAdvances || !remainingMatches) {
+        throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native history continuation is discontinuous.')
       }
+      if (value.page.hasMore) continue
       if (value.history.terminalTurn?.correlationId === input.clientCorrelationId || receipt.phase === 'confirmed_terminal') return
       if (receipt.phase === 'uncertain') throw new Error('Original remote execution requires reconciliation')
       await delay(100, undefined, { signal })
