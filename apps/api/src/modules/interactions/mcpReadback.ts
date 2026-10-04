@@ -9,6 +9,8 @@ import { DomainError } from '../errors.js'
 
 // Includes both JSON representations and escaping, with room for HTTP/SSE framing and the RPC id.
 export const INTERACTION_MCP_RESPONSE_BYTES = 384 * 1024
+// Stay below OpenCode's default tool-text truncation so options and cursors reach the model.
+export const INTERACTION_MCP_TEXT_BYTES = 24 * 1024
 const CHUNK_CHARACTERS = 8192
 const ContentCursorSchema = z.object({
   interactionId: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -16,11 +18,12 @@ const ContentCursorSchema = z.object({
 }).strict()
 
 export function fitsInteractionMcpResponse(value: unknown): boolean {
+  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > INTERACTION_MCP_TEXT_BYTES) return false
   const envelope = { jsonrpc: '2.0', id: 'x'.repeat(1000), result: toolResult(value) }
   return Buffer.byteLength(JSON.stringify(envelope), 'utf8') <= INTERACTION_MCP_RESPONSE_BYTES
 }
 
-function summary(interaction: DurableInteraction) {
+export function interactionMcpSummary(interaction: DurableInteraction) {
   const { id, revision, workspaceId, workflowId, runId, executionId, harness, status,
     deliveryState, approval } = interaction
   const responseOptions: DurableInteraction['responseOptions'] = []
@@ -30,13 +33,17 @@ function summary(interaction: DurableInteraction) {
   }
   return McpInteractionSummarySchema.parse({
     id, revision, workspaceId, workflowId, runId, executionId, harness, status, deliveryState, approval,
+    ...(interaction.selectedOptionId ? { selectedOptionId: interaction.selectedOptionId } : {}),
+    ...(interaction.selectedSemantic ? { selectedSemantic: interaction.selectedSemantic } : {}),
+    ...(interaction.decidedAt ? { decidedAt: interaction.decidedAt } : {}),
+    ...(interaction.deliveredAt ? { deliveredAt: interaction.deliveredAt } : {}),
     responseOptions, responseOptionsComplete: responseOptions.length === interaction.responseOptions.length,
     contentOmitted: true, retrieval: { tool: 'interaction_get', interactionId: id },
   })
 }
 
 export function interactionMcpView(interaction: DurableInteraction) {
-  return fitsInteractionMcpResponse({ interaction }) ? interaction : summary(interaction)
+  return fitsInteractionMcpResponse({ interaction }) ? interaction : interactionMcpSummary(interaction)
 }
 
 export function interactionMcpGet(
@@ -61,15 +68,22 @@ export function interactionMcpGet(
       throw new DomainError('INVALID_CURSOR', 'The interaction content cursor is invalid.', 400)
     }
   }
-  let end = Math.min(offset + CHUNK_CHARACTERS, json.length)
-  if (isSurrogateBoundary(json, end)) end--
-  const nextCursor = end < json.length ? Buffer.from(JSON.stringify({
-    interactionId: value.interaction.id, sha256, offset: end,
-  })).toString('base64url') : null
-  return {
-    interaction: summary(value.interaction),
-    content: { format: 'json' as const, text: json.slice(offset, end), totalCharacters: json.length, sha256, nextCursor },
+  const interaction = interactionMcpSummary(value.interaction)
+  let length = CHUNK_CHARACTERS
+  while (length > 0) {
+    let end = Math.min(offset + length, json.length)
+    if (isSurrogateBoundary(json, end)) end--
+    const nextCursor = end < json.length ? Buffer.from(JSON.stringify({
+      interactionId: value.interaction.id, sha256, offset: end,
+    })).toString('base64url') : null
+    const result = {
+      interaction,
+      content: { format: 'json' as const, text: json.slice(offset, end), totalCharacters: json.length, sha256, nextCursor },
+    }
+    if (end > offset && fitsInteractionMcpResponse(result)) return result
+    length = Math.floor(length / 2)
   }
+  throw new DomainError('INTERACTION_METADATA_TOO_LARGE', 'The interaction metadata exceeds the MCP response budget.', 413)
 }
 
 function isSurrogateBoundary(text: string, offset: number): boolean {

@@ -23,7 +23,9 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
 import type { InteractionService } from './service.js'
-import { fitsInteractionMcpResponse, interactionMcpGet, interactionMcpView } from './mcpReadback.js'
+import {
+  fitsInteractionMcpResponse, interactionMcpGet, interactionMcpSummary, interactionMcpView,
+} from './mcpReadback.js'
 import type { InteractionResponseOptions } from './cancellation.js'
 
 const CURSOR_PREFIX = 'interaction:'
@@ -192,9 +194,15 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const visible = rows.rows.map((row) => DurableInteractionSchema.parse(row.record))
     const items: ReturnType<typeof interactionMcpView>[] = []
     for (const interaction of visible.slice(0, parsed.limit)) {
-      const item = interactionMcpView(interaction)
-      const page = { items: [...items, item], nextCursor: encodeCursor(interaction.id) }
-      if (items.length && !fitsInteractionMcpResponse(page)) break
+      let item = interactionMcpView(interaction)
+      const nextCursor = encodeCursor(interaction.id)
+      if (!fitsInteractionMcpResponse({ items: [...items, item], nextCursor })) {
+        if (items.length) break
+        item = interactionMcpSummary(interaction)
+        if (!fitsInteractionMcpResponse({ items: [item], nextCursor })) {
+          throw new DomainError('INTERACTION_METADATA_TOO_LARGE', 'The interaction metadata exceeds the MCP response budget.', 413)
+        }
+      }
       items.push(item)
     }
     return AppInteractionListOutputSchema.parse({
@@ -226,8 +234,8 @@ export class PostgresAppInteractionService implements AppInteractionService {
         },
       }, parsed, options)
       const response = RespondToInteractionResponseSchema.parse(result)
-      return AppInteractionRespondOutputSchema.parse({
-        interaction: interactionMcpView(response.interaction), replayed: response.replayed,
+      return AppInteractionRespondOutputSchema.parse(fitsInteractionMcpResponse(response) ? response : {
+        interaction: interactionMcpSummary(response.interaction), replayed: response.replayed,
       })
     } catch (error) {
       const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)

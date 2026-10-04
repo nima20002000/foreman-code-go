@@ -1595,7 +1595,7 @@ export const RespondToInteractionResponseSchema = z.object({ interaction: Durabl
 export const McpInteractionSummarySchema = DurableInteractionSchema.pick({
   id: true, revision: true, workspaceId: true, workflowId: true, runId: true,
   executionId: true, harness: true, status: true, deliveryState: true, approval: true,
-  responseOptions: true,
+  responseOptions: true, selectedOptionId: true, selectedSemantic: true, decidedAt: true, deliveredAt: true,
 }).extend({
   contentOmitted: z.literal(true),
   responseOptions: z.array(ApprovalResponseOptionSchema),

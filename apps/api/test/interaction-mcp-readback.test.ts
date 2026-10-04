@@ -7,7 +7,7 @@ import {
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { PostgresAppInteractionService, decodeInteractionCursor } from '../src/modules/interactions/app.js'
 import {
-  interactionMcpGet, INTERACTION_MCP_RESPONSE_BYTES,
+  interactionMcpGet, INTERACTION_MCP_RESPONSE_BYTES, INTERACTION_MCP_TEXT_BYTES,
 } from '../src/modules/interactions/mcpReadback.js'
 import { toolResult } from '../src/mcp/shared/results.js'
 
@@ -26,6 +26,7 @@ function modelVisible(value: unknown) {
   expect(result.content).toHaveLength(1)
   const text = result.content[0]
   if (text?.type !== 'text') throw new Error('Expected model-readable text')
+  expect(Buffer.byteLength(text.text, 'utf8')).toBeLessThanOrEqual(INTERACTION_MCP_TEXT_BYTES)
   expect(Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), 'utf8'))
     .toBeLessThan(INTERACTION_MCP_RESPONSE_BYTES)
   return JSON.parse(text.text) as ReturnType<typeof AppInteractionGetOutputSchema.parse>
@@ -61,7 +62,7 @@ describe('bounded interaction MCP readback', () => {
 
   it('paginates by serialized envelope bytes without skipping records', async () => {
     const records = Array.from({ length: 6 }, (_, index) => ({
-      ...source, id: `interaction-${index}`, request: { patch: '界"'.repeat(20_000) },
+      ...source, id: `interaction-${index}`, request: { patch: '界"'.repeat(3_000) },
     }))
     const pool = { query: async (_sql: string, values: unknown[]) => ({
       rows: records.filter((record) => values[1] === null || record.id > String(values[1]))
@@ -89,9 +90,18 @@ describe('bounded interaction MCP readback', () => {
       responseOptions: [{ ...source.responseOptions[0]!, label: 'large option '.repeat(20_000) }] }
     const service = new PostgresAppInteractionService({} as pg.Pool,
       { get: async () => interaction } as never, {} as never)
-    const page = AppInteractionGetOutputSchema.parse(await service.get(principal, interaction.id))
+    let page = AppInteractionGetOutputSchema.parse(await service.get(principal, interaction.id))
     expect(page.interaction).toMatchObject({ responseOptions: [], responseOptionsComplete: false })
     await expect(service.get({ ...principal, grants: [] }, interaction.id, page.content!.nextCursor!))
       .rejects.toMatchObject({ code: 'INTERACTION_NOT_FOUND' })
+    let json = ''
+    do {
+      json += page.content!.text
+      const cursor = page.content!.nextCursor
+      if (!cursor) break
+      page = AppInteractionGetOutputSchema.parse(await service.get(principal, interaction.id, cursor))
+      modelVisible(page)
+    } while (true)
+    expect(JSON.parse(json).interaction.responseOptions).toEqual(interaction.responseOptions)
   })
 })
