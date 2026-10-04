@@ -27,6 +27,46 @@ const missing = (runId: string) => HttpResponse.json({ kind: 'unavailable',
 const tick = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(3000) }) }
 
 describe('Selected Run execution discovery refresh', () => {
+  it('continues missing-execution discovery after a transient service failure', async () => {
+    const source = installSelectedHandlers()
+    let reads = 0
+    server.use(http.get(selectedRoute, () => {
+      reads++
+      if (reads === 1) return missing('run-a')
+      if (reads === 2) return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
+      return HttpResponse.json(envelope(source.states.get('run-a')!))
+    }))
+    const mounted = await mountSelected()
+    await screen.findByText('Execution unavailable')
+    const href = mounted.router.history.location.href
+    await tick()
+    await screen.findByText('Load failed')
+    await tick()
+    await screen.findByText('Reply execution-run-a')
+    expect(reads).toBe(3)
+    expect(mounted.router.history.location.href).toBe(href)
+    expect(source.current.calls).toHaveLength(0)
+  })
+
+  it('counts transient failures toward the automatic discovery bound', async () => {
+    installSelectedHandlers()
+    let reads = 0
+    server.use(http.get(selectedRoute, () => {
+      reads++
+      return reads === 1 ? missing('run-a')
+        : HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
+    }))
+    await mountSelected()
+    await screen.findByText('Execution unavailable')
+    for (let expected = 2; expected <= 20; expected++) {
+      await tick()
+      await waitFor(() => expect(reads).toBe(expected))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled())
+    }
+    await tick()
+    expect(reads).toBe(20)
+  })
+
   it('recovers when an execution appears without changing the selected Run', async () => {
     const source = installSelectedHandlers()
     let created = false

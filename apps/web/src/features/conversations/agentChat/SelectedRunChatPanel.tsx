@@ -85,9 +85,14 @@ function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecut
   const lookupKey = useMemo(() => ['agent-chat', generation, 'selected-identity', visitId, request] as const, [generation, visitId, request])
   const lookup = useQuery<Lookup>({ queryKey: lookupKey, retry: false, staleTime: Infinity, gcTime: 0,
     refetchOnWindowFocus: false, refetchOnReconnect: false,
-    refetchInterval: (query) => !query.state.error && visit.isCurrent()
+    refetchInterval: (query) => (!query.state.error || ApiError.is(query.state.error)
+      && query.state.error.code !== 'INVALID_RESPONSE'
+      && ![401, 403, 404].includes(query.state.error.status)
+      && (query.state.error.code === 'NETWORK_ERROR' || [408, 429].includes(query.state.error.status)
+        || query.state.error.status >= 500)) && visit.isCurrent()
       && query.state.data?.kind === 'unavailable' && query.state.data.reason === 'execution_missing'
-      && query.state.dataUpdateCount < executionDiscoveryReadLimit ? executionDiscoveryIntervalMs : false,
+      && query.state.dataUpdateCount + query.state.errorUpdateCount < executionDiscoveryReadLimit
+      ? executionDiscoveryIntervalMs : false,
     queryFn: async ({ signal }) => {
       const current = visit.capture()
       if (!current()) throw new DOMException('Selection changed', 'AbortError')
