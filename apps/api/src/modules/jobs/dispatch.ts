@@ -28,7 +28,7 @@ export interface JobDispatchHost {
 /** Durable job intent is consumed by the same W08 carrier/journal, never a new scheduler. */
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
   private readonly repository=new JobRepository()
-  private readonly owners=new Map<string,{owner:JobOwnership;abort:AbortController}>()
+  private readonly owners=new Map<string,{owner:JobOwnership;abort:AbortController;pendingRequests:number;settlementRequested:boolean}>()
   constructor(private readonly pool: pg.Pool, private readonly remote: RemoteJobDispatchPort,
     private readonly host: JobDispatchHost,
     private readonly workerExecution = new WorkerExecutionPolicy()) {}
@@ -80,9 +80,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(!active) {
       const abort=new AbortController(),owner=await JobOwnership.acquire(this.pool,executionId,()=>abort.abort())
       if(!owner)return
-      active={owner,abort};this.owners.set(executionId,active)
+      active={owner,abort,pendingRequests:0,settlementRequested:false};this.owners.set(executionId,active)
     }
     const {owner,abort}=active
+    active.pendingRequests++
     try {
       const prepared=await owner.connection.transaction(async sql=>{
         const scope=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
@@ -130,6 +131,11 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     } catch(error) {
       if(abort.signal.aborted)await this.release(executionId)
       throw error
+    } finally {
+      active.pendingRequests--
+      if (active.pendingRequests === 0 && active.settlementRequested && this.owners.get(executionId) === active) {
+        await this.settle(executionId)
+      }
     }
   }
   /** W07/W08 validated receipt ingress. Retains the original main owner across asynchronous work. */
@@ -154,7 +160,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       const abort = new AbortController()
       const owner = await JobOwnership.acquire(this.pool, executionId, () => abort.abort())
       if (!owner) throw new DomainError('JOB_RECOVERY_OWNER_BUSY', 'The original Job owner is still active.', 409)
-      active = { owner, abort }
+      active = { owner, abort, pendingRequests: 0, settlementRequested: false }
       this.owners.set(executionId, active)
     }
     try {
@@ -232,6 +238,12 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     return receipt
   }
   private async settle(executionId: string): Promise<void> {
+    const active = this.owners.get(executionId)
+    // Receipt ingress may complete while the original dispatch RPC is still returning.
+    if (active && active.pendingRequests > 0) {
+      active.settlementRequested = true
+      return
+    }
     await this.host.settleSource?.(executionId)
     await this.release(executionId)
   }

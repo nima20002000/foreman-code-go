@@ -95,6 +95,18 @@ async function fixture() {
     deny: () => { denied = true }, failAck: () => { failAck = true }, allowAck: () => { failAck = false }, replace: (value: typeof helper) => { helper = value } }
 }
 describe('installed selected Job-input factory with real canonical journals and detached files', () => {
+  it('uses the original transfer deadline for input staging instead of the short metadata request timeout', async () => {
+    const f = await fixture()
+    const intent = f.admission.transfers[0]!.intent
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(intent.expiresAt) - 45000)
+    try {
+      await f.helper.prepare(f.execution, f.source, new AbortController().signal)
+      expect(f.request).toHaveBeenCalledWith('job-inputs-v1', { method: 'stage', transferId: intent.transferId },
+        { signal: expect.any(AbortSignal), timeoutMs: 45000 })
+    } finally {
+      clock.mockRestore()
+    }
+  })
   it('stages into the one shared receiver, verifies detached files, and persists before backend ACK readback', async () => {
     const f = await fixture(), receipt = await f.helper.prepare(f.execution, f.source, new AbortController().signal)
     expect(f.order).toEqual(['stage', 'stage', 'persist', 'readback', 'backend-ack', 'persist', 'readback', 'backend-ack'])

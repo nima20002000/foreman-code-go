@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@graphql/contracts'
 import { jobSpecDigests } from '@graphql/contracts/jobs-node'
+import { componentLogger } from '../../infrastructure/logger.js'
 export { jobSpecDigests } from '@graphql/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
@@ -153,7 +154,8 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
       await ports.authority.recheck(execution)
       return prepared
     })
-  } catch {
+  } catch (error) {
+    componentLogger('jobs').warn({ err: error, executionId: execution.id }, 'Job preparation failed before native entry')
     return { ...result, outcome: cancellation.aborted ? 'cancelled' : 'preparation_failed', processStopped: true }
   }
   if (cancellation.aborted) return { ...result, outcome: 'cancelled', processStopped: true }

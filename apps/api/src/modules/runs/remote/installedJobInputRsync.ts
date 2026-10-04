@@ -141,7 +141,10 @@ export function createInstalledJobInputRsync(input: {
         await input.receiver.start(item.intent, context())
         const progress = await input.receiver.status(item.intent.transferId, context())
         if (progress.state !== 'verified') {
-          const staged = await input.channel.request(JOB_INPUT_NAMESPACE, { method: 'stage', transferId: item.intent.transferId }, { signal })
+          const timeoutMs = Math.min(BYTE_TRANSFER_POLICY.maxIdleMs, Date.parse(item.intent.expiresAt) - Date.now())
+          if (timeoutMs <= 0) throw new DomainError('JOB_INPUT_TRANSFER_EXPIRED', 'The original input transfer has expired.', 409)
+          const staged = await input.channel.request(JOB_INPUT_NAMESPACE,
+            { method: 'stage', transferId: item.intent.transferId }, { signal, timeoutMs })
           if (staged.bytes !== undefined) throw new Error('Job input stage returned unexpected bytes')
           const receipt = VerifiedTransferReceiptSchema.parse(staged.payload)
           if (!isDeepStrictEqual(receipt.intent, item.intent)) throw new Error('Original Job input stage receipt changed')

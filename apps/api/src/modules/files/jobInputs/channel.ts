@@ -32,7 +32,7 @@ export function jobInputDeviceExtension(service:CanonicalJobInputs):DeviceExtens
   }}
 }
 export interface JobInputWorkerChannel {
- request(namespace:'job-inputs-v1',payload:unknown,options?:{signal?:AbortSignal}):Promise<{payload:unknown;bytes?:Uint8Array}>
+ request(namespace:'job-inputs-v1',payload:unknown,options?:{signal?:AbortSignal;timeoutMs?:number}):Promise<{payload:unknown;bytes?:Uint8Array}>
  currentBinding():Readonly<DeviceSessionBinding>
 }
 /** Pulls actual authorized canonical ranges through existing W07; B performs durable verified staging. */

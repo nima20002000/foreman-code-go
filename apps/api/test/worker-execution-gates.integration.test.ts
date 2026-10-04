@@ -278,7 +278,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     expect(fixture.preparation.accept).toHaveBeenCalledOnce()
   })
 
-  it('reads an accepted Worker closure receipt after restart without another delivery', async () => {
+  it('accepts closure during delivery and reads it after restart without another delivery', async () => {
     const fixture = await jobFixture({ enabled: true })
     const definition = await fixture.save(workerSpec())
     fixture.remote.deliver.mockImplementationOnce(async (intent, execution) => {
@@ -286,7 +286,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
       const hostRef = execution.acceptedSpec.target.hostRef
       if (hostRef.kind !== 'device') throw new Error('Expected Worker target')
       const now = new Date().toISOString()
-      return { status: 'known', receipt: RemoteJobOperationReceiptSchema.parse({
+      const receipt = RemoteJobOperationReceiptSchema.parse({
         schemaVersion: 1, kind: 'job', intent, execution,
         connection: { mainId: hostRef.mainId, deviceId: hostRef.deviceId, ...registration,
           bootId: randomUUID(), connectionGeneration: 1 },
@@ -296,7 +296,9 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
           finishedAt: now, closureEvidenceDigest: '1'.repeat(64), logGapPossible: false,
           logsTruncated: false, outputCollectionError: false, resultDigest: '1'.repeat(64), artifactDigests: [] },
         publication: 'complete',
-      }) }
+      })
+      await fixture.dispatch.observeReceipt(execution.workspaceId, execution.id, receipt)
+      return { status: 'known', receipt }
     })
     const input = { definitionId: definition.id, expectedRevision: 1, commandId: randomUUID() }
     const execution = await fixture.jobs.start(fixture.writer.principal, 'http', fixture.workspaceId, input)
