@@ -45,6 +45,7 @@ export function selectFiles(files, startAt) {
 }
 
 export function selectExactFiles(files, requested) {
+  if (!requested.length) throw new Error('--files requires at least one integration file')
   const known = new Set(files)
   for (const file of requested) {
     if (!known.has(file)) throw new Error(`Unknown --files integration file: ${file}`)
