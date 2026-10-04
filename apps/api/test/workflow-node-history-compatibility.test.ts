@@ -132,7 +132,8 @@ describe('mixed-node admission and immutable history projections', () => {
       job_definition_id: job.jobDefinitionId, job_definition_revision: job.jobDefinitionRevision,
       job_definition_version_id: job.jobDefinitionVersionId }
     f.version.definition.nodes[1]!.name = 'Accepted Job name '.repeat(8)
-    const projected = publicRunActivity(pinned, f.version, f.run.id, f.run.outcome)
+    const captured = { ...pinned, safe_payload: { ...pinned.safe_payload, actorName: f.version.definition.nodes[1]!.name } }
+    const projected = publicRunActivity(captured, f.version, f.run.id, f.run.outcome)
     expect(projected.kind).toBe('job_work'); expect(projected.summary).toBe('Job work completed')
     expect(projected.actor).toMatchObject({ kind: 'job', nodeName: f.version.definition.nodes[1]!.name,
       jobDefinitionId: job.jobDefinitionId, jobDefinitionRevision: 7, jobDefinitionVersionId: job.jobDefinitionVersionId })

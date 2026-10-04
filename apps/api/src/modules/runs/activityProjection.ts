@@ -61,23 +61,23 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const jobActor = node?.kind === 'job' && row.job_execution_id && row.node_execution_id === row.job_execution_id
     && row.job_definition_id === node.jobDefinitionId && row.job_definition_revision === node.jobDefinitionRevision
     && row.job_definition_version_id === node.jobDefinitionVersionId
-    ? { kind: 'job' as const, nodeId: node.id, nodeName: node.name ?? node.label ?? 'Job',
+    ? { kind: 'job' as const, nodeId: node.id, nodeName: string(payload.actorName) ?? 'Job',
       jobDefinitionId: node.jobDefinitionId, jobDefinitionRevision: node.jobDefinitionRevision,
       jobDefinitionVersionId: node.jobDefinitionVersionId } : undefined
   const actor = actorKind.has(row.kind) && jobActor ? jobActor
     : actorKind.has(row.kind) && node && node.kind !== 'job' && node.agentId === row.execution_agent_id
-    ? { agentId: node.agentId, agentName: safeNodeName(node.name ?? node.label) ?? 'Agent',
-      nodeId: node.id, nodeName: safeNodeName(node.label ?? node.name) ?? 'Agent' } : undefined
+    ? { agentId: node.agentId, agentName: safeNodeName(payload.actorName) ?? 'Agent',
+      nodeId: node.id, nodeName: safeNodeName(payload.actorName) ?? 'Agent' } : undefined
   const subjectId = row.kind === 'work_requester_reactivated' ? id(payload.requesterNodeId)
     : row.kind.startsWith('work_limit_notice_') || row.kind === 'work_rerouted'
       ? id(payload.destinationNodeId) : undefined
   const subjectNode = version.definition.nodes.find((item) => item.id === subjectId)
   const subject = subjectNode?.kind === 'job' ? { kind: 'job' as const, nodeId: subjectNode.id,
-    nodeName: subjectNode.name ?? subjectNode.label ?? 'Job', jobDefinitionId: subjectNode.jobDefinitionId,
+    nodeName: string(payload.subjectName) ?? 'Job', jobDefinitionId: subjectNode.jobDefinitionId,
     jobDefinitionRevision: subjectNode.jobDefinitionRevision, jobDefinitionVersionId: subjectNode.jobDefinitionVersionId }
     : subjectNode ? { agentId: subjectNode.agentId,
-    agentName: safeNodeName(subjectNode.name ?? subjectNode.label) ?? 'Agent',
-    nodeId: subjectNode.id, nodeName: safeNodeName(subjectNode.label ?? subjectNode.name) ?? 'Agent' } : undefined
+    agentName: safeNodeName(payload.subjectName) ?? 'Agent',
+    nodeId: subjectNode.id, nodeName: safeNodeName(payload.subjectName) ?? 'Agent' } : undefined
   const relationship = id(payload.relationshipId)
   const fromRelationship = id(payload.fromRelationshipId)
   const requesterNode = id(payload.requesterNodeId)

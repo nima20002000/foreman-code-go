@@ -33,6 +33,11 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'status',a.payload->>'status','deliveryState',a.payload->>'deliveryState',
     'selectedSemantic',a.payload->>'selectedSemantic',
     'outcome',a.payload->>'outcome','failed',a.payload->'failed',
+    'actorName',(select captured->>'name' from jsonb_array_elements(s.record->'nodes') captured
+      where captured->>'id'=coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}')),
+    'subjectName',(select captured->>'name' from jsonb_array_elements(s.record->'nodes') captured
+      where captured->>'id'=case when a.kind='work_requester_reactivated' then a.payload->>'requesterNodeId'
+        when a.kind like 'work_limit_notice_%' or a.kind='work_rerouted' then a.payload->>'destinationNodeId' end),
     'activationId',case when exists(select 1 from run_work_activations w
       where w.run_id=a.run_id and w.activation_id=a.payload->>'activationId')
       then a.payload->>'activationId' end,
@@ -81,6 +86,8 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
 from run_activity a
 left join harness_executions e on e.id=a.harness_execution_id and e.run_id=a.run_id
 left join runs r on r.id=a.run_id
+left join run_board_snapshots s on s.run_id=r.id and s.workspace_id=r.workspace_id
+  and s.workflow_id=r.workflow_id and s.workflow_version_id=r.workflow_version_id
 left join workflow_job_executions w on w.run_id=a.run_id and w.job_execution_id=a.payload->>'jobExecutionId'
 left join run_repeat_executions x on x.run_id=w.run_id and x.execution_id=w.node_execution_id and x.executor_kind='job'
 left join job_executions j on j.id=w.job_execution_id and j.id=w.node_execution_id and j.workspace_id=r.workspace_id
