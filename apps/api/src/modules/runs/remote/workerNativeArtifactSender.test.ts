@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentFilePublishInput } from '@foreman-code/contracts/files'
@@ -226,6 +226,15 @@ describe('original worker-native artifact sender', () => {
         return { attempt: consumer, authority: receiverGrant }
       },
     })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const requestMcp = async (path: string, body: unknown, token: string) => {
+      const response = await fetch(new URL(path, address), {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
+          accept: 'application/json, text/event-stream' }, body: JSON.stringify(body),
+      })
+      return { statusCode: response.status, headers: { 'content-type': response.headers.get('content-type') ?? '' },
+        body: await response.text() }
+    }
     const requestMain = vi.mocked(producer.context.requestMain).getMockImplementation()!
     let loseReply = true
     vi.mocked(producer.context.requestMain).mockImplementation(async (raw, signal) => {
@@ -235,9 +244,7 @@ describe('original worker-native artifact sender', () => {
       if (body.params.name === 'files.admit_transferred_result') return { payload: { statusCode: 200,
         contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id: body.id,
           result: { structuredContent: await t.main.admit(body.params.arguments) } }) } }
-      const reply = await app.inject({ method: 'POST', url: '/mcp/artifact-publications',
-        payload: JSON.stringify(request.body), headers: { authorization: `Bearer ${t.token}`,
-          'content-type': 'application/json', accept: 'application/json, text/event-stream' } })
+      const reply = await requestMcp('/mcp/artifact-publications', request.body, t.token)
       if (loseReply) { loseReply = false; throw new Error('publication ACK lost') }
       return { payload: { statusCode: reply.statusCode,
         contentType: reply.headers['content-type']?.startsWith('text/event-stream') ? 'text/event-stream' : 'application/json',
@@ -284,14 +291,13 @@ describe('original worker-native artifact sender', () => {
       producer: t.accepted.attempt, consumer, outputKey: 'report', receiver: receiverGrant,
       sender: { principalId: t.f.principal.id, grantId: 'producer-grant', grantRevision: '1' },
       access: 'read-only', acceptedAt: t.f.clock().toISOString() })
-    const read = (token: string) => app.inject({ method: 'POST', url: '/mcp/artifact-inputs',
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 'read', method: 'tools/call', params: { name: 'files.read_edge_input',
-        arguments: { edgeId: edge.edgeId, offset: 0, length: t.body.length } } } })
+    const read = (token: string) => requestMcp('/mcp/artifact-inputs',
+      { jsonrpc: '2.0', id: 'read', method: 'tools/call', params: { name: 'files.read_edge_input',
+        arguments: { edgeId: edge.edgeId, offset: 0, length: t.body.length } } }, token)
     const reply = await read('second-computer-token')
     expect(reply.statusCode).toBe(200)
     const mcpReply = (response: typeof reply) => response.headers['content-type']?.startsWith('text/event-stream')
-      ? JSON.parse(/^data: (.+)$/m.exec(response.body)![1]!) : response.json()
+      ? JSON.parse(/^data: (.+)$/m.exec(response.body)![1]!) : JSON.parse(response.body)
     const returned = mcpReply(reply).result.structuredContent
     expect(Buffer.from(returned.contentBase64, 'base64')).toEqual(t.body)
     expect(returned.revision.revisionId).toBe(original.ref.revisionId)
@@ -310,7 +316,9 @@ describe('original worker-native artifact sender', () => {
     vi.mocked(producer.context.qualifyNativeOutput).mockRejectedValue(new Error('Native write denial absent'))
     await expect(producer.prepare()).rejects.toThrow('Native write denial absent')
     expect(t.links.size).toBe(0)
-    const other = createInstalledWorkflowNativeOutputFactory({ stateDirectory: t.canonicalRoot, pairing: producer.pairing,
+    const missingStore = join(t.root, 'missing-output-store')
+    await mkdir(missingStore, { mode: 0o700 })
+    const other = createInstalledWorkflowNativeOutputFactory({ stateDirectory: missingStore, pairing: producer.pairing,
       connection: () => undefined })(producer.context)
     await expect(other.assertQualified(producer.q, new AbortController().signal)).rejects.toMatchObject({ code: 'ENOENT' })
     t.f.denyWrites()

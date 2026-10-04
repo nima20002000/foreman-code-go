@@ -388,7 +388,7 @@ describe('installed host resident execution continuity', () => {
     const f = await runningInstalledFixture(phase)
     try {
       const original = f.context.binding
-      const originalConnection = DeviceConnectionIdentitySchema.parse(original)
+      const originalConnection = DeviceConnectionIdentitySchema.strip().parse(original)
       f.disconnect()
       await expect(f.call('history', {}, original)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
       const replacement = { ...original, connectionGeneration: original.connectionGeneration + 1, connectionEpoch: randomUUID() }
@@ -420,7 +420,8 @@ describe('installed host resident execution continuity', () => {
       if (defect === 'device') replacement.deviceId = randomUUID()
       if (defect === 'authorization') replacement.authorizationRevision++
       f.reconnect(replacement)
-      await expect(f.call('history')).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      await expect(f.call('history')).rejects.toMatchObject({ code: defect === 'process'
+        ? 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' : 'WORKER_WORKFLOW_UNAVAILABLE' })
       expect(f.create).toHaveBeenCalledOnce()
       expect(f.turns).toHaveBeenCalledOnce()
       expect(f.cancel).not.toHaveBeenCalled()
@@ -555,7 +556,7 @@ describe('lazy installed worker host qualification boundary',()=>{
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
-      const connection = DeviceConnectionIdentitySchema.parse(f.context.binding)
+      const connection = DeviceConnectionIdentitySchema.strip().parse(f.context.binding)
       await retainedJournal!.accept(f.intent, connection, randomUUID())
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({
@@ -620,7 +621,7 @@ function deferred() {
 
 async function constructionFixture() {
   const f = await sourceFixture()
-  f.intent.inputDigest = commandInputHash(f.request.input)
+  f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
   if (f.placement.payload.kind !== 'agent') throw new Error('Expected Agent placement')
   const payload = f.placement.payload
   const binding = f.context.binding

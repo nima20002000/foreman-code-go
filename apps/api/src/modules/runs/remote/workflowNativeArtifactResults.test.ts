@@ -17,7 +17,7 @@ function fixture() {
   const revisionId = randomUUID()
   const createdAt = '2026-10-04T00:00:00.000Z'
   const published: AgentFilePublishResult = { replayed: false, value: {
-    file: { fileId, currentRevisionId: revisionId, createdAt, expiresAt: '2099-01-01T00:00:00.000Z', state: 'ready',
+    file: { fileId, currentRevisionId: revisionId, createdAt, expiresAt: '2026-10-04T01:00:00.000Z', state: 'ready',
       retentionDurationSeconds: 3600, scope: publication.scope },
     revision: { fileId, revisionId, createdAt, filename: publication.filename, mediaType: publication.mediaType,
       sha256: 'a'.repeat(64), byteSize: 4, origin: 'agent_output' },
