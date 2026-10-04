@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { markdownReadText } from '../../files/tools/markdownReadText.js'
-import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
+import { assertRegisteredCodexCopy, CodexFileDeliveryError, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import { warnCodexFileError } from './runtime.js'
 import type {
   AcceptedCodexFileTurn, CodexAttachmentSource, CodexFileCall, CodexFileCallResult,
@@ -48,6 +48,15 @@ export interface CodexFileTurnDependencies {
   parseCall: (tool: FileToolOperation, arguments_: unknown) => unknown
   clock?: () => Date
   editsOnly?: boolean
+}
+
+export class CodexFilePreparationCleanupError extends CodexFileDeliveryError {
+  constructor(readonly turn: CodexFileTurn, preparationError: unknown, cleanupError: unknown) {
+    super('CODEX_FILE_PREPARATION_CLEANUP_REQUIRED', {
+      cause: new AggregateError([preparationError, cleanupError], 'File preparation failed and cleanup is unconfirmed.'),
+    })
+    this.name = 'CodexFilePreparationCleanupError'
+  }
 }
 
 /** A per-admission bridge for the EXISTING app-server transport. Does not spawn a
@@ -108,8 +117,9 @@ export class CodexFileTurn {
       signal?.throwIfAborted()
       return turn
     } catch (error) {
-      // A failed preparation does not leak a file session or a partially delivered turn.
-      try { await turn.close() } catch { fail('CODEX_FILE_PREPARATION_CLEANUP_REQUIRED') }
+      try { await turn.close() } catch (cleanupError) {
+        throw new CodexFilePreparationCleanupError(turn, error, cleanupError)
+      }
       throw error
     }
   }

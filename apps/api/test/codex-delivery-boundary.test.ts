@@ -123,44 +123,58 @@ describe('Codex creation and prompt write boundaries', () => {
     assert.equal((await f.wire('turn/start')).length, 1)
   })
 
-  it('retains the unsent failure and failed cleanup without authorizing a retry', async () => {
-    const ports = filePorts()
-    const originalClose = ports.dependencies.host.close
-    let cleanupFails = true
-    const files: CodexChatFiles = {
-      async prepare({ session, signal }) {
-        return prepareCodexFileTurn({
-          ownerPrincipalId: 'owner-a', scope: fileScope, nativeSessionId: session.nativeSessionId,
-          admissionId: 'input-admission', executionHostId: 'execution-host-a', projectMode: 'read', allowMutation: false,
-          allowedTools: ['files.list', 'files.read'], expiresAt: new Date(Date.now() + 60_000), attachments: [sourceRef],
-        }, { ...ports.dependencies, files: ports.files,
-          source: { ...ports.dependencies.source, recheck: async () => { throw new Error('Attachment disappeared.') } },
-          host: { ...ports.dependencies.host, close: async () => {
-            if (cleanupFails) throw new Error('Host closure is unconfirmed.')
-            await originalClose()
-          } },
-        }, signal)
-      },
-    }
-    const manager = f.makeManager(files)
-    const session = await manager.createSession(chatInput(f.directory))
-    try {
-      await assert.rejects(collect(manager.startTurn(session, {
-        prompt: 'Use the attachment', clientCorrelationId: 'cleanup-failure', onSubmitted: async () => assert.fail('Unexpected write'),
-      })), (error: unknown) => {
-        assert(error instanceof NativeDeliveryError)
-        assert.equal(error.operation, 'turn_submission')
-        assert.equal(error.delivery, 'unknown')
-        assert(error.cause instanceof AggregateError)
-        assert(error.cause.errors[0] instanceof NativeDeliveryError)
-        assert.equal(error.cause.errors[0].delivery, 'not_sent')
-        assert.match(error.cause.errors[0].message, /Attachment disappeared/)
-        assert.match(error.cause.errors[1].message, /Host closure is unconfirmed/)
-        return true
-      })
-      assert.equal((await f.wire('turn/start')).length, 0)
-    } finally { cleanupFails = false }
-  })
+  for (const phase of ['preparation', 'pre-send'] as const) {
+    it(`retains the ${phase} failure and failed cleanup without authorizing a retry`, async () => {
+      const ports = filePorts()
+      const originalClose = ports.dependencies.host.close
+      let cleanupFails = true
+      let rechecks = 0
+      const files: CodexChatFiles = {
+        async prepare({ session, signal }) {
+          return prepareCodexFileTurn({
+            ownerPrincipalId: 'owner-a', scope: fileScope, nativeSessionId: session.nativeSessionId,
+            admissionId: 'input-admission', executionHostId: 'execution-host-a', projectMode: 'read', allowMutation: false,
+            allowedTools: ['files.list', 'files.read'], expiresAt: new Date(Date.now() + 60_000), attachments: [sourceRef],
+          }, { ...ports.dependencies, files: ports.files,
+            source: { ...ports.dependencies.source, recheck: async () => {
+              rechecks++
+              if (rechecks === (phase === 'preparation' ? 1 : 2)) throw new Error('Attachment disappeared.')
+              return ports.dependencies.source.recheck()
+            } },
+            host: { ...ports.dependencies.host, close: async () => {
+              if (cleanupFails) throw new Error('Host closure is unconfirmed.')
+              await originalClose()
+            } },
+          }, signal)
+        },
+      }
+      const manager = f.makeManager(files)
+      const session = await manager.createSession(chatInput(f.directory))
+      try {
+        await assert.rejects(collect(manager.startTurn(session, {
+          prompt: 'Use the attachment', clientCorrelationId: 'cleanup-failure', onSubmitted: async () => assert.fail('Unexpected write'),
+        })), (error: unknown) => {
+          assert(error instanceof NativeDeliveryError)
+          assert.equal(error.operation, 'turn_submission')
+          assert.equal(error.delivery, 'unknown')
+          assert(error.cause instanceof AggregateError)
+          assert(error.cause.errors[0] instanceof NativeDeliveryError)
+          assert.equal(error.cause.errors[0].delivery, 'not_sent')
+          if (phase === 'preparation') {
+            assert.equal(error.cause.errors[0].result.error?.code, 'CODEX_FILE_PREPARATION_CLEANUP_REQUIRED')
+            const preparation = error.cause.errors[0].cause
+            assert(preparation instanceof Error && preparation.cause instanceof AggregateError)
+            assert.match(preparation.cause.errors[0].message, /Attachment disappeared/)
+          } else assert.match(error.cause.errors[0].message, /Attachment disappeared/)
+          assert.match(error.cause.errors[1].message, /Host closure is unconfirmed/)
+          return true
+        })
+        assert.equal((await f.wire('turn/start')).length, 0)
+      } finally { cleanupFails = false }
+      await manager.dispose()
+      assert(ports.events.includes('host:close'))
+    })
+  }
 
   it('the admitted lookup recovers only the original late creation without allocation or replay', async () => {
     const source = chatInput(f.directory)

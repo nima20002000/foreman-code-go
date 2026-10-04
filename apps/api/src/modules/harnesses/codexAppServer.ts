@@ -18,6 +18,7 @@ import {
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } from './errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from './codexFiles/runtime.js'
+import { CodexFilePreparationCleanupError } from './codexFiles/turn.js'
 import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/declarations.js'
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATIVE_OUTPUT_TOOL_ALIASES,
   type CodexNativeOutputs, type CodexNativeOutputQualificationInput, type CodexNativeOutputSandbox } from './codexNativeOutput.js'
@@ -809,6 +810,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
               throw new HarnessExecutionError('CODEX_FILE_POLICY_MISMATCH', 'File admission exceeds this chat harness policy.')
             }
             return files
+          }, (error: unknown) => {
+            if (error instanceof CodexFilePreparationCleanupError) {
+              runtime.files = new CodexRuntimeFileTurn(error.turn, session.nativeSessionId)
+            }
+            throw error
           })
         }
         preparationSignal.throwIfAborted()
