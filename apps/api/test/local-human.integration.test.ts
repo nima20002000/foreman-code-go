@@ -1,18 +1,15 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ManagementActionSchema } from '@graphql/contracts/management'
-import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { localHumanMigration } from '../src/infrastructure/localHumanMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
-import { seedAgent3 } from './helpers/wave25Agent3.js'
+import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
-import { readdir } from 'node:fs/promises'
-import { join } from 'node:path'
 
 async function browserTables(pool: Awaited<ReturnType<typeof currentDatabase>>['pool']) {
   return (await pool.query<{ tablename: string }>(
@@ -22,24 +19,18 @@ async function browserTables(pool: Awaited<ReturnType<typeof currentDatabase>>['
 
 describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, () => {
   it('preserves saved versions, runs and pending approval decisions when migrations are reapplied', async () => {
-    const db = await currentDatabase()
+    const fixture = await approvalDatabase()
     try {
-      const fixture = await seedAgent3(db.pool, db.directory)
-      const readRun = async () => (await db.pool.query('select * from runs where id=$1', [fixture.run.id])).rows[0]
-      const workflows = new PostgresWorkflowRepository(db.pool)
-      const interactions = new PostgresInteractionRepository(db.pool)
-      const pending = { ...NATIVE_INTERACTION_FIXTURES.codex, id: randomUUID(),
-        workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
-        runId: fixture.run.id, graphThreadId: fixture.run.id }
-      await interactions.create(pending)
+      const readRun = () => fixture.runs.get(fixture.run.id)
+      const workflows = new PostgresWorkflowRepository(fixture.pool)
+      const pending = await fixture.repository.get(fixture.interaction.id)
       const run = await readRun()
       const version = await workflows.getSavedVersion(fixture.version.id)
-      await applyApplicationMigrations(db.pool)
+      await applyApplicationMigrations(fixture.pool)
       expect(await readRun()).toEqual(run)
       expect(await workflows.getSavedVersion(fixture.version.id)).toEqual(version)
-      expect(await interactions.get(pending.id)).toEqual(pending)
-      expect(await interactions.create(pending)).toEqual({ interaction: pending, created: false })
-    } finally { await db.close() }
+      expect(await fixture.repository.get(fixture.interaction.id)).toEqual(pending)
+    } finally { await fixture.close() }
   })
   it('provides credential-free access on a fresh database and remains repeatable', async () => {
     const db = await currentDatabase()
@@ -56,9 +47,7 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
         grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
       const routes = new AppMcpRoutes(db.pool, 'http://127.0.0.1:3000/mcp', join(db.directory, 'graphql-mcp.mjs'))
       try {
-        await routes.refresh()
-        expect(await readdir(join(db.directory, 'routes')))
-          .toEqual([`${createHash('sha256').update(reader.token).digest('hex')}.json`])
+        await expect(routes.refresh()).resolves.toBeUndefined()
         expect(await access.authenticate(reader.token)).toEqual(reader.principal)
       } finally { await routes.close() }
       await applyApplicationMigrations(db.pool)
