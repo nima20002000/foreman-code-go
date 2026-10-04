@@ -32,11 +32,10 @@ export function browserTimezone(): string {
   } catch { return 'UTC' }
 }
 function tomorrow(timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en', {
-    timeZone, calendar: 'iso8601', numberingSystem: 'latn', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(Date.now() + 86_400_000)
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((value) => value.type === type)?.value ?? ''
-  return `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}`
+  const { localDate } = scheduleUtcToLocalTime(new Date().toISOString(), timeZone)
+  const date = new Date(`${localDate}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + 1)
+  return date.toISOString().slice(0, 10)
 }
 export function createDraft(value: ScheduleConfiguration | WorkflowSchedule | null): ScheduleDraft {
   const timezone = browserTimezone()

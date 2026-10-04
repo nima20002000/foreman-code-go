@@ -17,9 +17,31 @@ function command(value: ScheduleConfiguration | WorkflowSchedule) {
   if (result.command?.kind !== 'save') throw new Error(JSON.stringify(result.errors))
   return { store, schedule: result.command.input.schedule }
 }
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 describe('device-local schedule drafts', () => {
+  it.each([
+    ['2026-03-08T04:30:00.000Z', '2026-03-08'],
+    ['2026-03-08T05:30:00.000Z', '2026-03-09'],
+    ['2026-03-09T03:30:00.000Z', '2026-03-09'],
+    ['2026-03-09T04:30:00.000Z', '2026-03-10'],
+    ['2026-11-01T03:30:00.000Z', '2026-11-01'],
+    ['2026-11-01T04:30:00.000Z', '2026-11-02'],
+    ['2026-11-02T04:30:00.000Z', '2026-11-02'],
+    ['2026-11-02T05:30:00.000Z', '2026-11-03'],
+  ])('defaults a fresh Once to the next local calendar date at %s', (instant, localDate) => {
+    device('America/New_York')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(instant))
+    const store = createScheduleEditorStore()
+    store.getState().initialize(null, 0)
+    store.getState().edit({ mode: 'once' })
+    expect(store.getState().draft).toMatchObject({ mode: 'once', timezone: 'America/New_York', localDate })
+  })
+
   it.each([
     ['Asia/Tokyo', '2099-08-25', '00:30'],
     ['America/Los_Angeles', '2099-08-24', '08:30'],
