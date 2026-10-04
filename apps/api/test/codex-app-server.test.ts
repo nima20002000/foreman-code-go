@@ -13,10 +13,14 @@ import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/r
 import { DomainError } from '../src/modules/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { ThreadItem, Turn } from '../src/modules/harnesses/codexMethodTypes.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
-import { calls, collect, emit, errorCode, finish, fixture, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import {
+  calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
+  input, state, until, type Fixture,
+} from './fixtures/codex-test-helpers.js'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
 // below runs the repository implementation. The real schema gate has its own tests.
@@ -84,6 +88,63 @@ async function assertSpawnedEnvironment(expected: Record<string, string | null>,
   assert.deepEqual(processes.at(-1)!.environmentMatches,
     Object.fromEntries(Object.keys(expected).map((key) => [key, true])))
 }
+
+describe('Codex fixture user-message contract', () => {
+  const userMessage = {
+    type: 'userMessage', id: 'native-item-123', clientId: 'application-request-456', content: [],
+  } satisfies ThreadItem
+  const turn = {
+    id: 'native-turn-1', items: [userMessage], itemsView: 'full', status: 'inProgress',
+    error: null, startedAt: 1, completedAt: null, durationMs: null,
+  } satisfies Turn
+  const surfaces: Array<{ name: string; validate(item: JsonObject): void }> = [
+    { name: 'turn/start response', validate: (item) => fixtureProtocol.response('turn/start', {
+      turn: { ...turn, items: [item] },
+    }) },
+    { name: 'thread/read response', validate: (item) => fixtureProtocol.response('thread/read', {
+      thread: { id: 'native-thread-1', turns: [{ ...turn, items: [item] }] },
+    }) },
+    { name: 'thread/turns/list response', validate: (item) => fixtureProtocol.response('thread/turns/list', {
+      data: [{ ...turn, items: [item] }], nextCursor: null, prevCursor: null,
+    }) },
+    ...['turn/started', 'turn/completed'].map((method) => ({
+      name: `${method} notification`, validate: (item: JsonObject) => fixtureProtocol.notification({
+        method, params: { threadId: 'native-thread-1', turn: { ...turn, items: [item] } },
+      }),
+    })),
+    ...['item/started', 'item/completed'].map((method) => ({
+      name: `${method} notification`, validate: (item: JsonObject) => fixtureProtocol.notification({
+        method, params: { threadId: 'native-thread-1', turnId: turn.id, item },
+      }),
+    })),
+  ]
+
+  for (const surface of surfaces) {
+    it(`validates separate native/app identities and nullable clientId on ${surface.name}`, () => {
+      assert.doesNotThrow(() => surface.validate(userMessage))
+      const uncorrelated = { ...userMessage, clientId: null } satisfies ThreadItem
+      assert.doesNotThrow(() => surface.validate(uncorrelated))
+      assert.doesNotThrow(() => surface.validate({ ...userMessage, id: userMessage.clientId }))
+    })
+
+    it(`rejects malformed user-message identities and content on ${surface.name}`, () => {
+      const missingClientId: JsonObject = { ...userMessage }
+      delete missingClientId.clientId
+      for (const item of [
+        missingClientId,
+        { ...userMessage, id: 123 },
+        { ...userMessage, clientId: 456 },
+        { ...userMessage, content: {} },
+      ]) assert.throws(() => surface.validate(item))
+    })
+  }
+
+  it('validates the native turn identity in steer acknowledgements', () => {
+    assert.doesNotThrow(() => fixtureProtocol.response('turn/steer', { turnId: turn.id }))
+    assert.throws(() => fixtureProtocol.response('turn/steer', {}))
+    assert.throws(() => fixtureProtocol.response('turn/steer', { turnId: 123 }))
+  })
+})
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
@@ -496,6 +557,9 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 1)
     await finish(f.directory, session.nativeSessionId)
     await result
+    assert.deepEqual(await manager.reconcileSteers(session, [{ clientCorrelationId, expectedTurnId }]), [{
+      nativeSessionId: session.nativeSessionId, nativeTurnId: expectedTurnId, correlationId: clientCorrelationId,
+    }])
   })
 
   it('keeps a lost start fenced when the native item id matches but clientId does not', async () => {

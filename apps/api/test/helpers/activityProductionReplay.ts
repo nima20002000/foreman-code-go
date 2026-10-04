@@ -69,7 +69,8 @@ export class ActivityProductionReplay {
           if (mode === 'reject') throw new CodexRpcError(method, 'recorded-rejection', false, 'CODEX_REQUEST_FAILED')
           const turn: Turn = { id: `recorded-turn-${thread.turns.length + 1}`, status: 'inProgress', itemsView: 'full',
             error: null, startedAt: 1, completedAt: null, durationMs: null,
-            items: [{ id: params.clientUserMessageId, type: 'userMessage', content: params.input }] }
+            items: [{ id: `recorded-user-${thread.turns.length + 1}`, clientId: params.clientUserMessageId ?? null,
+              type: 'userMessage', content: params.input }] }
           thread.turns.push(turn)
           this.starts.push({ sessionId: thread.id, nativeTurnId: turn.id, correlationId: String(params.clientUserMessageId),
             promptDigest: createHash('sha256').update(JSON.stringify(params.input)).digest('hex') })

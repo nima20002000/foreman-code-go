@@ -48,9 +48,10 @@ export async function state(directory: string, sessionId: string): Promise<{ id:
 export async function finish(directory: string, sessionId: string, answer = 'correct-answer'): Promise<void> {
   const current = await state(directory, sessionId)
   const turn = current.turns.at(-1)!
+  assert(Array.isArray(turn.items))
   await emit(directory, { method: 'turn/completed', params: { threadId: sessionId, turn: {
     ...turn, status: 'completed', completedAt: 2,
-    items: [{ type: 'agentMessage', id: 'final-item', text: answer, phase: 'final_answer' }],
+    items: [...turn.items, { type: 'agentMessage', id: 'final-item', text: answer, phase: 'final_answer' }],
   } } })
 }
 export async function until<T>(probe: () => Promise<T | undefined | false>, timeout = 5_000): Promise<T> {
@@ -70,6 +71,15 @@ export function collect(iterator: AsyncIterable<NativeHarnessEvent>): Promise<Na
 export function errorCode(error: unknown): string | undefined {
   return error instanceof HarnessExecutionError ? error.result.error?.code : undefined
 }
+function nativeItem(value: unknown): void {
+  assert(value && typeof value === 'object')
+  const item = value as JsonObject
+  if (item.type !== 'userMessage') return
+  // Codex 0.154.0 ThreadItem requires clientId even when it is null.
+  assert.equal(typeof item.id, 'string')
+  assert(item.clientId === null || typeof item.clientId === 'string')
+  assert(Array.isArray(item.content))
+}
 export function nativeTurn(value: unknown): void {
   assert(value && typeof value === 'object')
   const turn = value as JsonObject
@@ -78,13 +88,27 @@ export function nativeTurn(value: unknown): void {
   assert(['full', 'summary', 'notLoaded'].includes(String(turn.itemsView)))
   assert(['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status)))
   for (const field of ['error', 'startedAt', 'completedAt', 'durationMs']) assert(Object.hasOwn(turn, field))
+  for (const item of turn.items) nativeItem(item)
 }
 /** Test double for schema qualification only. Real implementation tests are separate. */
 export const fixtureProtocol: CodexProtocol = {
   request() {}, serverResponse() {},
   response(method, value) {
     assert(value && typeof value === 'object')
-    if (method === 'turn/start') nativeTurn((value as JsonObject).turn)
+    const result = value as JsonObject
+    if (method === 'turn/start') nativeTurn(result.turn)
+    if (method === 'turn/steer') assert.equal(typeof result.turnId, 'string')
+    if (method === 'thread/turns/list') {
+      assert(Array.isArray(result.data))
+      for (const turn of result.data) nativeTurn(turn)
+    }
+    if (method === 'thread/read') {
+      assert(result.thread && typeof result.thread === 'object')
+      const thread = result.thread as JsonObject
+      assert.equal(typeof thread.id, 'string')
+      assert(Array.isArray(thread.turns))
+      for (const turn of thread.turns) nativeTurn(turn)
+    }
   },
   serverRequest(message) { assert(message.params && typeof message.params.threadId === 'string') },
   notification(message) {
@@ -93,6 +117,7 @@ export const fixtureProtocol: CodexProtocol = {
     if (message.method === 'turn/started' || message.method === 'turn/completed') {
       assert.equal(typeof params.threadId, 'string'); nativeTurn(params.turn)
     }
+    if (message.method === 'item/started' || message.method === 'item/completed') nativeItem(params.item)
   },
 }
 export async function fixtureQualification(
