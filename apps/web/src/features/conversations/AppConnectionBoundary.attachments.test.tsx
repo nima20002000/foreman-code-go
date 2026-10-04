@@ -3,14 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema } from '@foreman-code/contracts/management'
 import { FileWithRevisionSchema, type TemporaryFileScope } from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
 import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
 import { finishSessionChange, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import type { AttachmentClient, AttachmentUploadInput } from '../attachments/attachmentClient'
 import { useConversationAttachments, type ConversationAttachments } from '../attachments/useConversationAttachments'
-import { RequireBrowserSession } from './RequireBrowserSession'
+import { AppConnectionBoundary } from '../../app/AppConnectionBoundary'
 
 const transport = vi.hoisted(() => ({ upload: vi.fn<AttachmentClient['upload']>(), cancel: vi.fn<AttachmentClient['cancel']>() }))
 const navigate = vi.hoisted(() => vi.fn())
@@ -24,10 +24,10 @@ vi.mock('@tanstack/react-router', async (original) => ({
 }))
 
 const identity = { installationId: '10000000-0000-4000-8000-000000000001', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
-const session = BrowserAccessSessionSchema.parse({ principal: {
+const session = LocalHumanAccessSchema.parse({ principal: {
   id: 'owner-a', name: 'Test browser', expiresAt: '2099-01-01T00:00:00Z',
   grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }],
-}, account: { name: 'Operator', email: 'operator@example.test' } })
+} })
 const scope = (conversationId: string): TemporaryFileScope => ({ kind: 'temporary',
   chat: { kind: 'operator', conversationId, ownerPrincipalId: 'owner-a', operatorId: 'operator-a' } })
 const scopes = [scope('chat-a'), scope('chat-b')]
@@ -61,10 +61,10 @@ beforeEach(() => {
   })
   transport.cancel.mockResolvedValue(undefined)
   server.use(
-    http.get('/api/auth/session', () => failure === 'network' ? HttpResponse.error() : failure
+    http.get('/api/local-human', () => failure === 'network' ? HttpResponse.error() : failure
       ? HttpResponse.json({ error: { code: 'SESSION_CHECK_FAILED', message: 'Unavailable' } }, { status: failure })
       : HttpResponse.json(session)),
-    http.get('/api/auth/identity', () => HttpResponse.json(identity)),
+    http.get('/api/runtime/identity', () => HttpResponse.json(identity)),
   )
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
 })
@@ -75,9 +75,9 @@ afterEach(async () => {
   if (sessionIsSwitching()) finishSessionChange()
 })
 async function mountDrafts() {
-  render(<QueryClientProvider client={queryClient}><RequireBrowserSession>
+  render(<QueryClientProvider client={queryClient}><AppConnectionBoundary>
     {scopes.map((value) => <Probe key={value.chat.conversationId} value={value} />)}
-  </RequireBrowserSession></QueryClientProvider>)
+  </AppConnectionBoundary></QueryClientProvider>)
   await screen.findByTestId('chat-a')
   await waitFor(() => {
     expect(drafts.get('chat-a')).toBeDefined()
@@ -93,8 +93,8 @@ async function mountDrafts() {
   })
 }
 
-describe('ATT-01: authenticated attachment lifetime', () => {
-  it.each([503, 'network'] as const)('preserves all drafts and the running upload through a %s session check', async (error) => {
+describe('attachment lifetime during local API failures', () => {
+  it.each([503, 'network'] as const)('preserves all drafts and the running upload through a %s connection check', async (error) => {
     await mountDrafts()
     const generation = sessionGeneration()
     const selections = scopes.map((value) => drafts.get(value.chat.conversationId)!.items.map(({ id, requestId, file }) => ({ id, requestId, file })))

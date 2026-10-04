@@ -3,7 +3,7 @@ import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@foreman-code/contracts'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
-import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@foreman-code/contracts/management'
+import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, LocalHumanAccessSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@foreman-code/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema,
@@ -399,11 +399,11 @@ export function createCurrentBoardMock(options: {
     editIntents: { ...CURRENT_WORKFLOW_CAPABILITIES.editIntents, stopUnsettled: controls.start },
     reasons: controls.start ? [] : ['NATIVE_START_NOT_READY', 'NATIVE_STOP_CLEANUP_NOT_READY'] })
   const handlers: RequestHandler[] = [
-    http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+    http.get('/api/local-human', () => HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
       id: 'principal-current-mock', name: 'Synthetic current Board', expiresAt: '2099-01-01T00:00:00.000Z', grants: [{
         actions: ['workspaces:read', 'workflows:read', 'workflows:create', 'workflows:update', 'workflows:archive', 'agents:read', 'agents:create', 'agents:update', 'graph:read', 'graph:edit', 'graph:save', 'interactions:read', 'runs:read',
           ...(!controls.deniedStart ? ['runs:start'] : []), ...(!controls.deniedStop ? ['runs:stop'] : [])], scope: { workspaceIds: [workspaceId] },
-      }] }, account: { name: 'Synthetic current Board', email: 'current-board@example.test' } }))),
+      }] } }))),
     http.get('/api/management/workflows/capabilities/v3', () => HttpResponse.json(capabilities())),
     http.get('/api/workspaces', () => HttpResponse.json({ workspaces: [workspace()] })),
     http.get('/api/management/workspaces', () => HttpResponse.json({ items: [managedWorkspace()], pageInfo })),

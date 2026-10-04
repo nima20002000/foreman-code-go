@@ -20,19 +20,19 @@ export function registerRunSubagentRoutes(app: FastifyInstance, services: Operat
   }
   const base = '/api/management/workspaces/:workspaceId/runs/:runId/subagents'
   app.get<Read>(base, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service().list(requirePrincipal(request), scopedInput(request.params, request.query))
   })
   app.get<Read>(`${base}/:subagentId`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service().get(requirePrincipal(request), scopedInput(request.params, request.query))
   })
   app.get<Read>(`${base}/:subagentId/messages`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service().messages(requirePrincipal(request), scopedInput(request.params, request.query))
   })
   app.get<Read>(`${base}/:subagentId/tools`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service().tools(requirePrincipal(request), scopedInput(request.params, request.query))
   })
   app.post<Command>(`${base}/:subagentId/input`, async request => service().input(requirePrincipal(request), 'http', scopedInput(request.params, request.body)))

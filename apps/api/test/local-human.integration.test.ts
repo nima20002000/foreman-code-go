@@ -1,0 +1,68 @@
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { ManagementActionSchema } from '@graphql/contracts/management'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { localHumanMigration } from '../src/infrastructure/localHumanMigration.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+
+async function browserTables(pool: Awaited<ReturnType<typeof currentDatabase>>['pool']) {
+  return (await pool.query<{ tablename: string }>(
+    "select tablename from pg_tables where schemaname=current_schema() and tablename like 'browser_auth_%'",
+  )).rows
+}
+
+describe.skipIf(!postgresEnabled)('local human migration', () => {
+  it('provides credential-free access on a fresh database and remains repeatable', async () => {
+    const db = await currentDatabase()
+    try {
+      const access = new PostgresAccessService(db.pool)
+      const human = new PostgresLocalHumanAccess(db.pool, access)
+      const before = await human.current()
+      expect(before).toMatchObject({ id: 'principal-local-human', audience: 'operator', revokedAt: null })
+      expect(before.grants).toEqual([{ actions: [...ManagementActionSchema.options], scope: {} }])
+      expect(await browserTables(db.pool)).toEqual([])
+      await applyApplicationMigrations(db.pool)
+      expect(await human.current()).toEqual(before)
+      await expect(access.authenticate('local-human:no-credential')).rejects.toMatchObject({ code: 'AUTH_INVALID' })
+    } finally { await db.close() }
+  })
+
+  it('drops existing browser accounts and sessions without widening MCP grants or altering audit history', async () => {
+    const db = await currentDatabase()
+    try {
+      const access = new PostgresAccessService(db.pool)
+      const reader = await access.issue({ name: 'Existing browser owner with read-only MCP access', audience: 'operator',
+        grants: [{ actions: ['settings:read'], scope: { workspaceIds: ['existing-workspace'] } }],
+        expiresAt: new Date(Date.now() + 600_000) })
+      await db.pool.query('drop table local_human_principal')
+      await db.pool.query("delete from management_principals where id='principal-local-human'")
+      await db.pool.query('delete from application_migrations where version=$1', [localHumanMigration.version])
+      await db.pool.query(`
+        create table browser_auth_user(id text primary key);
+        create table browser_auth_owner(singleton boolean primary key, user_id text references browser_auth_user(id),
+          principal_id text references management_principals(id));
+        create table browser_auth_session(id text primary key, user_id text references browser_auth_user(id));
+        create table browser_auth_account(id text primary key, user_id text references browser_auth_user(id));
+        create table browser_auth_verification(id text primary key);
+        create table browser_auth_attempts(key text primary key);
+        insert into browser_auth_user values('previous-owner');
+        insert into browser_auth_session values('previous-session','previous-owner');
+        insert into browser_auth_account values('previous-account','previous-owner');
+      `)
+      await db.pool.query('insert into browser_auth_owner values(true,$1,$2)', ['previous-owner', reader.principal.id])
+      await db.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+        values($1,'http','settings.read',$2,'succeeded','{}')`, [reader.principal.id, randomUUID()])
+      const principals = (await db.pool.query('select * from management_principals order by id')).rows
+      const audit = (await db.pool.query('select * from management_audit order by sequence')).rows
+      await applyApplicationMigrations(db.pool)
+      expect(await browserTables(db.pool)).toEqual([])
+      expect((await db.pool.query("select * from management_principals where id <> 'principal-local-human' order by id")).rows)
+        .toEqual(principals)
+      expect((await db.pool.query('select * from management_audit order by sequence')).rows).toEqual(audit)
+      expect(await access.authenticate(reader.token)).toEqual(reader.principal)
+      expect((await new PostgresLocalHumanAccess(db.pool, access).current()).id).not.toBe(reader.principal.id)
+    } finally { await db.close() }
+  })
+})

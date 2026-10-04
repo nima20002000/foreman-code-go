@@ -6,7 +6,7 @@ import { boardSearchForInspection, type WorkspaceBoardInspection, boardSearchFor
 import { Button, ErrorState } from '../shared/ui/nocturne'
 import { PersistedWorkflowBoundary } from '../features/graph/PersistedWorkflowBoundary'
 import { WorkflowBoard } from '../features/workflow-board/WorkflowBoard'
-import { useProtectedAccessError } from '../features/auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../shared/api/useProtectedAccessError'
 import { clearCurrentRunAccess, revokeCurrentRunWorkspace } from '../features/workflow-board/currentRunQuery'
 import { ApiError } from '../shared/api/client'
 import { queryKeys, useManagedWorkflowQuery, useWorkspaceDetailsQuery } from '../shared/api/query'

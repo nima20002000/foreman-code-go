@@ -111,24 +111,18 @@ Compose runs only PostgreSQL, bound to `127.0.0.1:5432`. Its named volume keeps
 application records and LangGraph checkpoints across `db:down` and restarts.
 The API applies database migrations during startup.
 
-`corepack pnpm dev` enables local browser access on the loopback API. Open
-`http://127.0.0.1:5173` without setting up or entering browser credentials.
-The API still reads the chosen Operator's current grants for every request. It
-uses the configured `FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID`, the browser owner, or a
-single active root Operator in that order. An empty local database gets a durable
-`principal-local-development-browser` Operator with app-wide grants. If several
-eligible Operators exist without a browser owner, set
-`FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID` in the private env file to select one. Existing
-grants are never expanded. The local access stays active while the dev server runs,
-so the Account page does not offer sign-out in this mode.
-To configure password sign-in later on that fresh database, select
-`principal-local-development-browser` as `OWNER_OPERATOR_PRINCIPAL_ID` during
-the normal one-time owner setup.
+The app uses one implicit local human. Open `http://127.0.0.1:5173` without login,
+passwords, browser tokens, or cookies. API starts bind to loopback only. Set
+`FOREMAN_CODE_BROWSER_ORIGIN` and `FOREMAN_CODE_WEB_PORT` together for a custom local browser
+endpoint; requests from another origin or a non-loopback client are rejected.
 
-Direct `dev:api` and production starts require normal browser authentication.
-Configure private auth values and owner setup as described in
-[`docs/browser-auth.md`](./docs/browser-auth.md). Local development browser access
-is rejected when the API or database is not loopback or when `NODE_ENV=production`.
+The migration removes browser authentication tables and creates a dedicated
+credential-free local principal. Existing principals and their grants, historical
+conversation ownership, and audit history remain intact. Conversations owned by a
+former browser principal retain that identity and are not adopted by the local human. Operator/agent MCP still requires explicit
+bearer credentials and enforces grants, scopes, revocation, and read-only access.
+Remote device credentials, harness sandbox security, human approval decisions,
+revision checks, idempotent commands, and audit records remain enforced.
 
 For a separate local test installation, set `FOREMAN_CODE_API_ENV_FILE` to an absolute
 path before `corepack pnpm dev`; the API and credential CLI use that file instead

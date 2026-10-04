@@ -24,12 +24,12 @@ it('persists installation identity, rotates after recreation, and authenticates 
     app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       runtimeIdentity: () => readRuntimeIdentity(pool, process.cwd(), connectionString),
       operator: { access, services: { commands: new PostgresCommandCoordinator(pool) } as OperatorServices } })
-    const authorized = await app.inject({ method: 'GET', url: '/api/auth/identity', headers: { authorization: `Bearer ${reader.token}` } })
+    const authorized = await app.inject({ method: 'GET', url: '/api/runtime/identity', headers: { authorization: `Bearer ${reader.token}` } })
     expect(authorized.statusCode).toBe(200)
     expect(authorized.json()).toEqual(first)
-    expect((await app.inject({ method: 'GET', url: '/api/auth/identity' })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/runtime/identity' })).statusCode).toBe(401)
     await access.revoke(reader.principal.id)
-    expect((await app.inject({ method: 'GET', url: '/api/auth/identity', headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/runtime/identity', headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(401)
     await app.close(); app = undefined
     await pool.end()
     await admin.query(`drop schema "${schema}" cascade`)

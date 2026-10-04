@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import Fastify from 'fastify'
 import { it, vi } from 'vitest'
-import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import type { DurableInteraction } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -9,6 +8,8 @@ import { DomainError } from '../src/modules/errors.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import type { InteractionService } from '../src/modules/interactions/service.js'
+import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
+import { localHumanPrincipal } from '../src/modules/access/localHuman.js'
 import { registerUserInteractions } from '../src/routes/userInteractions.js'
 import { projectInteractionActivity } from '../src/modules/interactions/activityProjection.js'
 
@@ -78,23 +79,17 @@ function userInteraction(): DurableInteraction {
     status: 'pending', deliveryState: 'not_started', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z' }
 }
 
-it('F15: production User routes require a User bearer credential and expose actual response authority', async () => {
+it('local human approval routes expose response authority and exclude agent credentials', async () => {
   const app = Fastify()
-  app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? 403 : 500)
+  app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500)
     .send({ error: error instanceof Error ? error.message : 'Unknown error' }))
   const record = userInteraction()
-  const user = ManagementPrincipalSchema.parse({ id: 'user', name: 'Human', audience: 'user',
-    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: ['workspace'] } }],
-    expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null })
-  const readonly = ManagementPrincipalSchema.parse({ ...user, id: 'reader', grants: [{ actions: ['interactions:read'], scope: { workspaceIds: ['workspace'] } }] })
-  const access = { authenticate: async (token: string | undefined, audience: string) => {
-    assert.equal(audience, 'user')
-    if (token === 'test-human') return user
-    if (token === 'test-reader') return readonly
-    throw new DomainError('AUTH_WRONG_AUDIENCE', 'A User bearer is required, not an Operator credential or cookie.', 403)
-  } } as unknown as PostgresAccessService
+  const reader = { ...localHumanPrincipal, id: 'reader', grants: [{ actions: ['capabilities:read' as const], scope: {} }] }
+  const access = { authenticate: async () => reader } as unknown as PostgresAccessService
+  registerOperatorHttpSecurity(app, access)
   const respond = vi.fn(async (actor: { kind: string; principal?: { id: string } }) => {
-    assert.equal(actor.kind, 'user'); assert.equal(actor.principal?.id, 'user')
+    assert.equal(actor.kind, 'user')
+    assert.equal(actor.principal?.id, localHumanPrincipal.id)
     return { interaction: { ...record, revision: 1, selectedOptionId: 'choice', selectedSemantic: 'approve_once', nativeResponse: null,
       decidedAt: '2026-09-16T00:00:01.000Z', deliveredAt: '2026-09-16T00:00:02.000Z', status: 'delivered', deliveryState: 'delivered' }, replayed: false }
   })
@@ -102,25 +97,31 @@ it('F15: production User routes require a User bearer credential and expose actu
     { response: { authorized, qualified: true, usable: true, path: 'live_callback', identity: { interactionId: current.id,
       revision: current.revision, sessionId: current.nativeSessionId, requestId: current.nativeRequestId, executionId: current.executionId } } }))
   const interactions = { get: async () => record, readActivity, respond } as unknown as InteractionService
-  registerUserInteractions(app, access, interactions)
+  registerUserInteractions(app, interactions)
   const headers = { host: '127.0.0.1:4100', origin: 'http://127.0.0.1:5173' }
   const url = `/api/user/interactions/${record.id}`
+  const payload = { interactionId: record.id, optionId: 'choice', expectedRevision: 0 }
   try {
-    const detail = await app.inject({ method: 'GET', url, headers: { ...headers, authorization: 'Bearer test-human' } })
-    assert.equal(detail.statusCode, 200, detail.body); assert.equal(detail.json().canRespond, true)
-    const reader = await app.inject({ method: 'GET', url, headers: { ...headers, authorization: 'Bearer test-reader' } })
-    assert.equal(reader.statusCode, 200); assert.equal(reader.json().canRespond, false)
-    assert.equal(reader.json().activity.response.reason, 'unauthorized')
-    assert.deepEqual(readActivity.mock.calls.map((call) => call[1]), [true, false])
-    for (const supplied of [{ authorization: 'Bearer operator-token' }, { cookie: 'graphql_operator=operator-cookie' }, { authorization: 'Bearer test-reader' }]) {
-      const denied = await app.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, ...supplied }, payload: { interactionId: record.id, optionId: 'choice', expectedRevision: 0 } })
-      assert(denied.statusCode >= 400)
-    }
-    const foreign = await app.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, origin: 'https://foreign.example', authorization: 'Bearer test-human' }, payload: { interactionId: record.id, optionId: 'choice', expectedRevision: 0 } })
-    assert(foreign.statusCode >= 400)
+    const detail = await app.inject({ method: 'GET', url, headers })
+    assert.equal(detail.statusCode, 200, detail.body)
+    assert.equal(detail.json().canRespond, true)
+    assert.deepEqual(readActivity.mock.calls.map((call) => call[1]), [true])
+    const unavailable = { ...record, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer' } }
+    const agentRead = await app.inject({ method: 'GET', url, headers: { ...headers, authorization: 'Bearer reader-token' } })
+    assert.equal(agentRead.statusCode, 403)
+    const agentWrite = await app.inject({ method: 'POST', url: `${url}/respond`,
+      headers: { ...headers, authorization: 'Bearer reader-token' }, payload })
+    assert.equal(agentWrite.statusCode, 403)
+    const foreign = await app.inject({ method: 'POST', url: `${url}/respond`,
+      headers: { ...headers, origin: 'https://foreign.example' }, payload })
+    assert.equal(foreign.statusCode, 403)
     assert.equal(respond.mock.calls.length, 0)
-    const accepted = await app.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, authorization: 'Bearer test-human' }, payload: { interactionId: record.id, optionId: 'choice', expectedRevision: 0 } })
+    const accepted = await app.inject({ method: 'POST', url: `${url}/respond`,
+      headers: { ...headers, cookie: 'graphql_operator=obsolete' }, payload })
     assert.equal(accepted.statusCode, 200, accepted.body)
     assert.equal(respond.mock.calls.length, 1)
+    Object.assign(record, unavailable)
+    const hidden = await app.inject({ method: 'GET', url, headers })
+    assert.equal(hidden.statusCode, 404)
   } finally { await app.close() }
 })

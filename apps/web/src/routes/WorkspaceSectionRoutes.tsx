@@ -180,7 +180,7 @@ function SettingsDetailPage({ eyebrow = PRODUCT_NAME, title, description, childr
   )
 }
 
-export { AgentSettingsRouteEntry, HarnessSettingsRouteEntry, OperatorAccessSettingsRouteEntry } from './SettingsExperienceRoutes'
+export { AgentSettingsRouteEntry, HarnessSettingsRouteEntry } from './SettingsExperienceRoutes'
 
 export function GlobalSettingsRouteEntry() {
   return (

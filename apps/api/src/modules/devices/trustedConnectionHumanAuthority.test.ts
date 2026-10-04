@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './trustedConnectionHumanAuthority.js'
 import { PostgresTrustedConnectionSetup } from './trustedConnectionSetup.js'
 interface Receipt { principal_id: string; operation: string; command_id: string; target_key: string; input_hash: string; result: unknown }
-function fixture(options: { localDev?: boolean; ownerConfigured?: boolean } = {}) {
+function fixture(options: { ownerConfigured?: boolean } = {}) {
   const mainId = randomUUID(), deviceId = randomUUID()
   let registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), scopes: ['connect'], status: 'paired' }
   const principal: ManagementPrincipal = { id: 'human-owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
@@ -29,7 +29,7 @@ function fixture(options: { localDev?: boolean; ownerConfigured?: boolean } = {}
     else if (sql.includes('select id,name,audience,grants')) rows = [{ ...principal, id: values[0], grants: values[0] === delegate.id ? delegateGrants : principal.grants, expires_at: values[0] === delegate.id ? delegateExpiry : new Date(principal.expiresAt), revoked_at: principalRevoked || values[0] === delegate.id && delegateRevoked ? new Date() : null, delegated_from: values[0] === delegate.id ? principal.id : null }]
     else if (sql.includes('operator_chat_credentials')) rows = values[0] === delegate.id ? [{ conversation_id: conversationId, owner_principal_id: principal.id, deleted_at: null, status: chatOpen ? 'open' : 'closed' }] : []
     else if (sql.includes('select audience,delegated_from')) rows = [{ audience: 'operator', delegated_from: values[0] === delegate.id ? principal.id : null }]
-    else if (sql.includes('from browser_auth_owner')) rows = ownerId ? [{ principal_id: ownerId }] : []
+    else if (sql.includes('from local_human_principal')) rows = ownerId ? [{ principal_id: ownerId }] : []
     else if (sql.includes('from device_registrations')) rows = [{ record: registration }]
     else if (sql.includes('select input_hash, target_key, result')) rows = receipts.filter(row => row.principal_id === values[0] && row.operation === values[1] && row.command_id === values[2])
     else if (sql.includes("result->>'id'=$2")) rows = receipts.filter(row => row.operation === values[0] && (row.result as { id?: string }).id === values[1] && (row.result as { mainId?: string }).mainId === values[2])
@@ -44,16 +44,15 @@ function fixture(options: { localDev?: boolean; ownerConfigured?: boolean } = {}
   })
   const client = { query, release: vi.fn() } as unknown as pg.PoolClient
   const pool = { query, connect: async () => client } as unknown as pg.Pool
-  const request = { operatorPrincipal: principal, operatorAuthentication: 'browser' } as FastifyRequest
-  const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId,
-    options.localDev ? { authenticate: async () => principal } : undefined)
+  const request = { operatorPrincipal: principal, operatorAuthentication: 'local-human' } as FastifyRequest
+  const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId)
   const setup = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval: authority.verifyOwnerApproval })
   const input = { requestCommandId: randomUUID(), action: { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { host: '100.76.219.118', port: 22, osUser: 'dexter', transport: 'tailscale' as const }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true } }
   return { authority, setup, principal, delegate, request, input, query, client, revokeDelegate: () => { delegateRevoked = true }, removeDelegateGrant: () => { delegateGrants = [] }, changeDelegateGrant: () => { delegateGrants = [{ actions: ['settings:update'], scope: {} }] }, expireDelegate: () => { delegateExpiry = new Date(Date.now() - 1000) }, closeChat: () => { chatOpen = false }, get receipts() { return receipts }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } }, switchOwner: () => { ownerId = 'replacement-owner' }, revokePrincipal: () => { principalRevoked = true }, failWrite: (value: boolean) => { failConsentInsert = value } }
 }
 describe('connection-specific human owner approval authority', () => {
-  it('allows the configured local development owner to approve and persist connection consent', async () => {
-    const f = fixture({ localDev: true, ownerConfigured: false })
+  it('allows the implicit local human to approve and persist connection consent', async () => {
+    const f = fixture()
     const pending = await f.authority.requestBrowser(f.request, f.input)
     const approved = await f.authority.decideBrowser(f.request, pending.id, { commandId: randomUUID() }, 'approve')
     const consent = await f.setup.configure(f.principal, approved.action)
@@ -61,8 +60,8 @@ describe('connection-specific human owner approval authority', () => {
     expect((await f.authority.readBrowser(f.request, pending.id)).state).toBe('consumed')
   })
 
-  it('does not turn local development access into bearer approval or replace an established owner', async () => {
-    const f = fixture({ localDev: true, ownerConfigured: false })
+  it('does not turn local human access into bearer approval or replace an established owner', async () => {
+    const f = fixture()
     await expect(f.authority.requestBrowser({ ...f.request, operatorAuthentication: 'bearer' } as FastifyRequest, f.input))
       .rejects.toMatchObject({ code: 'MCP_BROWSER_REVIEW_REQUIRED' })
     f.switchOwner()
@@ -72,8 +71,8 @@ describe('connection-specific human owner approval authority', () => {
       .rejects.toMatchObject({ code: 'DEVICE_CONNECTION_WRONG_OWNER' })
   })
 
-  it('revalidates local development owner permissions before consuming approval', async () => {
-    const f = fixture({ localDev: true, ownerConfigured: false })
+  it('revalidates local human permissions before consuming approval', async () => {
+    const f = fixture()
     const pending = await f.authority.requestBrowser(f.request, f.input)
     await f.authority.decideBrowser(f.request, pending.id, { commandId: randomUUID() }, 'approve')
     f.revokePrincipal()
@@ -229,7 +228,7 @@ describe('connection-specific human owner approval authority', () => {
   })
   it('binds human review through browser routes and denies bearer approval without any live security change', async () => {
     const f = fixture(), app = Fastify()
-    app.addHook('preHandler', async request => { request.operatorPrincipal = f.principal; request.operatorAuthentication = request.headers.authorization ? 'bearer' : 'browser' })
+    app.addHook('preHandler', async request => { request.operatorPrincipal = f.principal; request.operatorAuthentication = request.headers.authorization ? 'bearer' : 'local-human' })
     registerTrustedConnectionApprovalRoutes(app, f.authority)
     try {
       const pending = await app.inject({ method: 'POST', url: '/api/devices/connection-approvals', payload: f.input })

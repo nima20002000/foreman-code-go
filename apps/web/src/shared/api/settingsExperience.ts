@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ManagedWorkspaceDefaultsSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema,
-  BrowserAccessSessionSchema, type WorkspaceDefaultsUpdateInput } from '@foreman-code/contracts/management'
+  LocalHumanAccessSchema, type WorkspaceDefaultsUpdateInput } from '@foreman-code/contracts/management'
 import { apiClient } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
@@ -8,7 +8,7 @@ import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 export const settingsExperienceKeys = {
   workspaceDefaults: () => ['workbench', 'management', 'settings', 'workspaces', sessionGeneration()] as const,
   workspaceCreation: () => ['workbench', 'management', 'workspace-creation', sessionGeneration()] as const,
-  access: () => ['workbench', 'browser-access', sessionGeneration()] as const,
+  access: () => ['workbench', 'local-human', sessionGeneration()] as const,
 }
 export function useWorkspaceDefaultsQuery() {
   useHarnessSessionEpoch()
@@ -32,8 +32,8 @@ export function useUpdateWorkspaceDefaultsMutation() {
     },
   })
 }
-export function useBrowserAccessQuery() {
+export function useLocalHumanAccessQuery() {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: settingsExperienceKeys.access(), enabled: !sessionIsSwitching(), retry: false, staleTime: 0, refetchInterval: 60_000,
-    queryFn: ({ signal }) => apiClient.request('/api/auth/session', BrowserAccessSessionSchema, { signal }) })
+    queryFn: ({ signal }) => apiClient.request('/api/local-human', LocalHumanAccessSchema, { signal }) })
 }

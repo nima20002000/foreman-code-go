@@ -5,7 +5,7 @@ import {
   type RunExecutionSummary, type WorkflowVersionV3, type WorkspaceBoardExecutionSelection,
 } from '@foreman-code/contracts/wave25'
 import { Alert, Button, Select } from '../../../shared/ui/nocturne'
-import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import { JobRunResult } from '../../jobs/JobRunResult'
 import { useWorkflowBoard } from '../context'
 import { assertExecutionVersion } from '../runDetailsClient'

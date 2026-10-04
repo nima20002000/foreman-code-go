@@ -1,11 +1,11 @@
 import { PinnedNodePlacement } from '../node-placement/PinnedNodePlacement'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
+import { useLocalHumanAccessQuery } from '../../shared/api/settingsExperience'
 import { useCurrentRunQuery, currentRunKey } from './currentRunQuery'
 import { readPinnedRun } from './runDetailsClient'
 import { useRunVersionQuery } from './inspect/queries'
@@ -23,7 +23,7 @@ import { Activities } from './Activities'
 export type RunDetailsProps = { scope: RepeatGraphScopeV3; runActions?: ReactNode }
 export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
   const canonical = useCurrentRunQuery(scope, false), cache = useQueryClient(), generation = sessionGeneration()
-  const access = useBrowserAccessQuery(), outbox = useBoardStopOutbox(scope)
+  const access = useLocalHumanAccessQuery(), outbox = useBoardStopOutbox(scope)
   const identity = JSON.stringify([generation, scope]), detailsKey = ['workbench', 'pinned-v3-run-details', generation, scope.workspaceId, scope.workflowId, scope.runId, scope.workflowVersionId]
   const run = useQuery({ queryKey: detailsKey, queryFn: ({ signal }) => readPinnedRun(scope, { signal }), retry: false,
     staleTime: Infinity, refetchOnMount: 'always', refetchOnReconnect: false, refetchOnWindowFocus: false })

@@ -47,7 +47,7 @@ import {
 } from '@foreman-code/contracts/management'
 import { HarnessQualificationRunParamsSchema } from '@foreman-code/contracts/harness-qualification'
 import { ManualRunStartInputSchema } from '@foreman-code/contracts/wave25'
-import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
+import { requireLocalHuman, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'
 
@@ -114,7 +114,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.workspaces.storageFolders.delete(requirePrincipal(request), 'http', WorkspaceStorageFolderDeleteInputSchema.parse(request.body)))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {
     const input = WorkspaceCreateInputSchema.parse(request.body)
-    if (input.parentPath) requireBrowserSession(request)
+    if (input.parentPath) requireLocalHuman(request)
     const result = await services.workspaces.create(requirePrincipal(request), 'http', input)
     reply.code(result.replayed ? 200 : 201)
     return result

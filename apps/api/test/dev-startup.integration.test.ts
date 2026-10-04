@@ -19,14 +19,14 @@ it('rejects reuse of a matching API that still trusts a different browser port',
   const identity = await readRuntimeIdentity(database.pool, root, connectionString)
   const api = createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json')
-    if (request.url === '/api/auth/session') {
+    if (request.url === '/api/local-human') {
       observed.push(request.headers.origin)
       // Like the real local dev gate, originless probes succeed. A different
       // explicit browser origin must fail even though all identity fields match.
       if (request.headers.origin && request.headers.origin !== 'http://127.0.0.1:1') {
         response.statusCode = 403
         response.end(JSON.stringify({ error: { code: 'CSRF_ORIGIN_NOT_ALLOWED' } }))
-      } else response.end(JSON.stringify({ localDev: true }))
+      } else response.end(JSON.stringify({ principal: { id: "local-human" } }))
     } else if (request.url === '/health/identity') response.end(JSON.stringify(identity))
     else response.end(JSON.stringify({ status: 'ok', service: 'graphql-api' }))
   })

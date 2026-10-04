@@ -116,7 +116,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   }, input => invoke(context, 'job_cancel', async () => ({ execution: await service.cancel(context.principal,
     'mcp', input.workspaceId, input.executionId, input.commandId, input.recovery) })))
   if (jobToolAvailable(context, 'job_cancellation_recovery_propose')) server.registerTool('job_cancellation_recovery_propose', {
-    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the signed-in human application owner may approve the reviewed proposal in the browser.',
+    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the local human may approve the reviewed proposal in the browser.',
     inputSchema: JobCancellationProposalInputSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: write,
   }, input => invoke(context, 'job_cancellation_recovery_propose', () =>
     service.proposeCancellationRecovery(context.principal, 'mcp', input)))

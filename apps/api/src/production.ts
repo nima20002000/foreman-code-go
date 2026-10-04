@@ -131,8 +131,7 @@ import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
 import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
-import { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
-import { BrowserAuthentication } from './modules/browser-auth/service.js'
+import { PostgresLocalHumanAccess } from './modules/access/localHuman.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from './modules/interactions/wave25/credentials.js'
 import {
   ensureOperatorRuntimeDirectory,
@@ -1072,14 +1071,11 @@ export function buildProductionApp(
   const runtimeServices: OperatorServices & { jobs?: import('./modules/jobs/service.js').JobService;
     buildComputers?: import('./modules/settings/buildComputers.js').BuildComputerSettings
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
-  const localDevBrowserAccess = config.localDevBrowserAccess
-    ? new LocalDevBrowserAccess(database.pool, access,
-      config.localDevBrowserAccess.origin, config.localDevBrowserAccess.principalId)
-    : undefined
+  const localHuman = new PostgresLocalHumanAccess(database.pool, access)
   const app = buildApp({
     runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
-    ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
-    ...(localDevBrowserAccess ? { localDevBrowserAccess } : {}),
+    localHuman,
+    ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     harnessCompatibility,
@@ -1218,7 +1214,7 @@ export function buildProductionApp(
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
       const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(
-        database.pool, machine.installationId, localDevBrowserAccess,
+        database.pool, machine.installationId,
       )
       trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId,
         { verifyOwnerApproval: connectionAuthority.verifyOwnerApproval })

@@ -2,7 +2,7 @@ import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema } from '@foreman-code/contracts/management'
 
 import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
@@ -57,7 +57,7 @@ export function OperatorChat(props: { settingsWarning?: string } = {}) {
 function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) {
   const enabled = useOperatorChatVisibility()
   const browserAccess = useQuery({ queryKey: settingsExperienceKeys.access(), enabled: false,
-    queryFn: ({ signal }) => apiClient.request('/api/auth/session', BrowserAccessSessionSchema, { signal }),
+    queryFn: ({ signal }) => apiClient.request('/api/local-human', LocalHumanAccessSchema, { signal }),
   })
   const attachmentReceipts = useOperatorAttachmentReceipts()
   const { panelRef, size, grip, moveGrip } = useOperatorChatResize()

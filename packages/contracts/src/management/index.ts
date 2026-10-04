@@ -11,7 +11,6 @@ export * from "./harnessSettings.js";
 export * from './workerExecution.js'
 export * from "./codexPlugins.js";
 export * from "./settingsExperience.js";
-export * from "./browserAuth.js";
 
 import {
   AgentSchema,
@@ -140,16 +139,13 @@ export const ManagementPrincipalSchema = z
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
-/** Browser identity readback. No bearer token, cookie, or token hash is returned. */
-export const BrowserAccessSessionSchema = z.object({
-  localDev: z.literal(true).optional(),
+/** The implicit local human's product permissions; contains no credentials. */
+export const LocalHumanAccessSchema = z.object({
   principal: z.object({
     id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
     grants: z.array(ManagementGrantSchema),
   }).strict(),
-  account: z.object({ name: z.string().min(1), email: z.string().email() }).strict().optional(),
 }).strict();
-export const BrowserAccessLogoutSchema = z.object({ signedOut: z.literal(true) }).strict();
 
 // Native automatic handling is supported by the server. The shared schema
 // still enforces agreement between autoApprove and Advanced permission handling.
@@ -178,10 +174,6 @@ export const ManagementPageInfoSchema = z
   .object({ nextCursor: z.string().nullable() })
   .strict();
 
-export const OperatorEnrollmentRequestSchema = z.object({ token: z.string().trim().min(1) }).strict();
-export const OperatorEnrollmentResponseSchema = z.object({
-  principal: z.object({ id: IdSchema, name: z.string().trim().min(1), expiresAt: TimestampSchema }).strict(),
-}).strict();
 
 export const ManagedWorkspaceSchema = z
   .object({

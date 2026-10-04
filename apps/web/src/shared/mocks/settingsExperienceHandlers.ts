@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { BrowserAccessSessionSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
+import { LocalHumanAccessSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
   WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { getMockScenarioState } from './scenarios'
 
@@ -33,8 +33,8 @@ export const settingsExperienceHandlers = [
     receipts.set(input.data.commandId, { input: payload, result: structuredClone(defaults) })
     return HttpResponse.json(WorkspaceDefaultsUpdateResultSchema.parse({ value: defaults, replayed: false }))
   }),
-  http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+  http.get('/api/local-human', () => HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
     id: 'principal-preview', name: 'Preview browser (simulated)', expiresAt: '2099-01-01T00:00:00Z',
     grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }],
-  }, account: { name: 'Preview Operator', email: 'preview@example.test' } }), { headers: { 'Cache-Control': 'no-store' } })),
+  } }), { headers: { 'Cache-Control': 'no-store' } })),
 ]

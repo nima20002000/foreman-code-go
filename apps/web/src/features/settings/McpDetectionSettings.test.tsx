@@ -298,12 +298,11 @@ describe('Workspace App MCP scope and access', () => {
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
     await user.click(await screen.findByRole('button', { name: 'Check setup for Codex' }))
-    expect(await screen.findByText(status === 401 ? 'Sign in to check connections' : 'Connection access is restricted')).toBeVisible()
+    expect(await screen.findByText('Connection access is unavailable')).toBeVisible()
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
     expect(screen.queryByText('Details')).not.toBeInTheDocument()
-    if (status === 401) expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toContain('/sign-in')
-    else expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 
   it('does not reveal an old report after a denial followed by a network error', async () => {
@@ -315,7 +314,7 @@ describe('Workspace App MCP scope and access', () => {
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
     await user.click(await screen.findByRole('button', { name: 'Check setup for Codex' }))
-    expect(await screen.findByText('Connection access is restricted')).toBeVisible()
+    expect(await screen.findByText('Connection access is unavailable')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Check setup for Codex' }))
     await waitFor(() => expect(getDetection).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled())

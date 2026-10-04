@@ -8,5 +8,5 @@ export function useRuntimeIdentityQuery() {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: ['workbench', 'runtime-identity', sessionGeneration()], retry: false,
     enabled: !sessionIsSwitching(), staleTime: 0, refetchInterval: 60_000,
-    queryFn: ({ signal }) => apiClient.request('/api/auth/identity', RuntimeIdentitySchema, { signal }) })
+    queryFn: ({ signal }) => apiClient.request('/api/runtime/identity', RuntimeIdentitySchema, { signal }) })
 }

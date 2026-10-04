@@ -16,10 +16,8 @@ import type { AppMcpServices } from './mcp/app/types.js'
 import { registerGraphqlMcp, type GraphqlMcpServices } from './mcp/unified/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
 import { registerOperatorHttpSecurity } from './modules/access/http.js'
-import { registerBrowserAuthRoutes } from './modules/browser-auth/routes.js'
-import type { BrowserAuthentication } from './modules/browser-auth/service.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
-import type { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
+import type { LocalHumanAccess } from './modules/access/localHuman.js'
 import { DomainError } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
 import { registerUserInteractions } from './routes/userInteractions.js'
@@ -39,8 +37,8 @@ export interface ReadinessDependencies {
 
 export interface BuildAppOptions {
   runtimeIdentity?: () => Promise<RuntimeIdentity>
-  browserAuth?: BrowserAuthentication
-  localDevBrowserAccess?: LocalDevBrowserAccess
+  localHuman?: LocalHumanAccess
+  browserOrigin?: string
   harnessCompatibility?: HarnessCompatibilityService
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
@@ -128,7 +126,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   if (options.runtimeIdentity) {
     app.get('/health/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
-    app.get('/api/auth/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
+    app.get('/api/runtime/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
   }
 
   app.get('/health/live', async () => ServiceHealthSchema.parse({ status: 'ok', service: 'graphql-api' }))
@@ -144,8 +142,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return response
   })
 
-  if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
-  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
+  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.localHuman, options.browserOrigin)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
   if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
@@ -153,7 +150,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator?.services.agentChat) registerAgentChatRoutes(app, options.operator.services.agentChat)
-  if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
+  if (options.operator && options.product?.interactions) registerUserInteractions(app, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)
   if (options.operator || options.appMcp) registerGraphqlMcp(app, {
     access: (options.operator?.access ?? options.appMcp?.access)!,

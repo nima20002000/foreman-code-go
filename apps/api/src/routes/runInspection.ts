@@ -13,7 +13,7 @@ function input(params: Request['Params'], query: Request['Querystring']) {
   }) }
 }
 function privateRead(reply: FastifyReply) {
-  reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+  reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
 }
 /** Registered below the existing authenticated management HTTP hook. Parsing,
  * authorization, bounds, exact readback and output validation all live in the

@@ -3,7 +3,7 @@ import { JobNodePanel, JobNodePicker } from '../../jobs'
 import { attachJob } from './model'
 import { BoardNotice } from './BoardNotice'
 import { useDraftLayout } from './useDraftLayout'
-import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
+import { useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
@@ -127,7 +127,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const reloading = reloadMutation.isPending
   const layout = useDraftLayout(draftKey)
   const preflight = useBoardStartPreflight(context.draft)
-  const access = useBrowserAccessQuery()
+  const access = useLocalHumanAccessQuery()
   const principal = !access.isError ? access.data?.principal : undefined
   const canStart = !!principal && Date.parse(principal.expiresAt) > Date.now()
     && canUseBoardAction(principal.grants, 'runs:start', { workspaceId: graph.workspaceId, workflowId: graph.id })

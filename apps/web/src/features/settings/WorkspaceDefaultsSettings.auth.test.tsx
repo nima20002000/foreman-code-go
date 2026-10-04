@@ -26,11 +26,11 @@ function mount() {
 beforeEach(() => clearRevisionedFormPersistence())
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); clients.splice(0).forEach((client) => client.clear()) })
 
-describe('Workspace defaults authentication states', () => {
+describe('Workspace defaults API access states', () => {
   it.each([401, 403, 503])('distinguishes an initial %s response', async (status) => {
     server.use(http.get('*/api/management/settings/workspaces', () => failure(status)))
     mount()
-    const title = status === 401 ? 'Sign in to continue' : status === 403 ? 'Access denied' : 'Workspace defaults are unavailable'
+    const title = [401, 403].includes(status) ? 'Access unavailable' : 'Workspace defaults are unavailable'
     expect(await screen.findByText(title)).toBeVisible()
     expect(screen.queryByLabelText('Suggested workspace name')).not.toBeInTheDocument()
   })
@@ -42,13 +42,13 @@ describe('Workspace defaults authentication states', () => {
     await user.clear(name); await user.type(name, 'Unsaved protected draft')
     server.use(http.get('*/api/management/settings/workspaces', () => failure(status)))
     await client.invalidateQueries({ queryKey: settingsExperienceKeys.workspaceDefaults() })
-    expect(await screen.findByText(status === 401 ? 'Sign in to continue' : 'Access denied')).toBeVisible()
+    expect(await screen.findByText('Access unavailable')).toBeVisible()
     expect(screen.queryByDisplayValue('Unsaved protected draft')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save workspace defaults' })).not.toBeInTheDocument()
     server.use(http.get('*/api/management/settings/workspaces', () => failure(503)))
     await client.invalidateQueries({ queryKey: settingsExperienceKeys.workspaceDefaults() })
     expect(screen.queryByDisplayValue('Unsaved protected draft')).not.toBeInTheDocument()
-    expect(screen.getByText(status === 401 ? 'Sign in to continue' : 'Access denied')).toBeVisible()
+    expect(screen.getByText('Access unavailable')).toBeVisible()
   })
   it('keeps unsaved edits during a backend failure rather than sending the owner to sign-in', async () => {
     server.use(http.get('*/api/management/settings/workspaces', () => HttpResponse.json(defaults)))
@@ -62,7 +62,7 @@ describe('Workspace defaults authentication states', () => {
     expect(screen.getByLabelText('Suggested workspace name')).toHaveValue('Keep my draft')
     expect(screen.queryByText('Sign in to continue')).not.toBeInTheDocument()
   })
-  it('saves through the API client after login, but hides the form when a write loses permission', async () => {
+  it('saves through the API client without login, but hides the form when a write loses permission', async () => {
     server.use(http.get('*/api/management/settings/workspaces', () => HttpResponse.json(defaults)),
       http.put('*/api/management/settings/workspaces', () => failure(403)))
     mount()
@@ -70,7 +70,7 @@ describe('Workspace defaults authentication states', () => {
     const name = await screen.findByLabelText('Suggested workspace name')
     await user.clear(name); await user.type(name, 'Rejected change')
     await user.click(screen.getByRole('button', { name: 'Save workspace defaults' }))
-    expect(await screen.findByText('Access denied')).toBeVisible()
+    expect(await screen.findByText('Access unavailable')).toBeVisible()
     expect(screen.queryByDisplayValue('Rejected change')).not.toBeInTheDocument()
   })
 })

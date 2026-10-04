@@ -116,8 +116,8 @@ const setup = new PostgresTrustedConnectionSetup(pool, mainId, {
 registerTrustedConnectionApprovalRoutes(app, authority)
 ```
 
-These four approval routes require `requireBrowserSession(request)` plus live
-unscoped settings authority and exact `browser_auth_owner` principal mapping:
+These four approval routes require `requireLocalHuman(request)` plus live
+unscoped settings authority and exact `local_human_principal` principal mapping:
 
 - POST `/api/devices/connection-approvals`: `{requestCommandId, action}`;
   action is TrustedConnectionConfigure without approvalId. Server issues ID,

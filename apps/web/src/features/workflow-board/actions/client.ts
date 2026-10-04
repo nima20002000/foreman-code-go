@@ -1,7 +1,7 @@
 import {
   ListInteractionsResponseSchema, RespondToInteractionRequestSchema, type DurableInteraction,
 } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema, InteractionListInputSchema, ManagedWorkspaceSchema,
+import { LocalHumanAccessSchema, InteractionListInputSchema, ManagedWorkspaceSchema,
   type ManagementAction } from '@foreman-code/contracts/management'
 import {
   CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, RunRecordDetailSchema, CurrentRunVersionSnapshotSchema,
@@ -40,7 +40,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
   const capabilities = (options?: RequestOptions) => client.request(CURRENT_WORKFLOW_ROUTES.capabilities,
     CurrentWorkflowCapabilitiesSchema, options)
   const authorize = async (action: ManagementAction, scope: { workspaceId: string; workflowId: string; runId?: string }, options?: RequestOptions) => {
-    const access = await client.request('/api/auth/session', BrowserAccessSessionSchema, options)
+    const access = await client.request('/api/local-human', LocalHumanAccessSchema, options)
     if (Date.parse(access.principal.expiresAt) <= Date.now() || !canUseBoardAction(access.principal.grants, action, scope)) {
       throw new ApiError({ code: 'ACCESS_DENIED', message: `${action} permission is unavailable for this exact scope.` }, 403)
     }
@@ -88,7 +88,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
     return page
   }
   const approval = async (scope: RepeatGraphScopeV3, id: string, options?: RequestOptions) => {
-    const value = await client.getUserInteraction(id, undefined, options)
+    const value = await client.getUserInteraction(id, options)
     assertInteractionScope(value.interaction, scope)
     if (value.interaction.id !== id) throw invalid('Approval detail returned a different interaction.')
     // Interactions have no WorkflowVersion field. Resolve their exact execution
@@ -98,7 +98,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
     return { ...value, execution: detail.execution }
   }
   const respond = async (scope: RepeatGraphScopeV3, expected: DurableInteraction,
-    input: Parameters<ApiClient['respondToUserInteraction']>[1], options?: RequestOptions) => {
+    input: Parameters<ApiClient['respondToUserInteraction']>[0], options?: RequestOptions) => {
     const request = RespondToInteractionRequestSchema.parse(input)
     assertInteractionScope(expected, scope)
     if (request.interactionId !== expected.id) throw invalid('The response targets a different interaction.')
@@ -110,7 +110,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
       || fresh.interaction.nativeSessionId !== expected.nativeSessionId) throw invalid('The original approval request identity changed.')
     // Do not replace expectedRevision on a retry. The service reconciles the exact
     // original interaction/option/revision tuple, including a lost response.
-    const result = await client.respondToUserInteraction(undefined, request, options)
+    const result = await client.respondToUserInteraction(request, options)
     assertInteractionScope(result.interaction, scope)
     if (result.interaction.id !== expected.id || result.interaction.executionId !== expected.executionId
       || result.interaction.nativeRequestId !== expected.nativeRequestId || result.interaction.nativeSessionId !== expected.nativeSessionId

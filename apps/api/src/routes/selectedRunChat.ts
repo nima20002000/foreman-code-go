@@ -23,7 +23,7 @@ export function registerSelectedRunChatRoutes(app: FastifyInstance, chat: AgentC
     const target = SelectedRunChatTargetSchema.parse(request.params)
     // Repeated scope ids/Agent ids in a query are rejected, never allowed to override the URL.
     const query = querySchema.parse(request.query)
-    reply.header('cache-control', 'private, no-store').header('vary', 'Authorization, Cookie')
+    reply.header('cache-control', 'private, no-store').header('vary', 'Authorization')
     return ReadSelectedRunChatResponseSchema.parse(await chat.readSelectedRun(requirePrincipal(request), {
       selection: { ...target, ...query },
     }))

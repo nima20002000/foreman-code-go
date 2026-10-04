@@ -228,7 +228,6 @@ export function WorkspaceDirectory() {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
     ]).catch(() => undefined)
   }
-  const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
     <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
@@ -249,10 +248,7 @@ export function WorkspaceDirectory() {
       />
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
       {selectedProtected ? <Alert tone="warning" title="A selected folder is now protected.">Deselect it to continue. Its protection reason is shown on its card.</Alert> : null}
-      {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
-        description="App access is required to load workspaces."
-        action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
-        : failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
+      {failed ? <ErrorState title="Workspaces unavailable" description="Check the local API connection, then retry the workspace list."
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length + visibleFolders.length > 0 ? (
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>

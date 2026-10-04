@@ -216,8 +216,8 @@ async function main() {
   const appEnv = { ...safeEnv, NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(opts.apiPort),
     DATABASE_URL: databaseUrl(state, database), DATABASE_QUERY_TIMEOUT_MS: '60000',
     LANGGRAPH_CHECKPOINT_SCHEMA: 'eng07_checkpoints', HARNESS_WORKSPACE_ROOT: join(state, 'runtime'),
-    GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl,
-    GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID: `eng07-owner-${owner}`, ENG07_DATABASE: database,
+    GRAPHQL_BROWSER_ORIGIN: webUrl,
+    ENG07_DATABASE: database,
     ENG07_STATE: state, ENG07_OWNER: owner, ENG07_WEB_PORT: String(opts.webPort),
     ...(opts.codexModel ? { ENG07_CODEX_MODEL: opts.codexModel } : {}), TMPDIR: join(state, 'tmp') }
   const startApi = async () => {
@@ -225,7 +225,7 @@ async function main() {
     api = ownedChild('API', process.execPath, ['--import', tsx, service, 'api'], appEnv, true)
     await bounded(api.ready, 120_000, 'API startup')
     await readyHttp(`${apiUrl}/health/ready`, () => true)
-    await readyHttp(`${apiUrl}/api/auth/session`, (body) => JSON.parse(body).localDev === true, { origin: webUrl })
+    await readyHttp(`${apiUrl}/api/local-human`, (body) => Boolean(JSON.parse(body).principal), { origin: webUrl })
   }
   stage = 'API migrations and production startup'
   await startApi()
@@ -237,7 +237,7 @@ async function main() {
   web = ownedChild('Web', process.execPath, ['--import', tsx, service, 'web'], webEnv, true)
   await bounded(web.ready, 90_000, 'Web startup')
   await readyHttp(webUrl, (body) => /<html(?:\s|>)/i.test(body))
-  await readyHttp(`${webUrl}/api/auth/session`, (body) => JSON.parse(body).localDev === true, { origin: webUrl })
+  await readyHttp(`${webUrl}/api/local-human`, (body) => Boolean(JSON.parse(body).principal), { origin: webUrl })
   console.log(`ENG07 ready: ${webUrl} (API ${apiUrl}). Dev browser access is loopback-only.`)
   console.log(`Workspace: ${demo.workspaceId}; eight saved workflows, ${demo.agentCount} Agents.`)
   console.log(`Execution folder: ${demo.executionFolder}`)

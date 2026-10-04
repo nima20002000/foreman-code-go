@@ -20,9 +20,9 @@ describe('WorkspaceDirectory', () => {
     }, { status: 401 })))
     renderWithRouter(<WorkspaceDirectory />)
 
-    expect(await screen.findByRole('link', { name: 'Open App access' }))
-      .toHaveAttribute('href', '/settings/operator-access')
-    expect(screen.queryByText('Workspaces unavailable')).not.toBeInTheDocument()
+    expect(await screen.findByText('Workspaces unavailable')).toBeVisible()
+    expect(screen.getByText('Check the local API connection, then retry the workspace list.')).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Open App access' })).not.toBeInTheDocument()
   })
 
   it('lists durable workspaces as simple cards', async () => {

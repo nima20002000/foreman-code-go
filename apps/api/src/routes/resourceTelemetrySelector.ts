@@ -7,7 +7,7 @@ import type { TelemetryDenialAudit } from '../modules/resource-telemetry/readbac
 
 export function registerResourceTelemetrySelectorRoutes(app: FastifyInstance, selectors: TelemetrySelectorService<ManagementPrincipal>, audit: TelemetryDenialAudit): void {
   app.post(RESOURCE_TELEMETRY_SELECTOR_ROUTE, { bodyLimit: 8192 }, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     const principal = requirePrincipal(request)
     const controller = new AbortController()
     const abort = () => controller.abort()

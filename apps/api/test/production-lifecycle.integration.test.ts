@@ -303,9 +303,9 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   return { run, issuer, pending: (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]! }
 }
 
-it('answers a production User approval through its own authenticated API while excluding Operator and App authority', async () => {
+it('answers a production User approval through the local API while excluding Operator and App authority', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }], expiresAt: new Date(Date.now() + 600_000) })
+
   const url = `/api/user/interactions/${pending.id}/respond`
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
@@ -314,13 +314,13 @@ it('answers a production User approval through its own authenticated API while e
   const denied = await mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)
   expect(denied.isError).toBe(true)
   expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
-  const headers = { authorization: `Bearer ${human.token}` }
+  const headers = {}
   const list = await production.app.inject({ method: 'GET', url: `/api/user/interactions?runId=${run.id}`, headers })
   expect(list.statusCode, list.body).toBe(200)
   expect(list.json().items.map((item: { id: string }) => item.id)).toEqual([pending.id])
   expect((await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}`, headers })).statusCode).toBe(200)
   expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions/:interactionId' })).toBe(false)
-  const response = await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${human.token}` }, payload })
+  const response = await production.app.inject({ method: 'POST', url, headers: {}, payload })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
   await production.engine.resume(run.id)
@@ -339,9 +339,9 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     expect(native.attaches).toBe(before.attaches)
     expect(native.responses).toBe(before.responses)
     expect((await runs.get(run.id))?.executionState).toBe('waiting')
-    const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
     const response = await production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-      headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+      headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
     expect(response.statusCode).toBe(change === 'location' ? 409 : 403)
     const untouched = await interactions.get(pending.id)
     expect(untouched?.selectedOptionId).toBeUndefined()
@@ -351,7 +351,7 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
   const respond = vi.mocked(CodexAppServerSessionManager.prototype.respond)
   const original = respond.getMockImplementation()!
   let entered!: () => void, release!: () => void
@@ -363,7 +363,7 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
     return original.apply(this, args)
   })
   const delivery = production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-    headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+    headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
   // inject starts when awaited/then'ed; keep both requests live.
   const delivered = Promise.resolve(delivery)
   await writing
@@ -383,7 +383,7 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
 
 it('revalidates the accepting authority again between attachment and the native response', async () => {
   const { issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
   const coordinator = runtime()
   const attach = coordinator.attachInteraction.bind(coordinator)
   vi.spyOn(coordinator, 'attachInteraction').mockImplementationOnce(async (...args) => {
@@ -392,7 +392,7 @@ it('revalidates the accepting authority again between attachment and the native 
     return attached
   })
   const response = await production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-    headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+    headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('failed')
   expect(native.responses).toBe(0)

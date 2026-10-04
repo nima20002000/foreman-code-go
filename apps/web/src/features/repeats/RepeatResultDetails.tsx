@@ -2,7 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { sameWorkflowValue, type RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Button } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { ApiError } from '../../shared/api/client'
 import { repeatClient } from './client'
 

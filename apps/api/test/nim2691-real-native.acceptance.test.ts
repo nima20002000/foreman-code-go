@@ -81,7 +81,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       }
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
-        GRAPHQL_DEV_BROWSER_ACCESS: '0',
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
         HARNESS_WORKSPACE_ROOT: runtimeRoot, DATABASE_QUERY_TIMEOUT_MS: '10000' }),
         workspaceStorageRoot: projectPath }
@@ -236,17 +235,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expectedLocationRevision: 1, input: { task: 'Say hello once.' } } })
         expect(started.statusCode, started.body).toBe(202)
         const runId = started.json().run.id as string
-        const user = scenario.approval ? await access.issue({ name: 'NIM-2691 read-only approval tester',
-          audience: 'user', expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{
-            actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [workspace.id] },
-          }] }) : undefined
         const approved = new Set<string>()
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
-          if (user) {
+          if (scenario.approval) {
             const pendingResponse: { statusCode: number; body: string; json(): unknown } = await app.inject({ method: 'GET',
               url: `/api/user/interactions?workspaceId=${encodeURIComponent(workspace.id)}&workflowId=${encodeURIComponent(managed.workflow.id)}&runId=${encodeURIComponent(runId)}&status=pending&limit=20`,
-              headers: { host: 'localhost', authorization: `Bearer ${user.token}` } })
+              headers: { host: 'localhost' } })
             expect(pendingResponse.statusCode, pendingResponse.body).toBe(200)
             const pending: ReturnType<typeof ListInteractionsResponseSchema.parse>['items'] =
               ListInteractionsResponseSchema.parse(pendingResponse.json()).items
@@ -261,7 +256,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               assert.ok(choice)
               const response = await app.inject({ method: 'POST',
                 url: `/api/user/interactions/${interaction.id}/respond`,
-                headers: { host: 'localhost', authorization: `Bearer ${user.token}` },
+                headers: { host: 'localhost' },
                 payload: { interactionId: interaction.id, optionId: choice.optionId, expectedRevision: interaction.revision } })
               if (response.statusCode === 409 && (response.json() as { error?: { code?: string } }).error?.code === 'REVISION_CONFLICT') {
                 continue // The native request changed after the list read; refetch its current revision.

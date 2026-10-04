@@ -223,7 +223,7 @@ export function bindMockInstallation(): void {
 export const handlers: RequestHandler[] = [
   ...agentChatHandlers,
   currentAuthoringHandler,
-  http.get('/api/auth/identity', () => HttpResponse.json(mockRuntimeIdentity)),
+  http.get('/api/runtime/identity', () => HttpResponse.json(mockRuntimeIdentity)),
   ...settingsExperienceHandlers,
   ...skillsHandlers,
   http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,

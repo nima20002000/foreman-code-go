@@ -12,7 +12,7 @@ The public export is `ChatRetentionSettings`; it takes no props and requires onl
 the application's existing `QueryClientProvider` and Nocturne theme/styles.
 It does not read a workspace, workflow, selected conversation or router context.
 
-In `apps/web/src/features/auth/AccountAccess.tsx`, add:
+In `apps/web/src/features/settings/LocalAccount.tsx`, add:
 
 ```tsx
 import { ChatRetentionSettings } from '../retention-settings'

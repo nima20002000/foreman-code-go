@@ -50,7 +50,7 @@ export function bindProtectedChatInstance(instanceId: string): boolean {
   // Existing unbound state has no trustworthy instance owner either.
   const epoch = rotateProtectedSession()
   instanceReloadRequired = true
-  // rotateProtectedSession supports volatile sessions; this boundary requires
+  // rotateProtectedSession supports volatile storage; this boundary requires
   // durable writes so the next document cannot enter a reload loop.
   window.localStorage.setItem(identityEpochKey, epoch)
   window.localStorage.setItem(instanceBindingKey, instanceId)

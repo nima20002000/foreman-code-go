@@ -193,7 +193,7 @@ describe('FIL-17 + SCH selected Board', () => {
     useOperatorChatStore.setState({ open: true, historyOpen: false, selectedConversationId: 'conversation-a' })
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(
-      http.get('/api/auth/session', () => HttpResponse.json({ principal: { id: owner, name: 'Combined tester',
+      http.get('/api/local-human', () => HttpResponse.json({ principal: { id: owner, name: 'Combined tester',
         expiresAt: '2099-01-01T00:00:00.000Z', grants: [] } })),
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator,

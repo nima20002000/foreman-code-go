@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { JobRuntimeProfileSaveSchema, JobRuntimeQualificationCommandSchema } from '@foreman-code/contracts/job-runtime'
 import { z } from 'zod'
-import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
+import { requireLocalHuman, requirePrincipal } from '../modules/access/http.js'
 import type { JobRuntimeProfiles } from '../modules/jobs/runtimeProfiles.js'
 interface Scope {workspaceId:string;profileId:string;approvalId:string}
 export function registerJobRuntimeProfileRoutes(app:FastifyInstance,service:JobRuntimeProfiles):void {
@@ -14,5 +14,5 @@ export function registerJobRuntimeProfileRoutes(app:FastifyInstance,service:JobR
   })
   app.get<{Params:Scope}>(`${root}/runtime-qualifications/:approvalId`,request=>service.getQualification(requirePrincipal(request),request.params.workspaceId,request.params.approvalId))
   app.post<{Params:Scope;Body:unknown}>(`${root}/runtime-qualifications/:approvalId/run`,async request=>({profile:await service.qualify(requirePrincipal(request),'http',request.params.workspaceId,JobRuntimeQualificationCommandSchema.parse(request.body).commandId,request.params.approvalId)}))
-  app.post<{Params:Scope;Body:unknown}>(`${root}/runtime-qualifications/:approvalId/approve`,async request=>{requireBrowserSession(request);return {approval:await service.approve(requirePrincipal(request),'http',request.params.workspaceId,JobRuntimeQualificationCommandSchema.parse(request.body).commandId,request.params.approvalId)}})
+  app.post<{Params:Scope;Body:unknown}>(`${root}/runtime-qualifications/:approvalId/approve`,async request=>{requireLocalHuman(request);return {approval:await service.approve(requirePrincipal(request),'http',request.params.workspaceId,JobRuntimeQualificationCommandSchema.parse(request.body).commandId,request.params.approvalId)}})
 }

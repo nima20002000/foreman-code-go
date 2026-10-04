@@ -3,18 +3,18 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { server } from '../../mocks/server'
-import { bindProtectedChatInstance } from '../../shared/api/protectedChatStorage'
+import { server } from '../mocks/server'
+import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
 
-vi.mock('../../shared/api/protectedChatStorage', async (original) => ({
-  ...await original<typeof import('../../shared/api/protectedChatStorage')>(), bindProtectedChatInstance: vi.fn(() => false),
+vi.mock('../shared/api/protectedChatStorage', async (original) => ({
+  ...await original<typeof import('../shared/api/protectedChatStorage')>(), bindProtectedChatInstance: vi.fn(() => false),
 }))
 const identity = { installationId: 'd95abeb8-598a-49a4-8c3c-c6e3533053e8', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
 const clients: QueryClient[] = []
 beforeEach(() => {
   vi.mocked(bindProtectedChatInstance).mockReset().mockReturnValue(false)
-  server.use(http.get('*/api/auth/identity', () => HttpResponse.json(identity)))
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json(identity)))
 })
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 function mount() {
@@ -23,7 +23,7 @@ function mount() {
   render(<QueryClientProvider client={client}><RuntimeInstanceBoundary><p>Protected content</p></RuntimeInstanceBoundary></QueryClientProvider>)
   return client
 }
-it('withholds protected content until the authenticated installation is bound', async () => {
+it('withholds protected content until the local installation is bound', async () => {
   mount()
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
   expect(await screen.findByText('Protected content')).toBeVisible()
@@ -32,7 +32,7 @@ it('withholds protected content until the authenticated installation is bound', 
 it('hides previously rendered content when identity verification subsequently fails', async () => {
   const client = mount()
   await screen.findByText('Protected content')
-  server.use(http.get('*/api/auth/identity', () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Unavailable' } }, { status: 503 })))
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Unavailable' } }, { status: 503 })))
   await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] })
   expect(await screen.findByRole('heading', { name: 'Could not verify this app' })).toBeVisible()
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()

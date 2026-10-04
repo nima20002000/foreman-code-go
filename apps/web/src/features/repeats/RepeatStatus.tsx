@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { repeatGraphClient, type RepeatGraphClient } from './canonicalClient'
 import { useCurrentRunQuery } from '../workflow-board/currentRunQuery'
 import { RepeatResultDetails } from './RepeatResultDetails'

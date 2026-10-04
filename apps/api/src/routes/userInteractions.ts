@@ -6,20 +6,16 @@ import { InteractionListInputSchema } from '@foreman-code/contracts/management'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 
-import { requireLocalRequest } from '../modules/access/http.js'
-import { bearerToken, type PostgresAccessService } from '../modules/access/postgres.js'
+import { requireLocalHuman, requirePrincipal } from '../modules/access/http.js'
 import { canUserInteract } from '../modules/access/userPolicy.js'
 import { DomainError } from '../modules/errors.js'
 import type { InteractionService } from '../modules/interactions/service.js'
 
-export function registerUserInteractions(app: FastifyInstance, access: PostgresAccessService, interactions: InteractionService): void {
-  const authenticate = (request: FastifyRequest): Promise<ManagementPrincipal> | ManagementPrincipal => {
-    requireLocalRequest(request)
-    if (request.operatorAuthentication === 'browser' && request.operatorPrincipal) {
-      const owner = request.operatorPrincipal
-      return { ...owner, audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {} }] }
-    }
-    return access.authenticate(bearerToken(request.headers.authorization), 'user')
+export function registerUserInteractions(app: FastifyInstance, interactions: InteractionService): void {
+  const authenticate = (request: FastifyRequest): ManagementPrincipal => {
+    requireLocalHuman(request)
+    const human = requirePrincipal(request)
+    return { ...human, audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {} }] }
   }
   app.get<{ Querystring: Record<string, unknown> }>('/api/user/interactions', async (request) => {
     const principal = await authenticate(request)

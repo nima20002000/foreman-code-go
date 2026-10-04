@@ -50,7 +50,7 @@ import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
 import { runLiveActivityMigration } from './runLiveActivityMigration.js'
 import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigration.js'
-import { browserAuthMigration } from './browserAuthMigration.js'
+import { localHumanMigration } from './localHumanMigration.js'
 import { skillsLibraryMigration } from './skillsLibraryMigration.js'
 import { currentApprovalPublicationMigration } from './currentApprovalPublicationMigration.js'
 import { agentChatMigration } from './agentChatMigration.js'
@@ -699,7 +699,6 @@ export const migrations = [
   pr17AuditMigration,
   nativeEventSequenceMigration,
   harnessSettingsMigration,
-  browserAuthMigration,
   { version: 170019, sql: `alter table operator_conversations add column if not exists deleted_at timestamptz;` },
   { version: 170020, sql: `
     create table operator_conversation_activity (
@@ -822,6 +821,7 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  localHumanMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

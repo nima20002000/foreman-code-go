@@ -12,17 +12,12 @@ afterEach(() => vi.restoreAllMocks())
 
 async function approveThroughHttp(f: Harness, started: Started) {
   const { workspaceId, workflowId, runId } = started.scope
-  const user = await f.base.access.issue({ name: 'ENG07 human approver', audience: 'user',
-    expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
-      scope: { workspaceIds: [workspaceId], workflowIds: [workflowId], runIds: [runId] } }] })
-  // All three constrained grant dimensions must be present on the list request.
-  // Keep the original underspecified request as a denial regression; do not
-  // broaden the human's grant to make a run-only list succeed.
-  const underspecified = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`, undefined, user.token)
-  expect(underspecified.status).toBe(403)
-  expect(underspecified.body).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+  const denied = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`)
+  expect(denied.status).toBe(403)
+  const runOnly = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`, undefined, '')
+  expect(runOnly.status).toBe(200)
   const query = new URLSearchParams({ workspaceId, workflowId, runId, limit: '10' })
-  const list = () => f.http('GET', `/api/user/interactions?${query}`, undefined, user.token)
+  const list = () => f.http('GET', `/api/user/interactions?${query}`, undefined, '')
   await vi.waitFor(async () => {
     const page = ListInteractionsResponseSchema.parse(await list())
     expect(page.items).toHaveLength(1)
@@ -38,7 +33,7 @@ async function approveThroughHttp(f: Harness, started: Started) {
   const current = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
   expect(current.state.run.pendingInteractionCount).toBe(1)
   expect(current.state.occurrences).toEqual([]); expect(current.state.decisions).toEqual([])
-  const detail = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
+  const detail = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
   expect(detail.canRespond).toBe(true); expect(detail.interaction).toEqual(interaction)
   const option = interaction.responseOptions.find((item) => item.semantic === 'approve_once')
   expect(option).toBeDefined()
@@ -69,7 +64,7 @@ async function approveThroughHttp(f: Harness, started: Started) {
   // correctly hits EXECUTION_STOPPED. Hold the successor, not the requester,
   // and replay after delivery/ACK while the first response is still in flight.
   const successor = f.scenario.nodes[2]!, releaseSuccessor = f.hold(successor.id)
-  const response = f.http('POST', path, input, user.token)
+  const response = f.http('POST', path, input, '')
   void response.catch(() => undefined) // Keep failures handled until the awaited read below.
   try {
     await f.waitUntilParked(started.scope, successor.id)
@@ -77,9 +72,9 @@ async function approveThroughHttp(f: Harness, started: Started) {
     expect(active).toMatchObject({ run: { executionState: 'running', outcome: 'pending' },
       stopRequested: false, cleanupPending: false })
     expect(f.base.provider.counts.responses).toBe(1)
-    const delivered = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
+    const delivered = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
     expect(delivered.interaction).toMatchObject({ id: interaction.id, runId, deliveryState: 'delivered' })
-    const replay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
+    const replay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, ''))
     expect(replay).toMatchObject({ replayed: true,
       interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
     expect(f.parked.has(successor.id)).toBe(true)
@@ -94,11 +89,11 @@ async function approveThroughHttp(f: Harness, started: Started) {
   await f.settled(started.scope)
   // An exact terminal replay remains idempotent and cannot redeliver the native response.
   const counts = { ...f.base.provider.counts }
-  const terminalReplay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
+  const terminalReplay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, ''))
   expect(terminalReplay).toMatchObject({ replayed: true,
     interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   expect(f.base.provider.counts).toEqual(counts)
-  const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
+  const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
   expect(final.interaction).toEqual(decision.interaction)
   const finalMonitor = ManagedInteractionPageSchema.parse(await f.mcp('interaction_list', { workspaceId, workflowId, runId, limit: 10 }))
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)

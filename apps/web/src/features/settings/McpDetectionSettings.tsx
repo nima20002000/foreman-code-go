@@ -4,14 +4,14 @@ import type { AgentHarness } from '@foreman-code/contracts'
 import { Alert, Badge, Button, Combobox, Icon } from '../../shared/ui/nocturne'
 import { useManagedWorkspacesQuery, useManagedWorkspaceQuery } from '../../shared/api/query'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { McpAccessNotice, McpConnectionCard } from './McpConnectionCard'
 import './mcpConnections.css'
 
 type Props = { workspaceId?: string; harness?: AgentHarness }
 
-function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspaceId: string; returnTo: string }) {
+function WorkspaceEvidence({ workspaceId, harness }: Props & { workspaceId: string }) {
   const contentRef = useRef<HTMLDivElement>(null)
   const query = useManagedWorkspaceQuery(workspaceId)
   const accessError = useProtectedAccessError(query)
@@ -19,7 +19,7 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
   const retry = <Button size="sm" loading={query.isFetching} leading={<Icon name="refresh" size={16} />}
     onClick={() => void query.refetch({ cancelRefetch: false })}>Try again</Button>
 
-  if (accessError) return <McpAccessNotice error={accessError} returnTo={returnTo} retry={retry} />
+  if (accessError) return <McpAccessNotice error={accessError} retry={retry} />
   if (!current) return query.isError
     ? <Alert live tone="danger" title="Couldn't load this workspace" action={retry}>{query.error.message}</Alert>
     : <p className="mcp-pending" role="status"><Icon name="clock" size={16} />
@@ -38,7 +38,7 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
     {ready && location ? <div className="mcp-connection-grid">
       {(harness ? [harness] : ['codex', 'opencode'] as const).map((provider) => <McpConnectionCard
         key={JSON.stringify([workspaceId, provider, location.runnerId, location.rootPath])}
-        workspaceId={workspaceId} harness={provider} location={location} returnTo={returnTo} />)}
+        workspaceId={workspaceId} harness={provider} location={location} />)}
     </div> : status === 'restricted' ? <Alert tone="warning" title="Folder access is restricted" action={retry}>
       Ask the workspace owner for access, then try again.
     </Alert> : <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="card" onSaved={() => contentRef.current?.focus()} />}
@@ -46,12 +46,12 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
 }
 
 /** A picker belongs only in the global harness preview, never inside a known workspace. */
-function WorkspaceSelector({ harness, returnTo }: { harness?: AgentHarness; returnTo: string }) {
+function WorkspaceSelector({ harness }: { harness?: AgentHarness }) {
   const [selected, setSelected] = useState('')
   const query = useManagedWorkspacesQuery()
   const accessError = useProtectedAccessError(query)
   const retry = <Button size="sm" loading={query.isFetching} onClick={() => void query.refetch({ cancelRefetch: false })}>Try again</Button>
-  if (accessError) return <McpAccessNotice error={accessError} returnTo={returnTo} retry={retry} />
+  if (accessError) return <McpAccessNotice error={accessError} retry={retry} />
   if (!query.data) return query.isError
     ? <Alert live tone="danger" title="Couldn't load workspaces" action={retry}>{query.error.message}</Alert>
     : <p className="mcp-pending" role="status">{query.fetchStatus === 'paused' ? 'Waiting for a connection…' : 'Loading workspaces…'}</p>
@@ -69,19 +69,18 @@ function WorkspaceSelector({ harness, returnTo }: { harness?: AgentHarness; retu
       <Icon name="folder" size={22} /><div><strong>No workspaces yet</strong><p>Create a workspace to check its app connections.</p></div>
       <Link className="n-button n-button--secondary n-button--sm" to="/workspaces">Workspaces<Icon name="arrow" size={16} /></Link>
     </div>}
-    {selected ? <WorkspaceEvidence key={selected} workspaceId={selected} harness={harness} returnTo={returnTo} /> : null}
+    {selected ? <WorkspaceEvidence key={selected} workspaceId={selected} harness={harness} /> : null}
   </div>
 }
 
 export function McpDetectionSettings(props: Props) {
   const epoch = useHarnessSessionEpoch()
-  const returnTo = props.workspaceId ? `/workspaces/${encodeURIComponent(props.workspaceId)}/settings` : '/settings/harnesses'
   return <section className="mcp-connections" aria-label="Workspace Foreman Code MCP">
     <header className="mcp-heading">
       <div className="mcp-heading-title"><Icon name="workflow" size={20} /><h2>App connections</h2><Badge>MCP</Badge></div>
       <p>{props.workspaceId ? 'Connections to this workspace’s app tools.' : 'Check app connections for a workspace.'}</p>
     </header>
-    {props.workspaceId ? <WorkspaceEvidence key={`${props.workspaceId}:${epoch}`} {...props} workspaceId={props.workspaceId} returnTo={returnTo} />
-      : <WorkspaceSelector key={epoch} harness={props.harness} returnTo={returnTo} />}
+    {props.workspaceId ? <WorkspaceEvidence key={`${props.workspaceId}:${epoch}`} {...props} workspaceId={props.workspaceId} />
+      : <WorkspaceSelector key={epoch} harness={props.harness} />}
   </section>
 }

@@ -62,10 +62,10 @@ async function responds(url, accepts) {
 
 export async function runningApiAcceptsBrowserOrigin(apiUrl, browserOrigin, request = fetch) {
   try {
-    const response = await request(`${apiUrl}/api/auth/session`, {
+    const response = await request(`${apiUrl}/api/local-human`, {
       headers: { origin: browserOrigin }, signal: AbortSignal.timeout(2000),
     })
-    return response.ok && (await response.text()).includes('"localDev":true')
+    return response.ok && Boolean(JSON.parse(await response.text()).principal)
   } catch { return false }
 }
 
@@ -144,7 +144,7 @@ async function main() {
     api = start('API', ['--filter', '@foreman-code/api', 'dev'], {
       // Keep API logs on disk by default (.logs/api.*.log) unless the caller chose a destination.
       env: { ...process.env, ...(!process.env.LOG_DIR && !process.env.LOG_FILE ? { LOG_DIR: join(root, '.logs') } : {}),
-        FOREMAN_CODE_DEV_BROWSER_ACCESS: '1', FOREMAN_CODE_DEV_BROWSER_ORIGIN: webUrl },
+        FOREMAN_CODE_BROWSER_ORIGIN: webUrl },
     })
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)

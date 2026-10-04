@@ -31,7 +31,7 @@ async function main() {
       scope: workspaceId ? { workspaceIds: [workspaceId] } : {},
     }
     const issued = await access.issue({
-      name, audience, grants: [audience === 'user' ? { ...grant, actions: ['interactions:read', 'interactions:respond'] } : grant], expiresAt: new Date(Date.now() + days * 86_400_000),
+      name, audience, grants: [grant], expiresAt: new Date(Date.now() + days * 86_400_000),
     })
     process.stdout.write(`Principal: ${issued.principal.id}\nAudience: ${issued.principal.audience}\nExpires: ${issued.principal.expiresAt}\nToken (shown once): ${issued.token}\n`)
   } finally { await database.close() }

@@ -60,9 +60,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
         'jobs:read', 'jobs:start', 'jobs:cancel'], scope: { workspaceIds: [workspaceId] } }] })
     reader = await access.issue({ name: 'Read only Job caller', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
       grants: [{ actions: ['jobs:read'], scope: { workspaceIds: [workspaceId] } }] })
-    const userId = randomUUID()
-    await pool.query('insert into browser_auth_user(id,name,email) values($1,$2,$3)', [userId, 'Owner', `${userId}@example.test`])
-    await pool.query('insert into browser_auth_owner(singleton,user_id,principal_id) values(true,$1,$2)', [userId, writer.principal.id])
+    await pool.query('update local_human_principal set principal_id=$1', [writer.principal.id])
     const deviceId = randomUUID(), workerInstallationId = randomUUID(), policyId = randomUUID()
     const registration = { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 2,
       publicKeyFingerprint: publicKeyFingerprint(publicKey), status: 'revoked', scopes: ['connect', 'heartbeat'] }

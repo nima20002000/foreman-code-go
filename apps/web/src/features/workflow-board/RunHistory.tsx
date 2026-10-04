@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { readBoardHistory } from './client'
 import { Button } from '../../shared/ui/nocturne'
 import { refreshFirstInspectionPage } from './inspect/queries'

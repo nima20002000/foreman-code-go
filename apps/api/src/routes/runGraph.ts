@@ -17,7 +17,7 @@ export type GraphHttpDenialAudit = (principalId: string | undefined, code: strin
 export function registerRunGraphRoutes(app: FastifyInstance, reads: RunGraphReadApi, recordDenied: GraphHttpDenialAudit): void {
   const canonical = canonicalRunGraphReadApi(reads)
   const invoke = async (request: FastifyRequest, reply: FastifyReply, route: string, work: () => Promise<unknown> | unknown) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     try {
       if (!request.operatorPrincipal) throw new RunGraphError('GRAPH_READ_ACCESS_DENIED')
       return await work()

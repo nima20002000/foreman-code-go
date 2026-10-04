@@ -22,7 +22,7 @@ import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Age
 const closes: Array<() => Promise<void>> = []
 async function eventStream(url: string, token: string) {
   const controller = new AbortController()
-  const response = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: controller.signal })
+  const response = await fetch(url, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: controller.signal })
   if (!response.ok || !response.body) throw new Error('Authorized production SSE did not open.')
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let buffered = ''
@@ -96,7 +96,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   let origin = await startActivityReplayProduction(production, replay, closes, config.port)
   const headers = { authorization: `Bearer ${writer.token}` }
   async function http(method: 'GET' | 'POST' | 'PUT', url: string, payload?: Record<string, unknown>, token = writer.token) {
-    const response = await production.app.inject({ method, url, headers: { authorization: `Bearer ${token}` }, ...(payload !== undefined ? { payload } : {}) })
+    const response = await production.app.inject({ method, url, headers: token ? { authorization: `Bearer ${token}` } : {}, ...(payload !== undefined ? { payload } : {}) })
     return response
   }
   async function call(name: string, args: Record<string, unknown>, token = writer.token) {
@@ -471,12 +471,9 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
       `/api/management/workspaces/${workspaceId}/runs/${started.run.id}`)).json()),
     (value) => value.activitySnapshot!.pendingInteractions.length > 0)
     const interaction = detail.activitySnapshot!.pendingInteractions[0]!
-    const user = await f.access.issue({ name: 'Exact qualified User response', audience: 'user', expiresAt: new Date(Date.now() + 600000),
-      grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [workspaceId],
-        workflowIds: [started.run.workflowId], runIds: [started.run.id] } }] })
     // Request publication precedes the checkpoint binding, which advances its public revision.
     const view = await eventually(async () => {
-      const response = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)
+      const response = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, '')
       expect(response.statusCode, response.body).toBe(200)
       return GetInteractionResponseSchema.parse(response.json())
     }, (value) => !!value.interaction.graphInterruptId)
@@ -487,11 +484,11 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const choice = current.responseOptions.find((option) => option.semantic === 'approve_once')!
     const stale = await f.http('POST', `/api/user/interactions/${interaction.id}/respond`, {
       interactionId: interaction.id, expectedRevision: current.revision - 1, optionId: choice.optionId,
-    }, user.token)
+    }, '')
     expect(stale.statusCode, stale.body).toBe(409)
     expect(stale.json().error.code).toBe('REVISION_CONFLICT')
     expect(f.replay.responses).toHaveLength(0)
-    const unchanged = GetInteractionResponseSchema.parse((await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)).json())
+    const unchanged = GetInteractionResponseSchema.parse((await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, '')).json())
     expect(unchanged.interaction).toMatchObject({ revision: current.revision, status: 'pending',
       graphInterruptId: current.graphInterruptId, nativeSessionId: current.nativeSessionId, nativeRequestId: current.nativeRequestId })
     const authoritative = (await f.db.pool.query<{ revision: string; graph_interrupt_id: string }>(`
@@ -499,11 +496,11 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(authoritative).toEqual({ revision: String(current.revision), graph_interrupt_id: current.graphInterruptId })
     const answer = await f.http('POST', `/api/user/interactions/${interaction.id}/respond`, {
       interactionId: interaction.id, expectedRevision: current.revision, optionId: choice.optionId,
-    }, user.token)
+    }, '')
     expect(answer.statusCode, answer.body).toBe(200)
     expect(answer.json().interaction.deliveryState).not.toBe('delivered')
     expect(f.replay.responses).toHaveLength(1)
-    const recorded = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)
+    const recorded = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, '')
     expect(recorded.json().activity.answerRecorded).toBe(true)
     expect(recorded.json().activity.workerAcknowledgment).toBe('unknown')
     expect(recorded.json().activity.response.available).toBe(false)

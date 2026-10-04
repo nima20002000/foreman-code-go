@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RepeatGraphScopeV3Schema } from '@foreman-code/contracts/wave25'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { ApiError } from '../../../shared/api/client'
-import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
+import { useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience'
 import { sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { useWorkflowBoard } from '../context'
 import { currentRunKey } from '../currentRunQuery'
@@ -18,7 +18,7 @@ import { StopControl, StopReceipt } from './StopControl'
 import './actions.css'
 
 function SelectedRunActions({ selection, access }: {
-  selection: RunActionSelection; access: ReturnType<typeof useBrowserAccessQuery>
+  selection: RunActionSelection; access: ReturnType<typeof useLocalHumanAccessQuery>
 }) {
   const cache = useQueryClient(), board = useWorkflowBoard()
   const principal = access.isError ? undefined : access.data?.principal
@@ -106,7 +106,7 @@ function SelectedRunActions({ selection, access }: {
 /** The only public mount point. Selection is supplied by the URL-owned Board;
  * changing Run or principal tears down private Query observers and command forms. */
 export function RunActions(props: RunActionSelection) {
-  const access = useBrowserAccessQuery(), board = useWorkflowBoard()
+  const access = useLocalHumanAccessQuery(), board = useWorkflowBoard()
   return <SelectedRunActions key={JSON.stringify([sessionGeneration(), props.workspaceId, props.workflowId, props.runId,
     board?.workspaceId, board?.workflowId, board?.run?.runId, board?.run?.workflowVersionId, board?.run?.executionSemanticsVersion])}
     selection={props} access={access} />

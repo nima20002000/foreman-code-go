@@ -162,21 +162,19 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
   })
 
-  it('opens the profile from Account and redirects the old App access URL', async () => {
+  it('opens local preferences without login or credential controls', async () => {
     const account = renderRoute('/account')
-    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
-    expect(screen.getByText('preview@example.test')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Local preferences', level: 1 })).toBeVisible()
+    expect(screen.getByText(/one local human/)).toBeVisible()
+    expect(screen.queryByText('preview@example.test')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /sign in|sign out|connect browser/i })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
-    account.unmount()
-
-    const legacy = renderRoute('/settings/operator-access')
-    await waitFor(() => expect(legacy.router.state.location.pathname).toBe('/account'))
-    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
+    expect(account.router.state.location.pathname).toBe('/account')
   })
 
-  it('mounts chat retention on the authenticated account page', async () => {
+  it('mounts chat retention on the local preferences page', async () => {
     renderRoute('/account')
-    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Local preferences', level: 1 })).toBeVisible()
     const retention = await screen.findByRole('region', { name: 'Chat retention' })
     expect(within(retention).getByRole('spinbutton', { name: 'Duration' })).toHaveValue(7)
   })
@@ -277,7 +275,7 @@ describe('workspace section routes', () => {
   it('opens the approved Main folder browser without navigating away from Settings', async () => {
     localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${rootMainId}`)
     server.use(
-      http.get('/api/auth/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
+      http.get('/api/runtime/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
       http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
       http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
       http.get('/api/management/harnesses/directories', () => HttpResponse.json({

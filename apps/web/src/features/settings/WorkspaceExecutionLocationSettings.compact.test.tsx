@@ -28,7 +28,7 @@ beforeEach(() => {
     executionLocation: { runnerId: 'server-main-runner', rootPath: `${base}/existing` } }
   folders = ['existing', 'target']; writes = []; localRootReads = []
   server.use(
-    http.get('/api/auth/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
+    http.get('/api/runtime/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
     http.get('/api/management/settings/workspaces/creation', () => HttpResponse.json({ suggestedName: 'New workspace', description: '', parentPath: base })),
     http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json(saved)),
     http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),

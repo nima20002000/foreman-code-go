@@ -29,7 +29,7 @@ still verifies the provider and original session.
 Human approval credentials can be issued with the existing CLI:
 
 ```sh
-corepack pnpm --filter @graphql/api credential issue --name 'Human approvals' --audience user --workspace <workspace-id>
+# Human approvals use the implicit local human in the loopback app; no User token is issued.
 ```
 
 Send that credential as a Bearer token to `/api/user/interactions`. Operator

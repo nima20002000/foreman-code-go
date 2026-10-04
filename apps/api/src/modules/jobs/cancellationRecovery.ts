@@ -11,7 +11,7 @@ import { JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema, J
   type SignedJobCancellationClosure } from '@foreman-code/contracts/job-cancellation-recovery'
 import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
 import type { JobExecution } from '@foreman-code/contracts/jobs'
-import { requireBrowserSession, requirePrincipal } from '../access/http.js'
+import { requireLocalHuman, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -115,16 +115,16 @@ export class PostgresJobCancellationRecovery {
   }
   async approveBrowser(request: FastifyRequest, workspaceId: string, executionId: string, recoveryId: string,
     commandId: string) {
-    requireBrowserSession(request)
+    requireLocalHuman(request)
     const principal = requirePrincipal(request)
     return (await this.commands.execute({ principal, source: 'http', operation: APPROVE, commandId,
       targetKey: recoveryId, payload: { workspaceId, executionId, recoveryId },
       authorize: async sql => {
         await this.authorize(sql, principal, workspaceId)
         const owner = (await sql.query<{ principal_id: string }>(
-          'select principal_id from browser_auth_owner where singleton=true for share')).rows[0]
-        if (owner ? owner.principal_id !== principal.id : request.operatorLocalDev !== true) {
-          deny('Only the current signed-in application owner can approve cleanup.')
+          'select principal_id from local_human_principal where singleton=true for share')).rows[0]
+        if (!owner || owner.principal_id !== principal.id) {
+          deny('Only the local human can approve cleanup.')
         }
       },
       perform: async sql => {

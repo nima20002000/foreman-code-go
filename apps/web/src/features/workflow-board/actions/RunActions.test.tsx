@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, RespondToInteractionRequestSchema } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema, ManagedWorkspaceSchema, type ManagementAction } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema, ManagedWorkspaceSchema, type ManagementAction } from '@foreman-code/contracts/management'
 import { CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowCapabilitiesSchema, RunExecutionDetailSchema,
   RunExecutionSummarySchema, RunInspectionRunSchema, RunRecordDetailSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -38,7 +38,7 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
         : { outcome } }),
     }),
     cleanupPending: false, currentVersionId: f.version.id, revision: 7, locationRevision: 9,
-    access: BrowserAccessSessionSchema.parse({ principal: { id: 'lane-c-user', name: 'Lane C user',
+    access: LocalHumanAccessSchema.parse({ principal: { id: 'lane-c-user', name: 'Lane C user',
       expiresAt: '2099-01-01T00:00:00.000Z', grants: [{ actions, scope: { workspaceIds: [workspaceId], workflowIds: [workflowId] } }] } }),
     capabilities: CurrentWorkflowCapabilitiesSchema.parse({ ...CURRENT_WORKFLOW_CAPABILITIES,
       runtimeAdmission: true, stopAvailable: true, meaningfulEdit: true, reasons: [],
@@ -65,7 +65,7 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
   }
   const failed = () => HttpResponse.json({ error: { code: 'SYNTHETIC_UNCERTAIN', message: 'Receipt was not observed' } }, { status: 503 })
   const handlers = [
-    http.get('*/api/auth/session', async ({ request }) => { await record(request); return HttpResponse.json(state.access) }),
+    http.get('*/api/local-human', async ({ request }) => { await record(request); return HttpResponse.json(state.access) }),
     http.get('*/api/management/workflows/capabilities/v3', async ({ request }) => { await record(request); return HttpResponse.json(state.capabilities) }),
     http.get(`*${runPath}/executions`, async ({ request }) => {
       await record(request)

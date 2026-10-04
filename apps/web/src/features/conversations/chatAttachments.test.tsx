@@ -18,7 +18,7 @@ import {
   type FileMediaType, type FileWithRevision, type TemporaryFileScope,
 } from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
-import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
+import { useLocalHumanAccessQuery } from '../../shared/api/settingsExperience'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import { agentChatFixtureFor, createAgentChatMock } from '../../shared/mocks/agentChatHandlers'
 import { OperatorChat } from '../operator-chat/OperatorChat'
@@ -86,15 +86,15 @@ function idleAgent(): AgentChatState {
   return { ...structuredClone(agentChatFixtures.active), sessionState: 'idle', activeTurn: null, turns: [], messages: [], activities: [],
     availability: { canSend: true }, capabilities: { ...agentChatFixtures.active.capabilities, resume: true, queueNextTurn: true }, revision: 1 }
 }
-function TestBrowserSession({ children }: { children: ReactNode }) {
-  // The production RequireBrowserSession owns this same Query above RootShell.
-  useBrowserAccessQuery()
+function TestLocalAccess({ children }: { children: ReactNode }) {
+  // The production AppConnectionBoundary owns this same Query above RootShell.
+  useLocalHumanAccessQuery()
   return children
 }
 function tree(children: ReactNode) {
-  return <QueryClientProvider client={client}><TestBrowserSession>
+  return <QueryClientProvider client={client}><TestLocalAccess>
     <ChatAttachmentBoundary>{children}</ChatAttachmentBoundary>
-  </TestBrowserSession></QueryClientProvider>
+  </TestLocalAccess></QueryClientProvider>
 }
 function operatorTree() { return tree(<OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider>) }
 function panel(state: AgentChatState) { return <AgentChatPanel name="Coder" context={state.context} /> }
@@ -164,7 +164,7 @@ beforeEach(() => {
   })]))
   register(operatorScope()); register(operatorScope('conversation-two'))
   server.use(
-    http.get('/api/auth/session', () => HttpResponse.json({ principal: { id: owner, name: 'FIL-13 tester', expiresAt: '2099-01-01T00:00:00.000Z', grants: [] } })),
+    http.get('/api/local-human', () => HttpResponse.json({ principal: { id: owner, name: 'FIL-13 tester', expiresAt: '2099-01-01T00:00:00.000Z', grants: [] } })),
     http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
       value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.codex } } })),
     http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('codex'))),

@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
 import type { PostgresSourceService } from '../src/modules/sources/service.js'
@@ -45,7 +44,7 @@ async function fixture() {
   const commands = new PostgresCommandCoordinator(db.pool)
   const service = new JobRuntimeProfiles(db.pool, commands, { resolveRootBinding: async () => root } as unknown as PostgresSourceService, producer)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    browserAuth: new BrowserAuthentication(db.pool, access, { origin, secret: 'runtime-test-browser-secret-'.repeat(3), ownerPrincipalId: owner.principal.id }),
+    localHuman: { current: () => access.currentOperator(owner.principal.id) }, browserOrigin: origin,
     operator: { access, services: { commands, jobRuntimeProfiles: service } as OperatorServices } })
   registerJobRuntimeProfileRoutes(app, service)
   const clients: Client[] = [], close = async () => { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close() }
@@ -67,14 +66,7 @@ async function fixture() {
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
-    const browser = async () => {
-      const account = { email: 'runtime-owner@example.test', password: 'runtime-owner-test-password' }
-      expect((await app.inject({ method: 'POST', url: '/api/auth/setup', headers: browserHeaders, payload: account })).statusCode).toBe(201)
-      const signedIn = await app.inject({ method: 'POST', url: '/api/auth/sign-in/email', headers: browserHeaders, payload: account })
-      expect(signedIn.statusCode).toBe(200)
-      const cookies = signedIn.headers['set-cookie'], cookie = (Array.isArray(cookies) ? cookies : [cookies!]).map(value => value.split(';')[0]).join('; ')
-      return { ...browserHeaders, cookie }
-    }
+    const browser = async () => browserHeaders
     return { db, access, owner, app, auth, base, workspaceId, profile, approval, input, producer, connect, browser, close }
   } catch (error) { await close(); throw error }
 }

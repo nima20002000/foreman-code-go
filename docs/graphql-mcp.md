@@ -52,7 +52,7 @@ native source.
 
 The Operator can discover, request, and read back the `graphql` preset (its stable serialized name) through
 `harness_mcp_servers_list`, `harness_mcp_managed_request`, and
-`harness_mcp_change_get`. A signed-in human applies it in Harness Settings; an
+`harness_mcp_change_get`. A local human applies it in Harness Settings; an
 Operator cannot approve its own native-configuration write. Operator chat setup
 and workflow credential preflight both recognize either the enabled `foreman-code` or supported `graphql` entry.
 
