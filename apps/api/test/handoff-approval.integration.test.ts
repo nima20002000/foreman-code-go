@@ -20,7 +20,6 @@ import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 type Fixture = Awaited<ReturnType<typeof br1002OpenCodeRuntime>>
 type Runtime = ReturnType<Fixture['compose']>
 afterEach(() => vi.restoreAllMocks())
-const routingFailures: Array<{ code?: string; message: string }> = []
 
 async function fixture() {
   const definition = makeCurrentWorkflowFixture(randomUUID())
@@ -110,6 +109,8 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
     const input = br1002Response(interaction)
     await expect(denied.callTool({ name: 'interaction_respond', arguments: input })).rejects.toThrow('not found')
     expect((await runtime.repository.get(interaction.id))?.status).toBe('pending')
+    await runtime.credentials.revoke({ principalId: readOnlyPrincipalId })
+    readOnlyPrincipalId = undefined
     const client = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
     expect((await client.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(true)
     expect((await client.callTool({ name: 'interaction_respond', arguments: input })).isError).not.toBe(true)
@@ -143,48 +144,13 @@ async function runtimeDetails(f: Fixture, runtime: Runtime): Promise<string> {
   const run = await runtime.runs.get(f.f.run.id)
   const executions = (await f.db.pool.query('select record,accepted from harness_executions where run_id=$1',
     [f.f.run.id])).rows
-  const cleanup = (await f.db.pool.query('select * from run_cleanup_intents where run_id=$1', [f.f.run.id])).rows
-  return JSON.stringify({ run, executions, cleanup, routingFailures })
-}
-
-function traceCleanup(runtime: Runtime): void {
-  const requestCleanup = runtime.runs.requestCleanup.bind(runtime.runs)
-  vi.spyOn(runtime.runs, 'requestCleanup').mockImplementation(async (...args) => {
-    routingFailures.push({ code: 'cleanup-request', message: new Error('Cleanup requested').stack ?? 'Cleanup requested' })
-    await requestCleanup(...args)
-  })
+  return JSON.stringify({ run, executions })
 }
 
 describe.skipIf(!postgresEnabled)('handoff Worker approval through the designated Orchestrator', () => {
   it.each([false, true])('resumes each business activation with persisted reviewer ownership (restart=%s)', async (restart) => {
     const f = await fixture()
-    routingFailures.length = 0
     let runtime: Runtime = f
-    traceCleanup(runtime)
-    const acceptTerminal = RepeatRunRepository.prototype.acceptWorkTerminal
-    vi.spyOn(RepeatRunRepository.prototype, 'acceptWorkTerminal').mockImplementation(async function (
-      this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['acceptWorkTerminal']>
-    ) {
-      try {
-        return await acceptTerminal.apply(this, args)
-      } catch (error) {
-        if (error instanceof Error) routingFailures.push({ message: error.stack ?? error.message,
-          ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}) })
-        throw error
-      }
-    })
-    const returnWork = RepeatRunRepository.prototype.returnWork
-    vi.spyOn(RepeatRunRepository.prototype, 'returnWork').mockImplementation(async function (
-      this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['returnWork']>
-    ) {
-      try {
-        return await returnWork.apply(this, args)
-      } catch (error) {
-        if (error instanceof Error) routingFailures.push({ message: error.message,
-          ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}) })
-        throw error
-      }
-    })
     vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
     const cut = deferred<string>()
     const release = deferred<void>()
@@ -226,7 +192,6 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
         await settledStart
         pause.mockRestore()
         runtime = f.compose(new ApprovalPostgresSaver(f.db.pool, undefined, { schema: f.db.schema }))
-        traceCleanup(runtime)
         vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
         await runtime.engine.resume(f.f.run.id)
         expect(f.counts().sessions, await runtimeDetails(f, runtime)).toBe(2)
