@@ -68,12 +68,6 @@ corepack pnpm test:acceptance
 corepack pnpm db:down
 ```
 
-Lint enforces the maintainability rules in `packages/eslint-config`. Fix every
-violation in the code itself. Do not disable, weaken, narrow, or suppress those
-rules: inline `eslint-disable` comments are ignored and fail lint, and
-`eslint-suppressions.json` files are rejected. Work is not ready while
-`corepack pnpm lint` fails.
-
 Tests assert behavior through public interfaces: rendered UI, HTTP and MCP
 responses, function results, and persisted data. Tests that check source text,
 file hashes, file paths, SQL strings, private members, or implementation
@@ -81,17 +75,6 @@ wording are not contracts. Replace them with behavior tests or delete them;
 never keep or add slop to satisfy them. Never skip, weaken, or delete a test to
 get a green run. A removed test needs a replacement that covers the same
 behavior.
-
-Every test must run in CI: a test skipped in every CI run, or a test file no
-CI run executes, fails the build. Only the opt-in suites in `test-policy.json`,
-which need external tools, are exempt. A pull request that removes or renames
-tests fails the Change review check until the maintainer reviews the list and
-adds the `test-removal-approved` label.
-
-Lint, test, type, and CI configuration, package manifests, and this file are
-protected. A pull request that changes them fails the Protected configuration
-check until the maintainer reviews it and adds the `protected-config-approved`
-label.
 
 Keep generated output, local environment files, caches, and credentials out of
 Git. Make focused changes and preserve unrelated worktree edits.

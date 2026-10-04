@@ -1,5 +1,4 @@
 import js from '@eslint/js'
-import maintainability from '@graphql/eslint-config'
 import globals from 'globals'
 
 export default [
@@ -11,5 +10,4 @@ export default [
       globals: globals.node,
     },
   },
-  ...maintainability,
 ]

@@ -11,6 +11,3 @@ test-results/
 
 # Temporary file-publication storage created by tests.
 apps/api/.af-publications-*/
-
-# Stryker mutation-testing working files.
-.stryker-tmp/

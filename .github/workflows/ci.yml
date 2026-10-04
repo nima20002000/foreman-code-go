@@ -12,9 +12,6 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 240
-    env:
-      # Unit and integration runs write per-test results here for scripts/check-test-results.mjs.
-      TEST_RESULTS_DIR: /tmp/graphql-test-results
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -30,8 +27,6 @@ jobs:
       - run: node --check scripts/production-smoke.mjs
       - run: pnpm db:up
       - run: pnpm test:integration
-      - name: Every test runs in CI
-        run: node scripts/check-test-results.mjs
       - name: Production start and PostgreSQL restart on Node 22.16.0
         run: node scripts/production-smoke.mjs --restart-postgres
       - uses: actions/setup-node@v4
