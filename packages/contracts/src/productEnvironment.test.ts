@@ -32,6 +32,18 @@ describe('product environment aliases', () => {
       .toEqual({ FOREMAN_CODE_WEB_PORT: '5198' })
     expect(() => resolveProductEnvironment({}, { FOREMAN_CODE_WEB_PORT: '5198', GRAPHQL_WEB_PORT: '5199' })).toThrow('conflicts')
   })
+
+  it.each(['API_ENV_FILE', 'HEAVY_BASE_TMPDIR', 'HEAVY_JOB_COMMON'])('preserves exact filesystem settings for %s', suffix => {
+    expect(() => readProductEnvironment({ [`FOREMAN_CODE_${suffix}`]: '/tmp/installation',
+      [`GRAPHQL_${suffix}`]: '/tmp/installation ' }, suffix)).toThrow('conflicts')
+  })
+
+  it.each(['LAPTOP_EXECUTION_ENABLED', 'DEVICE_LISTENER_ENABLED', 'ENABLE_EXPERIMENTAL_CODEX_APP_SERVER'])(
+    'preserves strict opt-in values for %s', suffix => {
+      expect(() => readProductEnvironment({ [`FOREMAN_CODE_${suffix}`]: '1',
+        [`GRAPHQL_${suffix}`]: '1 ' }, suffix)).toThrow('conflicts')
+    },
+  )
 })
 
 it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])('keeps %s behind the managed credential boundary', name => {

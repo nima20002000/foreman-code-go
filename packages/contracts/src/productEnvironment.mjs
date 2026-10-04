@@ -10,7 +10,8 @@ function effectiveValue(suffix, value) {
   if (suffix.endsWith('ORIGIN')) {
     try { return new globalThis.URL(trimmed).toString() } catch { return trimmed }
   }
-  return trimmed
+  if (suffix === 'DEV_OPERATOR_PRINCIPAL_ID') return trimmed
+  return value
 }
 
 /**
