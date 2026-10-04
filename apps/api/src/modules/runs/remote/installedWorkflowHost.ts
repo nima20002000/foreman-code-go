@@ -55,6 +55,12 @@ import { pageNativeHistory } from './nativeHistoryPage.js'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
+function connectionIdentity(binding: Readonly<DeviceSessionBinding>): DeviceConnectionIdentity {
+  const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = binding
+  return DeviceConnectionIdentitySchema.parse({
+    mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration,
+  })
+}
 export interface InstalledWorkflowNativeOwner {
   readonly native:RemoteNativeIdentity
   readonly launch:NativeLaunchObservation
@@ -214,6 +220,7 @@ interface InstalledOperation {
   relay?:Awaited<ReturnType<typeof prepareWorkerApplicationAccess>>
   leaseExpiresAt?:string
   runtimeLeaf?:RuntimeLeafAttestation
+  runtimeRoots?:ApprovedRootAllowlist
   retainedHistory?:NativeHistory
   physicalClosure?:NativeLaunchObservation
 }
@@ -279,7 +286,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, intent)
           || status.receipt.native?.sessionId !== owned.session.nativeSessionId
           || status.receipt.native?.processIdentityDigest !== owned.native.native.processIdentityDigest
-          || !isDeepStrictEqual(status.receipt.connection, DeviceConnectionIdentitySchema.parse(owned.capture.binding))) {
+          || !isDeepStrictEqual(status.receipt.connection, connectionIdentity(owned.capture.binding))) {
           unavailable('original_native_reconnection_conflict')
         }
         const observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
@@ -395,9 +402,11 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!executionPlacement||executionPlacement.bindingHash!==capture.facts.executionPlacement.bindingHash
             ||!isDeepStrictEqual(request.configuration,capture.facts.configuration))unavailable('actual_native_placement_required')
           resident.capture=capture
-          const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf({sources:input.sources,context:{...context,signal},approvedRoots:await input.approvedRoots(),
+          const approvedRoots = ApprovedRootAllowlistSchema.parse(await input.approvedRoots())
+          const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf({sources:input.sources,context:{...context,signal},approvedRoots,
             nativePlacement:capture.facts.executionPlacement,intent,placement,request})
           resident.runtimeLeaf=runtimeLeaf
+          resident.runtimeRoots=structuredClone(approvedRoots)
           return runtimeLeaf
         },
         preflight:async(nativeRequest,access)=>{
@@ -421,7 +430,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!resident.manager||!nativeContext||nativeContext.manager!==resident.manager
             ||nativeContext.request.executionId!==intent.executionId)unavailable('native_manager_not_allocated')
           resident.session=structuredClone(session);resident.nativeSignal=nativeContext.signal
-          const captured = captureInstalledWorkflowNativeOwner(registry, DeviceConnectionIdentitySchema.parse(resident.capture.binding), intent, session)
+          const captured = captureInstalledWorkflowNativeOwner(registry, connectionIdentity(resident.capture.binding), intent, session)
           if (resident.native && !isDeepStrictEqual(resident.native, captured)) unavailable('original_native_process_changed')
           resident.native ??= captured
           if(!resident.nativeStart)unavailable('original_native_start_missing')
@@ -484,16 +493,21 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
             if (receipt.stopFence) {
               await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, 'stop')
-              resident.leaseExpiresAt = new Date(Date.now() + 60_000).toISOString()
-            } else {
+            } else if (!resident.physicalClosure) {
+              if (!resident.mcp) unavailable('original_main_lease_required')
+              resident.leaseExpiresAt = await resident.mcp!.refreshLease()
+            } else if (Date.parse(resident.leaseExpiresAt) <= Date.now()) {
               if (!resident.relay) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.relay!.refresh(signal)
             }
+            // Cancellation readback uses cleanup authority; it does not extend the MCP credential.
+            const observationExpiresAt = receipt.stopFence
+              ? new Date(Date.now() + 60_000).toISOString() : resident.leaseExpiresAt
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :value?.history?{type:'history',history:value.history}:{type:'boundary'}
             const history = value?.history ?? (resident.retainedHistory
               ? pageNativeHistory(resident.retainedHistory).history : undefined)
-            const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Math.min(Date.parse(resident.leaseExpiresAt),Date.now()+60_000)).toISOString(),
+            const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Math.min(Date.parse(observationExpiresAt),Date.now()+60_000)).toISOString(),
               receipt,session:resident.session,launch:resident.native.launch,
               observation:matchingOriginalRegistryLaunch(registry,resident.native.launch),runtimeLeaf:resident.runtimeLeaf,
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
@@ -511,13 +525,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
                 ||logged.receipt.native?.processIdentityDigest!==resident.native?.native.processIdentityDigest)unavailable('original_physical_owner_changed')
               current(context.binding)
             }
-            physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:resident.leaseExpiresAt,assertOwnerCurrent,
+            physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:observationExpiresAt,assertOwnerCurrent,
               assertCurrent:async()=>{
                 await assertOwnerCurrent()
-                const approvedRoots=ApprovedRootAllowlistSchema.parse(await input.approvedRoots())
+                const approvedRoots=ApprovedRootAllowlistSchema.parse(receipt.stopFence
+                  ? resident.runtimeRoots : await input.approvedRoots())
                 await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
                   authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,receipt.stopFence?'stop':'read');current(context.binding)}})
-                if(!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
+                if(!receipt.stopFence&&!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
                 current(context.binding)},
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
               closure:()=>resident.physicalClosure??null})

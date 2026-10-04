@@ -42,7 +42,7 @@ export async function createWorkerMcpEndpoint(input: {
   const token = input.relay.environment.variables.GRAPHQL_MCP_TOKEN
   if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
   const digest = createHash('sha256').update(`Bearer ${token}`).digest()
-  const active = new Set<Promise<void>>()
+  const active = new Set<Promise<unknown>>()
   let closing = false, shutdown: Promise<void> | undefined
   const server = createServer((request, response) => {
     const task = (async () => {
@@ -100,5 +100,18 @@ export async function createWorkerMcpEndpoint(input: {
     unregister = await registerAppRoute(token, endpoint, expiresAt, input.launcher)
     input.signal.throwIfAborted()
   } catch (error) { await close(); throw error }
-  return { endpoint, close }
+  const refreshLease = () => {
+    const task = (async () => {
+      if (closing) throw new Error('The original worker MCP endpoint is closing.')
+      const expiresAt = await input.relay.refresh(input.signal)
+      input.signal.throwIfAborted()
+      if (closing) throw new Error('The original worker MCP endpoint is closing.')
+      unregister = await registerAppRoute(token, endpoint, expiresAt, input.launcher)
+      return expiresAt
+    })()
+    active.add(task)
+    void task.then(() => active.delete(task), () => active.delete(task))
+    return task
+  }
+  return { endpoint, close, refreshLease }
 }

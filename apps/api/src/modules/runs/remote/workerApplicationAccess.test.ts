@@ -38,7 +38,7 @@ describe('worker selected-main application lease with authenticated carrier doub
     await expect(prepareWorkerApplicationAccess({ request: async () => { requests++; return { payload: value.lease } } }, value.intent, value.placement, { ...value.applicationAccess, executionId: 'other' })).rejects.toThrow('original accepted execution')
     expect(requests).toBe(0)
   })
-  it.each(['generation', 'approval wait'])('refreshes the same principal and token over twenty minutes of %s', async () => {
+  it('refreshes the same principal and token over twenty minutes', async () => {
     const value = fixture()
     const startedAt = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(startedAt)
