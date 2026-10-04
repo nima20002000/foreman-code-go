@@ -64,11 +64,13 @@ describe('built web hosting', () => {
   })
 
   it('fails startup if the build is absent or the directory is relative', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'graphql-missing-web-'))
+    cleanup.push(() => rm(root, { recursive: true, force: true }))
     const app = buildApp({ readiness: {
       database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
     } })
     cleanup.push(() => app.close())
     await expect(registerBuiltWeb(app, 'dist')).rejects.toThrow('absolute directory')
-    await expect(registerBuiltWeb(app, '/nonexistent/graphql-web-build')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(registerBuiltWeb(app, root)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
