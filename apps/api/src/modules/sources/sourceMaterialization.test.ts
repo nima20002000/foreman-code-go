@@ -69,6 +69,41 @@ describe('source manifest policy', () => {
   })
 })
 describe('private materialization', () => {
+  it.each([31_000, 301_000])('bounds a slow source copy after %d ms without activating interrupted bytes', async elapsed => {
+    const f = await fixture()
+    let entered!: () => void
+    let release!: () => void
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    const bytesReady = new Promise<void>(resolve => { release = resolve })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('Source copy deadline exceeded.', 'TimeoutError')), milliseconds)
+      return controller.signal
+    })
+    try {
+      const service = new PrivateSourceMaterializer({ async read() {
+        entered()
+        await bytesReady
+        return f.bytes
+      } }, async () => {})
+      const prepared = service.prepare(f)
+      await reading
+      await vi.advanceTimersByTimeAsync(elapsed)
+      release()
+      if (elapsed < 300_000) {
+        const receipt = await prepared
+        expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
+      } else {
+        await expect(prepared).rejects.toThrow('Source copy deadline exceeded.')
+      }
+    } finally {
+      release()
+      deadline.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('verifies complete bytes in a distinct local root and detects later mutation', async () => {
     const f = await fixture(), service = new PrivateSourceMaterializer({ async read() { return f.bytes } }, async () => {})
     const receipt = await service.prepare(f), path = await service.resolve(receipt, f)

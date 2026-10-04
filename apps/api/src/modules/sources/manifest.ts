@@ -5,7 +5,7 @@ export class SourceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'SourceError' }
 }
 export const SOURCE_LIMITS = Object.freeze({ entries: 4096, bytes: 128 * 1024 * 1024,
-  fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 30_000, concurrent: 2 })
+  fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 300_000, concurrent: 2 })
 // Credential implementation/test/declaration leaves are code, not credential data or directories.
 // Byte verification still applies; data/backup suffixes never qualify as source filenames.
 const credentialSourceLeaf = /^credentials(?:(?:\.(?:test|spec))?\.(?:[cm]?[jt]s|[jt]sx)|\.d\.[cm]?ts)$/
