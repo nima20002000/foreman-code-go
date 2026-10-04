@@ -42,7 +42,7 @@ export type { RsyncControlRequest } from '@graphql/contracts/byte-transfer'
 export interface RsyncControlChannel {
   /** Capture rsync-stage-v1 on the exact existing authenticated W07 connection. No new socket/supervisor. */
   capture(): { binding: Readonly<DeviceSessionBinding>; request(payload: RsyncControlRequest,
-    options: { signal: AbortSignal }): Promise<DeviceApplicationResult> } | undefined
+    options: { signal: AbortSignal; timeoutMs?: number }): Promise<DeviceApplicationResult> } | undefined
 }
 export interface RsyncProductionInput {
   side: 'main' | 'worker'
