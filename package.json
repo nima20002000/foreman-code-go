@@ -18,7 +18,7 @@
     "db:down": "docker compose down",
     "typecheck": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --if-present typecheck\"",
     "lint": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
-    "test": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --workspace-concurrency=1 --if-present test\"",
+    "test": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test\"",
     "test:integration": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
     "test:acceptance": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api test:acceptance\"",
     "test:production": "node scripts/heavy-job.mjs -- node scripts/production-smoke.mjs",
