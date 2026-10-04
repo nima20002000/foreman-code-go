@@ -1,4 +1,5 @@
-import { assertOwnedTestApi, ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
+import { assertOwnedExecutionDestinations, assertOwnedTestApi,
+  ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
 /** EXPLICIT OPT-IN, real running loopback product + same task-owned PostgreSQL.
  * No provider mocks, seed conversion, direct accepted-result/native/closure writes
  * or custom CurrentRunProductionBinding. Run from apps/api with pinned tsx.
@@ -74,6 +75,9 @@ try {
   for (const item of cases) {
     assert.ok(['complete', 'stop-native', 'stop-approval'].includes(item.mode))
     const input = RunStartV3InputSchema.parse(item.start)
+    await assertOwnedExecutionDestinations(pool, { workspaceId: input.workspaceId,
+      agentConfigurationVersionIds: Object.values(input.expectedAgentConfigurationVersionIds),
+      ...(item.existingRunId ? { runId: item.existingRunId } : {}) })
     const wfPath = `/api/management/workspaces/${encodeURIComponent(input.workspaceId)}/workflows/${encodeURIComponent(input.workflowId)}`
     const savedResponse = await http('GET', `${wfPath}/definition`)
     assert.equal(savedResponse.status, 200)

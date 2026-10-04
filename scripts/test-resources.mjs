@@ -245,15 +245,22 @@ export async function removeFixtureDirectory(directory, options = { force: true 
   rmSync(target, { recursive: true, force: options.force })
 }
 
-export function ownedTestPath(path) {
-  const root = process.env.GRAPHQL_TEST_ROOT
-  assertTestRoot(root, process.env.GRAPHQL_TEST_OWNER)
+export function assertTestPath(resource, path) {
+  const root = resource.directory
+  assertTestRoot(root, resource.token)
+  if (!path || !path.startsWith('/')) throw new Error('Test path must be absolute')
   const target = resolve(path)
   if (target !== root && !target.startsWith(`${root}/`)) throw new Error('Test path must remain inside its owned root')
-  const parent = realpathSync(dirname(target))
-  if (target !== root && parent !== root && !parent.startsWith(`${root}/`)) {
-    throw new Error('Test path parent escapes its owned root')
+  let ancestor = target
+  while (!existsSync(ancestor)) ancestor = dirname(ancestor)
+  const canonical = realpathSync(ancestor)
+  if (canonical !== root && !canonical.startsWith(`${root}/`)) {
+    throw new Error('Test path escapes its owned root')
   }
   if (existsSync(target) && lstatSync(target).isSymbolicLink()) throw new Error('Test path must not be a symlink')
   return target
+}
+
+export function ownedTestPath(path) {
+  return assertTestPath({ directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }, path)
 }

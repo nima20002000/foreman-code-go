@@ -7,8 +7,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it } from 'vitest'
-import { provisionTestResources } from '../../../scripts/test-resources.mjs'
+import pg from 'pg'
+import { createTestRoot, provisionTestResources, removeTestRoot } from '../../../scripts/test-resources.mjs'
 import { stopGroup } from '../../../scripts/integration-process.mjs'
+import { assertOwnedTestApi } from './helpers/testResources.js'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const require = createRequire(import.meta.url)
@@ -72,6 +74,9 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
   child.stderr?.resume()
   try {
     await ready(child, port)
+    const pool = new pg.Pool({ connectionString: environment.TEST_DATABASE_URL, max: 1 })
+    try { await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool) }
+    finally { await pool.end() }
     await delay(50)
     expect(JSON.parse(await readFile(observation, 'utf8'))).toEqual({ ambientKey: false, logFile: null })
     expect(await readFile(log, 'utf8')).toBe('application log sentinel')
@@ -82,6 +87,34 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
     await resources.close()
   }
 }, 120_000)
+
+it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
+  'refuses prepared native acceptance when the real API uses an unowned %s', async variable => {
+    const resources = await provisionTestResources({ PATH: process.env.PATH })
+    const outside = createTestRoot()
+    const sentinel = join(outside.directory, 'retained.txt')
+    await writeFile(sentinel, 'outside application state')
+    const port = await freePort()
+    const child = spawn(process.execPath, ['--import', require.resolve('tsx'), join(root, 'apps/api/src/server.ts')], {
+      cwd: root, env: { ...resources.environment, [variable]: outside.directory,
+        HOST: '127.0.0.1', PORT: String(port) },
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    child.stdout?.resume()
+    child.stderr?.resume()
+    const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL, max: 1 })
+    try {
+      await ready(child, port)
+      await expect(assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool)).rejects.toThrow('identity is unavailable')
+      expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
+      expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
+    } finally {
+      await stopGroup(child.pid, { signal: 'SIGTERM' })
+      await pool.end()
+      await resources.close()
+      removeTestRoot(outside)
+    }
+  }, 120_000)
 
 it('starts the local smoke API and web app and completes authenticated HTTP/MCP parity', async () => {
   const ports = [await freePort(), await freePort()]

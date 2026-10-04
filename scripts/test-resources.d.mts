@@ -7,6 +7,7 @@ export const testAdminUrl: string
 export function requireTestServerUrl(value: string): URL
 export function createTestRoot(parent?: string, prefix?: string): TestRoot
 export function assertTestRoot(directory: string, token: string): void
+export function assertTestPath(resource: TestRoot, path: string): string
 export function removeTestRoot(resource: TestRoot): void
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
 export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise<{

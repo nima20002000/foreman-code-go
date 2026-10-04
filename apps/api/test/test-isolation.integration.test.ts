@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
+import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
+import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema } from '@graphql/contracts'
 
 it('rejects connections to the app PostgreSQL endpoint before connecting', async () => {
   const client = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' })
@@ -63,5 +68,41 @@ it('rejects a prepared acceptance API bound to a different database before start
     await pool?.end()
     await dropFixtureSchema(admin, schema)
     await admin.end()
+  }
+})
+
+it('checks persisted execution destinations again after reconnecting to the prepared database', async () => {
+  const fixture = await agent3Database()
+  const outside = createTestRoot()
+  let restarted: pg.Pool | undefined
+  try {
+    const saved = await seedAgent3(fixture.pool, fixture.directory,
+      makeCurrentWorkflowFixture(randomUUID(), 'single'), { run: false })
+    const selection = { workspaceId: saved.scope.workspaceId,
+      agentConfigurationVersionIds: saved.configurations.map(configuration => configuration.id) }
+    await assertOwnedExecutionDestinations(fixture.pool, selection)
+    await fixture.pool.query('update workspaces set execution_location=$2::jsonb where id=$1',
+      [selection.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: outside.directory })])
+    restarted = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${fixture.schema}`, max: 1 })
+    await expect(assertOwnedExecutionDestinations(restarted, selection)).rejects.toThrow('owned root')
+    expect((await restarted.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
+    await restarted.query('update workspaces set execution_location=$2::jsonb where id=$1',
+      [selection.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: fixture.directory })])
+    await assertOwnedExecutionDestinations(restarted, selection)
+    const configuration = AgentConfigurationVersionSchema.parse({ ...saved.configurations[0], harness: {
+      harness: 'claude', model: 'claude-sonnet-4-6', authMode: 'subscription', configDirectory: outside.directory,
+      permissionMode: 'default', sandbox: 'workspace-write', tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    } })
+    await restarted.query('update agent_configuration_versions set record=$2::jsonb where id=$1',
+      [configuration.id, JSON.stringify(configuration)])
+    await expect(assertOwnedExecutionDestinations(restarted, selection)).rejects.toThrow('owned root')
+    await restarted.query('update agent_configuration_versions set record=$2::jsonb where id=$1',
+      [configuration.id, JSON.stringify(saved.configurations[0])])
+    await assertOwnedExecutionDestinations(restarted, selection)
+  } finally {
+    await restarted?.end()
+    await fixture.close()
+    removeTestRoot(outside)
   }
 })

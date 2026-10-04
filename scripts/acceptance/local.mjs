@@ -163,7 +163,8 @@ async function main() {
   await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
   resources = await createTestDatabase(admin, resources)
   const isolated = testEnvironment(process.env, resources)
-  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS }
+  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS,
+    GRAPHQL_API_ENV_FILE: isolated.GRAPHQL_API_ENV_FILE }
   toolEnv = {
     ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
     ...(isolated.GRAPHQL_HEAVY_JOB_COMMON ? { GRAPHQL_HEAVY_JOB_COMMON: isolated.GRAPHQL_HEAVY_JOB_COMMON } : {}),
