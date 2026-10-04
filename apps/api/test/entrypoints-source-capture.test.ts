@@ -83,7 +83,7 @@ it('maps its expired preparation budget to a typed retryable failure after priva
         write: async (...args) => { await store.write(...args); controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')) },
         commit: store.commit.bind(store), abort: store.abort.bind(store),
       } })).rejects.toMatchObject({ code: 'SOURCE_CAPTURE_TIMEOUT', status: 503, details: { retryable: true, newCommandRequired: true } })
-      expect(timeout).toHaveBeenCalledWith(30_000); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
+      expect(timeout).toHaveBeenCalledWith(300_000); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
     } finally { timeout.mockRestore() }
   } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
 })

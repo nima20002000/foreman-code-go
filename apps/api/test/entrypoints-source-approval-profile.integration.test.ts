@@ -131,7 +131,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
           expect(failed.isError).toBe(true)
           expect(JSON.parse((failed.content[0] as { text: string }).text)).toMatchObject({ error: { code: 'SOURCE_CAPTURE_TIMEOUT', details: { retryable: true, newCommandRequired: true } } })
         }
-        expect(timeout).toHaveBeenCalledWith(30_000)
+        expect(timeout).toHaveBeenCalledWith(300_000)
         const row = (await db.pool.query('select state from source_approvals where command_id=$1', [interrupted.commandId])).rows[0]
         expect(row.state).toBe('failed')
         expect((await db.pool.query('select count(*)::int as count from source_snapshots')).rows[0].count).toBe(1)
