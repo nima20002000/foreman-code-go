@@ -53,7 +53,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   }, async (input) => invokeOperatorTool(context, 'run_activities_get_v1',
     () => context.services.runs.activities.read(context.principal, input)))
   if (operatorToolAvailable(context, 'run_start')) server.registerTool('run_start', {
-    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
+    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. If any Agent has a computer placement, save explicit computer, approved source and root choices for every Agent, including Agents on Main. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
     outputSchema: ManualRunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))

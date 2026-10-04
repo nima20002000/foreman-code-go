@@ -47,9 +47,13 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
-      // Unplaced local workflows keep the original path. Mixed placed/unplaced
-      // Agent nodes cannot fabricate evidence for the unplaced members.
       if (!nodes.some(node => node.placement)) return undefined
+      const incomplete = nodes.filter(node => !node.placement?.source || !node.placement?.rootBinding)
+      if (incomplete.length) {
+        throw new DomainError('PLACEMENT_ADMISSION_CONFLICT',
+          'Choose a computer with an approved source and root for every Agent, including Agents on Main, then save the graph before starting.',
+          409, { nodeIds: incomplete.map(node => node.id) })
+      }
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection }[] = []
       for (const node of nodes) {
         signal?.throwIfAborted()

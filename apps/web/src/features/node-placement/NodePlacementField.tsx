@@ -30,6 +30,8 @@ export function NodePlacementField({ value, options, onChange, disabled, options
         if (option && !option.unavailableReason) onChange(structuredClone(option.placement))
       }} />
     {value && stage ? <p role="status">{stage === 'editing' ? 'Editing computer choice — Apply to this node’s draft.' : stage === 'draft' ? 'Applied to draft — Save graph to persist this placement.' : 'Persisted Board placement — configured for a later Run.'}</p> : null}
+    <p>Once any Agent has a computer choice, choose a computer with an approved source and root for every Agent,
+      including Agents on Main. Save the graph before starting.</p>
     {value ? <>
       <dl>
         <dt>Configured for next Run</dt><dd>{current?.label ?? (optionsState === 'ready' ? 'Unavailable configured choice' : 'Configured choice retained')}</dd>

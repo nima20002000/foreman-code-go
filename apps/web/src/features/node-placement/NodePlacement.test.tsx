@@ -5,6 +5,14 @@ import { NodePlacementField } from './NodePlacementField'
 import { NodePlacementFacts } from './NodePlacementFacts'
 import { acceptedPlacementFixture as placement, savedPlacementFixture as saved, workerObservationFixture as observation } from './fixtures'
 
+it('explains the all-Agent source and root requirement before choosing a computer', () => {
+  const view = render(<NodePlacementField options={[{ label: 'Laptop', placement: saved }]} onChange={vi.fn()} />)
+  expect(screen.getByText(/including Agents on Main\. Save the graph before starting\./)).toBeInTheDocument()
+  view.rerender(<NodePlacementField value={saved} stage="draft"
+    options={[{ label: 'Laptop', placement: saved }]} onChange={vi.fn()} />)
+  expect(screen.getByText(/approved source and root for every Agent/)).toBeInTheDocument()
+})
+
 it('retains removed placement and never silently selects the main computer', async () => {
   const change = vi.fn()
   render(<NodePlacementField value={saved} options={[{ label: 'PC', placement: { ...saved, hostRef: { kind: 'main', mainId: saved.hostRef.mainId } } }]} onChange={change} />)
