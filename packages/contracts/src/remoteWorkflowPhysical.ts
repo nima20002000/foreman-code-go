@@ -8,6 +8,7 @@ import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, Sou
 import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
+import { DeviceHistoryGapSchema } from './deviceApplication.js'
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -24,6 +25,7 @@ export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.stri
 export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() => NativeMessageSubmissionSchema).optional(),
   correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(), nextCursor: z.string().optional(),
   firstRetainedSequence: z.number().int().nonnegative().optional(), nextSequence: z.number().int().nonnegative().optional(),
+  gap: DeviceHistoryGapSchema.optional(),
   events: z.array(z.lazy(() => NativeHarnessEventSchema)).max(1024), pendingInteractions: z.array(z.lazy(() => PendingNativeInteractionSchema)).max(128),
   pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional(), terminalResult: z.lazy(() => ExecutionResultSchema).optional(),
   terminalTurn: z.object({ correlationId: z.string(), providerId: z.string(), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),

@@ -1,24 +1,23 @@
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema, NativeHarnessCapabilitiesSchema,
-  McpDetectionSchema, ExecutionResultSchema, ApprovalResponseSemanticSchema, AgentHarnessSchema, type AgentConfigurationVersion, type AgentHarness, type NativeSessionReference } from '@foreman-code/contracts'
+import { NativeSessionReferenceSchema, PendingNativeInteractionSchema, NativeHarnessCapabilitiesSchema,
+  McpDetectionSchema, type AgentConfigurationVersion, type AgentHarness, type NativeSessionReference } from '@foreman-code/contracts'
+import { DeviceHistoryPageSchema } from '@foreman-code/contracts/device-application'
+import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
+import { HarnessExecutionError } from '../../harnesses/errors.js'
 
 export interface RemoteNativeTransport {
   request(method: 'prepare' | 'reattach' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
 const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
-const HistorySchema = z.object({ correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(),
-  nextCursor: z.string().optional(), firstRetainedSequence: z.number().optional(), nextSequence: z.number().optional(),
-  events: z.array(NativeHarnessEventSchema), pendingInteractions: z.array(PendingNativeInteractionSchema), pendingInteraction: PendingNativeInteractionSchema.optional(),
-  terminalResult: ExecutionResultSchema.optional(), terminalTurn: z.object({ correlationId: z.string(), providerId: z.string(), result: ExecutionResultSchema }).optional(),
-  interactionDeliveries: z.array(z.object({ nativeRequestId: z.string(), state: z.enum(['pending','submitting','submitted','uncertain']), selectedOptionId: z.string().optional() })).optional(),
-  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: AgentHarnessSchema, providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(), semantic: ApprovalResponseSemanticSchema })).optional(),
-  canceledRequestIds: z.array(z.string()).optional() }).passthrough()
+const HistoryResponseSchema = z.object({
+  history: RemoteNativeHistorySchema, status: StatusSchema, page: DeviceHistoryPageSchema,
+}).strict()
 export interface RemoteNativeManagerOptions {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
@@ -37,7 +36,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private session?: NativeSessionReference
   private receipt?: RemoteOperationReceipt
   private streamHistory: {
-    value: z.infer<typeof HistorySchema>
+    value: z.infer<typeof RemoteNativeHistorySchema>
     receipt: RemoteOperationReceipt
     observedAt: number
   } | undefined
@@ -109,11 +108,15 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
     await this.status(await this.request('start-turn', { operationId: this.intent.operationId, prompt: input.prompt, correlationId: input.clientCorrelationId }, signal))
-    let sequence = -1, submitted = false
+    let sequence = -1
+    let submitted = false
     while (true) {
       signal?.throwIfAborted()
-      const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
+      const value = HistoryResponseSchema.parse(await this.request('history', { afterSequence: sequence }, signal))
       const receipt = await this.status(value.status)
+      if (value.history.gap) {
+        throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native events are unavailable; reload durable history.')
+      }
       if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
       this.streamHistory = { value: value.history, receipt, observedAt: Date.now() }
       try {
@@ -134,6 +137,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
         }
       } finally {
         this.streamHistory = undefined
+      }
+      if (value.page.hasMore) {
+        if (value.page.nextAfterSequence <= sequence && value.history.events.length === 0) {
+          throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native history continuation did not advance.')
+        }
+        continue
       }
       if (value.history.terminalTurn?.correlationId === input.clientCorrelationId || receipt.phase === 'confirmed_terminal') return
       if (receipt.phase === 'uncertain') throw new Error('Original remote execution requires reconciliation')
@@ -165,7 +174,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       await this.options.observeOriginalSource?.(streamed.receipt, { type: 'history', history })
       return history
     }
-    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
+    const value = HistoryResponseSchema.parse(await this.request('history', {}, signal))
     await this.status(value.status)
     if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now() }
     const history = this.projectHistory(value.history)
@@ -177,7 +186,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const receipt = await this.status(await this.request('status', {}, signal))
     await this.options.observeOriginalSource?.(receipt, { type: 'boundary' })
   }
-  private projectHistory(history: z.infer<typeof HistorySchema>): NativeHistory {
+  private projectHistory(history: z.infer<typeof RemoteNativeHistorySchema>): NativeHistory {
     return { events: history.events, pendingInteractions: history.pendingInteractions,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
       ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }),
@@ -185,6 +194,8 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       ...(history.nextCursor === undefined ? {} : { nextCursor: history.nextCursor }),
       ...(history.firstRetainedSequence === undefined ? {} : { firstRetainedSequence: history.firstRetainedSequence }),
       ...(history.nextSequence === undefined ? {} : { nextSequence: history.nextSequence }),
+      ...(history.gap === undefined ? {} : { gap: history.gap }),
+      ...(history.nativeSubmission === undefined ? {} : { nativeSubmission: history.nativeSubmission }),
       ...(history.pendingInteraction === undefined ? {} : { pendingInteraction: history.pendingInteraction }),
       ...(history.terminalResult === undefined ? {} : { terminalResult: history.terminalResult }),
       ...(history.terminalTurn === undefined ? {} : { terminalTurn: history.terminalTurn }),
@@ -198,7 +209,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async reconcileResponse(session: NativeSessionReference, response: Parameters<NonNullable<NativeHarnessSessionManager['reconcileResponse']>>[1], signal?: AbortSignal) {
     this.assertSession(session)
-    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('reconcile-response', { response }, signal))
+    const value = HistoryResponseSchema.parse(await this.request('reconcile-response', { response }, signal))
     await this.status(value.status)
     const history = this.projectHistory(value.history)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })

@@ -1,4 +1,5 @@
 import type { NativeMessageSubmission } from '@foreman-code/contracts'
+import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 export type { NativeMessageSubmission } from '@foreman-code/contracts'
 import type {
   AgentHarness,
@@ -106,6 +107,8 @@ export interface NativeHistory {
   /** This is a bounded live window; callers persist streamed events at the durable boundary. */
   firstRetainedSequence?: number
   nextSequence?: number
+  /** Events omitted from this bounded observation; terminal metadata remains original. */
+  gap?: DeviceHistoryGap
   interactionDeliveries?: readonly {
     nativeRequestId: string
     state: 'pending' | 'submitting' | 'submitted' | 'uncertain'

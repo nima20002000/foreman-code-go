@@ -32,6 +32,7 @@ export function remoteWorkflowNativeHistory(value:NonNullable<RemoteWorkflowPhys
     ...(value.correlationId!==undefined?{correlationId:value.correlationId}:{}),...(value.nativeTurnId!==undefined?{nativeTurnId:value.nativeTurnId}:{}),
     ...(value.nativeMessageId!==undefined?{nativeMessageId:value.nativeMessageId}:{}),...(value.nextCursor!==undefined?{nextCursor:value.nextCursor}:{}),
     ...(value.firstRetainedSequence!==undefined?{firstRetainedSequence:value.firstRetainedSequence}:{}),...(value.nextSequence!==undefined?{nextSequence:value.nextSequence}:{}),
+    ...(value.gap!==undefined?{gap:value.gap}:{}),
     ...(value.pendingInteraction!==undefined?{pendingInteraction:value.pendingInteraction}:{}),...(value.terminalResult!==undefined?{terminalResult:value.terminalResult}:{}),
     ...(value.terminalTurn!==undefined?{terminalTurn:value.terminalTurn}:{}),...(value.canceledRequestIds!==undefined?{canceledRequestIds:value.canceledRequestIds}:{}),
     ...(value.interactionDeliveries!==undefined?{interactionDeliveries:value.interactionDeliveries.map(item=>({nativeRequestId:item.nativeRequestId,state:item.state,

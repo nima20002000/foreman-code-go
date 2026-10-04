@@ -14,6 +14,7 @@ import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
 import { RemoteExecutionHost, type RemoteExecutionHostPorts } from './executionHost.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 const hosts: RemoteExecutionHost[] = []
@@ -40,9 +41,31 @@ async function setup(expectedToken?: string) {
   return { host, manager, session, journal, intent, placement, request, state, ports }
 }
 describe('actual worker native-port adapter', () => {
+  it('pages authenticated history without relaxing grants or the original execution owner', async () => {
+    const f = await setup()
+    await f.host.prepare({ intent: f.intent, placement: f.placement, request: f.request })
+    const events = Array.from({ length: 70 }, (_, sequence) => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { text: 'x'.repeat(20_000) } }))
+    f.manager.reconcile = vi.fn(async () => ({ events, pendingInteractions: [], firstRetainedSequence: 0,
+      nextSequence: events.length }))
+    const request = { method: 'history', intent: f.intent, placement: f.placement, afterSequence: -1 }
+    const first = await f.host.handle(request) as ReturnType<typeof pageNativeHistory>
+    expect(first.page.hasMore).toBe(true)
+    expect(first.history.events[0]?.sequence).toBe(0)
+    const second = await f.host.handle({ ...request, afterSequence: first.page.nextAfterSequence }) as
+      ReturnType<typeof pageNativeHistory>
+    expect(second.history.events[0]?.sequence).toBe(first.page.nextAfterSequence + 1)
+    f.state.allowed = false
+    await expect(f.host.handle(request)).rejects.toThrow('revoked')
+    f.state.allowed = true
+    await expect(f.host.handle({ ...request, intent: { ...f.intent, executionId: 'foreign-execution' } }))
+      .rejects.toThrow('RPC stale execution owner')
+    expect(f.manager.reconcile).toHaveBeenCalledTimes(2)
+  })
+
   it('reuses a streamed history and acknowledges a refreshed turn before its next event', async () => {
     const f = await setup()
-    const events = [1, 2].map(sequence => ({ sequence, type: 'native.notification',
+    const events = [0, 1].map(sequence => ({ sequence, type: 'native.notification',
       occurredAt: '2026-10-01T00:00:00.000Z', payload: { sequence } }))
     const submitted: string[] = []
     const observedEvents: Array<{ sequence: number; turnId: string | undefined; submitted: string[] }> = []
@@ -61,8 +84,8 @@ describe('actual worker native-port adapter', () => {
         const status = await f.journal.status(f.intent.operationId)
         if (status.status !== 'known') throw new Error('Original receipt is unavailable')
         const turnId = status.receipt.native?.turnId
-        return { status, history: { events, pendingInteractions: [], correlationId: 'execution:execution',
-          ...(turnId ? { nativeTurnId: turnId } : {}) } }
+        return { status, ...pageNativeHistory({ events, pendingInteractions: [], correlationId: 'execution:execution',
+          ...(turnId ? { nativeTurnId: turnId } : {}) }, (frame as { afterSequence?: number }).afterSequence) }
       } },
       observeReceipt: async () => {},
       observeOriginalSource: async (receipt, source) => {
@@ -89,8 +112,8 @@ describe('actual worker native-port adapter', () => {
       expect(historyReads).toBe(2)
       expect((await stream.next()).value).toEqual(events[1])
       expect(observedEvents).toEqual([
-        { sequence: 1, turnId: undefined, submitted: [] },
-        { sequence: 2, turnId: 'native-turn', submitted: ['native-turn'] },
+        { sequence: 0, turnId: undefined, submitted: [] },
+        { sequence: 1, turnId: 'native-turn', submitted: ['native-turn'] },
       ])
       await stream.return(undefined)
       await proxy.history(session)

@@ -24,7 +24,7 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
-import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import { DEVICE_APPLICATION_JSON_BYTES, negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import type { HarnessExecution } from '@foreman-code/contracts'
@@ -36,6 +36,7 @@ import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSou
 import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../repeatResolution.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
 
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
@@ -328,6 +329,44 @@ async function physicalFixture(relativeCwd='') {
     entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs}
 }
 describe('original physical source selectors and Main SQL consumer',()=>{
+  it('retains byte-bounded page and event selectors without copying the entire native history', async () => {
+    const f = await physicalFixture()
+    const events = Array.from({ length: 80 }, (_, sequence) => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { text: '漢'.repeat(6000) } }))
+    const full = { ...f.source.history, events, firstRetainedSequence: 0, nextSequence: events.length }
+    expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(DEVICE_APPLICATION_JSON_BYTES)
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const assertCurrent = vi.fn(async () => {})
+    const observed: number[] = []
+    let cursor = -1
+    try {
+      for (let count = 0; count < events.length; count++) {
+        const page = pageNativeHistory(full, cursor)
+        const source = { type: 'history' as const, history: page.history }
+        readouts.remember({ readout: { ...f.readout, history: page.history }, placement: f.placement, source,
+          leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: assertCurrent, assertCurrent,
+          observe: () => f.captured.launch, closure: () => null })
+        const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,
+          sourceDigest: remoteWorkflowSourceDigest(source) }
+        const readout = await readouts.read(selector)
+        expect(Buffer.byteLength(JSON.stringify(readout))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+        expect(readout.history).toEqual(page.history)
+        for (const event of page.history.events) {
+          const original = { type: 'event' as const, event: { ...event, executionId: f.intent.executionId } }
+          expect((await readouts.read({ ...selector, sourceDigest: remoteWorkflowSourceDigest(original) }))
+            .history?.events).toContainEqual(event)
+          observed.push(event.sequence)
+        }
+        await expect(readouts.read({ ...selector, intent: { ...f.intent, executionId: 'foreign-execution' } }))
+          .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        await readouts.ack(selector)
+        cursor = page.page.nextAfterSequence
+        if (!page.page.hasMore) break
+      }
+      expect(observed).toEqual(events.map(event => event.sequence))
+      expect(assertCurrent).toHaveBeenCalled()
+    } finally { await f.sqlConnection.close() }
+  })
   it('retains the exact earlier source, never reconstructs latest history, and expires/purges selectors',async()=>{
     const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),assertCurrent=vi.fn(async()=>{})
     const input={readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:assertCurrent,assertCurrent,

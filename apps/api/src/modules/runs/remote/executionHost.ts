@@ -12,6 +12,7 @@ import type { NativeHarnessSessionManager, NativeHistory, ChildProcessEnvironmen
 import { assertRuntimeLeafPath, assertRuntimeLeafBinding, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { readPlacement } from '../../placement/binding.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
 
 export interface RemoteExecutionHostPorts {
   journal: RemoteOperationJournal
@@ -91,11 +92,22 @@ export class RemoteExecutionHost {
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
-    if (frame.method === 'reconcile-response') { const resident = await this.resident(frame.intent.operationId, 'read'); if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable'); return { history: await resident.manager.reconcileResponse(resident.session, frame.response), status: await this.ports.journal.status(frame.intent.operationId) } }
+    if (frame.method === 'reconcile-response') {
+      const resident = await this.resident(frame.intent.operationId, 'read')
+      if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable')
+      const history = await resident.manager.reconcileResponse(resident.session, frame.response)
+      return { ...pageNativeHistory(history), status: await this.ports.journal.status(frame.intent.operationId) }
+    }
     if (frame.method === 'control') return this.control(frame.command, frame)
     if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
     if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
+    if (frame.method === 'history') {
+      const result = await this.read(frame.intent.operationId, 'history') as {
+        history: NativeHistory; status: Awaited<ReturnType<RemoteOperationJournal['status']>>
+      }
+      return { ...pageNativeHistory(result.history, frame.afterSequence), status: result.status }
+    }
     return this.read(frame.intent.operationId, frame.method)
   }
   async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown; executionPlacement?: NativeExecutionPlacement | undefined }, method: 'capabilities' | 'inspectMcp') {

@@ -9,6 +9,7 @@ import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-id
 import { DeviceConnectionIdentitySchema, WorkerPairingConfigurationSchema, type WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
@@ -50,6 +51,7 @@ import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,asser
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
 import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
@@ -432,7 +434,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     construction=next.then(()=>undefined,()=>undefined)
     return next
   }
-  const extensions:DeviceExtensionRegistration[]=[{namespace:'execution-v1',version:1,role:'duplex',maxJsonBytes:1024*1024,maxBinaryBytes:0,
+  const extensions:DeviceExtensionRegistration[]=[{namespace:'execution-v1',version:1,role:'duplex',maxJsonBytes:DEVICE_APPLICATION_JSON_BYTES,maxBinaryBytes:0,
     async handle(payload,context) {
       if(context.bytes!==undefined)unavailable('workflow_binary_payload_refused')
       const task=(async()=>{
@@ -450,13 +452,17 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :value?.history?{type:'history',history:value.history}:{type:'boundary'}
-            const history=value?.history??resident.retainedHistory
+            const history = value?.history ?? (resident.retainedHistory
+              ? pageNativeHistory(resident.retainedHistory).history : undefined)
             const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Math.min(Date.parse(resident.leaseExpiresAt),Date.now()+60_000)).toISOString(),
               receipt,session:resident.session,launch:resident.native.launch,
               observation:matchingOriginalRegistryLaunch(registry,resident.native.launch),runtimeLeaf:resident.runtimeLeaf,
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
               ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
               ...(receipt.terminal?.result?{output:{kind:'text-only',result:receipt.terminal.result}}:{})})
+            if (Buffer.byteLength(JSON.stringify(readout)) > DEVICE_APPLICATION_JSON_BYTES) {
+              unavailable('physical_readout_too_large')
+            }
             const assertOwnerCurrent = async () => {
               current(context.binding)
               await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
@@ -477,6 +483,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
               closure:()=>resident.physicalClosure??null})
           }
+        }
+        if (response !== undefined && Buffer.byteLength(JSON.stringify(response)) > DEVICE_APPLICATION_JSON_BYTES) {
+          unavailable('workflow_response_too_large')
         }
         return {payload:response}
       })()

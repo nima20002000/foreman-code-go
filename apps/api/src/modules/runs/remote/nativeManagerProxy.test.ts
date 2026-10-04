@@ -1,0 +1,112 @@
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeHarnessEvent } from '@graphql/contracts'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@graphql/contracts/device-application'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
+import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
+import type { NativeHistory } from '../../harnesses/port.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
+import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
+
+function event(sequence: number, text = 'event'): NativeHarnessEvent {
+  return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
+}
+function setup(read: () => NativeHistory) {
+  const mainId = randomUUID()
+  const deviceId = randomUUID()
+  const workerInstallationId = randomUUID()
+  const digest = 'a'.repeat(64)
+  const configuration: AgentConfigurationVersion = {
+    id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1, prompt: { system: 'test' },
+    assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex, contentHash: 'fixture',
+    createdAt: '2026-10-01T00:00:00.000Z',
+  }
+  const placement = freezePlacement({ schemaVersion: 1, mainId, runId: 'run', nodeId: 'node',
+    hostRef: { kind: 'device', mainId, deviceId }, registration: { workerInstallationId,
+      keyRevision: 1, authorizationRevision: 1 }, mainInstallationId: 'main-installation',
+    destination: { canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/runtime',
+      directoryIdentityHash: digest, rootPolicyId: 'policy', rootPolicyRevision: '1', locationRevision: '1',
+      attestationId: 'attestation', attestationHash: digest },
+    source: { revisionId: 'source', manifestDigest: digest, materializationId: 'materialization',
+      materializationDigest: digest },
+    payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'codex',
+      driverRevision: '1', instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'harness',
+      installationFingerprint: digest, runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [] },
+  })
+  const intent = deriveDispatch(placement, { executionId: 'execution', occurrenceId: null, occurrenceIndex: 0,
+    technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', inputDigest: `sha256:${digest}`,
+    owner: { grantId: 'grant', epoch: '1' } })
+  const session = { harness: 'codex' as const, providerVersion: 'fixture', nativeSessionId: 'native-session' }
+  const receipt = RemoteOperationReceiptSchema.parse({ schemaVersion: 1, intent,
+    connection: { mainId, deviceId, workerInstallationId, bootId: randomUUID(), keyRevision: 1,
+      authorizationRevision: 1, connectionGeneration: 1 }, workerIncarnationId: randomUUID(), sequence: 1,
+    phase: 'running', native: { sessionId: session.nativeSessionId, turnId: 'native-turn',
+      processIdentityDigest: digest }, entryAttempted: true, turnEntryAttempted: true,
+    turnInput: { correlationId: 'execution:execution', promptDigest: digest }, stopFence: false, controls: [],
+  })
+  const status = { status: 'known' as const, receipt }
+  const cursors: Array<number | undefined> = []
+  const observeOriginalSource = vi.fn(async () => {})
+  const request = vi.fn(async (method: string, raw: unknown) => {
+    const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+    if (method === 'prepare') return { session, status }
+    if (method === 'start-turn') return status
+    if (frame.method !== 'history') throw new Error('Unexpected request')
+    cursors.push(frame.afterSequence)
+    const reply = { ...pageNativeHistory(read(), frame.afterSequence), status }
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+    return reply
+  })
+  const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
+    transport: { request }, observeReceipt: async () => {}, observeOriginalSource,
+    controlFor: async () => { throw new Error('No native control requested') },
+  })
+  const start = { correlationId: 'execution:execution', request: { executionId: 'execution', runId: 'run',
+    workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', configuration, input: {} } }
+  return { proxy, start, request, cursors, observeOriginalSource }
+}
+
+function terminal(events: NativeHarnessEvent[]): NativeHistory {
+  const result = { outcome: 'succeeded' as const, output: { text: 'original terminal result' } }
+  return { events, pendingInteractions: [], firstRetainedSequence: events[0]?.sequence ?? 0,
+    nextSequence: (events.at(-1)?.sequence ?? -1) + 1, correlationId: 'execution:execution',
+    nativeTurnId: 'native-turn', terminalResult: result,
+    terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result } }
+}
+
+describe('remote native history streaming', () => {
+  it('drains every continuation before returning a terminal turn and recovers the original result', async () => {
+    const events = Array.from({ length: 90 }, (_, sequence) => event(sequence, 'x'.repeat(20_000)))
+    const history = terminal(events)
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeGreaterThan(DEVICE_APPLICATION_JSON_BYTES)
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const delivered: NativeHarnessEvent[] = []
+    for await (const value of f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })) {
+      delivered.push(value)
+      expect((await f.proxy.history(session)).terminalTurn).toEqual(history.terminalTurn)
+    }
+    expect(delivered).toEqual(events)
+    expect(f.cursors[0]).toBe(-1)
+    expect(f.cursors.length).toBeGreaterThan(1)
+    expect(f.cursors.every(cursor => cursor !== undefined)).toBe(true)
+    const recovered = await f.proxy.reconcile(session, f.start.correlationId)
+    expect(recovered.terminalTurn).toEqual(history.terminalTurn)
+    expect(recovered.firstRetainedSequence).toBeGreaterThan(0)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+
+  it('exposes an oversized event gap without blocking subsequent terminal recovery or replaying the turn', async () => {
+    const history = terminal([event(0, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1))])
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    await expect(stream.next()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
+    const recovered = await f.proxy.reconcile(session, f.start.correlationId)
+    expect(recovered.events).toEqual([])
+    expect(recovered.gap).toEqual({ fromSequence: 0, toSequence: 0, reason: 'event_too_large' })
+    expect(recovered.terminalTurn).toEqual(history.terminalTurn)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+})
