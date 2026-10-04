@@ -294,13 +294,13 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   vi.spyOn(CodexAppServerSessionManager.prototype, 'pending').mockImplementation(async () => history.pendingInteractions[0])
   vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
   vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
-  const finish = (outcome: 'succeeded' | 'cancelled') => {
+  const finish = (outcome: 'succeeded' | 'canceled') => {
     history.pendingInteractions = []
     history.terminalTurn = { correlationId: 'execution:execution', providerId: 'original-turn', result: { outcome } }
     release()
   }
   const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockImplementation(async () => {
-    finish('cancelled')
+    finish('canceled')
     return true
   })
   let live: DeviceSessionBinding | undefined = f.context.binding
@@ -379,7 +379,7 @@ describe('installed host resident execution continuity', () => {
       expect(await f.call('status')).toMatchObject({ payload: { receipt: { terminal: { kind: 'completed' } } } })
       expect(f.create).toHaveBeenCalledOnce()
     } finally {
-      f.finish('cancelled')
+      f.finish('canceled')
       await f.host.close()
     }
   })
@@ -406,7 +406,7 @@ describe('installed host resident execution continuity', () => {
       expect(f.attach).not.toHaveBeenCalled()
       expect(f.requests.at(-1)?.binding).toEqual(replacement)
     } finally {
-      f.finish('cancelled')
+      f.finish('canceled')
       await f.host.close()
     }
   })
@@ -426,7 +426,7 @@ describe('installed host resident execution continuity', () => {
       expect(f.cancel).not.toHaveBeenCalled()
     } finally {
       f.reconnect(f.context.binding)
-      f.finish('cancelled')
+      f.finish('canceled')
       await f.host.close()
     }
   })
@@ -479,7 +479,7 @@ describe('installed host resident execution continuity', () => {
       expect(f.turns).toHaveBeenCalledOnce()
     } finally {
       clock.mockRestore()
-      f.finish('cancelled')
+      f.finish('canceled')
       await f.host.close()
     }
   })
@@ -501,7 +501,7 @@ describe('installed host resident execution continuity', () => {
       expect(f.cancel).toHaveBeenCalledOnce()
       expect(f.create).toHaveBeenCalledOnce()
     } finally {
-      f.finish('cancelled')
+      f.finish('canceled')
       await f.host.close()
     }
   })
@@ -727,7 +727,9 @@ describe('installed workflow construction concurrency', () => {
       residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
       assertCurrent: () => {},
     })
-    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockResolvedValue({ endpoint: 'http://unit.invalid/mcp', close: async () => {} })
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
     const history = { events: [], pendingInteractions: [], correlationId: `execution:${f.intent.executionId}` }
     vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue(history)
     const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
@@ -1003,7 +1005,7 @@ describe('original physical source selectors and Main SQL consumer',()=>{
       for (let count = 0; count < events.length; count++) {
         const page = pageNativeHistory(full, cursor)
         const source = { type: 'history' as const, history: page.history }
-        readouts.remember({ readout: { ...f.readout, history: page.history }, placement: f.placement, source,
+        readouts.remember({ readout: RemoteWorkflowPhysicalReadoutSchema.parse({ ...f.readout, history: page.history }), placement: f.placement, source,
           leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: assertCurrent, assertCurrent,
           observe: () => f.captured.launch, closure: () => null })
         const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,

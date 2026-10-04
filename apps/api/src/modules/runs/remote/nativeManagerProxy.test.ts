@@ -64,7 +64,8 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
     controlFor: async () => { throw new Error('No native control requested') },
   })
   const start = { correlationId: 'execution:execution', request: { executionId: 'execution', runId: 'run',
-    workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', configuration, input: {} } }
+    workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', runtimeDirectory: '/runtime',
+    configuration, input: {} } }
   return { proxy, start, request, cursors, observeOriginalSource }
 }
 

@@ -235,8 +235,9 @@ describe('original worker-native artifact sender', () => {
       if (body.params.name === 'files.admit_transferred_result') return { payload: { statusCode: 200,
         contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id: body.id,
           result: { structuredContent: await t.main.admit(body.params.arguments) } }) } }
-      const reply = await app.inject({ method: 'POST', url: '/mcp/artifact-publications', payload: request.body,
-        headers: { authorization: `Bearer ${t.token}`, accept: 'application/json, text/event-stream' } })
+      const reply = await app.inject({ method: 'POST', url: '/mcp/artifact-publications',
+        payload: JSON.stringify(request.body), headers: { authorization: `Bearer ${t.token}`,
+          'content-type': 'application/json', accept: 'application/json, text/event-stream' } })
       if (loseReply) { loseReply = false; throw new Error('publication ACK lost') }
       return { payload: { statusCode: reply.statusCode,
         contentType: reply.headers['content-type']?.startsWith('text/event-stream') ? 'text/event-stream' : 'application/json',

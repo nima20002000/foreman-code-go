@@ -6,6 +6,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
+import { DeviceHistoryPageSchema } from '@foreman-code/contracts/device-application'
+import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
@@ -18,6 +21,9 @@ import { pageNativeHistory } from './nativeHistoryPage.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 const hosts: RemoteExecutionHost[] = []
+const HistoryReplySchema = z.object({
+  history: RemoteNativeHistorySchema, page: DeviceHistoryPageSchema,
+}).passthrough()
 afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 async function setup(expectedToken?: string) {
   const root = await mkdtemp(join(tmpdir(), 'w08-host-')); roots.push(root)
@@ -50,11 +56,12 @@ describe('actual worker native-port adapter', () => {
     f.manager.reconcile = vi.fn(async () => ({ events, pendingInteractions: [], firstRetainedSequence: 0,
       nextSequence: events.length }))
     const request = { method: 'history', intent: f.intent, placement: f.placement, afterSequence: -1 }
-    const first = await f.host.handle(request) as ReturnType<typeof pageNativeHistory>
+    const first = HistoryReplySchema.parse(await f.host.handle(request))
     expect(first.page.hasMore).toBe(true)
     expect(first.history.events[0]?.sequence).toBe(0)
-    const second = await f.host.handle({ ...request, afterSequence: first.page.nextAfterSequence }) as
-      ReturnType<typeof pageNativeHistory>
+    const second = HistoryReplySchema.parse(await f.host.handle({
+      ...request, afterSequence: first.page.nextAfterSequence,
+    }))
     expect(second.history.events[0]?.sequence).toBe(first.page.nextAfterSequence + 1)
     f.state.allowed = false
     await expect(f.host.handle(request)).rejects.toThrow('revoked')
@@ -358,7 +365,7 @@ describe('actual worker native-port adapter', () => {
       if (action !== 'stop' && action !== 'read') throw new Error(reason)
     })
     f.ports.settle = vi.fn(async () => f.state.cancels ? {
-      kind: 'cancelled', closureEvidenceDigest: 'c'.repeat(64),
+      kind: 'cancelled' as const, closureEvidenceDigest: 'c'.repeat(64),
     } : null)
     const before = await f.journal.status(f.intent.operationId)
     if (before.status !== 'known') throw new Error('Missing native receipt')

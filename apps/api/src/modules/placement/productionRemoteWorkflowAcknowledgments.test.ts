@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { beforeEach, expect, it, vi } from 'vitest'
-import type { HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@graphql/contracts'
 import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
 import type { WorkflowNativeCapture, WorkflowOriginalNativeSource } from '../interactions/workflowNativeCapture.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
@@ -75,8 +75,9 @@ async function fixture() {
     endpoint: () => ({ currentBinding: () => ports.connection }) as unknown as ReturnType<
       Parameters<typeof createProductionRemoteWorkflow>[0]['endpoint']>,
     producer: () => undefined,
-    execution: async () => ({ ...ports.intent, id: 'execution', workflowNodeId: 'node', attempt: 1,
-      workingDirectory: '/original/source' }) as HarnessExecution,
+    execution: async () => HarnessExecutionSchema.parse({ id: 'execution', runId: ports.intent.runId,
+      workflowNodeId: 'node', agentId: 'agent', agentConfigurationVersionId: 'configuration', attempt: 1,
+      input: {}, state: 'running', createdAt: '2026-10-04T00:00:00.000Z', workingDirectory: '/original/source' }),
   })
   await composition.prepare('execution')
   const owner = { runId: 'run', assertOwned() {} } as RunOwnership

@@ -57,11 +57,13 @@ describe('original workflow publication replies', () => {
     const f = fixture()
     f.tracker.observe(f.input, f.published)
     const input = structuredClone(f.input)
-    const result = structuredClone(f.published)
+    let result = structuredClone(f.published)
     if (kind === 'scope' && input.publication.scope.chat.kind === 'agent') input.publication.scope.chat.executionId = 'foreign'
-    if (kind === 'pins') result.value.revision.revisionId = randomUUID()
+    if (kind === 'pins') result = { ...result, value: { ...result.value,
+      revision: { ...result.value.revision, revisionId: randomUUID() } } }
     if (kind === 'transfer') input.transferId = randomUUID()
-    if (kind === 'metadata') result.value.revision.filename = 'replacement.md'
+    if (kind === 'metadata') result = { ...result, value: { ...result.value,
+      revision: { ...result.value.revision, filename: 'replacement.md' } } }
     expect(() => f.tracker.observe(input, result)).toThrow()
     expect(f.tracker.read(f.result()).artifactDigests).toEqual(['a'.repeat(64), 'a'.repeat(64)])
   })
