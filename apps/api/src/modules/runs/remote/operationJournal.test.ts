@@ -2,12 +2,12 @@ import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RemoteOperationJournal } from './operationJournal.js'
 import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
-import type { RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
+import type { RemoteOwnerControl, RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { bootIdentity, processIdentity, identityAlive } from '../../harnesses/recovery/linuxIdentity.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
@@ -165,7 +165,6 @@ describe('durable remote ownership', () => {
       expect((await recovered.reserveEntry(intent.operationId)).reserved).toBe(false)
       await expect(recovered.accept({ ...intent, operationId: 'replacement' }, connection, randomUUID()))
         .rejects.toThrow('already bound')
-      expect((await readdir(root)).filter(name => name.includes('.retired-owner-'))).toHaveLength(1)
     } finally {
       worker.kill('SIGKILL')
       if (descendantPid) process.kill(descendantPid, 'SIGKILL')
@@ -188,7 +187,8 @@ describe('durable remote ownership', () => {
       status: 'known', receipt: { native, phase: 'start_acknowledged' },
     })
     expect((await recovered.reserveEntry(intent.operationId)).reserved).toBe(false)
-    expect(JSON.parse(await readFile(`${path}.retired-owner-${owner.ownerId}.json`, 'utf8'))).toEqual(owner)
+    const retained = await Promise.all((await readdir(dirname(path))).map(name => readFile(join(dirname(path), name), 'utf8')))
+    expect(retained).toContain(JSON.stringify(owner))
   })
   it('refuses a live service identity or unidentifiable legacy lock even without a kernel holder', async () => {
     const { path, journal } = await setup()
@@ -200,5 +200,98 @@ describe('durable remote ownership', () => {
     await writeFile(`${path}.owner-lock`, randomUUID())
     await expect(RemoteOperationJournal.open(path)).rejects.toThrow()
     expect(await readFile(`${path}.owner-lock`, 'utf8')).toMatch(/^[a-f0-9-]{36}$/)
+  })
+  it('reuses settled capacity while retaining immutable readback and duplicate ownership fences', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'journal-retention-'))
+    roots.push(root)
+    const path = join(root, 'journal.json')
+    const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true, capacity: 1 })
+    journals.push(journal)
+    const evidence = { kind: 'completed' as const, closureEvidenceDigest: digest,
+      result: { outcome: 'succeeded' as const, output: { text: 'x'.repeat(24_000) } } }
+    let original: RemoteOperationReceipt | undefined
+    for (let index = 0; index < 4; index++) {
+      const dispatched = { ...intent, operationId: `operation-${index}`,
+        executionId: `execution-${index}`, attemptId: `attempt-${index}` }
+      await journal.accept(dispatched, connection, randomUUID())
+      await journal.reserveEntry(dispatched.operationId)
+      await journal.acknowledgeStart(dispatched.operationId, native)
+      await expect(journal.accept({ ...intent, operationId: 'excess' }, connection, randomUUID()))
+        .rejects.toThrow('full')
+      const cancel = { ...stop, commandId: `stop-${index}`, operationId: dispatched.operationId,
+        attemptId: dispatched.attemptId, executionId: dispatched.executionId }
+      expect((await journal.control(cancel)).dispatch).toBe(true)
+      expect(await journal.enterControlDelivery(cancel)).toBe(true)
+      await journal.acknowledgeControl(cancel)
+      const terminal = await journal.terminal(dispatched.operationId, evidence)
+      await expect(journal.retireSettled({ ...dispatched, owner: { grantId: 'foreign', epoch: '1' } }, terminal.sequence))
+        .rejects.toThrow('retirement required')
+      await journal.retireSettled(dispatched, terminal.sequence)
+      if (index === 0) original = terminal
+    }
+    if (!original) throw new Error('Missing first terminal receipt')
+    await journal.close()
+    const recovered = await RemoteOperationJournal.open(path, { capacity: 1 })
+    journals.push(recovered)
+    expect(await recovered.status(original.intent.operationId)).toEqual({ status: 'known', receipt: original })
+    expect(await recovered.accept(original.intent, connection, randomUUID())).toEqual(original)
+    expect((await recovered.reserveEntry(original.intent.operationId)).reserved).toBe(false)
+    const duplicate = original.controls[0]!
+    expect((await recovered.control(duplicate)).dispatch).toBe(false)
+    await expect(recovered.control({ ...duplicate, native: { ...native, sessionId: 'changed' } }))
+      .rejects.toThrow('Control command conflict')
+    await expect(recovered.accept({ ...original.intent, operationId: 'replacement' }, connection, randomUUID()))
+      .rejects.toThrow('already bound')
+    await expect(recovered.control({ ...stop, operationId: original.intent.operationId,
+      attemptId: original.intent.attemptId, executionId: original.intent.executionId,
+      native: { ...native, sessionId: 'foreign' } })).rejects.toThrow('Wrong native')
+    expect((await recovered.control({ ...stop, operationId: original.intent.operationId,
+      attemptId: original.intent.attemptId, executionId: original.intent.executionId })).dispatch).toBe(false)
+    await recovered.accept(intent, connection, randomUUID())
+  })
+  it('rejects byte exhaustion before disk uncertainty and preserves Stop for another active owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'journal-bytes-'))
+    roots.push(root)
+    const journal = await RemoteOperationJournal.open(join(root, 'journal.json'), {
+      initializeNewInstallation: true, capacity: 3, byteLimit: 16 * 1024,
+    })
+    journals.push(journal)
+    const other = { ...intent, operationId: 'other', executionId: 'other-execution', attemptId: 'other-attempt' }
+    await journal.accept(intent, connection, randomUUID())
+    await journal.accept(other, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.reserveEntry(other.operationId)
+    await journal.acknowledgeStart(other.operationId, { ...native, sessionId: 'other-session' })
+    await expect(journal.terminal(intent.operationId, { kind: 'completed', closureEvidenceDigest: digest,
+      result: { outcome: 'succeeded', output: { text: 'x'.repeat(16_384) } } })).rejects.toThrow('byte limit')
+    expect(await journal.status(intent.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'start_acknowledged', native },
+    })
+    const terminal = await journal.terminal(intent.operationId, { kind: 'completed', closureEvidenceDigest: digest,
+      result: { outcome: 'succeeded', output: { text: 'x'.repeat(9_000) } } })
+    const third = { ...intent, operationId: 'third', executionId: 'third-execution', attemptId: 'third-attempt' }
+    await expect(journal.accept(third, connection, randomUUID())).rejects.toThrow('byte limit')
+    const cancel = { ...stop, operationId: other.operationId, attemptId: other.attemptId, executionId: other.executionId }
+    expect((await journal.control(cancel)).dispatch).toBe(true)
+    expect(await journal.enterControlDelivery(cancel)).toBe(true)
+    await journal.acknowledgeControl(cancel)
+    expect(await journal.status(other.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'stop_requested', stopFence: true },
+    })
+    await journal.retireSettled(intent, terminal.sequence)
+    await journal.accept(third, connection, randomUUID())
+    expect(await journal.status(intent.operationId)).toEqual({ status: 'known', receipt: terminal })
+  })
+  it('rejects retirement before terminal closure and old-owner delivery after renewal', async () => {
+    const { journal } = await setup()
+    const receipt = await journal.accept(intent, connection, randomUUID())
+    await expect(journal.retireSettled(intent, receipt.sequence)).rejects.toThrow('terminal retirement required')
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.control(stop)
+    await journal.reconcileOwner({ commandId: 'renew', operationId: intent.operationId,
+      previousOwner: intent.owner, nextOwner: { grantId: 'renewed', epoch: '2' }, native, evidenceDigest: digest })
+    await expect(journal.enterControlDelivery(stop)).rejects.toThrow('Stale control ownership')
   })
 })

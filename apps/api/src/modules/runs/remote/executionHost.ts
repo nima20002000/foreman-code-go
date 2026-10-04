@@ -7,7 +7,7 @@ import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, 
 import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
-import type { NativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
+import type { NativeSessionManagerResolver, NativeManagerResolutionContext } from '../../interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager, NativeHistory, ChildProcessEnvironment } from '../../harnesses/port.js'
 import { assertRuntimeLeafPath, assertRuntimeLeafBinding, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { readPlacement } from '../../placement/binding.js'
@@ -35,7 +35,10 @@ export class RemoteExecutionHost {
   private closing = false
   private shutdownTask: Promise<void> | undefined
   private readonly preparations = new Set<Promise<unknown>>()
-  private readonly allocatedManagers = new Set<NativeHarnessSessionManager>()
+  private readonly allocatedManagers = new Map<string, {
+    manager: NativeHarnessSessionManager
+    context: NativeManagerResolutionContext
+  }>()
   private readonly inspections = new Map<string, Set<AbortController>>()
   private readonly launchControllers = new Map<string, AbortController>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
@@ -53,7 +56,8 @@ export class RemoteExecutionHost {
     const active = [...this.residents.values()]
     for (const owned of active) owned.controller.abort(new Error('Worker execution host is shutting down.'))
     await Promise.allSettled(active.flatMap(owned => owned.turn ? [owned.turn] : []))
-    const managers = new Set([...this.allocatedManagers, ...active.map(owned => owned.manager)])
+    const managers = new Set([...this.allocatedManagers.values()].map(value => value.manager)
+      .concat(active.map(owned => owned.manager)))
     await Promise.all([...managers].map(async manager => {
       if (!manager.dispose) throw new Error('An actual worker native manager has no disposal contract.')
       await manager.dispose()
@@ -128,10 +132,12 @@ export class RemoteExecutionHost {
     const controllers = this.inspections.get(intent.operationId) ?? new Set<AbortController>()
     controllers.add(controller); this.inspections.set(intent.operationId, controllers)
     try {
-      const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: configuration.agentId,
-        harness: configuration.harness.harness, configuration, workingDirectory: executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd })
+      const context = { executionId: intent.executionId, agentId: configuration.agentId,
+        harness: configuration.harness.harness, configuration,
+        workingDirectory: executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd }
+      const resolved = this.ports.managers.resolve(context)
       if (this.closing) throw new Error('Worker execution host is shutting down.')
-      this.allocatedManagers.add(resolved.manager)
+      this.allocatedManagers.set(intent.operationId, { manager: resolved.manager, context })
       return await resolved.manager[method](controller.signal)
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
@@ -171,10 +177,12 @@ export class RemoteExecutionHost {
       await this.ports.authorize(intent, placement, 'start')
       const before = await this.ports.journal.status(intent.operationId)
       if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
-      const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: request.configuration.agentId,
-        harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
+      const context = { executionId: intent.executionId, agentId: request.configuration.agentId,
+        harness: request.configuration.harness.harness, configuration: request.configuration,
+        workingDirectory: request.workingDirectory }
+      const resolved = this.ports.managers.resolve(context)
       controller.signal.throwIfAborted()
-      this.allocatedManagers.add(resolved.manager)
+      this.allocatedManagers.set(intent.operationId, { manager: resolved.manager, context })
       resolved.beginStart?.()
       const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
@@ -362,6 +370,29 @@ export class RemoteExecutionHost {
       await this.settle(resident, `execution:${resident.intent.executionId}`)
     } catch { await this.ports.journal.uncertain(command.operationId, 'Native control acknowledgment unavailable') }
     return this.ports.journal.status(command.operationId)
+  }
+  async retireSettled(operationId: string) {
+    if (!await this.ports.journal.isRetired(operationId)) throw new Error('Settled journal retirement required')
+    const resident = this.residents.get(operationId)
+    if (resident) {
+      await resident.turn
+      await resident.settlementTask
+    }
+    let allocation = this.allocatedManagers.get(operationId)
+    if (!allocation && resident) {
+      allocation = { manager: resident.manager, context: {
+        executionId: resident.intent.executionId, agentId: resident.request.configuration.agentId,
+        harness: resident.request.configuration.harness.harness, configuration: resident.request.configuration,
+        workingDirectory: resident.request.workingDirectory,
+      } }
+    }
+    if (allocation) {
+      await allocation.manager.dispose?.()
+      this.ports.managers.release?.(allocation.context, allocation.manager)
+      this.allocatedManagers.delete(operationId)
+    }
+    this.residents.delete(operationId)
+    this.bindings.delete(operationId)
   }
   async drain() { await Promise.all([...this.residents.values()].flatMap(resident => resident.turn ? [resident.turn] : [])) }
   status(operationId: string) { return this.ports.journal.status(operationId) }

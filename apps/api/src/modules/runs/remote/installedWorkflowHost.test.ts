@@ -505,6 +505,32 @@ describe('lazy installed worker host qualification boundary',()=>{
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({
         status: 'known', receipt: { phase: 'confirmed_terminal', entryAttempted: false, terminal: { kind: 'not_started' } },
       })
+      expect(await retainedJournal!.isRetired(f.intent.operationId)).toBe(true)
+      readMain.mockImplementation(async input => {
+        const request = input as { action: string; intent: typeof f.intent }
+        return { payload: { version: 1, action: request.action, operationId: request.intent.operationId,
+          attemptId: request.intent.attemptId, bindingHash: request.intent.bindingHash, owner: request.intent.owner } }
+      })
+      const retiredStatus = await retainedJournal!.status(f.intent.operationId)
+      expect(await handler({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .toEqual({ payload: retiredStatus })
+      expect(await handler({ method: 'control', intent: f.intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'retired-stop',
+          operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } } }, f.context))
+        .toEqual({ payload: retiredStatus })
+      await expect(handler({ method: 'control', intent: f.intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'foreign-stop',
+          operationId: 'foreign-operation', executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } } }, f.context))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE',
+          details: { reason: 'retired_control_ownership_changed' } })
+      readMain.mockRejectedValue(new Error('Original grant revoked'))
+      await expect(handler({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .rejects.toThrow('Original grant revoked')
+      expect(await retainedJournal!.status(f.intent.operationId)).toEqual(retiredStatus)
+      expect(reserve).not.toHaveBeenCalled()
+      expect(create).not.toHaveBeenCalled()
       const interrupted = { ...f.intent, executionId: 'interrupted-execution', attemptId: 'interrupted-attempt', operationId: 'interrupted-operation' }
       const cleanupOwner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const,
         identity: { ...f.owner.identity, operationId: interrupted.operationId },

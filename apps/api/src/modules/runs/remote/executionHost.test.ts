@@ -35,10 +35,11 @@ async function setup(expectedToken?: string) {
   const session = { harness: 'codex' as const, providerVersion: 'test', nativeSessionId: 'native-session' }
   const manager: NativeHarnessSessionManager = { harness: 'codex', capabilities: async () => { throw new Error('unused') }, inspectMcp: async () => { throw new Error('unused') }, createSession: async () => { state.starts++; return session }, attachSession: async () => session,
     startTurn: async function* (_session, turn) { state.turns++; await turn.onSubmitted?.('native-turn'); yield { sequence: 1, type: 'event', occurredAt: '2026-10-01T00:00:00.000Z', payload: {} } }, pending: async () => undefined, respond: async () => { state.responds++ }, cancel: async () => { state.cancels++; return false }, history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }), close: async () => {} }
-  const ports: RemoteExecutionHostPorts = { journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => { if (!placement.source.materializationId || !placement.source.materializationDigest) throw new Error('Original fixture has no materialized source'); return ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }) }, preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null }
+  const managers = new ExecutionScopedNativeSessionManagerResolver(() => manager)
+  const ports: RemoteExecutionHostPorts = { journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers, authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => { if (!placement.source.materializationId || !placement.source.materializationDigest) throw new Error('Original fixture has no materialized source'); return ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }) }, preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null }
   const host = new RemoteExecutionHost(ports)
   hosts.push(host)
-  return { host, manager, session, journal, intent, placement, request, state, ports }
+  return { host, manager, managers, session, journal, intent, placement, request, state, ports }
 }
 describe('actual worker native-port adapter', () => {
   it('pages authenticated history without relaxing grants or the original execution owner', async () => {
@@ -144,6 +145,50 @@ describe('actual worker native-port adapter', () => {
     expect(ports.settle).toHaveBeenCalledTimes(1)
   })
 
+  it('releases acknowledged terminal residents while preserving status and rejecting replacement launch', async () => {
+    const f = await setup()
+    f.ports.settle = async () => ({ kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
+      result: { outcome: 'succeeded', output: { text: 'Original result' } } })
+    f.manager.dispose = vi.fn(async () => {})
+    const release = vi.spyOn(f.managers, 'release')
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await f.host.drain()
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Missing terminal receipt')
+    await expect(f.host.retireSettled(f.intent.operationId)).rejects.toThrow('journal retirement required')
+    expect(f.manager.dispose).not.toHaveBeenCalled()
+    await f.journal.retireSettled(f.intent, status.receipt.sequence)
+    await f.host.retireSettled(f.intent.operationId)
+    await f.host.retireSettled(f.intent.operationId)
+    expect(f.manager.dispose).toHaveBeenCalledOnce()
+    expect(release).toHaveBeenCalledOnce()
+    expect(await f.host.handle({ method: 'status', intent: f.intent, placement: f.placement })).toEqual(status)
+    await expect(f.host.prepare(f)).rejects.toThrow('requires reconciliation')
+    await expect(f.host.read(f.intent.operationId, 'history')).rejects.toThrow('Original native owner requires reconciliation')
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(1)
+  })
+  it('retires an inspected manager without retaining it for a second shutdown disposal', async () => {
+    const f = await setup()
+    f.manager.capabilities = async () => ({ provider: 'codex', providerVersion: 'test',
+      persistentSessions: true, reconnect: false, sameRequestResponses: true, cancellation: true,
+      history: true, configurationInspection: true, mcpDetection: true, supportedInteractionKinds: [] })
+    f.manager.dispose = vi.fn(async () => {})
+    await f.host.inspect({ intent: f.intent, placement: f.placement,
+      configuration: f.request.configuration }, 'capabilities')
+    await f.host.control({ schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
+      operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+      bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } })
+    const terminal = await f.journal.terminal(f.intent.operationId, {
+      kind: 'not_started', closureEvidenceDigest: 'a'.repeat(64),
+    })
+    await f.journal.retireSettled(f.intent, terminal.sequence)
+    await f.host.retireSettled(f.intent.operationId)
+    await f.host.shutdown()
+    expect(f.manager.dispose).toHaveBeenCalledOnce()
+    expect(f.state.starts).toBe(0)
+  })
   it('keeps a workflow-only host available without substituting it for the missing OCI Job runtime', async () => {
     const { host } = await setup()
     const execution = jobExecution()

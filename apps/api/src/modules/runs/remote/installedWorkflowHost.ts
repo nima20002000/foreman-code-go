@@ -34,6 +34,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../../interactions/
 import { workerExecutionAuthorizer, workerExecutionFactsReader } from '../../placement/executionAuthorityClient.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
+import { readPlacement } from '../../placement/binding.js'
 import { anchored, identity, openPrivateRoot, openChildDirectory } from '../../sources/privateFilesystem.js'
 import type { SourceOperationWorkerService, SourceOperationWorkerContext } from '../../sources/operationWorker.js'
 import type { SourceInstalledNativeOwner } from '../../sources/executionHosts.js'
@@ -41,13 +42,13 @@ import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteExecutionHost } from './executionHost.js'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
-import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { RemoteExecutionRpcRequestSchema, type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
-import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
+import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
 import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
@@ -474,17 +475,74 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     construction=next.then(()=>undefined,()=>undefined)
     return next
   }
+  const releaseSettled = async (intent: DispatchIntent) => {
+    for (const host of hosts.values()) await host.retireSettled(intent.operationId)
+    operations.delete(intent.executionId)
+    physical.purge(intent.operationId)
+  }
+  const retiredReply = async (frame: RemoteExecutionRpcRequest,
+    context: DeviceExtensionContext, log: RemoteOperationJournal) => {
+    current(context.binding)
+    const placement = readPlacement(frame.placement)
+    const status = await log.status(frame.intent.operationId)
+    if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, frame.intent)
+      || placement.bindingHash !== frame.intent.bindingHash || placement.hostRef.kind !== 'device'
+      || placement.hostRef.deviceId !== context.binding.deviceId || placement.mainId !== context.binding.mainId
+      || status.receipt.connection.workerInstallationId !== context.binding.workerInstallationId) {
+      unavailable('retired_operation_ownership_changed')
+    }
+    if (frame.method === 'control' && (frame.command.operationId !== frame.intent.operationId
+      || frame.command.attemptId !== frame.intent.attemptId || frame.command.executionId !== frame.intent.executionId
+      || frame.command.bindingHash !== frame.intent.bindingHash || !isDeepStrictEqual(frame.command.owner, frame.intent.owner))) {
+      unavailable('retired_control_ownership_changed')
+    }
+    let action: 'start' | 'read' | 'control' = 'read'
+    if (frame.method === 'control') action = 'control'
+    else if (frame.method === 'prepare' || frame.method === 'start-turn') action = 'start'
+    await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, placement, action)
+    current(context.binding)
+    await releaseSettled(frame.intent)
+    if (frame.method === 'status') return { payload: status }
+    if (frame.method === 'control') {
+      await log.control(frame.command)
+      return { payload: status }
+    }
+    if (frame.method === 'physical-ack') return { payload: { version: 1, operationId: frame.intent.operationId,
+      receiptSequence: frame.receiptSequence, sourceDigest: frame.sourceDigest, status: 'not_retained' } }
+    unavailable('original_operation_retired')
+  }
   const extensions:DeviceExtensionRegistration[]=[{namespace:'execution-v1',version:1,role:'duplex',maxJsonBytes:DEVICE_APPLICATION_JSON_BYTES,maxBinaryBytes:0,
     async handle(payload,context) {
       if(context.bytes!==undefined)unavailable('workflow_binary_payload_refused')
       const task=(async()=>{
         if(RemoteJobExecutionRpcRequestSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed Codex workflow host has no Job runtime.',409)
         const frame=RemoteExecutionRpcRequestSchema.parse(payload)
+        if (journalOpening && await(await journalOpening).isRetired(frame.intent.operationId)) {
+          return retiredReply(frame, context, await journalOpening)
+        }
         const action = frame.method === 'control' && frame.command.action.kind === 'stop' ? 'stop' : 'read'
         const host=await construct(context,frame.intent,frame.placement,action)
         context.signal.throwIfAborted()
+        const log = await journal()
+        if (await log.isRetired(frame.intent.operationId)) return retiredReply(frame, context, log)
         if(frame.method==='physical-readout')return {payload:await physical.read(frame)}
-        if(frame.method==='physical-ack')return {payload:await physical.ack(frame)}
+        if(frame.method==='physical-ack') {
+          const resident = operation(frame.intent)
+          const status = await log.status(frame.intent.operationId)
+          const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })
+            || resident.retainedHistory && frame.sourceDigest === remoteWorkflowSourceDigest({
+              type: 'history', history: resident.retainedHistory,
+            })
+          if (terminalSource && resident.physicalClosure
+            && status.status === 'known' && status.receipt.terminal && status.receipt.sequence === frame.receiptSequence) {
+            await physical.read(frame)
+            await log.retireSettled(frame.intent, frame.receiptSequence)
+            const ack = await physical.ack(frame)
+            await releaseSettled(frame.intent)
+            return {payload:ack}
+          }
+          return {payload:await physical.ack(frame)}
+        }
         const response=await createRemoteExecutionHandler(host)(frame)
         const value=response&&typeof response==='object'?response as {session?:NativeSessionReference;history?:NativeHistory;status?:unknown}:undefined
         const status=value?.status&&typeof value.status==='object'?value.status as {status?:string;receipt?:unknown}:response as {status?:string;receipt?:unknown}
@@ -613,7 +671,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       || receipt.entryAttempted && !receipt.native
       || owned?.native && !isDeepStrictEqual(owned.native.native, receipt.native)
       || owned?.session && owned.session.nativeSessionId !== receipt.native?.sessionId) return false
-    if (receipt.terminal?.kind === 'not_started') return true
+    if (await log.isRetired(receipt.intent.operationId)) {
+      await releaseSettled(receipt.intent)
+      return true
+    }
+    if (receipt.terminal?.kind === 'not_started') {
+      await log.retireSettled(receipt.intent, receipt.sequence)
+      await releaseSettled(receipt.intent)
+      return true
+    }
     if (owned) owned.launchDisabled = true
     await log.revokeFence(owner.identity.operationId)
     if (owned?.manager) {
@@ -622,11 +688,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     }
     if ((receipt.native || launches().length) && !await registry.closeOwner(processOwner)) return false
     await owned?.mcp?.close()
-    if (receipt.terminal) return true
-    await log.terminal(owner.identity.operationId, {
+    const terminal = receipt.terminal ? receipt : await log.terminal(owner.identity.operationId, {
       kind: receipt.native ? 'cancelled' : 'not_started',
       closureEvidenceDigest: digest({ intent: receipt.intent, preparationClosed: true, launches: launches() }),
     })
+    await log.retireSettled(terminal.intent, terminal.sequence)
+    await releaseSettled(terminal.intent)
     return true
   }
   return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,close}
