@@ -47,6 +47,40 @@ async function setup(expectedToken?: string) {
   hosts.push(host)
   return { host, manager, managers, session, journal, intent, placement, request, state, ports }
 }
+
+async function productionShutdownFixture() {
+  const { loadConfig } = await import('../../../config.js')
+  const { createDatabase } = await import('../../../infrastructure/database.js')
+  const { createCheckpointStore } = await import('../../../infrastructure/checkpoints.js')
+  const { OperatorRuntimeOwner } = await import('../../../infrastructure/operatorRuntimeOwner.js')
+  const { OperatorChatService } = await import('../../conversations/operatorChat.js')
+  const { AutomaticReviewService } = await import('../../interactions/automaticReview.js')
+  const { ApprovalExecutionCoordinator } = await import('../../interactions/execution.js')
+  const { LangGraphWorkflowEngine } = await import('../engine.js')
+  const { ProductionDeviceRuntime } = await import('../../devices/productionRuntime.js')
+  const { buildProductionApp } = await import('../../../production.js')
+  const ownerClose = vi.spyOn(OperatorRuntimeOwner.prototype, 'close').mockResolvedValue()
+  const managerDispose = vi.spyOn(ExecutionScopedNativeSessionManagerResolver.prototype, 'dispose').mockResolvedValue()
+  const detach = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'closeForRestart')
+  const admission = vi.spyOn(ProductionDeviceRuntime.prototype, 'stopAdmission')
+  const channels = vi.spyOn(ProductionDeviceRuntime.prototype, 'stop')
+  const mocks = [ownerClose, managerDispose, detach, admission, channels,
+    vi.spyOn(OperatorChatService.prototype, 'shutdown').mockResolvedValue(),
+    vi.spyOn(AutomaticReviewService.prototype, 'shutdown').mockResolvedValue(),
+    vi.spyOn(LangGraphWorkflowEngine.prototype, 'shutdown').mockResolvedValue()]
+  const config = loadConfig({ DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_shutdown_fixture' })
+  const database = createDatabase(config.database)
+  const checkpoints = createCheckpointStore(config.database.connectionString, 'remote_shutdown_fixture', config.database)
+  const production = buildProductionApp(config, database, checkpoints, false)
+  return { production, ownerClose, managerDispose, detach, admission, channels,
+    async close() {
+      // Expected lifecycle rejections are asserted before this fixture releases its idle pools.
+      await Promise.allSettled([production.app.close()])
+      await Promise.all([database.close(), checkpoints.close()])
+      for (const mock of mocks) mock.mockRestore()
+    } }
+}
+
 describe('actual worker native-port adapter', () => {
   it('pages authenticated history without relaxing grants or the original execution owner', async () => {
     const f = await setup()
@@ -69,6 +103,131 @@ describe('actual worker native-port adapter', () => {
     await expect(f.host.handle({ ...request, intent: { ...f.intent, executionId: 'foreign-execution' } }))
       .rejects.toThrow('RPC stale execution owner')
     expect(f.manager.reconcile).toHaveBeenCalledTimes(2)
+  })
+
+  it('production detaches the running remote resident before closing channels or releasing ownership', async () => {
+    const f = await setup()
+    let channelsClosed = false
+    let historyEntered!: () => void
+    let releaseHistory!: () => void
+    const entered = new Promise<void>(resolve => { historyEntered = resolve })
+    const released = new Promise<void>(resolve => { releaseHistory = resolve })
+    const order: string[] = []
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: async (method, frame) => {
+        if (channelsClosed) throw new Error('Device channel closed')
+        if (method === 'history') {
+          historyEntered()
+          await released
+          if (channelsClosed) throw new Error('Device channel closed during disposition')
+        }
+        return f.host.handle(frame)
+      } },
+      observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    await f.host.startTurn(f.intent.operationId, 'original prompt', 'execution:execution')
+    await f.host.drain()
+    const original = await f.journal.status(f.intent.operationId)
+    const runtime = await productionShutdownFixture()
+    runtime.detach.mockImplementation(async () => {
+      await proxy.closeForRestart(session)
+      order.push('resident detached')
+    })
+    runtime.managerDispose.mockImplementation(async () => { await proxy.dispose(); order.push('manager disposed') })
+    runtime.channels.mockImplementation(() => { channelsClosed = true; order.push('channels closed') })
+    runtime.ownerClose.mockImplementation(async () => { order.push('ownership released') })
+    const closing = runtime.production.shutdown()
+    try {
+      await Promise.race([entered, closing.then(() => {
+        throw new Error('Shutdown finished before observing the remote resident')
+      })])
+      expect(runtime.admission).toHaveBeenCalledOnce()
+      expect(runtime.channels).not.toHaveBeenCalled()
+      expect(runtime.managerDispose).not.toHaveBeenCalled()
+      expect(runtime.ownerClose).not.toHaveBeenCalled()
+      await expect(runtime.production.initialize()).rejects.toMatchObject({ code: 'NATIVE_RUNTIME_CLOSING' })
+      releaseHistory()
+      await closing
+      expect(order).toEqual(['resident detached', 'manager disposed', 'channels closed', 'ownership released'])
+      expect(await f.journal.status(f.intent.operationId)).toEqual(original)
+      expect(f.state).toMatchObject({ starts: 1, turns: 1, cancels: 0 })
+    } finally {
+      releaseHistory()
+      await Promise.allSettled([closing])
+      await runtime.close()
+    }
+  })
+
+  it('production reports failed remote detachment and keeps runtime ownership', async () => {
+    const f = await setup()
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (method, frame) => {
+        if (method === 'history') throw new Error('Original history unavailable')
+        return f.host.handle(frame)
+      } },
+      observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    const runtime = await productionShutdownFixture()
+    runtime.detach.mockImplementation(() => proxy.closeForRestart(session))
+    runtime.managerDispose.mockImplementation(() => proxy.dispose())
+    try {
+      await expect(runtime.production.shutdown()).rejects.toThrow('runtime ownership was not released')
+      expect(runtime.channels).toHaveBeenCalledOnce()
+      expect(runtime.ownerClose).not.toHaveBeenCalled()
+      await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
+      expect(f.state).toMatchObject({ starts: 1, turns: 0, cancels: 0 })
+    } finally { await runtime.close() }
+  })
+
+  it('detaches a resident session once and can repeat detachment after transport closes', async () => {
+    const f = await setup()
+    let connected = true
+    const methods: string[] = []
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (method, frame) => {
+        if (!connected) throw new Error('Device channel closed')
+        methods.push(method)
+        return f.host.handle(frame)
+      } },
+      observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    await proxy.closeForRestart(session)
+    connected = false
+    await proxy.closeForRestart(session)
+    await proxy.dispose()
+    await expect(proxy.closeForRestart({ ...session, nativeSessionId: 'another-session' })).rejects.toThrow('Wrong remote native session')
+    expect(methods).toEqual(['prepare', 'history'])
+    expect(f.state.starts).toBe(1)
+    expect(f.state.cancels).toBe(0)
+    expect((await f.journal.status(f.intent.operationId)).status).toBe('known')
+  })
+
+  it('retains failed restart disposition until the original history can be observed', async () => {
+    const f = await setup()
+    let unavailable = false
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (method, frame) => {
+        if (unavailable && method === 'history') throw new Error('History unavailable')
+        return f.host.handle(frame)
+      } },
+      observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    unavailable = true
+    await expect(proxy.closeForRestart(session)).rejects.toThrow('History unavailable')
+    await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
+    unavailable = false
+    await proxy.closeForRestart(session)
+    await proxy.dispose()
+    expect(f.state.starts).toBe(1)
+    expect(f.state.cancels).toBe(0)
   })
 
   it('reuses a streamed history and acknowledges a refreshed turn before its next event', async () => {

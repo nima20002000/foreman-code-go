@@ -1112,14 +1112,8 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
+      { name: 'device admission', run: () => deviceRuntime.stopAdmission() },
       { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
-      { name: 'device admission and channels', run: async () => {
-        try {
-          if (rsync.kind === 'configured') await rsync.rsyncWriters.close()
-        } finally {
-          deviceRuntime.stop()
-        }
-      } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
@@ -1134,7 +1128,6 @@ export function buildProductionApp(
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
     drain: [
-      { name: 'device listener and admitted work', run: () => deviceRuntime.drain() },
       { name: 'live harness qualification', run: () => harnessQualifications?.join() },
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
@@ -1157,6 +1150,8 @@ export function buildProductionApp(
         const errors: unknown[] = []
         try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
         try { await managers.dispose() } catch (error) { errors.push(error) }
+        // Remote session disposition still needs the authenticated device channels.
+        try { await deviceRuntime.drain() } catch (error) { errors.push(error) }
         if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
       } },
       { name: 'remaining Operator native managers', run: async () => {

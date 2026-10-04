@@ -24,6 +24,7 @@ const authorizationFailure = (error: unknown) => {
 export class DeviceEndpoint {
   private readonly sessions = new Map<string, { epoch: string; authorizationRevision: number; socket: DeviceSocket; abort: AbortController; binding?: DeviceSessionBinding; ready?: true; presence?: DevicePresence }>()
   private closed = false
+  private admissionStopped = false
   private readonly tasks = new Set<Promise<unknown>>()
   private readonly allChannels = new Set<DeviceApplicationChannel>()
   private readonly channels = new Map<string, DeviceApplicationChannel>()
@@ -65,14 +66,15 @@ export class DeviceEndpoint {
     const abort = new AbortController(); this.pending.add(abort)
     let physicalAuthentication: Promise<AuthenticatedDevice> | undefined
     try {
-      if (this.closed || headers.cookie !== undefined || headers.origin !== undefined || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
+      if (this.closed || this.admissionStopped || headers.cookie !== undefined || headers.origin !== undefined
+        || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
       let principal: AuthenticatedDevice
       try {
         physicalAuthentication = this.track(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect'))
         void physicalAuthentication.then(() => this.pending.delete(abort), () => this.pending.delete(abort))
         principal = await withDeviceDeadline(physicalAuthentication, abort.signal, this.options.handshakeMs ?? 10_000)
       } catch (error) { throw authorizationFailure(error) }
-      if (this.closed || abort.signal.aborted) throw new DeviceConnectionError('transport')
+      if (this.closed || this.admissionStopped || abort.signal.aborted) throw new DeviceConnectionError('transport')
       if (principal.audience !== 'graphql-worker' || principal.mainId !== this.options.mainId) throw new DeviceConnectionError('wrong-main')
       if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
       this.tickets.add(principal)
@@ -96,14 +98,16 @@ export class DeviceEndpoint {
     let binding: DeviceSessionBinding | undefined
     let session: { epoch: string; authorizationRevision: number; socket: DeviceSocket; abort: AbortController; binding?: DeviceSessionBinding; ready?: true; presence?: DevicePresence } | undefined
     try {
-      if (this.closed || principal.mainId !== this.options.mainId || principal.audience !== 'graphql-worker') throw new DeviceConnectionError('authentication')
+      if (this.closed || this.admissionStopped || principal.mainId !== this.options.mainId
+        || principal.audience !== 'graphql-worker') throw new DeviceConnectionError('authentication')
       if (!this.tickets.has(principal) || principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
       const previous = this.sessions.get(principal.deviceId)
       previous?.abort.abort(); previous?.socket.close()
       if (previous?.presence) this.options.presence(Object.freeze({ ...previous.presence, phase: 'offline', dispatch: false, transfer: false }))
       const epoch = randomUUID()
       this.sessions.set(principal.deviceId, { epoch, authorizationRevision: principal.authorizationRevision, socket, abort })
-      const current = () => !abort.signal.aborted && this.sessions.get(principal!.deviceId)?.epoch === epoch
+      const current = () => !abort.signal.aborted && (!this.admissionStopped || session?.ready)
+        && this.sessions.get(principal!.deviceId)?.epoch === epoch
       const iterator = socket.messages[Symbol.asyncIterator]()
       const first = await nextFrame(iterator, abort.signal, this.options.handshakeMs ?? 10_000)
       if (first.done || !current()) throw new DeviceConnectionError('transport')
@@ -195,5 +199,23 @@ export class DeviceEndpoint {
     const session = this.sessions.get(deviceId)
     if (session && session.authorizationRevision <= revision) { this.channels.get(deviceId)?.close(new DeviceConnectionError('authentication')); session.abort.abort(); session.socket.close() }
   }
-  close() { this.closed = true; for (const channel of this.allChannels) channel.close(); for (const abort of this.pending) abort.abort(); for (const session of this.sessions.values()) { session.abort.abort(); session.socket.close() } }
+  /** Keep authenticated resident channels available for restart disposition. */
+  stopAdmission(): void {
+    this.admissionStopped = true
+    for (const abort of this.pending) abort.abort()
+    for (const session of this.sessions.values()) {
+      if (session.ready) continue
+      session.abort.abort()
+      session.socket.close()
+    }
+  }
+  close(): void {
+    this.closed = true
+    this.stopAdmission()
+    for (const channel of this.allChannels) channel.close()
+    for (const session of this.sessions.values()) {
+      session.abort.abort()
+      session.socket.close()
+    }
+  }
 }

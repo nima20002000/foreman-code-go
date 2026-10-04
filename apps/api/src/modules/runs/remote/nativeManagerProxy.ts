@@ -227,5 +227,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     if (!this.prepareAttempted) return
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native disposal is unconfirmed')
   }
-  async closeForRestart(session: NativeSessionReference) { this.assertSession(session); await this.history(session); this.detached = true }
+  async closeForRestart(session: NativeSessionReference) {
+    this.assertSession(session)
+    if (this.detached) return
+    await this.history(session)
+    this.detached = true
+  }
 }

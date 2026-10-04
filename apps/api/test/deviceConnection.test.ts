@@ -243,6 +243,10 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
       const captured = endpoint.captureRequest(identity.deviceId, 'execution-v1')!
       expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toEqual(captured.binding); expect(endpoint.currentBinding(identity.deviceId, 'unknown-v1')).toBeUndefined()
+      endpoint.stopAdmission()
+      await expect(endpoint.authenticate({ authorization: 'Bearer device' })).rejects.toThrow()
+      expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toEqual(captured.binding)
+      await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
       const response = await captured.request({ grant: 'exact-operation' })
       expect(response.payload).toMatchObject({ receipt: 'actual-handler' })
       const context = workerHandler.mock.calls.at(-1)![1]

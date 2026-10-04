@@ -22,6 +22,7 @@ export interface DeviceDomainComposition {
  * authority. Native/provider credentials never enter device pairing or TLS. */
 export class ProductionDeviceRuntime {
   private stopped = false
+  private admissionStopped = false
   private initialization: Promise<void> | undefined
   private service: PostgresDeviceAccessService | undefined
   private endpoint: DeviceEndpoint | undefined
@@ -43,12 +44,16 @@ export class ProductionDeviceRuntime {
     if (domains?.extensions.length && typeof domains.reconcile !== 'function') throw new Error('Registered device domains require authoritative reconciliation.')
   }
   private access(): PostgresDeviceAccessService {
-    this.assertOpen()
+    this.assertAdmissionOpen()
     if (!this.service) throw new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'The selected-main device authority has not initialized.', 503)
     return this.service
   }
   private assertOpen(): void {
     if (this.stopped) throw new DomainError('DEVICE_RUNTIME_CLOSING', 'Device access is shutting down.', 503)
+  }
+  private assertAdmissionOpen(): void {
+    this.assertOpen()
+    if (this.admissionStopped) throw new DomainError('DEVICE_RUNTIME_CLOSING', 'Device access is shutting down.', 503)
   }
   private track<T>(operation: () => Promise<T>): Promise<T> {
     if (this.stopped) return Promise.reject(new DomainError('DEVICE_RUNTIME_CLOSING', 'Device access is shutting down.', 503))
@@ -58,22 +63,22 @@ export class ProductionDeviceRuntime {
     return task
   }
   initialize(mainId: string): Promise<void> {
-    this.assertOpen()
+    this.assertAdmissionOpen()
     this.initialization ??= this.prepare(mainId)
     return this.initialization
   }
   async initializeFromRuntime(readIdentity: () => Promise<RuntimeIdentity>): Promise<RuntimeIdentity> {
-    this.assertOpen()
+    this.assertAdmissionOpen()
     const identity = this.runtimeIdentity ?? await this.track(readIdentity)
-    this.assertOpen()
+    this.assertAdmissionOpen()
     await this.initialize(identity.installationId)
-    this.assertOpen()
+    this.assertAdmissionOpen()
     this.runtimeIdentity = identity
     return structuredClone(identity)
   }
   private async prepare(mainId: string): Promise<void> {
     const identity = await loadOrCreateMainDeviceIdentity(this.pool, mainId)
-    this.assertOpen()
+    this.assertAdmissionOpen()
     const presence = new ProductionDevicePresence(mainId)
     const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId, authorizationRevision) => this.endpoint?.revoke(deviceId, authorizationRevision), () => this.setupOptions())
     const sign = (request: Parameters<typeof signMainIdentityProof>[1]) =>
@@ -101,7 +106,10 @@ export class ProductionDeviceRuntime {
     this.service = access; this.endpoint = endpoint; this.presence = presence
     if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, {
       mainId, mainPublicKeyFingerprint: identity.publicKeyFingerprint, appVersion: API_APPLICATION_VERSION,
-      signMainEnrollmentProof: signEnrollment, pair: (input) => this.track(() => access.pair(input)),
+      signMainEnrollmentProof: signEnrollment, pair: (input) => this.track(() => {
+        this.assertAdmissionOpen()
+        return access.pair(input)
+      }),
     })
   }
   currentBinding(deviceId: string): DeviceSessionBinding | null { return this.endpoint?.currentBinding(deviceId) ?? null }
@@ -119,14 +127,20 @@ export class ProductionDeviceRuntime {
     return { endpoint, available: this.listenerStarted, reason: this.listenerStarted ? null : 'listener-not-started', ...(tlsTrust ? { tlsTrust } : {}) }
   }
   async startListener(): Promise<void> {
-    this.assertOpen()
+    this.assertAdmissionOpen()
     if (!this.service) throw new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'Device identity must initialize before the dedicated listener.', 503)
     await this.listener?.start()
+    this.assertAdmissionOpen()
     this.listenerStarted = Boolean(this.listener)
   }
-  stop(): void {
-    this.stopped = true
+  stopAdmission(): void {
+    this.admissionStopped = true
     this.listenerStarted = false
+    this.endpoint?.stopAdmission()
+  }
+  stop(): void {
+    this.stopAdmission()
+    this.stopped = true
     this.endpoint?.close()
     this.presence?.close()
   }
