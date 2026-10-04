@@ -6,7 +6,7 @@ import {
   createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, OpenCodeResponseTooLargeError, readOpenCodeResponseText,
 } from '../src/modules/harnesses/opencodeClient.js'
 import { openCodeMediaStream } from '../src/modules/harnesses/opencodeMedia.js'
-import { object } from '../src/modules/harnesses/opencodeProtocol.js'
+import { object, type OpenCodeMessage } from '../src/modules/harnesses/opencodeProtocol.js'
 
 function chunksResponse(chunks: Iterable<string | Uint8Array>, onCancel?: () => void): Response {
   const iterator = chunks[Symbol.iterator]()
@@ -74,7 +74,7 @@ it('streams a single prompt with the full accepted attachment count and size int
 it('preserves JSON and UTF-8 boundaries, escaped URL characters, and media identity across history shapes', async () => {
   const url = 'data:image/png;base64,QQ=='
   const part = { url, type: 'file', mime: 'image/png', filename: 'عکس.png' }
-  const message = { info: { id: 'root', sessionID: 'owned' }, parts: [part,
+  const message: OpenCodeMessage = { info: { id: 'root', sessionID: 'owned' }, parts: [part,
     { type: 'tool', state: { status: 'completed', attachments: [part], input: { url } } },
     { type: 'text', text: `Quoted "text" and media ${url}` },
   ] }

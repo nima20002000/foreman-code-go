@@ -232,8 +232,10 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
         server.complete(agentChatCorrelation(id, 'A'), 'Completed A', nativeSessionId)
         await waitForDelivery(chat, conversations, id, 'A', 'completed')
         await waitForDelivery(chat, conversations, id, 'B', 'accepted')
-        assert.deepEqual((await new PostgresAgentChatRepository(pool).turn(id, 'A'))?.result,
-          { outcome: 'succeeded', output: { text: 'Completed A' } })
+        const completed = await pool.query<{ result: unknown }>(
+          'select result from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, 'A'])
+        assert.deepEqual(completed.rows.map(row => row.result),
+          [{ outcome: 'succeeded', output: { text: 'Completed A' } }])
         const token = credentials.get(firstId)!
         await assert.rejects(sessions.authenticate(token), { code: 'FILE_SESSION_EXPIRED' })
         assert.equal(facades.has(firstId), false)

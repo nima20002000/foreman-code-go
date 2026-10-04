@@ -90,7 +90,9 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
     rememberCredential: (value) => { token = value },
     service: { sessions: {
       issueForAcceptedSession: (context, expiry) => service.sessions.issueForAcceptedSession(context, expiry, 'opencode'),
-      authenticate: service.sessions.authenticate.bind(service.sessions), revoke: service.sessions.revoke.bind(service.sessions),
+      authenticate: service.sessions.authenticate.bind(service.sessions),
+      authorizeAccepted: service.sessions.authorizeAccepted.bind(service.sessions),
+      revoke: service.sessions.revoke.bind(service.sessions),
     }, artifacts: service.artifacts, list: service.list.bind(service), read: service.read.bind(service),
     createWorkingCopy: service.createWorkingCopy.bind(service),
     publish: async (...args: Parameters<typeof service.publish>) => {
@@ -108,7 +110,9 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   await turn.prepareInputs({ ...admission!, mode: 'write', executionHostId: host.host.executionHostId,
     directory: f.project, expiresAt: new Date(Date.now() + 60_000) },
   (input) => service.readAccepted(admission!.context, input), signal())
-  turn.submissionAttempted(); await turn.acknowledge(signal())
+  await turn.connectTools(signal())
+  turn.submissionAttempted()
+  await turn.acknowledge(signal())
   expect(token).toMatch(/^gql_file_/)
   f.native.onFinish = () => turn.finish('terminal', signal())
   const copy = await turn.createWorkingCopy(token, { commandId: randomUUID(), source: attachments[0]!,

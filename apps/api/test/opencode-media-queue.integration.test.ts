@@ -12,7 +12,7 @@ import { agentChatCorrelation, PostgresAgentChatRepository } from '../src/module
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
-import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
+import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { configuration, FixtureServer } from './opencode-fixtures.js'
 import { eventually } from './helpers/agentChatF5.js'
@@ -126,9 +126,13 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
         assert.equal(provider.calls.filter(call => call.path.includes('/prompt_async') && call.body?.messageID === expected).length, 1)
         assert.equal(state.turns.find(turn => turn.requestId === requestId)?.nativeTurnId, expected)
       }
-      const persisted = await repository.state(conversationId)
-      assert.equal(object(persisted?.turns[0]?.result?.output).text, 'Recovered first')
-      assert.equal(object(persisted?.turns[1]?.result?.output).text, 'Completed next')
+      const persisted = await pool.query<{ request_id: string; result: unknown }>(
+        'select request_id,result from operator_conversation_turns where conversation_id=$1 order by turn_sequence',
+        [conversationId])
+      assert.deepEqual(persisted.rows, [
+        { request_id: 'first', result: { outcome: 'succeeded', output: { text: 'Recovered first' } } },
+        { request_id: 'next', result: { outcome: 'succeeded', output: { text: 'Completed next' } } },
+      ])
       assert.equal(managers.length, 1)
       assert.equal(provider.calls.filter(call => call.path.includes('/abort')).length, 0)
       assert.equal(provider.restartEnvironments.length, 0)
