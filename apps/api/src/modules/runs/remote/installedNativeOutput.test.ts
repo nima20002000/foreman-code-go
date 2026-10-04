@@ -60,14 +60,21 @@ async function fixture() {
       connection: { current: async () => binding, retryable: () => false } },
   }
   const native = createInstalledNativeOutputs(ports), signal = new AbortController().signal
-  const prepare = () => native.prepare({ ...qualification, session: pin.session, clientCorrelationId: 'correlation',
-    connectionId: pin.connectionId, runtimeGeneration: pin.runtimeGeneration, effectiveSandbox: qualification.expectedSandbox }, signal)
+  const prepare = (effectiveSandbox = qualification.expectedSandbox) => native.prepare({ ...qualification, session: pin.session,
+    clientCorrelationId: 'correlation', connectionId: pin.connectionId, runtimeGeneration: pin.runtimeGeneration,
+    effectiveSandbox }, signal)
   const callback = (check = () => {}) => ({ ...pin, rpcId: 'rpc', callId: randomUUID(), assertCurrent: check } satisfies CodexNativeOutputCallback)
   const command = () => ({ operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const })
   return { root, ports, scope, qualification, pin, release, reserve, native, signal, prepare, callback, command }
 }
 
 describe('installed native common composition, no native qualification', () => {
+  it('accepts the native cwd in measured writable roots and refuses any additional root', async () => {
+    const f = await fixture()
+    const bridge = await f.prepare({ ...f.qualification.expectedSandbox, writableRoots: ['/workspace', '/workspace'] })
+    cleanups.push(() => bridge.close())
+    await expect(f.prepare({ ...f.qualification.expectedSandbox, writableRoots: ['/workspace', '/extra'] })).rejects.toThrow()
+  })
   it('requires genuine provider qualification and opens nothing until durable activation', async () => {
     const f = await fixture()
     vi.mocked(f.ports.assertQualified).mockRejectedValueOnce(new Error('No actual qualification'))

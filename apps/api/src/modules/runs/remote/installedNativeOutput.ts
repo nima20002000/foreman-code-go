@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { CodexNativeOutputs, CodexNativeOutputQualificationInput, CodexNativeOutputTurnPin,
+import type { CodexNativeOutputs, CodexNativeOutputQualificationInput, CodexNativeOutputTurnPin, CodexNativeOutputSandbox,
   CodexNativeOutputCallback } from '../../harnesses/codexNativeOutput.js'
 import type { TemporaryFileScope } from '@foreman-code/contracts/files'
 import { TemporaryFileScopeSchema } from '@foreman-code/contracts/files'
@@ -28,6 +28,12 @@ export interface InstalledNativeOutputProviders {
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE',
   'The original qualified native output composition is unavailable.', 409)
 
+function sameSandbox(expected: CodexNativeOutputSandbox, effective: CodexNativeOutputSandbox): boolean {
+  const roots = (sandbox: CodexNativeOutputSandbox) => [...new Set([sandbox.cwd, ...sandbox.writableRoots])].sort()
+  return isDeepStrictEqual({ ...expected, writableRoots: roots(expected) },
+    { ...effective, writableRoots: roots(effective) })
+}
+
 /** Exactly one registry per durable original turn. Omission by common factories
  * declares no tools. This adapter supplies no authority or qualification default. */
 export function createInstalledNativeOutputs(ports: InstalledNativeOutputProviders): CodexNativeOutputs {
@@ -44,7 +50,7 @@ export function createInstalledNativeOutputs(ports: InstalledNativeOutputProvide
     prepare: async (raw, signal) => {
       const input = structuredClone(raw)
       await qualified(input, signal)
-      if (!isDeepStrictEqual(input.effectiveSandbox, input.expectedSandbox)) throw unavailable()
+      if (!sameSandbox(input.expectedSandbox, input.effectiveSandbox)) throw unavailable()
       let opening: Promise<void> | undefined
       let registry: WorkerNativeOutputRegistry | undefined
       let sender: WorkerNativeArtifactSender | undefined

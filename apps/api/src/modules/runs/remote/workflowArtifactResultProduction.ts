@@ -3,7 +3,7 @@ import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../../interactions/workflowNativeCapture.js'
-import { readDispatchIntent } from '../../placement/persistence.js'
+import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
 import { assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, type GraphTransactionSql } from '../../run-graph/connection.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
 import { readRepeatExecutionLocked } from '../repeatPostgres.js'
@@ -87,10 +87,16 @@ export function createProductionWorkflowArtifactResultSource(ports: {
       const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
       const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
       const node = snapshot.version.definition.nodes.find(item => item.id === stored.ref.nodeId)
-      // The installed host currently has no qualified native output sealer or
-      // sender. A saved declaration cannot substitute for that missing producer.
-      if (node && node.kind !== 'job' && node.artifactOutputs) throw new DomainError(
-        'WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE', 'The saved artifact outputs require an original native output sealer and sender before launch.', 409)
+      if (!node || node.kind === 'job' || !node.artifactOutputs) return
+      const placement = await readAcceptedPlacement(sql, runId, node.id)
+      const configuration = snapshot.configurations.find(item => item.id === stored.execution.agentConfigurationVersionId)
+      if (!placement || placement.hostRef.kind !== 'device' || placement.payload.kind !== 'agent'
+        || placement.payload.agentConfigurationVersionId !== configuration?.id
+        || !same(placement.payload.artifactOutputs, node.artifactOutputs)
+        || configuration?.harness.harness !== 'codex' || configuration.harness.sandbox !== 'workspace-write') {
+        throw new DomainError('WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE',
+          'Saved artifact outputs require an installed Codex computer with authorized workspace-write output tools.', 409)
+      }
     },
     async retainOriginalLocked(sql: GraphTransactionSql, evidence: RepeatNativeEvidence, raw: WorkflowNativeProofRecord): Promise<void> {
       assertGraphTransaction(sql)

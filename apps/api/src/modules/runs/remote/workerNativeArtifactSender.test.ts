@@ -15,6 +15,22 @@ import { DistributedArtifactPublicationService, type AcceptedArtifactPublication
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import { WorkerNativeOutputRegistry } from './workerNativeOutputRegistry.js'
 import { WorkerNativeArtifactSender, type WorkerNativeArtifactApplication } from './workerNativeArtifactSender.js'
+import Fastify from 'fastify'
+import { isDeepStrictEqual } from 'node:util'
+import type { ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
+import { WorkerMcpRelayRequestSchema } from '@graphql/contracts/worker-mcp-relay'
+import type { CodexNativeOutputQualificationInput, CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
+import { ArtifactEdgeService } from '../../files/distributed/edges.js'
+import { registerDistributedArtifacts } from '../../files/distributed/adapters.js'
+import { CanonicalNativeArtifactResults } from '../../files/distributed/nativeResults.js'
+import { NativeArtifactOutputs, type NativeArtifactOutput } from './nativeArtifactOutputs.js'
+import { DomainError } from '../../errors.js'
+import { createInstalledNativeOutputs } from './installedNativeOutput.js'
+import { createInstalledWorkflowNativeOutputFactory, initializeInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
+import type { InstalledWorkflowNativeOutputContext } from './installedWorkflowHost.js'
+import { WorkflowNativeArtifactResults } from './workflowNativeArtifactResults.js'
 
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const cleanups: Array<() => Promise<void>> = []
@@ -60,7 +76,8 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
     assertSourceLive: vi.fn(async () => {}) }
   const receiver = new ResumableByteTransferService(join(root, 'receiver'), { authorize: vi.fn(async () => {}) })
   cleanups.push(() => receiver.close())
-  const files = new TemporaryFileService(f.repository, new FileByteStorage(canonicalRoot, MAX_FILE_BYTES),
+  const fileBytes = new FileByteStorage(canonicalRoot, MAX_FILE_BYTES)
+  const files = new TemporaryFileService(f.repository, fileBytes,
     { resolve: async () => f.scope }, undefined, f.clock)
   const links = new Map<string, DistributedPublicationLink>()
   const publisher = new DistributedArtifactPublicationService(files, { read: async (_owner, id) => links.get(id),
@@ -105,10 +122,203 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
   const publication: AgentFilePublishInput = { ...descriptor, scope: f.scope }
   const publish = () => dispatch({ operation: 'publish', publication: descriptor })
   return { f, root, intent, placement, rootBinding, context, body, registry, callback, call, protectedStorage, sender, main, receiver, connection,
-    files, authority, publication, publish, admissions, links }
+    files, fileBytes, canonicalRoot, authority, publisher, token, accepted, publication, publish, admissions, links }
+}
+
+async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
+  if (t.placement.payload.kind !== 'agent') throw new Error('Expected Agent fixture')
+  const agentId = t.placement.payload.agentId
+  const binding: DeviceSessionBinding = { ...t.context, connectionGeneration: 1 }
+  const pairing = { ...t.context, protocolVersion: 1 } as unknown as WorkerPairingConfiguration
+  await initializeInstalledWorkflowOutputStore(t.root, pairing)
+  const publications = new WorkflowNativeArtifactResults(t.placement, t.intent)
+  const q: CodexNativeOutputQualificationInput = {
+    configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low', sandbox: 'workspace-write', serviceTier: 'standard' },
+    binary: '/recorded/codex', binaryIdentity: 'recorded-binary', providerVersion: 'codex-cli 0.154.0', schemaIdentity: hash('schema'),
+    expectedSandbox: { cwd: t.canonicalRoot, writableRoots: [], networkAccess: false,
+      excludeSlashTmp: true, excludeTmpdirEnvVar: true, tmpdir: undefined },
+  }
+  const pin: CodexNativeOutputTurnPin = { session: { harness: 'codex', providerVersion: q.providerVersion,
+    nativeSessionId: t.f.context.nativeSessionId }, connectionId: 'original-native-connection', runtimeGeneration: 1,
+    nativeTurnId: t.f.context.turnId!, assertCurrent: vi.fn() }
+  const context: InstalledWorkflowNativeOutputContext = {
+    intent: t.intent, placement: t.placement, binding,
+    materialization: { receipt: { binding: { rootId: t.rootBinding.rootId, bindingRevision: t.rootBinding.rootBindingRevision } } }
+      as InstalledWorkflowNativeOutputContext['materialization'],
+    assertCurrent: vi.fn(async () => {}),
+    // Recorded native qualification/closure boundaries only; no native process is claimed by this fixture.
+    qualifyNativeOutput: vi.fn(async () => {}), closeNativeOutputWriters: vi.fn(async () => {}),
+    applicationAccess: () => ({ kind: 'scoped-worker-mcp', token: t.token, agentId,
+      executionId: t.intent.executionId, attemptId: t.intent.attemptId, operationId: t.intent.operationId,
+      bindingHash: t.intent.bindingHash }),
+    observeArtifactPublication: (input, result) => publications.observe(input, result),
+    requestMain: vi.fn(async raw => {
+      const request = WorkerMcpRelayRequestSchema.parse(raw)
+      await t.f.sessions.authenticate(request.applicationAccess.token, 'files.publish_result')
+      const lease = { version: 1, mainId: t.context.mainId, principalId: t.f.principal.id, audience: 'worker',
+        agentId, executionId: t.intent.executionId, operationId: t.intent.operationId,
+        attemptId: t.intent.attemptId, bindingHash: t.intent.bindingHash, expiresAt: '2099-01-01T00:00:00.000Z' }
+      if (request.operation === 'worker-mcp.authorize-native-output-declarations') return { payload: { ...lease,
+        agentConfigurationVersionId: t.placement.payload.kind === 'agent' ? t.placement.payload.agentConfigurationVersionId : '',
+        outputOperations: ['create', 'append', 'seal', 'publish'] } }
+      if (request.operation === 'worker-mcp.authorize-native-output') return { payload: { ...lease,
+        outputOperation: request.outputOperation, nativeSessionId: request.nativeSessionId, turnId: request.turnId, scope: t.f.scope } }
+      throw new Error('Install fixture must mount its authenticated Main MCP path before publication')
+    }),
+  }
+  const captured = { binding, request: async (raw: unknown, options?: { bytes?: Uint8Array }) => {
+    const request = raw as { method: string; transferId: string; offset: number; sha256: string }
+    const admitted = [...t.admissions.values()].find(value => value.transferId === request.transferId)!
+    if (request.method === 'start') return { payload: await t.receiver.start(admitted, t.context) }
+    if (request.method === 'status') return { payload: await t.receiver.status(request.transferId, t.context) }
+    if (request.method === 'append') return { payload: await t.receiver.append(request.transferId, t.context,
+      { offset: request.offset, sha256: request.sha256, bytes: options!.bytes! }) }
+    if (request.method === 'finish') return { payload: await t.receiver.finish(request.transferId, t.context) }
+    throw new Error('Unexpected artifact byte operation')
+  } }
+  const factory = createInstalledWorkflowNativeOutputFactory({ stateDirectory: t.root, pairing,
+    connection: () => ({ captureRequest: () => captured }) })
+  const ports = factory(context)
+  const native = createInstalledNativeOutputs(ports)
+  const prepare = () => native.prepare({ ...q, effectiveSandbox: { ...q.expectedSandbox, writableRoots: [q.expectedSandbox.cwd] },
+    session: pin.session, clientCorrelationId: `execution:${t.intent.executionId}`, connectionId: pin.connectionId,
+    runtimeGeneration: pin.runtimeGeneration }, new AbortController().signal)
+  return { context, native, q, pin, prepare, publications, pairing }
 }
 
 describe('original worker-native artifact sender', () => {
+  it('hands an installed producer on one computer to a second computer through authenticated MCP after a lost publication reply', async () => {
+    const t = await fixture()
+    const producer = await installedProducer(t)
+    const app = Fastify()
+    cleanups.push(() => app.close())
+    app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500)
+      .send({ error: { code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' } }))
+    const consumer = { ...t.accepted.attempt, nodeId: 'consumer', executionId: randomUUID(),
+      attemptId: randomUUID(), placementHash: hash('second-computer-placement') }
+    const receiverGrant = { principalId: 'consumer-on-second-computer', grantId: 'consumer-grant', grantRevision: '1' }
+    const bindings = new Map<string, ArtifactEdgeBinding>()
+    let receiverAllowed = true
+    const query = { query: async () => ({ rows: [], rowCount: 0, command: '', oid: 0, fields: [] }) }
+    const edges = new ArtifactEdgeService({
+      read: async id => bindings.get(id),
+      pin: async (binding, authorize) => {
+        await authorize(query)
+        const prior = bindings.get(binding.edgeId)
+        if (prior && !isDeepStrictEqual(prior, binding)) throw new Error('Conflicting original edge')
+        bindings.set(binding.edgeId, structuredClone(binding))
+        return structuredClone(prior ?? binding)
+      },
+      recordRead: async (_binding, _readAt, authorize) => { await authorize(query) },
+    }, t.f.repository, t.fileBytes, { assertCurrent: async binding => {
+      await t.authority.authorize()
+      if (!receiverAllowed || !isDeepStrictEqual(binding.consumer, consumer)
+        || !isDeepStrictEqual(binding.receiver, receiverGrant)) throw new DomainError('FILE_EDGE_DENIED', 'Receiver denied.', 403)
+    } }, t.f.clock)
+    registerDistributedArtifacts(app, edges, t.publisher, {
+      producer: async request => {
+        await t.f.sessions.authenticate(String(request.headers.authorization).replace(/^Bearer /, ''), 'files.publish_result')
+        return t.accepted
+      },
+      consumer: async request => {
+        if (request.headers.authorization !== 'Bearer second-computer-token')
+          throw new DomainError('FILE_EDGE_DENIED', 'Consumer credential denied.', 403)
+        return { attempt: consumer, authority: receiverGrant }
+      },
+    })
+    const requestMain = vi.mocked(producer.context.requestMain).getMockImplementation()!
+    let loseReply = true
+    vi.mocked(producer.context.requestMain).mockImplementation(async (raw, signal) => {
+      const request = WorkerMcpRelayRequestSchema.parse(raw)
+      if (request.operation !== 'worker-mcp.request') return requestMain(raw, signal)
+      const body = request.body as { id: string; params: { name: string; arguments: Parameters<typeof t.main.admit>[0] } }
+      if (body.params.name === 'files.admit_transferred_result') return { payload: { statusCode: 200,
+        contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id: body.id,
+          result: { structuredContent: await t.main.admit(body.params.arguments) } }) } }
+      const reply = await app.inject({ method: 'POST', url: '/mcp/artifact-publications', payload: request.body,
+        headers: { authorization: `Bearer ${t.token}`, accept: 'application/json, text/event-stream' } })
+      if (loseReply) { loseReply = false; throw new Error('publication ACK lost') }
+      return { payload: { statusCode: reply.statusCode,
+        contentType: reply.headers['content-type']?.startsWith('text/event-stream') ? 'text/event-stream' : 'application/json',
+        body: reply.body } }
+    })
+    const bridge = await producer.prepare()
+    cleanups.push(() => bridge.close())
+    const signal = new AbortController().signal
+    await bridge.activate(producer.pin, signal)
+    const callback = { ...producer.pin, rpcId: 'rpc', callId: 'original-call' }
+    const created = await bridge.dispatch({ operation: 'create', commandId: randomUUID(),
+      filename: 'result.md', mediaType: 'text/markdown' }, callback, signal)
+    if (created.operation !== 'create') throw new Error('Expected native output allocation')
+    await bridge.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
+      offset: 0, contentBase64: t.body.toString('base64') }, callback, signal)
+    await bridge.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId: created.artifactId }, callback, signal)
+    const commandId = randomUUID()
+    const publication = { operation: 'publish' as const, publication: { commandId, artifactId: created.artifactId,
+      filename: 'result.md', mediaType: 'text/markdown' as const } }
+    const result = { outcome: 'succeeded' as const, output: { text: JSON.stringify({ data: { edits: true },
+      artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId }] } }) } }
+    await expect(bridge.dispatch(publication, callback, signal)).rejects.toThrow('publication ACK lost')
+    expect(() => producer.publications.read(result)).toThrow()
+    expect(bindings.size).toBe(0)
+    expect(t.links.size).toBe(1)
+    const original = [...t.links.values()][0]!
+    const published = await bridge.dispatch(publication, callback, signal)
+    if (published.operation !== 'publish') throw new Error('Expected publication')
+    expect(published.result.replayed).toBe(true)
+    expect(published.result.value.revision.revisionId).toBe(original.ref.revisionId)
+    expect(t.links.size).toBe(1)
+    expect(t.f.repository.allocations.size).toBe(1)
+    expect(producer.publications.read(result)).toMatchObject({ output: { kind: 'published-artifacts', result },
+      artifactDigests: [hash(t.body)] })
+    const outputs = new Map<string, NativeArtifactOutput>()
+    const native = new NativeArtifactOutputs(new CanonicalNativeArtifactResults(t.files, {
+      read: async (_owner, id) => t.links.get(id), linkPublication: async () => { throw new Error('Read only') },
+    }, t.authority, t.f.clock), {
+      read: async (_attempt, key) => outputs.get(key),
+      bind: async (output, authorize) => { await authorize(query); outputs.set(output.outputKey, output); return output },
+    }, t.authority, edges)
+    await native.acceptOutput(t.accepted, 'report', commandId)
+    const edge = await native.pinEdge(t.accepted, { edgeId: randomUUID(), commandId: randomUUID(),
+      producer: t.accepted.attempt, consumer, outputKey: 'report', receiver: receiverGrant,
+      sender: { principalId: t.f.principal.id, grantId: 'producer-grant', grantRevision: '1' },
+      access: 'read-only', acceptedAt: t.f.clock().toISOString() })
+    const read = (token: string) => app.inject({ method: 'POST', url: '/mcp/artifact-inputs',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
+      payload: { jsonrpc: '2.0', id: 'read', method: 'tools/call', params: { name: 'files.read_edge_input',
+        arguments: { edgeId: edge.edgeId, offset: 0, length: t.body.length } } } })
+    const reply = await read('second-computer-token')
+    expect(reply.statusCode).toBe(200)
+    const mcpReply = (response: typeof reply) => response.headers['content-type']?.startsWith('text/event-stream')
+      ? JSON.parse(/^data: (.+)$/m.exec(response.body)![1]!) : response.json()
+    const returned = mcpReply(reply).result.structuredContent
+    expect(Buffer.from(returned.contentBase64, 'base64')).toEqual(t.body)
+    expect(returned.revision.revisionId).toBe(original.ref.revisionId)
+    expect((await read('foreign-computer-token')).statusCode).toBe(403)
+    receiverAllowed = false
+    expect(mcpReply(await read('second-computer-token')).result.isError).toBe(true)
+    expect(t.links.size).toBe(1)
+    await bridge.close()
+    expect(producer.context.closeNativeOutputWriters).toHaveBeenCalled()
+  })
+
+  it('refuses a missing or replacement output store and absent native qualification', async () => {
+    const t = await fixture()
+    const producer = await installedProducer(t)
+    await expect(initializeInstalledWorkflowOutputStore(t.root, producer.pairing))
+      .rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_STORE_EXISTS' })
+    vi.mocked(producer.context.qualifyNativeOutput).mockRejectedValue(new Error('Native write denial absent'))
+    await expect(producer.prepare()).rejects.toThrow('Native write denial absent')
+    expect(t.links.size).toBe(0)
+    const other = createInstalledWorkflowNativeOutputFactory({ stateDirectory: t.canonicalRoot, pairing: producer.pairing,
+      connection: () => undefined })(producer.context)
+    await expect(other.assertQualified(producer.q, new AbortController().signal)).rejects.toMatchObject({ code: 'ENOENT' })
+    t.f.denyWrites()
+    await expect(producer.prepare()).rejects.toThrow()
+    expect(t.links.size).toBe(0)
+    await rm(join(t.root, 'workflow-native-outputs'), { recursive: true })
+    await expect(initializeInstalledWorkflowOutputStore(t.root, producer.pairing)).rejects.toMatchObject({ code: 'EEXIST' })
+  })
   it('transfers real tool-created bytes, verifies receipt and publishes exact canonical pins', async () => {
     const t = await fixture(), reply = await t.publish()
     if (reply.operation !== 'publish') throw new Error('fixture')

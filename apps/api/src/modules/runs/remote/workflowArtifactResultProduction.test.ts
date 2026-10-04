@@ -12,10 +12,11 @@ import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { currentInitialPrompt, parseCurrentChoiceResult } from '../currentRouting.js'
 import { createProductionWorkflowArtifactResultSource } from './workflowArtifactResultProduction.js'
 
-const reads = vi.hoisted(() => ({ snapshot: vi.fn(), execution: vi.fn(), dispatch: vi.fn(), intent: vi.fn(), receipt: vi.fn() }))
+const reads = vi.hoisted(() => ({ snapshot: vi.fn(), execution: vi.fn(), dispatch: vi.fn(), placement: vi.fn(),
+  intent: vi.fn(), receipt: vi.fn() }))
 vi.mock('../repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: reads.snapshot }))
 vi.mock('../repeatPostgres.js', () => ({ readRepeatExecutionLocked: reads.execution }))
-vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: reads.dispatch }))
+vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: reads.dispatch, readAcceptedPlacement: reads.placement }))
 vi.mock('./persistence.js', () => ({ readReconciledDispatchIntent: reads.intent }))
 vi.mock('../../run-graph/repeatReceipts.js', () => ({ assertRepeatCanonicalReceiptLocked: reads.receipt,
   requireRepeatCanonicalReceiptBeforeCommit: vi.fn() }))
@@ -39,7 +40,11 @@ function fixture() {
     executionId: 'execution', attemptId: 'attempt', placementHash: 'placement' },
     context: { nativeSessionId: 'session', turnId: 'turn' }, transferContext: { connectionEpoch: 'original' } } as AcceptedArtifactPublication
   const version = { id: 'version', definition: { nodes: [{ id: 'node', artifactOutputs: { version: 1, outputKeys: ['report'] } }] } }
-  const snapshot = { version, stopRequested: false, cleanupPending: false }
+  const snapshot = { version, configurations: [{ id: 'config', harness: { harness: 'codex', sandbox: 'workspace-write' } }],
+    stopRequested: false, cleanupPending: false }
+  const placement = { hostRef: { kind: 'device' }, payload: { kind: 'agent', agentConfigurationVersionId: 'config',
+    artifactOutputs: version.definition.nodes[0]!.artifactOutputs } }
+  reads.placement.mockResolvedValue(placement)
   const stored = { execution, ref: proof.ref, inputDigest: proof.inputDigest }
   let durable = { record: structuredClone(proof), source_digest: repeatDigest(proof, 4 * 1024 * 1024) }
   const connection = new ExclusiveGraphConnection({ query: vi.fn(async () => ({ rows: [durable], rowCount: 1 })) } as unknown as pg.ClientBase, () => {})
@@ -58,7 +63,7 @@ function fixture() {
     authority: authority as unknown as Parameters<typeof createProductionWorkflowArtifactResultSource>[0]['authority'] })
   const retain = () => connection.transaction(sql => service.retainOriginalLocked(sql, evidence, proof))
   return { service, retain, connection, proof, accepted, capture, physical, authority, snapshot, stored,
-    evidence, changeProof: () => { durable = { ...durable, record: { ...durable.record, ownerFence: '2' } } } }
+    evidence, placement, changeProof: () => { durable = { ...durable, record: { ...durable.record, ownerFence: '2' } } } }
 }
 it('qualifies only the exact committed original and rechecks it across later awaits', async () => {
   const f = fixture(); await f.retain()
@@ -100,15 +105,29 @@ it('does not retain ordinary, failed or undeclared observations', async () => {
   expect(f.service.acceptedAfterCommit(f.evidence)).toBeUndefined()
   expect(f.physical.artifactTerminalContext).not.toHaveBeenCalled()
 })
-it('refuses declared artifact native launch before any physical or publication work', async () => {
+it('admits a declared installed Codex producer and leaves physical/output qualification to the worker', async () => {
   const f = fixture()
-  await expect(f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run')))
-    .rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE' })
+  await f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run'))
   expect(f.physical.artifactTerminalContext).not.toHaveBeenCalled()
   expect(f.authority.resolveWorkflowContext).not.toHaveBeenCalled()
   f.snapshot.version.definition.nodes[0]!.artifactOutputs = undefined as never
   await f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run'))
 })
+it.each(['local', 'read-only', 'full-access', 'harness', 'configuration', 'declaration', 'missing-placement'] as const)(
+  'keeps unsupported %s artifact launches fenced before any publication', async kind => {
+    const f = fixture()
+    if (kind === 'local') f.placement.hostRef.kind = 'main'
+    if (kind === 'read-only') f.snapshot.configurations[0]!.harness.sandbox = 'read-only'
+    if (kind === 'full-access') f.snapshot.configurations[0]!.harness.sandbox = 'danger-full-access'
+    if (kind === 'harness') f.snapshot.configurations[0]!.harness.harness = 'opencode'
+    if (kind === 'configuration') f.placement.payload.agentConfigurationVersionId = 'replacement'
+    if (kind === 'declaration') f.placement.payload.artifactOutputs = { version: 1, outputKeys: ['other'] }
+    if (kind === 'missing-placement') reads.placement.mockResolvedValue(undefined)
+    await expect(f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run')))
+      .rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE' })
+    expect(f.physical.artifactTerminalContext).not.toHaveBeenCalled()
+    expect(f.authority.resolveWorkflowContext).not.toHaveBeenCalled()
+  })
 it('prompts only the saved keys and original successful publication commands', () => {
   const prompt = currentInitialPrompt({ initialPrompt: 'Produce a report.', artifactOutputs: { version: 1, outputKeys: ['report'] } })!
   expect(prompt).toContain('Produce a report.')

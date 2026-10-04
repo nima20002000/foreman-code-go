@@ -50,7 +50,11 @@ import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfiguration
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
-import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
+import type { CodexNativeOutputTurnPin, CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
+import type { NativeOutputStorageOwner } from './installedNativeOutputStorage.js'
+import { qualifyInstalledNativeOutputSandbox } from './installedNativeOutputQualification.js'
+import { WorkflowNativeArtifactResults } from './workflowNativeArtifactResults.js'
+import type { AgentFilePublishInput, AgentFilePublishResult } from '@graphql/contracts/files'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 
@@ -81,10 +85,38 @@ export function captureInstalledWorkflowNativeOwner(registry:NativeProcessRegist
       guardian:launch.guardian,provider:launch.provider,boundary:launch.boundary})})})
 }
 
+/** Storage cleanup can close only the ACKed native owner that created the output. */
+export async function closeInstalledNativeOutputWriters(input: {
+  journal: RemoteOperationJournal
+  registry: NativeProcessRegistry
+  intent: DispatchIntent
+  binding: Readonly<DeviceSessionBinding>
+  session: NativeSessionReference
+  captured: InstalledWorkflowNativeOwner
+  owner: NativeOutputStorageOwner
+}): Promise<NativeLaunchObservation> {
+  const { owner, captured } = input
+  const status = await input.journal.status(input.intent.operationId)
+  if (!isDeepStrictEqual(owner.intent, input.intent) || !isDeepStrictEqual(owner.binding, input.binding)
+    || !isDeepStrictEqual(owner.session, input.session) || captured.owner !== `execution:${input.intent.executionId}`
+    || status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, input.intent)
+    || status.receipt.native?.sessionId !== owner.session.nativeSessionId
+    || status.receipt.native.turnId !== owner.nativeTurnId
+    || status.receipt.native.processIdentityDigest !== captured.native.processIdentityDigest)
+    unavailable('original_native_output_owner_conflict')
+  matchingOriginalRegistryLaunch(input.registry, captured.launch)
+  await input.registry.closeRegistration(input.registry.scope(captured.owner), captured.launch.launchId)
+  if (!await input.registry.closeOwner(captured.owner)) unavailable('native_owner_closure_unconfirmed')
+  const observation = matchingOriginalRegistryLaunch(input.registry, captured.launch)
+  if (observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty')
+    unavailable('original_physical_closure_missing')
+  return observation
+}
+
 /** Only matched provider history plus positive original registry closure can settle. Manager/process cleanup errors retain the original uncertainty. */
 export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOperationJournal;registry:NativeProcessRegistry;
   intent:DispatchIntent;history:NativeHistory;captured:InstalledWorkflowNativeOwner;
-  manager:NativeHarnessSessionManager;session:NativeSessionReference}):Promise<RemoteTerminalEvidence|null> {
+  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactDigests?:string[]}):Promise<RemoteTerminalEvidence|null> {
   const status=await input.journal.status(input.intent.operationId)
   if(status.status!=='known'||!isDeepStrictEqual(status.receipt.intent,input.intent)||!status.receipt.native
     ||status.receipt.native.sessionId!==input.session.nativeSessionId||input.captured.native.sessionId!==input.session.nativeSessionId
@@ -102,7 +134,8 @@ export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOp
   if(!await input.registry.closeOwner(input.captured.owner))return null
   return RemoteTerminalEvidenceSchema.parse({kind:result?result.outcome==='succeeded'?'completed':result.outcome==='failed'?'failed':'cancelled':'cancelled',
     closureEvidenceDigest:digest({intent:input.intent,native:status.receipt.native,launch:input.captured.launch,physicalOwnerClosed:true}),
-    ...(result?{result,resultDigest:digest(result)}:{})})
+    ...(result?{result,resultDigest:digest(result)}:{}),
+    ...(input.artifactDigests ? { artifactDigests: input.artifactDigests } : {})})
 }
 
 /** Source verification uses W09's actual Main-authorized worker service. The runtime leaf is a separate anchored directory with an immutable operation receipt. */
@@ -182,6 +215,13 @@ export interface InstalledWorkflowNativeOutputContext {
   /** Real original registry/ACK evidence; deliberately does not inspect passive
    * originalSessionLifetime while the producer's starting gate is active. */
   assertCurrent(pin?: CodexNativeOutputTurnPin, signal?: AbortSignal): Promise<void>
+  applicationAccess(): RemoteApplicationAccess
+  requestMain(payload: unknown, signal?: AbortSignal): Promise<DeviceApplicationResult>
+  qualifyNativeOutput(input: CodexNativeOutputQualificationInput, protectedDirectory: string,
+    signal: AbortSignal): Promise<void>
+  closeNativeOutputWriters(owner: NativeOutputStorageOwner): Promise<void>
+  observeArtifactPublication(input: { transferId: string; publication: AgentFilePublishInput },
+    result: AgentFilePublishResult): void
 }
 export interface InstalledWorkflowHostOptions {
   stateDirectory:string
@@ -224,6 +264,7 @@ interface InstalledOperation {
   runtimeRoots?:ApprovedRootAllowlist
   retainedHistory?:NativeHistory
   physicalClosure?:NativeLaunchObservation
+  artifacts: WorkflowNativeArtifactResults
 }
 /** A configured extension is code support, not qualified readiness. Every new operation consumes genuine Main facts before opening a journal or allocating a manager. */
 export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOptions) {
@@ -310,7 +351,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       const capture=await reader.capture()
       current(context.binding)
       if(operations.size>=1000)unavailable('operation_retention_full')
-      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,scope:registry.scope(`execution:${intent.executionId}`)}
+      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,
+        scope:registry.scope(`execution:${intent.executionId}`),artifacts:new WorkflowNativeArtifactResults(placement,intent)}
       operations.set(intent.executionId,owned)
     }
     const generation=commandInputHash(context.binding)
@@ -342,6 +384,21 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
           binding: Object.freeze(structuredClone(actual.context.binding)),
           materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
+          applicationAccess: () => {
+            if (!actual.applicationAccess) unavailable('original_main_lease_required')
+            return structuredClone(actual.applicationAccess!)
+          },
+          requestMain: (payload, effectSignal) => forBinding(actual.context.binding)(WORKER_MCP_EXTENSION.namespace,
+            payload, effectSignal ? { signal: effectSignal } : {}),
+          qualifyNativeOutput: (qualification, protectedDirectory, effectSignal) => qualifyInstalledNativeOutputSandbox({
+            qualification, protectedDirectory, reader: actual.reader, codexSuiteRevision: input.codexSuiteRevision,
+            registry, assertCurrent: bounded => outputContext.assertCurrent(undefined, bounded), signal: effectSignal }),
+          closeNativeOutputWriters: async owner => {
+            if (!actual.native || !actual.session) unavailable('original_native_output_owner_conflict')
+            actual.physicalClosure = await closeInstalledNativeOutputWriters({ journal: log, registry,
+              intent: actual.intent, binding: actual.context.binding, session: actual.session!, captured: actual.native!, owner })
+          },
+          observeArtifactPublication: (publication, result) => actual.artifacts.observe(publication, result),
           assertCurrent: async (pin, effectSignal) => {
             effectSignal?.throwIfAborted(); current(actual.context.binding)
             await before(); effectSignal?.throwIfAborted(); current(actual.context.binding)
@@ -363,7 +420,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
           },
         }
-        const outputPorts = input.nativeOutputs?.(outputContext)
+        const outputPorts = actual.placement.payload.kind === 'agent' && actual.placement.payload.artifactOutputs
+          ? input.nativeOutputs?.(outputContext) : undefined
+        if (actual.placement.payload.kind === 'agent' && actual.placement.payload.artifactOutputs && !outputPorts)
+          unavailable('original_native_output_host_missing')
         if (outputPorts && (!isDeepStrictEqual(outputPorts.artifacts.binding.intent, actual.intent)
           || !isDeepStrictEqual(outputPorts.artifacts.binding.placement, actual.placement)
           || outputPorts.artifacts.binding.root.rootId !== outputContext.materialization.receipt.binding.rootId
@@ -428,7 +488,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           const nativeStart:NativeSessionStart={request:structuredClone(nativeRequest),correlationId:`execution:${actual.intent.executionId}`,environment:relay.environment}
           if(actual.nativeStart&&!isDeepStrictEqual(actual.nativeStart,nativeStart))unavailable('original_native_start_changed')
           actual.nativeStart??=nativeStart
-          if(!actual.mcp)actual.mcp=await createWorkerMcpEndpoint({relay,launcher:configuration.appMcpLauncher,signal})
+          if(!actual.mcp)actual.mcp=await createWorkerMcpEndpoint({relay,launcher:configuration.appMcpLauncher,signal,
+            onArtifactPublication: (publication, result) => actual.artifacts.observe(publication, result)})
           return relay.environment
         },
         nativeEvidence:async(intent,session,nativeContext)=>{const resident=operation(intent)
@@ -453,12 +514,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         settle:async(intent,history,owner)=>{
           const resident=operation(intent)
           if(!resident.native||resident.manager!==owner.manager)unavailable('original_native_owner_required')
+          const artifacts = history.terminalTurn ? resident.artifacts.read(history.terminalTurn.result) : undefined
           resident.retainedHistory=structuredClone(history)
           const state=await log.status(intent.operationId)
           if(state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
             &&history.terminalTurn.providerId===state.receipt.native?.turnId))resident.launchDisabled=true
           const terminal=await settleInstalledWorkflowNativeOwner({journal:log,registry,intent,history,captured:resident.native,
-            manager:owner.manager,session:owner.session})
+            manager:owner.manager,session:owner.session,
+            ...(artifacts?.output.kind === 'published-artifacts' ? { artifactDigests: artifacts.artifactDigests } : {})})
           if(terminal) {
             const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
             if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
@@ -593,7 +656,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               observation:matchingOriginalRegistryLaunch(registry,resident.native.launch),runtimeLeaf:resident.runtimeLeaf,
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
               ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
-              ...(receipt.terminal?.result?{output:{kind:'text-only',result:receipt.terminal.result}}:{})})
+              ...(receipt.terminal?.result?{output:resident.artifacts.read(receipt.terminal.result).output}:{})})
             if (Buffer.byteLength(JSON.stringify(readout)) > DEVICE_APPLICATION_JSON_BYTES) {
               unavailable('physical_readout_too_large')
             }

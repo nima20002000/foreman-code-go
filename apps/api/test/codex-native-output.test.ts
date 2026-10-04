@@ -70,6 +70,25 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
     } finally { await f.manager.dispose() }
   })
 
+  it('reconciles an observed terminal after output cleanup closes its provider without starting a replacement', async () => {
+    const f = await fixture()
+    try {
+      const session = await f.manager.createSession(f.source)
+      const iterator = f.manager.startTurn(session, { prompt: 'Recorded output', clientCorrelationId: 'original-output',
+        onSubmitted: async () => {} })[Symbol.asyncIterator]()
+      await iterator.next()
+      const turn = f.replay.starts[0]!.nativeTurnId
+      f.replay.complete(session.nativeSessionId, turn, '{"original":true}')
+      f.replay.disconnect(session.nativeSessionId)
+      await iterator.return?.()
+      const starts = f.replay.calls.filter(call => call.method === 'thread/start' || call.method === 'thread/resume').length
+      const history = await f.manager.reconcile(session, 'original-output')
+      assert.equal(history.terminalTurn?.providerId, turn)
+      assert.deepEqual(history.terminalTurn?.result, { outcome: 'succeeded', output: { text: '{"original":true}' } })
+      assert.equal(f.replay.calls.filter(call => call.method === 'thread/start' || call.method === 'thread/resume').length, starts)
+      assert.equal(f.replay.starts.length, 1)
+    } finally { await f.manager.dispose() }
+  })
   it('requires genuine qualification before a native thread start or tool declaration', async () => {
     const f = await fixture({ qualified: false })
     try {

@@ -19,7 +19,8 @@ import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harne
 import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { readInstalledWorkflowConfiguration } from './installedWorkflowConfiguration.js'
-import { captureInstalledWorkflowNativeOwner, settleInstalledWorkflowNativeOwner, createInstalledWorkflowHost, attestInstalledWorkflowRuntimeLeaf, type InstalledWorkflowHostOptions } from './installedWorkflowHost.js'
+import { captureInstalledWorkflowNativeOwner, settleInstalledWorkflowNativeOwner, closeInstalledNativeOutputWriters,
+  createInstalledWorkflowHost, attestInstalledWorkflowRuntimeLeaf, type InstalledWorkflowHostOptions } from './installedWorkflowHost.js'
 import { SourceOperationWorkerService } from '../../sources/operationWorker.js'
 import { PrivateSourceMaterializer } from '../../sources/materialization.js'
 import { createSourceManifest, sourceSha256 } from '../../sources/manifest.js'
@@ -118,6 +119,32 @@ async function closureFixture() {
   return {...f,journal,captured,manager,close,closeOwner,closeRegistration,history}
 }
 describe('positive installed native closure consumption',()=>{
+  it.each(['intent', 'connection', 'session', 'turn', 'process'] as const)('refuses foreign %s output cleanup before closing a native owner', async kind => {
+    const f = await closureFixture()
+    const binding = { ...f.connection, connectionEpoch: randomUUID() }
+    const owner = { intent: structuredClone(f.intent), binding: structuredClone(binding), session: { ...f.session },
+      nativeTurnId: 'original-turn', runtimeGeneration: 1 }
+    const captured = structuredClone(f.captured)
+    if (kind === 'intent') owner.intent.executionId = 'foreign'
+    if (kind === 'connection') owner.binding.connectionEpoch = randomUUID()
+    if (kind === 'session') owner.session.nativeSessionId = 'foreign'
+    if (kind === 'turn') owner.nativeTurnId = 'foreign'
+    if (kind === 'process') captured.native.processIdentityDigest = 'f'.repeat(64)
+    await expect(closeInstalledNativeOutputWriters({ ...f, binding, owner, captured })).rejects.toThrow()
+    expect(f.closeRegistration).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+  })
+  it('requires positive original physical closure before completing output cleanup', async () => {
+    const f = await closureFixture()
+    const binding = { ...f.connection, connectionEpoch: randomUUID() }
+    const owner = { intent: f.intent, binding, session: f.session, nativeTurnId: 'original-turn', runtimeGeneration: 1 }
+    await expect(closeInstalledNativeOutputWriters({ ...f, binding, owner })).rejects.toThrow()
+    f.closeOwner.mockResolvedValue(true)
+    const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+    f.closeRegistration.mockImplementation(async () => { f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] }) })
+    expect(await closeInstalledNativeOutputWriters({ ...f, binding, owner })).toEqual(closed)
+    expect(f.closeOwner).toHaveBeenCalledWith('execution:execution')
+  })
   it('does not promote provider success when the original physical owner closure is unconfirmed',async()=>{
     const f=await closureFixture()
     expect(await settleInstalledWorkflowNativeOwner(f)).toBeNull()

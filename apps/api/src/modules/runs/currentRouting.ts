@@ -34,6 +34,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       ...(outcomes ? [`routing has exactly outcome, one of ${JSON.stringify(outcomes)}.`] : []),
       'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
       'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
+      'On an installed Codex computer, use files_native_output_create, files_native_output_append, files_native_output_seal, then files_native_output_publish. The host transfers and publishes the sealed bytes; use that successful publication commandId.',
       'Admit, transfer, and publish the original bytes before completing. A command ID alone does not prove publication; the backend verifies canonical bytes and durable output mappings.',
       'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
       'data is a JSON value. Preserve the accepted task data requirements. Do not wrap the complete JSON in Markdown or commentary. Maximum 65536 UTF-8 bytes.',

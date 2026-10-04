@@ -1151,12 +1151,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     return this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
-      const restarted = runtime.closed
-      if (runtime.closed) await this.restart(runtime, signal)
-      const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
-        && runtime.activeTurnId === undefined && runtime.interactions.size === 0
       const observedTerminal = runtime.activeCorrelationId === correlationId
         && runtime.activeTurnId !== undefined && runtime.terminalResult !== undefined
+      const restarted = runtime.closed && !observedTerminal
+      if (restarted) await this.restart(runtime, signal)
+      const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
+        && runtime.activeTurnId === undefined && runtime.interactions.size === 0
       if (!locallyIdle && !observedTerminal) await this.synchronize(runtime, correlationId, signal)
       this.record(runtime, 'thread.reconciled', {
         correlationId, restarted, threadId: session.nativeSessionId,
