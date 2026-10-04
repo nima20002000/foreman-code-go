@@ -19,14 +19,19 @@ it('persists the acknowledged native turn before a running result can be observe
       expect(saved?.correlationId).toBe('execution:original')
       expect(saved?.currentTurnOrMessageId).toBe('original-turn')
       expect(saved?.leaseToken).toBeTruthy()
-      yield* []
+      yield { sequence: 0, type: 'turn.started', occurredAt: '2026-10-04T00:00:00.000Z',
+        payload: { nativeTurnId: 'original-turn' } }
     },
   } satisfies Pick<NativeHarnessSessionManager, 'harness' | 'createSession' | 'reconcile' | 'startTurn'>
   const writer = new SingleWriterSessionManager(manager as unknown as NativeHarnessSessionManager, coordination, 'agent')
   await writer.createSession({} as Parameters<NativeHarnessSessionManager['createSession']>[0])
+  const events = []
   for await (const event of writer.startTurn(session, {
     prompt: 'original prompt', clientCorrelationId: 'execution:original',
   })) {
-    throw new Error(`Unexpected fixture event: ${event.type}`)
+    expect((await coordination.getLane('codex', session.nativeSessionId))?.currentTurnOrMessageId)
+      .toBe('original-turn')
+    events.push(event.type)
   }
+  expect(events).toEqual(['turn.started'])
 })

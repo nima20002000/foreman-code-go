@@ -388,7 +388,7 @@ describe('installed host resident execution continuity', () => {
     const f = await runningInstalledFixture(phase)
     try {
       const original = f.context.binding
-      const { connectionEpoch: _epoch, ...originalConnection } = original
+      const originalConnection = DeviceConnectionIdentitySchema.parse(original)
       f.disconnect()
       await expect(f.call('history', {}, original)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
       const replacement = { ...original, connectionGeneration: original.connectionGeneration + 1, connectionEpoch: randomUUID() }
@@ -555,10 +555,7 @@ describe('lazy installed worker host qualification boundary',()=>{
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
-      const { mainId, deviceId, workerInstallationId, bootId, keyRevision,
-        authorizationRevision, connectionGeneration } = f.context.binding
-      const connection = { mainId, deviceId, workerInstallationId, bootId, keyRevision,
-        authorizationRevision, connectionGeneration }
+      const connection = DeviceConnectionIdentitySchema.parse(f.context.binding)
       await retainedJournal!.accept(f.intent, connection, randomUUID())
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({

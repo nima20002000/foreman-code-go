@@ -78,8 +78,7 @@ describe('protected explicit installed rsync selection', () => {
     expect(f.probe).toHaveBeenCalled()
   })
 
-  it.each(['consent', 'registration', 'selection', 'grant', 'connection'] as const)(
-  'rejects a changed %s during a selected transfer', async change => {
+  it.each(['consent', 'registration', 'selection', 'grant', 'connection'] as const)('rejects a changed %s during a selected transfer', async change => {
     const f = await fixture()
     const selected = await f.provider.selection(f.intent, new AbortController().signal)
     if (change === 'consent') f.updateConsent({ allowOwnerCommands: false })

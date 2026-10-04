@@ -39,10 +39,36 @@ export async function qualifyInstalledNativeOutputSandbox(input: {
   let wake = () => {}
   let failure: Error | undefined
   let result: Awaited<ReturnType<typeof runCodexNativeOutputSandboxChecks>> | undefined
-    const current = async () => {
+  const current = async () => {
     signal.throwIfAborted()
     await input.assertCurrent(signal)
     signal.throwIfAborted()
+  }
+  const cleanup = async () => {
+    const errors: unknown[] = []
+    try { await transport?.close() }
+    catch (error) { errors.push(error) }
+    let ownerClosed = false
+    try {
+      ownerClosed = await input.registry.closeOwner(scope.owner)
+      if (!ownerClosed) errors.push(unavailable())
+    } catch (error) { errors.push(error) }
+    const paths = result?.evidence.cleanupPaths
+    if (ownerClosed && Array.isArray(paths)) {
+      for (const path of paths) {
+        if (typeof path !== 'string') {
+          errors.push(unavailable())
+          continue
+        }
+        try { await unlink(path) }
+        catch (error) {
+          if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
+            errors.push(error)
+          }
+        }
+      }
+    }
+    return errors
   }
   try {
     await current()
@@ -143,16 +169,16 @@ export async function qualifyInstalledNativeOutputSandbox(input: {
       } })
     if (result.checks.some(check => !check.passed)) throw unavailable()
     await current()
-  } finally {
-    await transport?.close()
-    if (!await input.registry.closeOwner(scope.owner)) throw unavailable()
-    const paths = result?.evidence.cleanupPaths
-    if (Array.isArray(paths)) {
-      for (const path of paths) {
-        if (typeof path !== 'string') throw unavailable()
-        try { await unlink(path) }
-        catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error }
-      }
+  } catch (error) {
+    const cleanupErrors = await cleanup()
+    if (cleanupErrors.length) {
+      throw new AggregateError([error, ...cleanupErrors], 'Native output qualification and cleanup failed.')
     }
+    throw error
+  }
+  const cleanupErrors = await cleanup()
+  if (cleanupErrors.length === 1) throw cleanupErrors[0]
+  if (cleanupErrors.length) {
+    throw new AggregateError(cleanupErrors, 'Native output qualification cleanup failed.')
   }
 }

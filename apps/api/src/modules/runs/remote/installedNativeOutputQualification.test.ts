@@ -91,6 +91,26 @@ async function fixture() {
 }
 
 describe('installed native output diagnostic wiring', () => {
+  it('still closes the original owner when transport cleanup fails', async () => {
+    const f = await fixture()
+    recorded.close.mockRejectedValue(new Error('Diagnostic transport close failed'))
+    await expect(qualifyInstalledNativeOutputSandbox(f.input)).rejects.toThrow('Diagnostic transport close failed')
+    expect(f.closeOwner).toHaveBeenCalledOnce()
+  })
+
+  it('preserves the qualification error and reports unresolved owner cleanup together', async () => {
+    const f = await fixture()
+    recorded.checks.mockRejectedValue(new Error('Native sandbox probe failed'))
+    f.closeOwner.mockResolvedValue(false)
+    const error = await qualifyInstalledNativeOutputSandbox(f.input).catch(error => error)
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors).toEqual([
+      expect.objectContaining({ message: 'Native sandbox probe failed' }),
+      expect.objectContaining({ code: 'CODEX_NATIVE_OUTPUT_UNQUALIFIED' }),
+    ])
+    expect(f.closeOwner).toHaveBeenCalledOnce()
+  })
+
   it('uses a separate owned diagnostic and joins positive closure before returning qualification', async () => {
     const f = await fixture()
     await qualifyInstalledNativeOutputSandbox(f.input)
