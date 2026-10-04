@@ -18,7 +18,7 @@ import { verifyApprovedRootAllowlist } from './rootAttestation.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { createPrivateSourceRepository } from './repository.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
-import { assertSourceNativeSession, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
+import { assertSourceNativeSession, sourceNativeSessionContinues, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import type { SourceNativeSessionCapture, SourceInstalledNativeOwnerReader } from './executionHosts.js'
 import { VerifiedSourcePackageReader } from './operationPackage.js'
 
@@ -104,7 +104,7 @@ export class SourceOperationWorkerService {
     let packageReader: VerifiedSourcePackageReader | undefined
     let preparation: string | undefined
     try {
-      const owner = await this.authority(request, context)
+      let owner = await this.authority(request, context)
       if (['sources.prepare', 'sources.private-repository', 'sources.reconcile-preparation'].includes(request.operation)) {
         preparation = owner.identity.operationId
         if (this.preparing.has(preparation)) { preparation = undefined; throw new SourceError('source-reconciliation-unconfirmed', 'Original source preparation is still active.') }
@@ -117,8 +117,15 @@ export class SourceOperationWorkerService {
         || owner.root.binding.canonicalPath !== join(allowlist.managedRuntimeRoot, 'source-materializations', z.uuid().parse(owner.root.selection.rootPolicyId)))
         throw new SourceError('SOURCE_ROOT_CONFLICT', 'Source paths must belong to the actual human-approved host runtime namespace.')
       await verifyApprovedRootAllowlist(allowlist)
-      const reauthorize = async () => { const current = await this.authority(request, context)
-        if (!isDeepStrictEqual(current, owner)) throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Current source ownership changed during the filesystem operation.') }
+      const reauthorize = async () => {
+        const current = await this.authority(request, context)
+        const { activeNativeSession: previousSession, ...previousOwner } = owner
+        const { activeNativeSession: currentSession, ...currentOwner } = current
+        if (!isDeepStrictEqual(currentOwner, previousOwner) || !sourceNativeSessionContinues(previousSession, currentSession)) {
+          throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Current source ownership changed during the filesystem operation.')
+        }
+        owner = current
+      }
       const reader = null
       if (request.operation === 'sources.reconcile-preparation') {
         if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
@@ -161,6 +168,7 @@ export class SourceOperationWorkerService {
           if (!installed) throw new SourceError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original installed native lifetime is unavailable.')
           const assertCurrent = async () => {
             installed.signal.throwIfAborted(); context.signal.throwIfAborted()
+            await reauthorize()
             if (installed.executionId !== proof.executionId || installed.runId !== proof.runId || installed.technicalAttempt !== proof.technicalAttempt || installed.attemptId !== proof.attemptId
               || installed.operationId !== proof.operationId || installed.materializationId !== proof.materializationId
               || installed.sourceBindingHash !== proof.sourceBindingHash || installed.finalDispatchBindingHash !== proof.finalDispatchBindingHash
@@ -168,7 +176,8 @@ export class SourceOperationWorkerService {
               throw new SourceError('SOURCE_NATIVE_SESSION_CONFLICT', 'Main continuation evidence differs from the actual original installed native lifetime.')
             await installed.assertCurrent(); installed.signal.throwIfAborted(); context.signal.throwIfAborted()
           }
-          capture = { proof, signal: AbortSignal.any([context.signal, installed.signal]), assertCurrent }
+          capture = { get proof() { return owner.activeNativeSession! },
+            signal: AbortSignal.any([context.signal, installed.signal]), assertCurrent }
           await assertSourceNativeSession(record, capture)
         }
         const verified = await verifyMaterializedWorkingDirectory(record, request.relativeCwd, reauthorize, capture)

@@ -17,6 +17,7 @@ import { remoteMcpPreflight } from './modules/placement/remoteMcpPreflight.js'
 import { closeCompletedWorkflowSources } from './modules/sources/workflowCleanup.js'
 import { remoteWorkflowPreparationClosed } from './modules/sources/workflowPreparationCleanup.js'
 import { readExecutionPlacement } from './modules/placement/persistence.js'
+import { sourceNativeSessionContinues } from './modules/sources/workingDirectory.js'
 import { placedContinuationValidator } from './modules/placement/continuation.js'
 import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
@@ -1217,12 +1218,14 @@ export function buildProductionApp(
             return proof
           } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
         }
-        const proof = await readCurrent()
+        let proof = await readCurrent()
         if (!proof) return null
         const capture = captures.find(value => value.execution.id === record.receipt.executionId)!
-        return { proof, signal: capture.signal, async assertCurrent() {
+        return { get proof() { return proof! }, signal: capture.signal, async assertCurrent() {
           capture.signal.throwIfAborted(); capture.assertCurrent()
-          if (!sameWorkflowValue(await readCurrent(), proof)) throw new DomainError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original entered native owner or source lane is no longer current.', 409)
+          const current = await readCurrent()
+          if (!sourceNativeSessionContinues(proof, current)) throw new DomainError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original entered native owner or source lane is no longer current.', 409)
+          proof = current
           capture.signal.throwIfAborted(); capture.assertCurrent()
         } }
       }

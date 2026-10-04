@@ -13,7 +13,7 @@ function fixture() {
   const entry = { phase: 'entered', reservation: { execution: repeatExecutionIdentity(execution) } }
   const sql = { query: async () => ({ rows: [entry] }) } as unknown as GraphSqlClient
   const state = {
-    execution, execution_state: 'completed', stop_requested: false, cleanup_pending: false, session_bound: false,
+    execution, execution_state: 'completed', stop_requested: false, cleanup_pending: false, session_bound: false, nativeSession: null,
   } as Awaited<ReturnType<typeof loadWorkflowPreparation>>
   return { sql, state, entry }
 }
@@ -35,11 +35,10 @@ it('accepts the persisted no-submission outcome of a stopped preparation', async
   await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
 })
 
-it.each(['running', 'live-execution', 'bound', 'native-id', 'success', 'changed-attempt'] as const)(
+it.each(['running', 'bound', 'native-id', 'success', 'changed-attempt'] as const)(
   'refuses to release a workflow preparation with %s', async defect => {
     const f = fixture()
     if (defect === 'running') f.state.execution_state = 'running'
-    if (defect === 'live-execution') f.state.execution.state = 'running'
     if (defect === 'bound') f.state.session_bound = true
     if (defect === 'native-id') f.state.execution.nativeSessionId = 'native'
     if (defect === 'success') f.state.execution.result = { outcome: 'succeeded', output: {} }
@@ -47,3 +46,13 @@ it.each(['running', 'live-execution', 'bound', 'native-id', 'success', 'changed-
     await expect(assertWorkflowPreparationClosed(f.sql, f.state)).rejects.toBeDefined()
   },
 )
+
+it('permits closure of the same recorded native session after the Run is fenced', async () => {
+  const f = fixture()
+  f.state.execution.nativeSessionId = 'original-native'
+  f.state.session_bound = true
+  f.state.nativeSession = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'original-native' }
+  await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
+  f.state.nativeSession.nativeSessionId = 'another-native'
+  await expect(assertWorkflowPreparationClosed(f.sql, f.state)).rejects.toMatchObject({ code: 'SOURCE_PREPARATION_ACTIVE' })
+})

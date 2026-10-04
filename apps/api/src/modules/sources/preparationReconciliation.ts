@@ -105,6 +105,7 @@ export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient,
   await admissionClosed(sql, state); await hostAuthority(sql, state)
   const owner = SourceOperationOwnerSchema.parse(row.owner)
   if ((owner.preparationKind === 'workflow') !== (state.kind === 'workflow')
+    || state.kind === 'workflow' && !isDeepStrictEqual(owner.preparationNativeSession ?? null, state.nativeSession)
     || !isDeepStrictEqual(owner.root, state.root) || !isDeepStrictEqual(owner.attempt, state.attempt)
     || !isDeepStrictEqual(owner.record, state.record) || owner.identity.operationId !== state.operationId
     || owner.identity.ownerPrincipalId !== principal.id || Date.parse(owner.identity.expiresAt) <= Date.now())
@@ -159,7 +160,8 @@ export class PostgresSourcePreparationReconciliation {
           const reconciliationId = randomUUID(), owner: SourceOperationOwner = { identity: { operationId: input.operationId,
             ownerPrincipalId: live.id, expiresAt: live.expiresAt }, root: state.root, attempt: state.attempt,
             source: state.root.source, record: state.record, physicalClosureConfirmed: false, preparationClosed: true,
-            ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const } : {}) }
+            ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const,
+              preparationNativeSession: state.nativeSession } : {}) }
           await sql.query(`insert into source_preparation_reconciliations(operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner)
             values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)`, [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
           return { reconciliationId, owner }

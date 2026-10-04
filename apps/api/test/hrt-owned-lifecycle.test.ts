@@ -88,3 +88,24 @@ it('passes actual Run owners through a private live getter without cloning or se
   await resolver.dispose()
   expect(getOwner()).toBeUndefined()
 })
+
+it('adopts a cleanup owner only for the already allocated manager and same Run', () => {
+  const first = { runId: 'run', assertOwned: vi.fn() } as unknown as RunOwnership
+  const next = { runId: 'run', assertOwned: vi.fn() } as unknown as RunOwnership
+  let getOwner!: () => RunOwnership | undefined
+  const create = vi.fn((_context, getter) => {
+    getOwner = getter
+    return { harness: 'codex' } as NativeHarnessSessionManager
+  })
+  const resolver = new ExecutionScopedNativeSessionManagerResolver(create)
+  const original = resolver.resolve({ ...context, runId: 'run' }, first)
+  resolver.adoptOwner(context.executionId, original.manager, next)
+  expect(getOwner()).toBe(next)
+  expect(create).toHaveBeenCalledOnce()
+  expect(() => resolver.adoptOwner('missing', original.manager, next)).toThrow('does not belong')
+  expect(() => resolver.adoptOwner(context.executionId, {} as NativeHarnessSessionManager, next)).toThrow('does not belong')
+  expect(() => resolver.adoptOwner(context.executionId, original.manager, { ...next, runId: 'other' } as RunOwnership))
+    .toThrow('does not belong')
+  expect(getOwner()).toBe(next)
+  expect(create).toHaveBeenCalledOnce()
+})

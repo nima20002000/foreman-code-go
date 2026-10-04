@@ -244,6 +244,9 @@ describe('lazy installed worker host qualification boundary',()=>{
         status: 'known', receipt: { phase: 'confirmed_terminal', native: { sessionId: 'unacknowledged-on-main' },
           terminal: { kind: 'cancelled' } },
       })
+      expect(await host.preparationClosed({ ...cleanupOwner, preparationNativeSession: {
+        harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'another-session',
+      } })).toBe(false)
       currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
       await expect(handler({method:'status',intent:f.intent,placement:f.placement},f.context)).rejects.toMatchObject({code:'WORKER_WORKFLOW_UNAVAILABLE'})
     } finally {await host.close(); await retainedJournal?.close()}
@@ -284,6 +287,9 @@ async function physicalFixture(relativeCwd='') {
   // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
   const producer=createRemoteWorkflowPhysicalVerification({endpoint:()=>({currentBinding,captureRequest:()=>({binding:f.context.binding,request})})})
   const query=vi.fn(async(text:string)=>{
+    if (text.startsWith('select r.id from runs r join execution_dispatch_intents')) {
+      return { rows: [{ id: execution.runId }], rowCount: 1 }
+    }
     if(['begin isolation level read committed','commit','rollback'].includes(text))return {rows:[],rowCount:0}
     if(text.includes('from execution_dispatch_intents'))return {rows:[{...f.intent,operation_id:f.intent.operationId,execution_id:f.intent.executionId,run_id:f.intent.runId,
       node_id:f.intent.nodeId,binding_hash:f.intent.bindingHash,attempt_id:f.intent.attemptId,record:f.intent}],rowCount:1}

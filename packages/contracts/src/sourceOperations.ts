@@ -63,6 +63,7 @@ export type SourceActiveNativeSession = z.infer<typeof SourceActiveNativeSession
 export const SourceOperationOwnerSchema = z.object({ identity: SourcePreparationIdentitySchema, root: SourceRootRecordSchema,
   attempt: SourceOperationAttemptSchema, source: SourcePinSchema, record: SourceMaterializationRecordSchema.nullable(),
   preparationKind: z.literal('workflow').optional(),
+  preparationNativeSession: z.lazy(() => NativeSessionReferenceSchema).nullable().optional(),
   physicalClosureConfirmed: z.boolean(), activeNativeSession: SourceActiveNativeSessionSchema.nullish(), preparationClosed: z.literal(true).optional() }).strict()
 export type SourceOperationOwner = z.infer<typeof SourceOperationOwnerSchema>
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),

@@ -540,6 +540,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     if (status.status === 'unknown') return !owned && launches().length === 0
     const receipt = status.receipt
     if (receipt.intent.executionId !== owner.attempt.executionId || receipt.intent.attemptId !== owner.attempt.attemptId
+      || owner.preparationNativeSession && (owner.preparationNativeSession.harness !== 'codex'
+        || owner.preparationNativeSession.nativeSessionId !== receipt.native?.sessionId)
       || receipt.entryAttempted && !receipt.native
       || owned?.native && !isDeepStrictEqual(owned.native.native, receipt.native)
       || owned?.session && owned.session.nativeSessionId !== receipt.native?.sessionId) return false

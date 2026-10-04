@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
 import { AcceptedNodePlacementSchema, DispatchIntentSchema } from '@graphql/contracts/node-placement'
 import { SourceMaterializationRecordSchema, SourcePreparationClosureSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { SourceOperationOwnerSchema } from '@graphql/contracts/source-operations'
@@ -13,7 +13,7 @@ import type { SourceReservation } from './reservations.js'
 export async function loadWorkflowPreparation(sql: GraphSqlClient, workspaceId: string, operationId: string) {
   const row = (await sql.query<{
     intent: unknown; execution: unknown; placement: unknown; principal_id: string;
-    execution_state: string; stop_requested: boolean; cleanup_pending: boolean; session_bound: boolean;
+    execution_state: string; stop_requested: boolean; cleanup_pending: boolean; session_bound: boolean; session_reference: unknown | null;
     reservation: SourceReservation; reservation_state: string; reserved_bytes: string;
     materialization: unknown | null; reconciliation_id: string | null; command_id: string | null;
     status: string | null; owner: unknown | null; closure: unknown | null;
@@ -21,6 +21,7 @@ export async function loadWorkflowPreparation(sql: GraphSqlClient, workspaceId: 
       r.record->>'authorizationPrincipalId' as principal_id,r.execution_state,r.stop_requested_at is not null as stop_requested,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending,
       exists(select 1 from execution_native_sessions n where n.execution_id=e.id) as session_bound,
+      (select n.reference from execution_native_sessions n where n.execution_id=e.id) as session_reference,
       s.record as reservation,s.state as reservation_state,s.reserved_bytes,m.record as materialization,
       c.reconciliation_id,c.command_id,c.status,c.owner,c.closure
     from execution_dispatch_intents i join harness_executions e on e.id=i.execution_id
@@ -33,6 +34,10 @@ export async function loadWorkflowPreparation(sql: GraphSqlClient, workspaceId: 
   if (!row) throw new DomainError('SOURCE_PREPARATION_NOT_FOUND', 'The original source preparation was not found.', 404)
   const intent = DispatchIntentSchema.parse(row.intent)
   const execution = HarnessExecutionSchema.parse(row.execution)
+  const nativeSession = row.session_reference === null ? null : NativeSessionReferenceSchema.parse(row.session_reference)
+  if ((execution.nativeSessionId ?? null) !== (nativeSession?.nativeSessionId ?? null)) {
+    throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original native session binding changed.', 409)
+  }
   const placement = AcceptedNodePlacementSchema.parse(row.placement)
   const source = placement.source
   if (!('kind' in source) || source.kind !== 'pending') {
@@ -72,7 +77,7 @@ export async function loadWorkflowPreparation(sql: GraphSqlClient, workspaceId: 
       || record.receipt.attemptId !== intent.attemptId || record.sourceBindingHash !== attempt.placementHash)) {
     throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original workflow source reservation changed.', 409)
   }
-  return { ...row, kind: 'workflow' as const, execution, root, attempt, record, operationId, workspaceId }
+  return { ...row, kind: 'workflow' as const, execution, nativeSession, root, attempt, record, operationId, workspaceId }
 }
 
 export async function assertWorkflowPreparationClosed(
@@ -81,9 +86,10 @@ export async function assertWorkflowPreparationClosed(
 ): Promise<void> {
   const execution = state.execution
   const fenced = state.execution_state === 'completed' || state.stop_requested || state.cleanup_pending
-  if (!fenced || !['queued', 'starting', 'completed'].includes(execution.state)
-    || state.session_bound || execution.nativeSessionId || execution.result?.outcome === 'succeeded') {
-    throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'Stop the workflow before reconciling an unacknowledged worker session.', 409)
+  if (!fenced || execution.result?.outcome === 'succeeded'
+    || (execution.nativeSessionId ?? null) !== (state.nativeSession?.nativeSessionId ?? null)
+    || state.session_bound !== Boolean(state.nativeSession)) {
+    throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'Stop the workflow before reconciling its original worker session.', 409)
   }
   const entry = (await sql.query<{ phase: string; reservation: { execution: unknown } }>(
     'select phase,reservation from workflow_native_entries where execution_id=$1 and run_id=$2 for share',
@@ -109,6 +115,7 @@ export async function remoteWorkflowPreparationClosed(sql: GraphSqlClient, execu
   return owner.preparationKind === 'workflow' && owner.preparationClosed === true
     && isDeepStrictEqual(owner.root, state.root) && isDeepStrictEqual(owner.attempt, state.attempt)
     && isDeepStrictEqual(owner.record, state.record)
+    && isDeepStrictEqual(owner.preparationNativeSession ?? null, state.nativeSession)
     && closure.reconciliationId === state.reconciliation_id && closure.operationId === state.operationId
     && closure.executionId === executionId && closure.attemptId === state.attempt.attemptId
     && closure.rootId === binding.rootId && closure.bindingRevision === binding.bindingRevision
@@ -125,6 +132,7 @@ export async function localWorkflowPreparationClosed(
   const state = await loadWorkflowPreparation(sql, owner.root.binding.workspaceId, owner.identity.operationId)
   await assertWorkflowPreparationClosed(sql, state)
   if (state.execution_state !== 'completed' || state.execution.state !== 'completed' || state.cleanup_pending
+    || state.nativeSession
     || state.root.selection.hostRef.kind !== 'main' || !isDeepStrictEqual(state.root, owner.root)
     || !isDeepStrictEqual(state.attempt, owner.attempt)) return false
   const entry = (await sql.query<{ phase: string }>(

@@ -118,6 +118,34 @@ it('preserves strict pre-entry bytes and permits edits only on the same current 
   expect(f.assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(4)
   expect(f.open).toHaveBeenCalledTimes(1)
 })
+it('keeps source verification valid while the same native writer renews its lease', async () => {
+  const f = await continuationFixture()
+  f.owner.activeNativeSession = f.proof
+  f.currentOwner.mockImplementation(async () => {
+    f.proof.lane.revision++
+    f.proof.lane.expiresAt = new Date(Date.parse(f.proof.lane.expiresAt) + 1000).toISOString()
+    return structuredClone(f.owner)
+  })
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }, f.context))
+    .resolves.toMatchObject({ operation: 'sources.verify' })
+})
+
+it.each(['token', 'generation', 'revision', 'expiry'] as const)('rejects a changed native %s while refreshing source authority', async change => {
+  const f = await continuationFixture()
+  f.owner.activeNativeSession = f.proof
+  let reads = 0
+  f.currentOwner.mockImplementation(async () => {
+    if (++reads === 2) {
+      if (change === 'token') f.proof.lane.tokenHash = 'a'.repeat(64)
+      if (change === 'generation') f.proof.generation++
+      if (change === 'revision') f.proof.lane.revision--
+      if (change === 'expiry') f.proof.lane.expiresAt = new Date(Date.parse(f.proof.lane.expiresAt) - 1000).toISOString()
+    }
+    return structuredClone(f.owner)
+  })
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }, f.context))
+    .rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
+})
 it.each(['attempt', 'technical-attempt', 'session', 'owner', 'expiry', 'missing-installed', 'aborted'] as const)('denies mutable continuation with %s evidence', async defect => {
   const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
   await writeFile(join(f.tree, 'src/source.ts'), 'edited\n')

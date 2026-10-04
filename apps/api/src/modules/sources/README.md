@@ -54,7 +54,8 @@ Job preparation cleanup requires the original installed worker closure journal.
 Already-admitted Jobs use their original execution cancellation/reconciliation path.
 
 Workflow preparations can be addressed by `operationId` after Main has fenced
-the Run for Stop or cleanup, when no native session was acknowledged on Main.
+the Run for Stop or cleanup. Any session recorded on Main is pinned into the
+cleanup request and must match the worker's original journal.
 The same HTTP and Operator MCP operations apply. Main fences new worker
 construction before requesting cleanup. The worker joins earlier construction
 and checks its protected journal. A known worker session requires positive

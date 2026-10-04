@@ -43,6 +43,7 @@ export interface ResolvedNativeSessionManager {
 /** Manager ownership is per durable Agent execution, never per harness singleton. */
 export interface NativeSessionManagerResolver {
   resolve(context: NativeManagerResolutionContext, owner?: RunOwnership): ResolvedNativeSessionManager
+  adoptOwner?(executionId: string, manager: NativeHarnessSessionManager, owner: RunOwnership): void
   release?(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state?: 'released' | 'failed'): void
 }
 
@@ -133,6 +134,15 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
       current.admission.owner = undefined
       this.entries.delete(context.executionId)
     }
+  }
+
+  adoptOwner(executionId: string, manager: NativeHarnessSessionManager, owner: RunOwnership): void {
+    owner.assertOwned()
+    const entry = this.entries.get(executionId)
+    if (this.disposed || !entry || entry.manager !== manager || entry.context.runId !== owner.runId) {
+      throw new Error('The existing native manager does not belong to this Run owner.')
+    }
+    entry.admission.owner = owner
   }
 
   dispose(): Promise<void> {

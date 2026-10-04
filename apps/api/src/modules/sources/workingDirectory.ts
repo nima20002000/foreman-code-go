@@ -8,11 +8,12 @@ import { PrivateSourceMaterializer } from './materialization.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SourceError, sourcePath, sourceSha256 } from './manifest.js'
 import { verifiedSourceWorkingTree } from './nativeStamp.js'
-import { SourceActiveNativeSessionSchema } from '@graphql/contracts/source-operations'
+import { SourceActiveNativeSessionSchema, type SourceActiveNativeSession } from '@graphql/contracts/source-operations'
 import type { SourceNativeSessionCapture } from './executionHosts.js'
 
 export async function assertSourceNativeSession(record: SourceMaterializationRecord, capture: SourceNativeSessionCapture): Promise<void> {
   capture.signal.throwIfAborted()
+  await capture.assertCurrent()
   const proof = SourceActiveNativeSessionSchema.parse(capture.proof), receipt = record.receipt
   if (receipt.binding.accessMode !== 'exclusive-write' || !record.finalDispatchBindingHash
     || proof.executionId !== receipt.executionId || proof.attemptId !== receipt.attemptId || proof.operationId !== record.operationId
@@ -23,8 +24,21 @@ export async function assertSourceNativeSession(record: SourceMaterializationRec
     || proof.cwdAttestation.sourceBindingHash !== record.sourceBindingHash || proof.cwdAttestation.accessMode !== receipt.binding.accessMode
     || Date.parse(proof.lane.expiresAt) <= Date.now())
     throw new SourceError('SOURCE_NATIVE_SESSION_CONFLICT', 'The current original entered native owner does not match this writable source attempt.')
-  await capture.assertCurrent()
   capture.signal.throwIfAborted()
+}
+
+/** A heartbeat extends the same writer lease; it cannot replace its owner or token. */
+export function sourceNativeSessionContinues(
+  previous: SourceActiveNativeSession | null | undefined,
+  current: SourceActiveNativeSession | null | undefined,
+): boolean {
+  if (!previous || !current) return previous === current
+  if (current.lane.revision < previous.lane.revision
+    || Date.parse(current.lane.expiresAt) < Date.parse(previous.lane.expiresAt)) return false
+  return isDeepStrictEqual(previous, {
+    ...current,
+    lane: { ...current.lane, revision: previous.lane.revision, expiresAt: previous.lane.expiresAt },
+  })
 }
 
 export function sourceCwdAttestationDigest(proof: Record<string, unknown>): string {

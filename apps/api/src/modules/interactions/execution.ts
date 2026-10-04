@@ -1111,6 +1111,12 @@ export class ApprovalExecutionCoordinator {
     }
     this.stoppingRuns.add(runId)
     this.pendingCleanupRuns.add(runId)
+    if (owner) {
+      for (const owned of this.ownedSessions.values()) {
+        if (owned.execution.runId !== runId) continue
+        this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+      }
+    }
     let task = this.cancellations.get(runId)
     if (!task) {
       task = (async () => {
