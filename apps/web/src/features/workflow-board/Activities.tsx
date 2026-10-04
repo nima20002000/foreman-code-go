@@ -10,7 +10,7 @@ import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/quer
 import { createChatVisit, type SelectedChatBinding } from '../conversations/agentChat/selectedRunChatModel'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities, isTransientRunActivityError,
-  runActivitiesKey, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
+  runActivitiesKey, runActivitiesRefetchInterval, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'
 
 type ActivitiesProps = { scope: RepeatGraphScopeV3; selection?: never; chat?: never }
@@ -131,7 +131,8 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     refetchInterval: (query) => {
       if (older.error && !isTransientRunActivityError(older.error)
         && !(ApiError.is(older.error) && older.error.status === 410)) return false
-      return query.state.error && !isTransientRunActivityError(query.state.error) ? false : 3000
+      if (query.state.error && !isTransientRunActivityError(query.state.error)) return false
+      return runActivitiesRefetchInterval(query.state.data)
     } })
   const denied = useProtectedAccessError(feed, older.error)
   const scopedItems = useMemo(() => chat ? feed.data?.items.filter((item) => item.refs.executionId === chat.selection.executionId
@@ -174,6 +175,9 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
   const error = olderReadRejected ? older.error : feed.error ?? older.error
   const retentionGap = ApiError.is(error) && error.status === 410
   const transient = isTransientRunActivityError(error)
+  let errorTitle = 'Activities are unavailable.'
+  if (retentionGap) errorTitle = 'Activity history has a retention gap.'
+  else if (transient) errorTitle = 'Activities refresh failed.'
   let errorHint: string | undefined
   if (retentionGap) errorHint = 'Refresh to read the retained history. '
   else if (transient) errorHint = 'Refresh failed. Retrying automatically. '
@@ -192,7 +196,7 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
       onClick={refresh} aria-label="Refresh Activities">{selection ? 'Refresh' : 'Refresh Activities'}</Button></header>
     {!selection ? <p>Recorded actions for this Run, in server order. Pending approvals stay in the approval inbox.</p> : null}
     {denied ? <Alert tone="warning" title="Activities access was withdrawn." /> : error ?
-      <Alert tone="warning" title={retentionGap ? 'Activity history has a retention gap.' : 'Activities are unavailable.'}>
+      <Alert tone="warning" title={errorTitle}>
         {errorHint}
         <Button size="sm" onClick={refresh}>{selection ? 'Retry' : 'Reload this Run’s Activities'}</Button>
       </Alert> : null}

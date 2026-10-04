@@ -122,6 +122,34 @@ describe('Activities shared Agent and Job actors', () => {
 })
 
 describe('Activities pagination and refresh', () => {
+  it('finishes a pending poll before accepting an older-page read', async () => {
+    const poll = deferred<RunActivitiesPage>()
+    const requests: Array<string | null> = []
+    server.use(http.get(activitiesPath, async ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      requests.push(cursor)
+      if (cursor === 'cursor-5') return HttpResponse.json(await poll.promise)
+      if (cursor === 'older-1') return HttpResponse.json(page({ items: [event('1', 'Earlier work', {})],
+        mode: 'older', olderCursor: null }))
+      return HttpResponse.json(page({ items: items.slice(1) }))
+    }))
+    await mount({ timed: true, expectedText: 'Agent worked' })
+    await advance(3000)
+    await eventually(() => expect(requests).toEqual([null, 'cursor-5']))
+    const more = screen.getByRole('button', { name: 'Load older Activities' })
+    expect(more).toBeDisabled()
+    fireEvent.click(more)
+    expect(requests).toEqual([null, 'cursor-5'])
+    poll.resolve(page({ items: [event('6', 'New work', {})], mode: 'newer', highWater: '6',
+      nextCursor: 'cursor-6', olderCursor: null }))
+    await eventually(() => expect(more).toBeEnabled())
+    fireEvent.click(more)
+    await eventually(() => expect(screen.getByText('Earlier work')).toBeVisible())
+    expect(screen.getByText('New work')).toBeVisible()
+    expect(cachedFeed()).toMatchObject({ nextCursor: 'cursor-6', olderCursor: null, retainedFrom: '1' })
+    expect(cachedFeed()?.items.map((item) => item.sequence)).toEqual(['1', '2', '3', '4', '5', '6'])
+  })
+
   it('waits for an older page cache write before polling the merged feed', async () => {
     const olderPage = deferred<RunActivitiesPage>()
     const poll = deferred<RunActivitiesPage>()
@@ -315,5 +343,59 @@ describe('Activities automatic recovery', () => {
     expect(screen.queryByText('Job ran')).not.toBeInTheDocument()
     await advance(60_000)
     expect(requests).toEqual([null, 'older-1'])
+  })
+})
+
+describe('Activities idle polling cadence', () => {
+  it.each([5, 50])('reduces polling for a completed Run left open with %s events', async (size) => {
+    const history = Array.from({ length: size - 1 }, (_, index) =>
+      event(String(index + 1), index === 0 ? 'Job ran' : `Work ${index + 1}`, {}))
+    history.push({ ...event(String(size), 'Run completed', {}, 'run'), status: 'completed' })
+    const requests: Array<string | null> = []
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      requests.push(cursor)
+      return HttpResponse.json(page({ items: cursor ? [] : history, mode: cursor ? 'newer' : 'initial',
+        highWater: String(size), nextCursor: `cursor-${size}`, olderCursor: null }))
+    }))
+    await mount({ timed: true })
+    for (const [index, interval] of [3000, 6000, 12_000, 24_000, 48_000, 60_000].entries()) {
+      await advance(interval)
+      await eventually(() => {
+        expect(cachedFeed()?.unchangedReads).toBe(Math.min(index + 1, 5))
+        expect(requests).toHaveLength(index + 2)
+      })
+    }
+    expect(requests).toEqual([null, ...Array(6).fill(`cursor-${size}`)])
+    expect(screen.getByText('Run completed')).toBeVisible()
+    expect(cachedFeed()?.items).toEqual(history)
+  })
+
+  it('returns to the active cadence after an event arrives during idle polling', async () => {
+    let published = false
+    const requests: Array<string | null> = []
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      requests.push(cursor)
+      if (!cursor) return HttpResponse.json(page({ olderCursor: null }))
+      return HttpResponse.json(page({
+        items: published && cursor === 'cursor-5' ? [event('6', 'New idle-period work', {})] : [],
+        mode: 'newer', highWater: published ? '6' : '5', nextCursor: published ? 'cursor-6' : 'cursor-5',
+        olderCursor: null,
+      }))
+    }))
+    await mount({ timed: true })
+    for (const [index, interval] of [3000, 6000, 12_000, 24_000, 48_000].entries()) {
+      await advance(interval)
+      await eventually(() => expect(cachedFeed()?.unchangedReads).toBe(index + 1))
+    }
+    published = true
+    await advance(60_000)
+    await eventually(() => expect(screen.getByText('New idle-period work')).toBeVisible())
+    expect(cachedFeed()?.unchangedReads).toBe(0)
+    const count = requests.length
+    await advance(3000)
+    await eventually(() => expect(requests).toHaveLength(count + 1))
+    expect(requests.at(-1)).toBe('cursor-6')
   })
 })

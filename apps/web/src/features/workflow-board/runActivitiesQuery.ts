@@ -13,8 +13,8 @@ export const runActivitiesKey = (scope: RunActivityScope, generation = sessionGe
     scope.runId, scope.workflowVersionId, 3] as const
 
 export function isTransientRunActivityError(error: unknown): boolean {
-  return ApiError.is(error) && (error.code === 'NETWORK_ERROR'
-    || error.status === 408 || error.status === 429 || error.status >= 500)
+  if (!ApiError.is(error) || [401, 403, 404].includes(error.status) || error.code === 'INVALID_RESPONSE') return false
+  return error.code === 'NETWORK_ERROR' || error.status === 408 || error.status === 429 || error.status >= 500
 }
 
 export async function readRunActivities(scope: RunActivityScope, cursor: string | null = null, options?: RequestOptions): Promise<RunActivitiesPage> {
@@ -51,8 +51,19 @@ export function mergeRunActivities(previous: readonly RunActivityPublic[], next:
   return [...bySequence.values()].sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : 1).slice(-1000)
 }
 
-export type RunActivityFeed = { activitySnapshot?: ActivitySnapshotV1; items: RunActivityPublic[]; olderCursor: string | null;
-  nextCursor: string; retainedFrom: string }
+export type RunActivityFeed = {
+  activitySnapshot?: ActivitySnapshotV1
+  items: RunActivityPublic[]
+  olderCursor: string | null
+  nextCursor: string
+  retainedFrom: string
+  unchangedReads: number
+}
+
+/** Unchanged history backs off without fetching another Run lifecycle projection. */
+export function runActivitiesRefetchInterval(feed?: RunActivityFeed): number {
+  return Math.min(3000 * 2 ** (feed?.unchangedReads ?? 0), 60_000)
+}
 
 export function mergeOlderRunActivities(current: RunActivityFeed, page: RunActivitiesPage): RunActivityFeed {
   const retainedFrom = BigInt(current.retainedFrom) > BigInt(page.retainedFrom)
@@ -63,6 +74,7 @@ export function mergeOlderRunActivities(current: RunActivityFeed, page: RunActiv
       .filter((item) => BigInt(item.sequence) >= BigInt(retainedFrom)),
     olderCursor: retainedFrom === page.retainedFrom ? page.olderCursor : null,
     retainedFrom,
+    unchangedReads: retainedFrom === current.retainedFrom ? current.unchangedReads : 0,
   }
 }
 
@@ -72,20 +84,37 @@ export async function readRunActivityFeed(scope: RunActivityScope, previous?: Ru
   options?: RequestOptions): Promise<RunActivityFeed> {
   if (!previous) {
     const page = await readRunActivities(scope, null, options)
-    return { ...(page.activitySnapshot ? { activitySnapshot: reconcileActivitySnapshot(undefined, page.activitySnapshot, page.activitySnapshot.scope)! } : {}), items: page.items, olderCursor: page.olderCursor,
-      nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
+    const activitySnapshot = page.activitySnapshot
+      ? reconcileActivitySnapshot(undefined, page.activitySnapshot, page.activitySnapshot.scope) : undefined
+    return {
+      ...(activitySnapshot ? { activitySnapshot } : {}),
+      items: page.items,
+      olderCursor: page.olderCursor,
+      nextCursor: page.nextCursor,
+      retainedFrom: page.retainedFrom,
+      unchangedReads: 0,
+    }
   }
   let cursor = previous.nextCursor
   let result = previous
+  let changed = false
   for (let count = 0; count < 20; count++) {
     const page = await readRunActivities(scope, cursor, options)
-    const activitySnapshot = page.activitySnapshot ? reconcileActivitySnapshot(result.activitySnapshot, page.activitySnapshot, result.activitySnapshot?.scope ?? page.activitySnapshot.scope) : result.activitySnapshot
-    result = { ...(activitySnapshot ? { activitySnapshot } : {}), items: mergeRunActivities(result.items, page.items)
-      .filter((item) => BigInt(item.sequence) >= BigInt(page.retainedFrom)),
-    olderCursor: BigInt(page.retainedFrom) > BigInt(result.retainedFrom) ? null : result.olderCursor,
-    nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
+    changed ||= page.items.length > 0 || page.retainedFrom !== previous.retainedFrom
+      || page.nextCursor !== previous.nextCursor
+    const activitySnapshot = page.activitySnapshot ? reconcileActivitySnapshot(result.activitySnapshot,
+      page.activitySnapshot, result.activitySnapshot?.scope ?? page.activitySnapshot.scope) : result.activitySnapshot
+    result = {
+      ...(activitySnapshot ? { activitySnapshot } : {}),
+      items: mergeRunActivities(result.items, page.items)
+        .filter((item) => BigInt(item.sequence) >= BigInt(page.retainedFrom)),
+      olderCursor: BigInt(page.retainedFrom) > BigInt(result.retainedFrom) ? null : result.olderCursor,
+      nextCursor: page.nextCursor,
+      retainedFrom: page.retainedFrom,
+      unchangedReads: 0,
+    }
     cursor = page.nextCursor
-    if (!page.hasMore) return result
+    if (!page.hasMore) return { ...result, unchangedReads: changed ? 0 : Math.min(previous.unchangedReads + 1, 5) }
   }
   throw new ApiError({ code: 'ACTIVITIES_CATCHUP_TOO_LARGE', message: 'Activities changed faster than this page can safely catch up. Reload this Run.' })
 }
