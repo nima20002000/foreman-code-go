@@ -157,9 +157,14 @@ async function workParents(sql: GraphSqlClient, scope: RepeatScope, version: Wor
       return conflict()
     }
     const request = await workRequest(sql, scope, version, work.returned.requestId)
+    const parent = (await sql.query<{ request_id: string | null }>(
+      'select work_parent_request($1,$2) as request_id',
+      [scope.runId, work.returned.sourceActivationId])).rows[0]
     if (request.requesterActivationId !== work.returned.requesterActivationId
       || request.requesterNodeId !== current.execution.workflowNodeId
-      || request.destinationActivationId !== work.returned.sourceActivationId) return conflict()
+      || parent?.request_id !== request.requestId
+      || work.returned.continuationActivationId !== work.activation.activationId
+      || work.returned.outcome !== 'needs_changes') return conflict()
     await acceptedWorkExecution(sql, scope, version, {
       executionId: work.returned.sourceExecutionId, activationId: work.returned.sourceActivationId,
       nodeId: request.destinationNodeId, digest: work.returned.acceptedResultDigest, result: work.acceptedSourceResult,

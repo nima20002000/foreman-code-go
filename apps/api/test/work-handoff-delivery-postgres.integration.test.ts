@@ -185,7 +185,9 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       }, [])
       const metadataBytes = Buffer.byteLength(canonicalGraphJson({ ...preview,
         delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8')
-      output.data.latestDeliverable = 'x'.repeat(65536 - metadataBytes)
+      const prefix = 'deliverable with spaces, "quotes", \\slashes and a newline\n'
+      const prefixBytes = Buffer.byteLength(JSON.stringify(prefix), 'utf8') - 2
+      output.data.latestDeliverable = prefix + 'x'.repeat(65536 - metadataBytes - prefixBytes)
       const candidate = HarnessExecutionSchema.parse({ ...t.executions[1], result: { outcome: 'succeeded', output } })
       WorkHandoffResultSchema.parse(output)
       let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)

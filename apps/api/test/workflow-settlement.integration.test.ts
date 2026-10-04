@@ -328,4 +328,29 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and e
       expect(f.failureSettlements).toBe(0)
     })
   }, timeout)
+
+  it.each([false, true])('rejects another branch\'s return before accepting its result (restart: %s)', async (restart) => {
+    await withFixture(handoffs(8), async (f) => {
+      const source = await acceptedActivation(f, await f.store.ensureWorkEntry(), finish())
+      const edges = f.version.definition.edges.filter((edge) => edge.kind === 'execution'
+        && edge.source === f.version.entryNodeId)
+      const left = await f.store.admitWorkRequest(source.id, edges[0]!.id)
+      const right = await f.store.admitWorkRequest(source.id, edges[1]!.id)
+      assert.equal(left.kind, 'accepted')
+      assert.equal(right.kind, 'accepted')
+      const admitted = await f.store.admitWorkActivation(right.request.destinationActivationId,
+        (nodeId) => f.candidate(nodeId))
+      await f.finish(admitted.execution.id, { outcome: 'succeeded', output: {
+        routing: { kind: 'return', requestId: left.request.requestId, outcome: 'accepted' },
+        data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+      } })
+      if (restart) await f.restart()
+      await expect(f.accept(admitted.execution.id)).rejects.toMatchObject({ code: 'WORK_RETURN_ANCESTRY_CONFLICT' })
+      expect((await f.store.readExecution(admitted.execution.id)).accepted).toBe(false)
+      expect((await f.db.pool.query('select execution_id from run_work_results where execution_id=$1',
+        [admitted.execution.id])).rowCount).toBe(0)
+      expect((await f.db.pool.query('select return_id from run_work_returns where run_id=$1',
+        [f.run.id])).rowCount).toBe(0)
+    }, 'parallel')
+  }, timeout)
 })

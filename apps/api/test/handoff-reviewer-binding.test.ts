@@ -25,6 +25,7 @@ function fixture() {
   const requests = new Map<string, WorkRequest>()
   const returns = new Map<string, unknown>()
   const denials = new Map<string, unknown>()
+  const parentBindings = new Map<string, string>()
   const receipts = new Map<string, { result_json: string; result_digest: string }>()
   function executionRow(execution: HarnessExecution, accepted: boolean) {
     const work = WorkActivationInputSchema.parse(execution.input).work
@@ -71,6 +72,11 @@ function fixture() {
     activation: activation('worker-first', 'node-worker', { kind: 'work_request', requestId: first.requestId }),
     request: first, acceptedSourceResult: reviewer.result! }, { accepted: false })
   const sql = { async query(statement: string, values: unknown[]) {
+    if (statement.includes('select work_parent_request')) {
+      const activationId = String(values[1])
+      const request = [...requests.values()].find((item) => item.destinationActivationId === activationId)
+      return { rows: [{ request_id: parentBindings.get(activationId) ?? request?.requestId ?? null }] }
+    }
     if (statement.includes('from runs r join workflow_versions')) return { rows: [{ run_record: base.run,
       version_record: version, run_id: scope.runId, workspace_id: scope.workspaceId,
       workflow_id: scope.workflowId, workflow_version_id: version.id }] }
@@ -93,7 +99,8 @@ function fixture() {
       requestingAgentId: execution.agentId, nativeSessionId: execution.nativeSessionId!,
       harness: 'codex', approval: base.version.approval }, 'node-reviewer')
   }
-  return { add, activation, request, select, reviewer, worker, rows, receipts, returns, denials, scope, base }
+  return { add, activation, request, select, reviewer, worker, rows, receipts, returns, denials,
+    parentBindings, scope, base }
 }
 
 describe('handoff approval reviewer binding', () => {
@@ -136,19 +143,36 @@ describe('handoff approval reviewer binding', () => {
     await expect(f.select()).rejects.toMatchObject({ code: 'REPEAT_REVIEW_IDENTITY_CONFLICT' })
   })
 
-  it('keeps the parent Worker review owner after a child returns changes', async () => {
+  it.each([false, true])('keeps the parent Worker review owner after a child returns changes (nested=%s)', async (nested) => {
     const f = fixture()
     const workerWork = WorkActivationInputSchema.parse(f.worker.input).work
     const parent = f.add('worker-parent', 'node-worker', workerWork)
     const request = f.request('child-request', parent, 'child-review', 'node-reviewer')
-    const child = f.add('reviewer-child', 'node-reviewer', { kind: 'work_request',
+    let child = f.add('reviewer-child', 'node-reviewer', { kind: 'work_request',
       activation: f.activation('child-review', 'node-reviewer', { kind: 'work_request', requestId: request.requestId }),
       request, acceptedSourceResult: parent.result! }, { result: { outcome: 'succeeded', output: {
         routing: { kind: 'return', requestId: request.requestId, outcome: 'needs_changes' },
         data: { latestDeliverable: { revision: 1 }, remainingFindings: ['fix'] },
       } } })
+    const childActivationId = nested ? 'child-review-revised' : 'child-review'
+    if (nested) {
+      const delegated = f.request('nested-request', child, 'nested-worker', 'node-worker')
+      const feedback = f.add('nested-worker-execution', 'node-worker', { kind: 'work_request',
+        activation: f.activation('nested-worker', 'node-worker', { kind: 'work_request', requestId: delegated.requestId }),
+        request: delegated, acceptedSourceResult: child.result! })
+      const revision = { scope: f.scope, returnId: 'nested-return', requestId: delegated.requestId,
+        sourceActivationId: 'nested-worker', sourceExecutionId: feedback.id, requesterActivationId: 'child-review',
+        continuationActivationId: childActivationId, acceptedResultDigest: repeatDigest(feedback.result, 64 * 1024),
+        outcome: 'needs_changes' as const, latestDeliverable: { revision: 1 }, remainingFindings: ['fix'],
+        returnedAt: f.base.createdAt }
+      f.returns.set(revision.returnId, revision)
+      f.parentBindings.set(childActivationId, request.requestId)
+      child = f.add('reviewer-child-revised', 'node-reviewer', { kind: 'work_return',
+        activation: f.activation(childActivationId, 'node-reviewer', { kind: 'work_return', returnId: revision.returnId }),
+        returned: revision, acceptedSourceResult: feedback.result! }, { result: child.result! })
+    }
     const returned = { scope: f.scope, returnId: 'child-return', requestId: request.requestId,
-      sourceActivationId: 'child-review', sourceExecutionId: child.id, requesterActivationId: 'worker-first',
+      sourceActivationId: childActivationId, sourceExecutionId: child.id, requesterActivationId: 'worker-first',
       continuationActivationId: 'worker-fixes', acceptedResultDigest: repeatDigest(child.result, 64 * 1024),
       outcome: 'needs_changes' as const, latestDeliverable: { revision: 1 }, remainingFindings: ['fix'],
       returnedAt: f.base.createdAt }

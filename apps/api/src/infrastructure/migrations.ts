@@ -1,3 +1,4 @@
+import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
 import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
 import { workJoinRoundMigration } from './workJoinRoundMigration.js'
 import { workParentRequestMigration } from './workParentRequestMigration.js'
@@ -827,6 +828,7 @@ export const migrations = [
   workParentRequestMigration,
   workJoinRoundMigration,
   workExhaustedRouteMigration,
+  workDeliverySettlementMigration,
   localHumanMigration,
 ] as const
 
