@@ -143,7 +143,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const reviewedQueue = input.infrastructure?.queueConfiguration
     ?? await readBuildQueueConfiguration(join(input.runtimeRoot, 'job-queue.json'))
   const queue = reviewedQueue ? createReviewedBuildQueueConfiguration(reviewedQueue, input.mainId) : undefined
-  const requestQueueWake = () => { if (queue) jobs.requestQueueWake() }
+  const requestQueueWake = (): void => { if (queue) jobs.requestQueueWake() }
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
@@ -189,8 +189,8 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     adoptFinalBinding: (...args) => preparation.adoptFinalBinding(...args),
   }
   const carrier = new RemoteJobCarrierDispatch(input.pool, { request: (deviceId, namespace, payload) => input.endpoint().request(deviceId, namespace, payload) }, input.infrastructure?.localExecution)
-  const dispatch = new PostgresJobDispatch(input.pool, carrier, {
-    prepareWaiting: () => jobs.wakeQueue(),
+  const dispatch: PostgresJobDispatch = new PostgresJobDispatch(input.pool, carrier, {
+    prepareWaiting: (): Promise<void> => jobs.wakeQueue(),
     capacityChanged: requestQueueWake,
     revalidate: (sql, execution, principal) => preparationPort.revalidateAccepted(sql, principal, execution),
     authorizeLaunch: async (sql, execution) => {
@@ -260,7 +260,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ...(input.infrastructure?.outputReader?{reader:input.infrastructure.outputReader}:{}),
     ...(input.transferReceiver?{receiver:input.transferReceiver}:{}),...(input.outputRsync?{rsync:input.outputRsync}:{})})
   const artifacts = outputs.artifacts
-  const jobs = new JobService(input.pool, input.commands, {
+  const jobs: JobService = new JobService(input.pool, input.commands, {
     placement,
     preparation,
     dispatch,

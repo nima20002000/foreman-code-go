@@ -3,6 +3,7 @@ import { chmod, link, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { JobBuildQueueConfiguration, JobQueueTicket } from '@graphql/contracts/job-admission'
+import { ResolvedJobDefinitionSpecSchema } from '@graphql/contracts/jobs'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { JobService, jobDigest } from '../src/modules/jobs/service.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
@@ -169,16 +170,17 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
     await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
       [profile.id, JSON.stringify(profile)])
     const fixed = await f.save(f.computers[0]!.candidate.spec)
+    const fixedSpec = ResolvedJobDefinitionSpecSchema.parse(fixed.spec)
     await database.pool.query('update job_runtime_profiles set revision=2,record=$2::jsonb where id=$1',
       [profile.id, JSON.stringify({ ...profile, revision: 2, limits: { ...profile.limits, cpuLimit: 2 } })])
     expect(await queue.resources(database.pool, fixed)).toEqual(config.envelopes[0])
     await expect(queue.resources(database.pool, { ...fixed, workspaceId: randomUUID() }))
       .rejects.toMatchObject({ code: 'JOB_QUEUE_PROFILE_CONFLICT' })
-    await expect(queue.resources(database.pool, { ...fixed, spec: { ...fixed.spec,
-      policy: { ...fixed.spec.policy, isolationPolicyRevision: 99 } } }))
+    await expect(queue.resources(database.pool, { ...fixed, spec: { ...fixedSpec,
+      policy: { ...fixedSpec.policy, isolationPolicyRevision: 99 } } }))
       .rejects.toMatchObject({ code: 'JOB_RUNTIME_PROFILE_VERSION_NOT_FOUND' })
-    await expect(queue.resources(database.pool, { ...fixed, spec: { ...fixed.spec,
-      policy: { ...fixed.spec.policy, imageDigest: `sha256:${'3'.repeat(64)}` } } }))
+    await expect(queue.resources(database.pool, { ...fixed, spec: { ...fixedSpec,
+      policy: { ...fixedSpec.policy, imageDigest: `sha256:${'3'.repeat(64)}` } } }))
       .rejects.toMatchObject({ code: 'JOB_QUEUE_PROFILE_CONFLICT' })
     await expect(queue.resources(database.pool, { ...auto, spec: { ...f.computers[0]!.auto,
       limits: { ...profile.limits, cpuLimit: 2 } } }))

@@ -209,7 +209,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(await f.jobs.getDefinition(writer.principal, f.workspaceId, definition.id)).toEqual(definition)
     const updated = await client.callTool({ name: 'job_definition_save', arguments: edit })
     expect(updated.isError).not.toBe(true)
-    const saved = updated.structuredContent?.definition as JobDefinition
+    const { definition: saved } = z.object({ definition: JobDefinitionSchema }).parse(updated.structuredContent)
     expect(saved.revision).toBe(definition.revision + 1)
     const staleEdit = await client.callTool({ name: 'job_definition_save', arguments: {
       ...edit, commandId: randomUUID(),

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
+import { JobAdmissionResultSchema, JobPendingAdmissionSchema } from '@graphql/contracts/job-admission'
 import { PreparedJobSpecSchema, JobDefinitionSchema, type JobDefinitionSpec, type JobExecution } from '@graphql/contracts/jobs'
 import { RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort } from '@graphql/contracts/remote-job-execution'
 import { ManagementActionSchema } from '@graphql/contracts/management'
@@ -154,7 +156,8 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const mcp = await client.callTool({ name: 'job_start',
       arguments: { workspaceId: fixture.workspaceId, ...input, commandId: randomUUID() } })
     expect(mcp.isError).not.toBe(true)
-    expect(mcp.structuredContent?.admission).toMatchObject({ kind: 'pending-admission' })
+    const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(mcp.structuredContent)
+    expect(pending.admission).toMatchObject({ kind: 'pending-admission' })
     await fixture.jobs.wakeQueue()
     expect(fixture.preparation.accept).not.toHaveBeenCalled()
     expect(fixture.remote.deliver).not.toHaveBeenCalled()
@@ -290,7 +293,8 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const client = await fixture.connect(fixture.writer.token)
     const permitted = await client.callTool({ name: 'job_start', arguments: { workspaceId: fixture.workspaceId, ...input } })
     expect(permitted.isError).not.toBe(true)
-    expect(permitted.structuredContent?.admission).toMatchObject({ kind: 'accepted' })
+    const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(permitted.structuredContent)
+    expect(accepted.admission).toMatchObject({ kind: 'accepted' })
     await expect(fixture.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
     const denied = await fixture.app.inject({ method: 'POST', url: `${fixture.root}/executions`,

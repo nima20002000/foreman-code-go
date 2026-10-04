@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import type { JobDefinition } from '@graphql/contracts/jobs'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobPendingAdmissionSchema, JobQueueTicketSchema } from '@graphql/contracts/job-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -13,6 +14,7 @@ import { JobOwnership } from '../src/modules/jobs/ownership.js'
 import { SOURCE_AGGREGATE_LIMITS, PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { ScheduleOperatorCapabilitiesSchema } from '../src/mcp/operator/tools/workflowSchedules.js'
 
 describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -384,7 +386,8 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       workspaceId: f.workspaceId,
     } })
     expect(capabilities.isError).not.toBe(true)
-    expect(capabilities.structuredContent?.requirements).toEqual(expect.arrayContaining([
+    const capabilitySummary = ScheduleOperatorCapabilitiesSchema.parse(capabilities.structuredContent)
+    expect(capabilitySummary.requirements).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'job_queue_get', actions: ['jobs:read'] }),
       expect.objectContaining({ name: 'job_queue_list', actions: ['jobs:read'] }),
       expect.objectContaining({ name: 'job_queue_cancel', actions: ['jobs:cancel'] }),
@@ -396,12 +399,13 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(await ordered(f)).toHaveLength(0)
     const started = await client.callTool({ name: 'job_start', arguments: input })
     expect(started.isError).not.toBe(true)
-    const admission = started.structuredContent?.admission as { kind: 'pending-admission'; ticket: JobQueueTicket }
+    const { admission } = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent)
     expect(admission.kind).toBe('pending-admission')
     await f.jobs.wakeQueue()
     const retried = await client.callTool({ name: 'job_start', arguments: input })
     expect(retried.isError).not.toBe(true)
-    expect((retried.structuredContent?.admission as { ticket: JobQueueTicket }).ticket.id).toBe(admission.ticket.id)
+    const retry = z.object({ admission: JobPendingAdmissionSchema }).parse(retried.structuredContent)
+    expect(retry.admission.ticket.id).toBe(admission.ticket.id)
     const read = await readOnly.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: admission.ticket.id,
     } })
@@ -470,7 +474,8 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(JSON.stringify(staleCancel.content)).toContain('REVISION_CONFLICT')
     const cancelled = await client.callTool({ name: 'job_queue_cancel', arguments: cancelInput })
     expect(cancelled.isError).not.toBe(true)
-    expect(cancelled.structuredContent?.ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
+    const cancellation = z.object({ ticket: JobQueueTicketSchema }).parse(cancelled.structuredContent)
+    expect(cancellation.ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
     const cancelledHttp = await app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/jobs/queue/${persisted.id}/cancel`,
       headers: { authorization: `Bearer ${writer.token}` },
@@ -483,7 +488,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(f.accept).not.toHaveBeenCalled()
     const next = await client.callTool({ name: 'job_start', arguments: { ...input, commandId: randomUUID() } })
     expect(next.isError).not.toBe(true)
-    const nextTicket = (next.structuredContent?.admission as { ticket: JobQueueTicket }).ticket
+    const nextTicket = z.object({ admission: JobPendingAdmissionSchema }).parse(next.structuredContent).admission.ticket
     f.online()
     await f.jobs.wakeQueue()
     const executed = await readOnly.callTool({ name: 'job_get', arguments: {

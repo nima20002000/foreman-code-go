@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import { JobAdmissionResultSchema, JobPendingAdmissionSchema } from '@graphql/contracts/job-admission'
+import { JobExecutionSchema } from '@graphql/contracts/jobs'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -94,7 +97,8 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       expect(retained).toHaveLength(1)
       const mcp=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
       expect(mcp.isError).not.toBe(true)
-      expect(mcp.structuredContent?.admission).toMatchObject({kind:'pending-admission',ticket:{id:ticketId,state:'claimed'}})
+      const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(mcp.structuredContent)
+      expect(pending.admission).toMatchObject({kind:'pending-admission',ticket:{id:ticketId,state:'claimed'}})
       await expect(jobs.wakeQueue()).rejects.toMatchObject({code:error.code})
       expect((await database.pool.query('select execution_id,attempt_id,operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toEqual(retained)
       expect((await database.pool.query('select id from job_executions where id=$1',[retained[0].execution_id])).rows).toHaveLength(0)
@@ -107,10 +111,12 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       await jobs.wakeQueue()
       const resumed=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
       expect(resumed.isError).not.toBe(true)
-      expect(resumed.structuredContent?.admission).toEqual({kind:'accepted',ticketId,executionId:retained[0].execution_id})
+      const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(resumed.structuredContent)
+      expect(accepted.admission).toEqual({kind:'accepted',ticketId,executionId:retained[0].execution_id})
       const read=await client.callTool({name:'job_get',arguments:{workspaceId,executionId:retained[0].execution_id}})
       expect(read.isError).not.toBe(true)
-      expect(read.structuredContent?.execution).toMatchObject({id:retained[0].execution_id,attemptId:retained[0].attempt_id,operationId:retained[0].operation_id})
+      const { execution } = z.object({ execution: JobExecutionSchema }).parse(read.structuredContent)
+      expect(execution).toMatchObject({id:retained[0].execution_id,attemptId:retained[0].attempt_id,operationId:retained[0].operation_id})
       expect((await database.pool.query('select result from management_command_receipts where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toHaveLength(1)
     } finally {queue.accept.mockImplementation(originalAccept)}
   })
