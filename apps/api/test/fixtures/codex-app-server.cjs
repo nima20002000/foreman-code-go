@@ -72,9 +72,10 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
 const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
 const store = () => save(`state-${current.id}.json`, current)
-const turn = (id, status = 'inProgress', correlation = 'unused') => ({
+const userMessage = (id, clientId, content = []) => ({ type: 'userMessage', id, clientId: clientId ?? null, content })
+const turn = (id, status = 'inProgress', correlation = null, content = []) => ({
   id, status, itemsView: 'full', error: null, startedAt: 1, completedAt: status === 'inProgress' ? null : 2, durationMs: null,
-  items: [{ type: 'userMessage', id: correlation, content: [] }],
+  items: [userMessage(`native-user-${id}-1`, correlation, content)],
 })
 const settings = (params) => {
   const config = params.config || {}
@@ -159,11 +160,14 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     if (flag('read-delay')) setTimeout(reply, 250)
     else reply()
   }
-  else if (message.method === 'thread/turns/list') result(message.id, { data: [...current.turns].reverse(), nextCursor: null, prevCursor: null })
+  else if (message.method === 'thread/turns/list') {
+    const persisted = read(`state-${params.threadId}.json`, current)
+    result(message.id, { data: [...persisted.turns].reverse(), nextCursor: null, prevCursor: null })
+  }
   else if (message.method === 'turn/start') {
     const prompt = params.input[0].text
     if (prompt === 'reject') { fail(message.id); return }
-    const nativeTurn = turn(`turn-${++nextTurn}`, 'inProgress', params.clientUserMessageId)
+    const nativeTurn = turn(`turn-${++nextTurn}`, 'inProgress', params.clientUserMessageId, params.input)
     current.turns.push(nativeTurn); store()
     if (prompt === 'lost-start') {
       nativeTurn.status = 'completed'; nativeTurn.completedAt = 2
@@ -186,6 +190,13 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     if (prompt === 'slow-start') setTimeout(started, 250)
     else if (prompt === 'late-start') setTimeout(started, 800)
     else started()
+  } else if (message.method === 'turn/steer') {
+    const nativeTurn = current.turns.find((entry) => entry.id === params.expectedTurnId && entry.status === 'inProgress')
+    if (params.threadId !== current.id || !nativeTurn) { fail(message.id); return }
+    const itemId = `native-user-${nativeTurn.id}-${nativeTurn.items.length + 1}`
+    nativeTurn.items.push(userMessage(itemId, params.clientUserMessageId, params.input))
+    store()
+    if (params.input[0].text !== 'lost-steer') result(message.id, { turnId: nativeTurn.id })
   } else if (message.method === 'turn/interrupt') {
     if (flag('interrupt-startup-race')) {
       fs.rmSync(path.join(root, 'interrupt-startup-race'))

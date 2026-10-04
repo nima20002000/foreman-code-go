@@ -915,7 +915,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           const nativeTurnId = text(turn.id)
           if (!nativeTurnId || turn.itemsView !== 'full' || !Array.isArray(turn.items)) continue
           for (const item of turn.items.filter(isObject)) {
-            const correlationId = text(item.id)
+            const correlationId = text(item.clientId)
             if (item.type !== 'userMessage' || !correlationId || !wanted.has(correlationId)) continue
             if (seen.has(correlationId) && seen.get(correlationId) !== nativeTurnId) {
               throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this steering correlation.')
@@ -1898,7 +1898,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         : runtime.input.correlationId === wantedCorrelation ? runtime.input.nativeTurnId : undefined
       : runtime.input.nativeTurnId ?? runtime.activeTurnId
     const matches = (turn: JsonObject) => wantedId ? turn.id === wantedId
-      : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.id === wantedCorrelation)
+      : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.clientId === wantedCorrelation)
         : true
     const turns = Array.isArray(thread.turns) ? thread.turns.filter(isObject) : []
     let selected = [...turns].reverse().find(matches)

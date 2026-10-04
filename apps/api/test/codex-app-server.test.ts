@@ -447,15 +447,137 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('turn/start')).length, 1)
   })
 
-  it('F06/F12: uncertain start is reconciled by its own correlation, without replay', async () => {
+  it('recovers a lost start acknowledgement by clientId while retaining the native item and turn identities', async () => {
     const session = await manager.createSession(source)
-    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId: 'lost' })))
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const native = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const userMessage = (native.items as JsonObject[])[0]!
+    assert.equal(userMessage.type, 'userMessage')
+    assert.equal(userMessage.clientId, clientCorrelationId)
+    assert.notEqual(userMessage.id, clientCorrelationId)
     await assertCode(manager.reconcile(session, 'wrong-correlation'), 'CODEX_CORRELATION_MISMATCH')
     await assertCode(collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'unsafe-retry' })), 'CODEX_TURN_ACTIVE')
-    const history = await manager.reconcile(session, 'lost')
+    const history = await manager.reconcile(session, clientCorrelationId)
     assert.deepEqual(history.terminalResult?.output, { text: 'recovered-answer' })
+    assert.equal(history.nativeTurnId, native.id)
+    assert.equal(history.terminalTurn?.providerId, native.id)
+    assert.equal(history.terminalTurn?.correlationId, clientCorrelationId)
     assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/start')).length, 1)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'next' }))
+  })
+
+  it('recovers a lost steer acknowledgement by clientId only in its expected turn without replay or retargeting', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const native = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const expectedTurnId = String(native.id)
+    const clientCorrelationId = 'application-steer-456'
+    await assertCode(manager.steerTurn(session, {
+      prompt: 'lost-steer', clientCorrelationId, expectedTurnId,
+    }), 'CODEX_APP_SERVER_TIMEOUT')
+    const persisted = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const userMessage = (persisted.items as JsonObject[]).at(-1)!
+    assert.equal(userMessage.clientId, clientCorrelationId)
+    assert.notEqual(userMessage.id, clientCorrelationId)
+    const before = await manager.history(session)
+    assert.deepEqual(await manager.reconcileSteers(session, [
+      { clientCorrelationId, expectedTurnId: 'another-turn' },
+      { clientCorrelationId: String(userMessage.id), expectedTurnId },
+      { clientCorrelationId: 'missing-steer', expectedTurnId },
+    ]), [])
+    assert.deepEqual(await manager.reconcileSteers(session, [{ clientCorrelationId, expectedTurnId }]), [{
+      nativeSessionId: session.nativeSessionId, nativeTurnId: expectedTurnId, correlationId: clientCorrelationId,
+    }])
+    assert.deepEqual(await manager.history(session), before)
+    assert.equal((await wire('turn/steer')).length, 1)
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/start')).length, 1)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('keeps a lost start fenced when the native item id matches but clientId does not', async () => {
+    const session = await manager.createSession(source)
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const userMessage = (persisted.turns[0]!.items as JsonObject[])[0]!
+    userMessage.id = clientCorrelationId
+    userMessage.clientId = 'another-request'
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcile(session, clientCorrelationId), 'CODEX_RECONCILIATION_UNCERTAIN')
+    await assertCode(collect(manager.startTurn(session, {
+      prompt: 'complete', clientCorrelationId: 'unsafe-retry',
+    })), 'CODEX_TURN_ACTIVE')
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
+  it('rejects conflicting start correlations in native history without replay', async () => {
+    const session = await manager.createSession(source)
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const duplicate = structuredClone(persisted.turns[0]!)
+    duplicate.id = 'another-turn'
+    const duplicateUserMessage = (duplicate.items as JsonObject[])[0]!
+    duplicateUserMessage.id = 'another-native-item'
+    persisted.turns.push(duplicate)
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcile(session, clientCorrelationId), 'CODEX_CORRELATION_AMBIGUOUS')
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
+  it('rejects conflicting steer correlations across native turns', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const native = persisted.turns[0]!
+    const clientCorrelationId = 'application-steer-456'
+    const userMessage = { type: 'userMessage', id: 'native-steer-item', clientId: clientCorrelationId, content: [] }
+    const items = native.items as JsonObject[]
+    items.push(userMessage)
+    persisted.turns.push({ ...structuredClone(native), id: 'another-turn' })
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcileSteers(session, [{
+      clientCorrelationId, expectedTurnId: String(native.id),
+    }]), 'CODEX_CORRELATION_AMBIGUOUS')
+    assert.equal((await wire('turn/steer')).length, 0)
+    assert.equal((await wire('turn/start')).length, 1)
+    await emit(f.directory, { method: 'turn/completed', params: {
+      threadId: session.nativeSessionId, turn: { ...native, status: 'completed' },
+    } })
+    await result
+  })
+
+  it('rejects another thread during steer reconciliation without changing the live owner', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const before = await manager.history(session)
+    persisted.id = 'another-thread'
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcileSteers(session, [{
+      clientCorrelationId: 'application-steer-456', expectedTurnId: 'turn-1',
+    }]), 'CODEX_SESSION_ID_MISMATCH')
+    assert.deepEqual(await manager.history(session), before)
+    assert.equal((await wire('thread/turns/list')).length, 0)
+    persisted.id = session.nativeSessionId
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('keeps the active turn owner when reconciling an older clientId', async () => {
+    const session = await manager.createSession(source)
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'older-request' }))
+    const { result } = await start(session, 'wait', 'active-request')
+    const before = await manager.history(session)
+    await assertCode(manager.reconcile(session, 'older-request'), 'CODEX_SESSION_BUSY')
+    assert.deepEqual(await manager.history(session), before)
+    await finish(f.directory, session.nativeSessionId)
+    await result
   })
 
   it('F07: failed restart cleans the candidate process and retains the original session', async () => {
