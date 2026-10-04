@@ -567,7 +567,7 @@ export function buildProductionApp(
         finally { await close() }
       } }, workerExecution), selectedSuites ? createInstalledCodexQualificationRetention({
       repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
-      currentBinding: deviceId => deviceRuntime.endpointForDomains().currentBinding(deviceId, 'host-harness-check-v1') ?? null,
+      currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
         if (value.target.hostRef.kind !== 'device') return

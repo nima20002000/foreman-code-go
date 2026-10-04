@@ -22,6 +22,10 @@ import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { buildProductionApp } from '../src/production.js'
+import { randomUUID } from 'node:crypto'
+import * as nativeRetention from '../src/modules/harnesses/installedCodexQualificationRetention.js'
+import { ProductionDeviceRuntime } from '../src/modules/devices/productionRuntime.js'
+import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
 
 vi.mock('../src/app.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/app.js')>()
@@ -140,6 +144,26 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
   const claim = { interaction: current, ownerToken: 'composition-resume-owner' }
   await callback!(claim)
   expect(resume).toHaveBeenCalledExactlyOnceWith(current, claim)
+})
+
+it('retains Worker qualification against the outgoing profile-check channel', async () => {
+  await production.app.close()
+  const retained = vi.spyOn(nativeRetention, 'createInstalledCodexQualificationRetention')
+  const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1, keyRevision: 1, authorizationRevision: 1 }
+  const captureRequest = vi.fn(() => ({ binding, request: vi.fn() }))
+  const currentBinding = vi.fn(() => undefined)
+  vi.spyOn(ProductionDeviceRuntime.prototype, 'endpointForDomains').mockReturnValue(
+    { captureRequest, currentBinding } as unknown as DeviceEndpoint)
+  const run = vi.fn(async () => { throw new Error('Construction must not qualify a native runtime') })
+  production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, {
+    codex: { harness: 'codex', revision: 'fixture', run },
+    opencode: { harness: 'opencode', revision: 'fixture', run },
+  })
+  expect(retained.mock.calls[0]![0].currentBinding(binding.deviceId)).toEqual(binding)
+  expect(captureRequest).toHaveBeenCalledExactlyOnceWith(binding.deviceId, 'host-harness-check-v1')
+  expect(currentBinding).not.toHaveBeenCalled()
+  expect(run).not.toHaveBeenCalled()
 })
 
 it.each(['codex', 'opencode'] as const)('constructs separate native %s managers for each accepted execution', (harness) => {
