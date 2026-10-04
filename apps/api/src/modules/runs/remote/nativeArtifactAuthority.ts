@@ -74,6 +74,7 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     const identity = DeviceConnectionIdentitySchema.parse({ mainId: connection.mainId, deviceId: connection.deviceId,
       workerInstallationId: connection.workerInstallationId, keyRevision: connection.keyRevision,
       authorizationRevision: connection.authorizationRevision, bootId: connection.bootId, connectionGeneration: connection.connectionGeneration })
+    await sql.query('select id from runs where id=$1 for share', [input.intent.runId])
     const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(`select r.workspace_id,r.workflow_id
       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
     [input.intent.runId, input.intent.executionId])).rows[0]

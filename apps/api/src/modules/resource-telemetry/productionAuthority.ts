@@ -222,6 +222,12 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
       && (a.nativeOwner === b.nativeOwner || [...roots.get(a)!].some(key => roots.get(b)!.has(key)))
     const selected = executionId ? source.filter(value => value.execution.id === executionId) : source
     const group = executionId ? source.filter(value => selected.some(own => related(own, value))) : source
+    if (group.length === 0) return []
+    // Execution control locks Runs before executions and native sessions.
+    const runIds = [...new Set(group.map(capture => capture.execution.runId))].sort()
+    const executionIds = [...new Set(group.map(capture => capture.execution.id))].sort()
+    await sql.query('select id from runs where id=any($1::text[]) order by id for share', [runIds])
+    await sql.query('select id from harness_executions where id=any($1::text[]) order by id for share', [executionIds])
     const result: Array<{ capture: CapturedTelemetryNativeOwner; scope: ScopeFacts | null }> = []
     for (const capture of group) result.push({ capture, scope: await readScope(sql, capture, observed, signal) })
     for (const value of result) if (value.scope && (Date.parse(value.scope.leaseExpiresAt) <= Date.now()
