@@ -39,8 +39,8 @@ import { AgentChatCommands } from './agentChatCommands.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { NativeTurnNotActiveError } from '../harnesses/errors.js'
-import type { NativeHarnessSessionManager, WorkflowNativeSessionStart, NativeMessageSubmission } from '../harnesses/port.js'
+import { NativeDeliveryError, NativeTurnNotActiveError } from '../harnesses/errors.js'
+import type { NativeHarnessSessionManager, NativeSessionStart, WorkflowNativeSessionStart, NativeMessageSubmission } from '../harnesses/port.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { legacySkillPrompt } from '../skills/instructions.js'
@@ -85,6 +85,7 @@ export class AgentChatEvents {
 interface Runtime {
   manager: NativeHarnessSessionManager
   session?: NativeSessionReference
+  creationInput?: NativeSessionStart
   configuration: AgentConfigurationVersion
   retiring?: boolean
   disposal?: Promise<void>
@@ -112,6 +113,9 @@ function failure(error: unknown, code = 'AGENT_CHAT_TURN_FAILED'): ExecutionResu
     message: provider?.message ?? (error instanceof Error ? error.message : 'The native turn failed.'), retryable: true } }
 }
 function definiteRejection(error: unknown): boolean {
+  if (error instanceof NativeDeliveryError) {
+    return error.operation === 'turn_submission' && error.delivery === 'not_sent'
+  }
   if (!error || typeof error !== 'object') return false
   if ('certainty' in error) return error.certainty === 'definite'
   return 'uncertain' in error && error.uncertain === false
@@ -126,11 +130,7 @@ function definiteNonCreation(error: unknown, row: AgentConversationRow): boolean
   if (error && typeof error === 'object' && ('uncertain' in error && error.uncertain === true
     || 'certainty' in error && error.certainty === 'uncertain')) return false
   if (row.harness === 'codex') {
-    // Model discovery is before thread/start/fork. A rejected later RPC (for example activation)
-    // is NOT evidence that the earlier thread creation failed.
-    if (nativeErrorCode(error) === 'CODEX_MODEL_CATALOG_UNAVAILABLE') return true
-    return definiteRejection(error) && error !== null && typeof error === 'object' && 'method' in error
-      && (error.method === 'initialize' || error.method === (row.record.origin.kind === 'fresh' ? 'thread/start' : 'thread/fork'))
+    return error instanceof NativeDeliveryError && error.operation === 'session_creation' && error.delivery === 'not_sent'
   }
   // OpenCode fresh creation has no fallible native operation after POST /session succeeds.
   // Fork also applies/verifies the child's policy; a definite error there can leave a created child.
@@ -364,6 +364,9 @@ export class AgentChatService {
 
   private sessionUnavailable(row: AgentConversationRow, configuration: AgentConfigurationVersion | undefined): Resolution['blocked'] {
     if (!configuration) return { reason: 'agent_missing', message: 'The pinned Agent configuration is unavailable; the transcript remains readable.' }
+    if (!row.native_session_id && row.record.sessionCreation && row.turn_state === 'uncertain') {
+      return { reason: 'native_session_missing', message: 'Native session creation is unconfirmed. Wait for recovery before sending another message.' }
+    }
     if (!row.native_session_id && (row.provider_version || row.record.startupDelivered || row.record.startupReceipt)) {
       return { reason: 'native_session_missing', message: 'This conversation lost its stored native session identity. The transcript remains readable; a replacement session will not be created.' }
     }
@@ -816,13 +819,16 @@ export class AgentChatService {
       if (!row.active_request_id || !await this.repository.beginSessionCreation(row.id, row.active_request_id)) {
         throw new DomainError('AGENT_CHAT_SESSION_CREATION_UNCERTAIN', 'A native session may already exist. A replacement will not be created.', 409)
       }
+      let creationRequested = false
       try {
         if (row.record.origin.kind === 'run_execution') {
           const origin = row.record.origin
           if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
           const providerVersion = await this.sourceProviderVersion(origin, runtime)
+          runtime.creationInput = this.startInput(row, configuration, correlationId, true)
+          creationRequested = true
           const forked = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
-            this.startInput(row, configuration, correlationId, true), signal)
+            runtime.creationInput, signal)
           if (forked.nativeSessionId === origin.sourceNativeSessionId || forked.harness !== row.harness) {
             // Do not adopt or close a returned source/foreign session, even during failure cleanup.
             throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'The harness did not create an independent chat fork. The Run session will not be changed.', 409)
@@ -833,12 +839,14 @@ export class AgentChatService {
         } else {
           // Keep the durable creation fence; this provider cannot expose SID before its first admitted input.
           if (runtime.manager.startInitialTurn) return runtime
-          runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
+          runtime.creationInput = this.startInput(row, configuration, correlationId, false)
+          creationRequested = true
+          runtime.session = await runtime.manager.createSession(runtime.creationInput, signal)
           await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
         }
       } catch (error) {
         // Binding/activation failure after successful creation must never authorize a replacement.
-        if (!runtime.session && !nativeUnavailable(error) && definiteNonCreation(error, row)) {
+        if (!runtime.session && (!creationRequested || definiteNonCreation(error, row))) {
           await this.release(row.id) // A cleanup failure keeps the original durable fence.
           throw new RejectedSessionCreation(error)
         }
@@ -1023,16 +1031,19 @@ export class AgentChatService {
       // Reconciliation can prove completion while OpenCode's SSE stays alive. Its observer
       // is detached only after finish() commits; this is neither failed delivery nor cancel.
       if (this.closing || observer.signal.aborted) return // Restart recovery reconciles in-flight work.
-      const unavailable = await this.markNativeUnavailable(id, error)
-      if (!unavailable && creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
+      if (creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
         // No reliable identity/commit means read-only, not another create/fork attempt.
-        await this.repository.markSessionUnavailable(id, 'Native session creation could not be confirmed. This conversation is read-only; no replacement session will be created automatically.')
         await this.repository.abandon(id, turn.requestId, 'Native session creation or binding is unconfirmed.')
+        this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
         return
       }
+      const unavailable = await this.markNativeUnavailable(id, error)
       if (!submitted && !initialOffered && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
         const current = await this.repository.get(id)
+        if (error instanceof NativeDeliveryError && nativeErrorCode(error) === 'CODEX_APP_SERVER_DISCONNECTED') {
+          await this.release(id)
+        }
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
         if (unavailable) await this.release(id)
       } else {
@@ -1139,6 +1150,27 @@ export class AgentChatService {
     this.reconciliationTimers.set(id, timer)
   }
 
+  private async recoverCreation(row: AgentConversationRow): Promise<boolean> {
+    const requestId = row.active_request_id
+    const runtime = this.runtimes.get(row.id)
+    const input = runtime?.creationInput
+    if (!requestId || row.record.sessionCreation?.requestId !== requestId || !runtime || !input
+      || runtime.retiring || runtime.disposal) return false
+    if (input.kind === 'operator' || input.correlationId !== agentChatCorrelation(row.id, requestId)
+      || input.request.configuration.id !== row.agent_configuration_version_id) return false
+    const session = runtime.session ?? await runtime.manager.reconcileSessionCreation?.(input, this.lifetime.signal)
+    if (!session || session.harness !== row.harness) return false
+    this.lifetime.signal.throwIfAborted()
+    if (this.runtimes.get(row.id) !== runtime || runtime.retiring || runtime.disposal) return false
+    runtime.session = session
+    await this.repository.bindCreatedSession(row.id, requestId, row.agent_configuration_version_id, session)
+    if (row.record.origin.kind === 'run_execution') await this.repository.markStartupDelivered(row.id)
+    const current = await this.repository.get(row.id)
+    await this.settle(row.id, requestId, current?.cancel_requested ? { outcome: 'canceled' }
+      : failure(new Error('The original session was recovered before the message was sent. Send the message again.')))
+    return true
+  }
+
   private async repair(id: string): Promise<void> {
     await this.control(id, async () => {
       const row = await this.repository.restoreUnsettled(id)
@@ -1170,6 +1202,11 @@ export class AgentChatService {
       const correlationId = agentChatCorrelation(id, recoveryRequestId)
       try {
         if (!row.native_session_id) {
+          if (await this.recoverCreation(row)) return
+          if (this.runtimes.has(id)) {
+            this.scheduleReconcile(id)
+            return
+          }
           await this.repository.markSessionUnavailable(id, 'No native session identity was stored before recovery. This conversation is read-only; no replacement session will be created automatically.')
           if (requestId) await this.repository.abandon(id, requestId, 'Native session creation is unconfirmed.')
           this.events.publish(id, 'state', { delivery: 'unknown' })

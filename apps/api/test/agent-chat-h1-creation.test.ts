@@ -12,7 +12,7 @@ import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/c
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import type { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { CodexRpcError } from '../src/modules/harnesses/codexStdioTransport.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { context, deferred, F1Native, F1Store } from './helpers/agentChatF1.js'
@@ -90,7 +90,8 @@ async function fixture() {
     },
   } as unknown as pg.Pool
   const repository = new PostgresAgentChatRepository(pool)
-  let creationError: Error | undefined = new CodexRpcError('thread/start', 1, false, 'CODEX_APP_SERVER_REQUEST_FAILED')
+  let creationError: Error | undefined = new NativeDeliveryError('session_creation', 'not_sent',
+    new CodexRpcError('thread/start', 1, false, 'CODEX_APP_SERVER_REQUEST_FAILED'))
   let disposeError: Error | undefined
   let creates = 0
   const creationInputs: NativeSessionStart[] = []
@@ -151,7 +152,8 @@ describe('H1/A3-PF-01 creation rejection and marker retirement (scripted SQL)', 
   for (const preflight of [false, true]) {
     it(`${preflight ? 'proven model-catalog preflight failure' : 'definite thread/start rejection'} stays retryable, and exact replay never resends`, async () => {
       const f = await fixture()
-      if (preflight) f.creationError = new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'The model catalogue is unavailable.')
+      if (preflight) f.creationError = new NativeDeliveryError('session_creation', 'not_sent',
+        new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'The model catalogue is unavailable.'))
       try {
         await f.send('first')
         await eventually(() => f.store.turns.get('first')?.delivery === 'failed')
@@ -223,7 +225,7 @@ describe('H1/A3-PF-01 creation rejection and marker retirement (scripted SQL)', 
         const state = await f.read()
         assert.equal(state.sessionState, 'unavailable'); assert.equal(state.availability.canSend, false)
         assert.equal(f.store.row.record.sessionCreation?.requestId, 'first')
-        assert.ok(f.store.row.record.sessionUnavailable)
+        assert.equal(f.store.row.record.sessionUnavailable, undefined)
         assert.equal((await f.send('first')).replayed, true)
         await assert.rejects(f.send('retry'), { code: 'AGENT_CHAT_UNAVAILABLE' })
         assert.equal(f.creates, 1)

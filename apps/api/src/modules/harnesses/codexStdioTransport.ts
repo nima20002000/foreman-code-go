@@ -33,10 +33,13 @@ export class CodexRpcError extends HarnessExecutionError {
     readonly uncertain: boolean,
     code: string,
     readonly nativeMessage?: string,
+    options?: ErrorOptions,
   ) {
-    super(code, uncertain
+    const message = uncertain
       ? `The outcome of ${method} is uncertain; reconcile the operation before retrying.`
-      : `Codex did not accept ${method}.`)
+      : `Codex did not accept ${method}.`
+    const preflightMessage = options?.cause instanceof HarnessExecutionError ? options.cause.message : undefined
+    super(code, preflightMessage ?? message, false, options)
   }
 }
 
@@ -118,14 +121,21 @@ export class CodexStdioTransport {
     method: string, params?: JsonObject, signal?: AbortSignal,
     late?: (value: unknown, error?: Error) => void,
   ): Promise<unknown> {
-    signal?.throwIfAborted()
-    this.assertConnected()
     const id = this.nextId++
-    const message: RpcRequest = { id, method, ...(params === undefined ? {} : { params }) }
-    this.protocol.request(message)
-    const frame = this.encode({ ...message })
-    if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
-      throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
+    let frame: string
+    try {
+      signal?.throwIfAborted()
+      this.assertConnected()
+      const message: RpcRequest = { id, method, ...(params === undefined ? {} : { params }) }
+      this.protocol.request(message)
+      frame = this.encode({ ...message })
+      if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
+        throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
+      }
+    } catch (error) {
+      const fallback = signal?.aborted ? 'CODEX_APP_SERVER_REQUEST_CANCELED' : 'CODEX_PROTOCOL_INVALID'
+      const code = error instanceof HarnessExecutionError ? error.result.error!.code : fallback
+      throw new CodexRpcError(method, id, false, code, undefined, { cause: error })
     }
     const finished = beginRuntimeTiming('harness', 'native.rpc', { operation: method, intervalMs: this.timeoutMs,
       ...(typeof params?.threadId === 'string' ? { nativeSessionId: params.threadId } : {}) })

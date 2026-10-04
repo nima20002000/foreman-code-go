@@ -232,7 +232,7 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
         await eventually(async () => (await f.repository.turn(id, first.requestId))?.delivery === 'unknown')
         const state = await f.read(), row = (await f.repository.get(id))!
         assert.equal(state.availability.canSend, false); assert.equal(state.sessionState, 'unavailable')
-        assert.equal(row.record.sessionCreation?.requestId, first.requestId); assert.ok(row.record.sessionUnavailable)
+        assert.equal(row.record.sessionCreation?.requestId, first.requestId); assert.equal(row.record.sessionUnavailable, undefined)
         assert.equal(row.native_session_id, null)
         assert.equal(f.created.length, mode === 'cleanup-failure' ? 0 : 1)
         assert.equal(f.calls.filter((call) => call.method === 'turn/start').length, 0)

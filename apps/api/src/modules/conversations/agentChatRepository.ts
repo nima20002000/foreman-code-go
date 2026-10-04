@@ -5,7 +5,7 @@ import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -388,6 +388,15 @@ export class PostgresAgentChatRepository {
     const bound = await this.pool.query(`update operator_conversations set provider_version=$2,native_session_id=$3,revision=revision+1,updated_at=now()
       where id=$1 and kind='agent' and (native_session_id is null or native_session_id=$3)`, [id, providerVersion, nativeSessionId])
     if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session binding changed.', 409)
+  }
+  async bindCreatedSession(id: string, requestId: string, configurationId: string, session: NativeSessionReference): Promise<void> {
+    const bound = await this.pool.query(`update operator_conversations
+      set provider_version=$4,native_session_id=$5,revision=revision+1,updated_at=now()
+      where id=$1 and kind='agent' and active_request_id=$2 and agent_configuration_version_id=$3
+        and record->'sessionCreation'->>'requestId'=$2 and native_session_id is null and harness=$6
+        and active_native_turn_id is null and (provider_version is null or provider_version=$4)`,
+    [id, requestId, configurationId, session.providerVersion, session.nativeSessionId, session.harness])
+    if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session creation owner changed.', 409)
   }
   async markStartupDelivered(id: string): Promise<void> {
     await this.pool.query(`update operator_conversations set record=record || '{"startupDelivered":true}'::jsonb where id=$1 and kind='agent'`, [id])

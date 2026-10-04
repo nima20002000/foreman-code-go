@@ -16,7 +16,7 @@ import {
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
-import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
+import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } from './errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from './codexFiles/runtime.js'
 import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/declarations.js'
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATIVE_OUTPUT_TOOL_ALIASES,
@@ -495,7 +495,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   /** Retrieve an identity learned from a late thread/start response without replaying it. */
-  async reconcileSessionCreation(input: NativeSessionStart): Promise<NativeSessionReference> {
+  async reconcileSessionCreation(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    signal?.throwIfAborted()
+    this.shutdownController.signal.throwIfAborted()
     const creation = this.creations.get(this.creationKey(input))
     const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
     if (!creation || creation.identity !== identity || !creation.session) {
@@ -514,11 +516,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     let candidate: Awaited<ReturnType<CodexAppServerSessionManager['transport']>> | undefined
     let expiration: NodeJS.Timeout | undefined
+    let creationAttempted = false
+    let creationAccepted = false
     try {
       const prepared = await this.prepareInput(input, signal)
       candidate = await this.transport(prepared, 0, signal)
       creation.transport = candidate.transport
       const publish = async (value: unknown): Promise<NativeSessionReference> => {
+        creationAccepted = true
         this.shutdownController.signal.throwIfAborted()
         const response = object(value, 'CODEX_THREAD_START_INVALID')
         const thread = this.validateThreadResponse(prepared, response)
@@ -536,7 +541,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.record(runtime, 'thread.started', { threadId: session.nativeSessionId })
         return session
       }
-      const result = await candidate.transport.request('thread/start', {
+      const params = {
         ...threadParameters(prepared), ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
         // Codex persists declarations at thread/start; thread/resume cannot add
         // them when a text-first Operator later switches to a file-only manager.
@@ -545,7 +550,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         ...(this.chatFiles || prepared.input.kind === 'operator'
           ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
           : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
-      }, signal, (value, error) => {
+      }
+      creationAttempted = true
+      const result = await candidate.transport.request('thread/start', params, signal, (value, error) => {
         void (async () => {
           if (error) {
             this.dependencies.cancelTimer(expiration)
@@ -556,7 +563,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       })
       return await publish(result)
     } catch (error) {
-      if (isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
+      const notCreated = !creationAttempted || !creationAccepted && error instanceof CodexRpcError
+        && error.method === 'thread/start' && !error.uncertain
+      if (!notCreated && isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
         creation.status = 'uncertain'
         // Keep a bounded late-response window. Expiry never authorizes a retry.
         expiration = this.dependencies.schedule(() => { void candidate!.transport.close().catch(() => undefined) }, 300_000)
@@ -566,11 +575,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         try { await candidate?.transport.close() }
         catch (cleanupError) {
           creation.status = 'uncertain'
-          throw new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError })
+          throw new NativeDeliveryError('session_creation', 'unknown',
+            new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError }))
         }
-        this.creations.delete(key)
+        if (notCreated) this.creations.delete(key)
+        else creation.status = 'uncertain'
       }
-      throw error
+      throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error)
     }
   }
 
@@ -723,14 +734,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async *streamTurn(session: NativeSessionReference, input: NativeTurnInput, signal: AbortSignal | undefined,
     subscriberSignal: AbortSignal): AsyncGenerator<NativeHarnessEvent, void> {
-    const runtime = this.requireRuntime(session)
-    signal?.throwIfAborted()
-    if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
-    if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
-    if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
-      throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+    let runtime: Runtime
+    try {
+      runtime = this.requireRuntime(session)
+      signal?.throwIfAborted()
+      if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+      if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
+      if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
+        throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+      }
+      if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
+    } catch (error) {
+      throw new NativeDeliveryError('turn_submission', 'not_sent', error)
     }
-    if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
     let resolveIdentity!: StartingTurn['resolveIdentity']
     const nativeIdentity = new Promise<string | undefined>((resolve) => { resolveIdentity = resolve })
     const starting: StartingTurn = {
@@ -827,8 +843,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
         })
       }).catch((error: unknown) => {
+        const rejected = !starting.acknowledgedTurnId && !runtime.activeTurnId
+          && error instanceof CodexRpcError && error.method === 'turn/start' && !error.uncertain
+        if (rejected) nativeSubmissionAttempted = false
         if (runtime.starting === starting) {
-          if (isUncertain(error)) {
+          if (!rejected) {
             runtime.phase = 'uncertain'
             this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
           } else this.restoreRejectedStart(runtime, starting)
@@ -849,12 +868,16 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
     } catch (error) {
       if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
-      if (!subscriberSignal.aborted) throw error
+      if (!subscriberSignal.aborted) {
+        throw new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
+      }
     } finally {
       signal?.removeEventListener('abort', abort)
       try {
         if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
-          await this.finishTurnResources(runtime)
+          try { await this.finishTurnResources(runtime) } catch (error) {
+            throw new NativeDeliveryError('turn_submission', 'unknown', error)
+          }
         }
       } finally { runtime.streamActive = false }
     }
@@ -936,20 +959,27 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   /** `thread/fork` copies the source history into a new thread; the source thread is never written. */
   async forkSession(source: NativeSessionReference, value: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    this.assertSessionVersion(source)
-    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
-    const input = structuredClone(value)
-    if (input.kind !== 'operator') input.instructionsDelivered = true
-    const prepared = await this.prepareInput(input, signal)
-    if (prepared.qualified.providerVersion !== source.providerVersion) {
-      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
-    }
-    const candidate = await this.transport(prepared, 0, signal)
+    let candidate: Awaited<ReturnType<CodexAppServerSessionManager['transport']>> | undefined
+    let creationAttempted = false
+    let creationAccepted = false
     try {
-      const response = object(await candidate.transport.request('thread/fork', {
+      this.assertSessionVersion(source)
+      signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+      const input = structuredClone(value)
+      if (input.kind !== 'operator') input.instructionsDelivered = true
+      const prepared = await this.prepareInput(input, signal)
+      if (prepared.qualified.providerVersion !== source.providerVersion) {
+        throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
+      }
+      candidate = await this.transport(prepared, 0, signal)
+      const params = {
         ...threadParameters(prepared, Boolean(this.chatFiles)), threadId: source.nativeSessionId, excludeTurns: true,
         ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
-      }, signal), 'CODEX_THREAD_FORK_INVALID')
+      }
+      creationAttempted = true
+      const responseValue = await candidate.transport.request('thread/fork', params, signal)
+      creationAccepted = true
+      const response = object(responseValue, 'CODEX_THREAD_FORK_INVALID')
       const thread = this.validateThreadResponse(prepared, response)
       if (thread.id === source.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
       const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
@@ -960,8 +990,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       this.record(runtime, 'thread.forked', { threadId: session.nativeSessionId, sourceThreadId: source.nativeSessionId })
       return session
     } catch (error) {
-      await candidate.transport.close().catch(() => undefined)
-      throw error
+      const notCreated = !creationAttempted || !creationAccepted && error instanceof CodexRpcError
+        && error.method === 'thread/fork' && !error.uncertain
+      try { await candidate?.transport.close() } catch (cleanupError) {
+        throw new NativeDeliveryError('session_creation', 'unknown',
+          new AggregateError([error, cleanupError], 'Native fork cleanup is unconfirmed.', { cause: cleanupError }))
+      }
+      throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error)
     }
   }
 
@@ -1751,6 +1786,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private restoreRejectedStart(runtime: Runtime, starting: StartingTurn): void {
     if (runtime.starting !== starting) return
+    if (starting.acknowledgedTurnId || runtime.activeTurnId) return
     Object.assign(runtime, starting.previous)
     runtime.phase = 'idle'
     runtime.starting = undefined

@@ -3,6 +3,7 @@ import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager } from './port.js'
 import { unavailableNativeResponse } from './responseAvailability.js'
+import { NativeDeliveryError } from './errors.js'
 
 /** One async domain admission behind the existing synchronous role factory.
  * The returned lifetime owns initialization and its actual adapter cleanup. */
@@ -33,11 +34,26 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     harness,
     capabilities: async signal => (await actual(signal)).capabilities(signal),
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
-    createSession: async (start, signal) => (await actual(signal)).createSession(start, signal),
+    createSession: async (start, signal) => {
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('session_creation', 'not_sent', error)
+      }
+      return current.createSession(start, signal)
+    },
     attachSession: async (session, start, signal) => (await actual(signal)).attachSession(session, start, signal),
-    async *startTurn(session, input, signal) { yield* (await actual(signal)).startTurn(session, input, signal) },
+    async *startTurn(session, input, signal) {
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('turn_submission', 'not_sent', error)
+      }
+      yield* current.startTurn(session, input, signal)
+    },
     forkSession: async (source, start, signal) => {
-      const current = await actual(signal)
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('session_creation', 'not_sent', error)
+      }
       if (!current.forkSession) throw new DomainError('HARNESS_FORK_UNAVAILABLE', 'The admitted driver has no fork capability.', 409)
       return current.forkSession(source, start, signal)
     },
@@ -82,6 +98,18 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   // Keep provider capabilities observable through the original port. OpenCode
   // has no exact-turn steering; Codex has no paged server-history primitive.
   if (harness === 'codex') {
+    manager.reconcileSessionCreation = async (start, signal) => {
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      const current = allocation?.manager
+      if (!current?.reconcileSessionCreation) {
+        throw new DomainError('HARNESS_CREATION_UNCONFIRMED', 'The original native creation is not available.', 409)
+      }
+      const session = await current.reconcileSessionCreation(start, signal)
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      return session
+    }
     manager.steerTurn = async (session, input, signal) => {
       const current = await actual(signal)
       if (!current.steerTurn) throw new DomainError('HARNESS_STEER_UNAVAILABLE', 'The admitted driver cannot steer this turn.', 409)

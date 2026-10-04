@@ -24,7 +24,8 @@ import type { OperatorConversationHistoryQuery } from '@foreman-code/contracts/o
 
 import { DomainError } from '../errors.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'
-import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission } from '../harnesses/port.js'
+import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission, NativeSessionStart } from '../harnesses/port.js'
+import { NativeDeliveryError } from '../harnesses/errors.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -95,6 +96,7 @@ interface Runtime {
   configuration?: OperatorConfigurationVersion
   manager: NativeHarnessSessionManager
   session?: NativeSessionReference
+  creationInput?: NativeSessionStart
   environment?: ChildProcessEnvironment
   disposal?: Promise<void>
   /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
@@ -110,6 +112,9 @@ function failure(error: unknown): ExecutionResult {
 
 /** Only evidence about the attempted prompt, never a later history/approval error. */
 function definitePromptRejection(error: unknown): boolean {
+  if (error instanceof NativeDeliveryError) {
+    return error.operation === 'turn_submission' && error.delivery === 'not_sent'
+  }
   if (!error || typeof error !== 'object') return false
   if ('certainty' in error) return error.certainty === 'definite'
   // Codex's RPC contract predates NativeDeliveryCertainty. A rejected read or
@@ -118,11 +123,12 @@ function definitePromptRejection(error: unknown): boolean {
     && 'uncertain' in error && error.uncertain === false
 }
 function definiteCreationFailure(error: unknown): boolean {
+  if (error instanceof NativeDeliveryError) {
+    return error.operation === 'session_creation' && error.delivery === 'not_sent'
+  }
   if (!error || typeof error !== 'object') return false
   if ('certainty' in error) return error.certainty === 'definite'
-  if ('uncertain' in error && error.uncertain === true) return false
-  const code = 'result' in error ? (error as { result?: ExecutionResult }).result?.error?.code : undefined
-  return Boolean(code && /(?:AUTH_|VERSION_|CONFIGURATION_|SETTING_|SCOPED_ENVIRONMENT_|OWNER_MISMATCH|MCP_|REQUEST_FAILED)/.test(code))
+  return false
 }
 
 export class OperatorChatService {
@@ -506,6 +512,7 @@ export class OperatorChatService {
         creating = true
         const start = { kind: 'operator' as const, correlationId: nativeCorrelation(id, input.requestId),
           configuration, workingDirectory: this.workingDirectory, environment }
+        runtime.creationInput = structuredClone(start)
         if (runtime.manager.startInitialTurn) {
           requireAuthorization(await this.authority.current(ownerId), 'operator_chat:write')
           const initialHandoff = Boolean(row.handoff_context)
@@ -930,8 +937,20 @@ export class OperatorChatService {
           if (!row.native_session_id) {
             // Recover a returned identity whose original bind failed while this process stayed alive.
             const resident = this.runtimes.get(row.id)
-            if (!resident?.session || row.active_phase !== 'creating') {
+            if (!resident || resident.disposal || row.active_phase !== 'creating') {
               throw new Error('Native session creation is uncertain; a replacement will not be created automatically.')
+            }
+            const creationInput = resident.creationInput
+            if (!resident.session && creationInput && resident.manager.reconcileSessionCreation) {
+              resident.session = await resident.manager.reconcileSessionCreation(creationInput, this.lifetime.signal)
+            }
+            this.lifetime.signal.throwIfAborted()
+            if (this.runtimes.get(row.id) !== resident || resident.disposal
+              || !resident.session || resident.session.harness !== row.harness
+              || !creationInput || creationInput.correlationId !== nativeCorrelation(row.id, requestId)
+              || creationInput.kind !== 'operator'
+              || creationInput.configuration.id !== row.operator_configuration_version_id) {
+              throw new Error('The original native session creation is not established.')
             }
             await this.repository.bind(row.id, requestId, resident.session.providerVersion, resident.session.nativeSessionId)
             await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
