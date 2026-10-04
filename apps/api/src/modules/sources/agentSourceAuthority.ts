@@ -21,8 +21,8 @@ import { sourceMaterializationDigest } from './bindingHash.js'
 export class AgentSourceAttemptAuthority implements SourceAttemptAuthority {
   constructor(private readonly pool: pg.Pool, private readonly rootFence: (sql: GraphSqlClient, root: SourceRootRecord) => Promise<void>) {}
   private async accepted(sql: GraphSqlClient, executionId: string, attemptId: string, operationId: string, caller?: ManagementPrincipal) {
-    const execution = (await sql.query<{ run_id: string; workflow_node_id: string; agent_id: string }>('select run_id,workflow_node_id,agent_id from harness_executions where id=$1 for share', [executionId])).rows[0]
     const original = await readDispatchIntent(sql, executionId), intent = await readReconciledDispatchIntent(sql, operationId, true)
+    const execution = (await sql.query<{ run_id: string; workflow_node_id: string; agent_id: string }>('select run_id,workflow_node_id,agent_id from harness_executions where id=$1 for share', [executionId])).rows[0]
     if (!execution || !original || !intent || original.operationId !== operationId || intent.executionId !== executionId || intent.attemptId !== attemptId
       || intent.runId !== execution.run_id || intent.nodeId !== execution.workflow_node_id || original.bindingHash !== intent.bindingHash)
       throw new DomainError('AGENT_SOURCE_ALLOCATION_MISSING', 'The original real Agent execution and accepted dispatch source allocation are required.', 409)

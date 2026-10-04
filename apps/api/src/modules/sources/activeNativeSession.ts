@@ -21,6 +21,7 @@ export interface SourceOwnedNativeSession {
 export async function readSourceCurrentNativeSession(sql: GraphSqlClient, record: SourceMaterializationRecord,
   captures: readonly SourceOwnedNativeSession[]): Promise<SourceActiveNativeSession | null> {
   if (record.receipt.binding.accessMode !== 'exclusive-write') return null
+  await readReconciledDispatchIntent(sql, record.operationId, true)
   const row = (await sql.query<{ reference: unknown; finalized: boolean }>(
     'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
     [record.receipt.executionId])).rows[0]
@@ -40,6 +41,7 @@ export async function readSourceActiveNativeSession(sql: GraphSqlClient, record:
   capture.signal.throwIfAborted(); await capture.assertCurrent()
   if (record.receipt.binding.accessMode !== 'exclusive-write' || !record.finalDispatchBindingHash
     || capture.execution.id !== record.receipt.executionId) return null
+  const intent = await readReconciledDispatchIntent(sql, record.operationId, true)
   const row = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1 and run_id=$2 for share',
     [capture.execution.id, capture.execution.runId])).rows[0]
   const execution = HarnessExecutionSchema.safeParse(row?.record)
@@ -47,7 +49,6 @@ export async function readSourceActiveNativeSession(sql: GraphSqlClient, record:
     || !isDeepStrictEqual(repeatExecutionIdentity(execution.data), repeatExecutionIdentity(capture.execution))
     || execution.data.nativeSessionId !== capture.session.nativeSessionId) return null
   const original = await readDispatchIntent(sql, execution.data.id)
-  const intent = await readReconciledDispatchIntent(sql, record.operationId, true)
   const placement = await readAcceptedPlacement(sql, execution.data.runId, execution.data.workflowNodeId)
   const rawNative = await readNativePlacement(sql, execution.data.id)
   if (!original || !intent || !placement || !rawNative || original.operationId !== record.operationId
