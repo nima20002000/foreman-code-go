@@ -1,0 +1,127 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { WorkflowRunSummarySchema, type WorkflowRunSummary } from '@graphql/contracts'
+import { WorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { server } from '../../mocks/server'
+import { currentWorkflowFixture } from '../../shared/mocks/currentWorkflow'
+import { deferred } from '../runs-selector/testFixtures'
+import { WorkflowBoardContext } from './context'
+import { boardRunListKey } from './keys'
+import { RunActivityPanel } from './RunActivityPanel'
+
+const fixture = currentWorkflowFixture('activity-list')
+const { workspaceId, workflowId } = fixture.scope
+const listRoute = `*/api/management/workspaces/${workspaceId}/runs`
+const clients: QueryClient[] = []
+const completedRun = WorkflowRunV3Schema.parse({ ...fixture.run, executionState: 'completed', outcome: 'succeeded',
+  startedAt: fixture.createdAt, finishedAt: '2026-10-04T10:00:00.000Z', result: { outcome: 'succeeded', output: {} } })
+
+function summary(run: typeof fixture.run): WorkflowRunSummary {
+  return WorkflowRunSummarySchema.parse({ id: run.id, workspaceId: run.workspaceId, workflowId: run.workflowId,
+    executionCondition: run.executionCondition, executionState: run.executionState, outcome: run.outcome,
+    startedAt: run.startedAt, finishedAt: run.finishedAt, authRequired: false, browserWait: null,
+    runnerHealth: { status: 'healthy' }, cleanupPending: false })
+}
+
+function mount(summaries: readonly WorkflowRunSummary[] = []) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  const selectRun = vi.fn()
+  const view = (items: readonly WorkflowRunSummary[]) => <QueryClientProvider client={client}>
+    <WorkflowBoardContext.Provider value={{ workspaceId, workflowId, inspection: {}, activeRuns: 0, selectRun,
+      selectInspection: vi.fn(), openLocation: vi.fn(), openRuns: vi.fn() }}>
+      <RunActivityPanel summaries={items} />
+    </WorkflowBoardContext.Provider>
+  </QueryClientProvider>
+  const rendered = render(view(summaries))
+  return { client, selectRun, update: (items: readonly WorkflowRunSummary[]) => rendered.rerender(view(items)) }
+}
+
+afterEach(() => {
+  cleanup()
+  for (const client of clients.splice(0)) client.clear()
+})
+
+describe('Run activity list summary freshness', () => {
+  it('overlays queued, running and completed summaries and preserves the saved selection pins', async () => {
+    let reads = 0
+    server.use(http.get(listRoute, () => {
+      reads++
+      return HttpResponse.json({ items: [fixture.run], pageInfo: { nextCursor: null } })
+    }))
+    const mounted = mount([summary(fixture.run)])
+    await screen.findByRole('button', { name: `Open Run ${fixture.run.id} · queued · pending` })
+    mounted.update([summary({ ...fixture.run, executionState: 'running', startedAt: fixture.createdAt })])
+    const running = screen.getByRole('button', { name: `Open Run ${fixture.run.id} · running · pending` })
+    expect(running).toHaveTextContent('Running')
+    expect(screen.queryByRole('button', { name: `Open Run ${fixture.run.id} · queued · pending` })).toBeNull()
+    const initialReads = reads
+    mounted.update([summary(completedRun)])
+    const completed = screen.getByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })
+    expect(completed).toHaveTextContent('Completed')
+    expect(completed).toHaveTextContent('Past Run')
+    await waitFor(() => expect(reads).toBeGreaterThan(initialReads))
+    await userEvent.click(completed)
+    expect(mounted.selectRun).toHaveBeenCalledWith(fixture.scope)
+  })
+
+  it('refreshes when a Run arrives and retains it through completion before the list response', async () => {
+    let reads = 0
+    let next = deferred<{ items: typeof fixture.run[]; pageInfo: { nextCursor: null } }>()
+    server.use(http.get(listRoute, async () => {
+      reads++
+      return HttpResponse.json(reads === 1 ? { items: [], pageInfo: { nextCursor: null } } : await next.promise)
+    }))
+    const mounted = mount()
+    await screen.findByText('No runs yet')
+    mounted.update([summary(fixture.run)])
+    await screen.findByRole('button', { name: `Inspect ${fixture.run.id}` })
+    await waitFor(() => expect(reads).toBe(2))
+    await act(async () => { next.resolve({ items: [fixture.run], pageInfo: { nextCursor: null } }) })
+    await screen.findByRole('button', { name: `Open Run ${fixture.run.id} · queued · pending` })
+    const settling = deferred<{ items: typeof fixture.run[]; pageInfo: { nextCursor: null } }>()
+    next = settling
+    mounted.update([summary(completedRun)])
+    expect(screen.getByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })).toHaveTextContent('Completed')
+    await waitFor(() => expect(reads).toBe(3))
+    await act(async () => { settling.resolve({ items: [completedRun], pageInfo: { nextCursor: null } }) })
+    await waitFor(() => expect(mounted.client.getQueryState(boardRunListKey(workspaceId, workflowId))?.fetchStatus).toBe('idle'))
+    expect(screen.getByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })).toBeInTheDocument()
+    mounted.update([])
+    expect(screen.getByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })).toBeInTheDocument()
+  })
+
+  it('retains a just-completed summary while the newly created Run is absent from the cached list', async () => {
+    const pending = deferred<{ items: typeof fixture.run[]; pageInfo: { nextCursor: null } }>()
+    let reads = 0
+    server.use(http.get(listRoute, async () => {
+      reads++
+      return HttpResponse.json(reads === 1 ? { items: [], pageInfo: { nextCursor: null } } : await pending.promise)
+    }))
+    const mounted = mount()
+    await screen.findByText('No runs yet')
+    mounted.update([summary(fixture.run)])
+    await waitFor(() => expect(reads).toBe(2))
+    mounted.update([summary(completedRun)])
+    expect(screen.getByRole('button', { name: `Inspect ${fixture.run.id}` })).toHaveTextContent('Completed')
+    await act(async () => { pending.resolve({ items: [completedRun], pageInfo: { nextCursor: null } }) })
+    await screen.findByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })
+  })
+
+  it('keeps scope filtering and hides summaries after denied list readback', async () => {
+    let denied = false
+    server.use(http.get(listRoute, () => denied
+      ? HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'No access' } }, { status: 403 })
+      : HttpResponse.json({ items: [fixture.run], pageInfo: { nextCursor: null } })))
+    const mounted = mount([summary(fixture.run), { ...summary(fixture.run), id: 'run-other', workflowId: 'workflow-other' }])
+    await screen.findByRole('button', { name: `Open Run ${fixture.run.id} · queued · pending` })
+    expect(screen.queryByRole('button', { name: 'Inspect run-other' })).toBeNull()
+    denied = true
+    await act(async () => { await mounted.client.invalidateQueries({ queryKey: boardRunListKey(workspaceId, workflowId) }) })
+    await screen.findByText('You don’t have access to this workflow’s runs.')
+    expect(screen.queryByRole('button', { name: /Open Run|Inspect run-/ })).toBeNull()
+  })
+})

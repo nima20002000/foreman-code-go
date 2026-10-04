@@ -46,12 +46,20 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => readBoardRuns(workspaceId, workflowId, pageParam, { signal }),
     getNextPageParam: (page, _pages, _param, params) => page.pageInfo.nextCursor && !params.includes(page.pageInfo.nextCursor) ? page.pageInfo.nextCursor : undefined,
-    maxPages: 5, staleTime: Infinity, refetchOnMount: false,
+    maxPages: 5, staleTime: Infinity, refetchOnMount: 'always',
     refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
   })
   const denied = useProtectedAccessError(runs)
   const listed = denied || runs.isError ? [] : [...new Map(runs.data?.pages.flatMap((page) => page.items.map((run) => [run.id, run] as const)) ?? []).values()]
-  const active = denied ? [] : summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId && isActiveRun(run))
+  const fresh = denied ? [] : summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId)
+  const freshById = new Map(fresh.map((run) => [run.id, run]))
+  const activeIds = JSON.stringify([workspaceId, workflowId, fresh.filter(isActiveRun).map((run) => run.id).sort()])
+  const previousActiveIds = useRef(activeIds)
+  useEffect(() => {
+    if (previousActiveIds.current === activeIds) return
+    previousActiveIds.current = activeIds
+    if (!denied) void client.invalidateQueries({ queryKey: boardRunListKey(workspaceId, workflowId), exact: true })
+  }, [activeIds, client, denied, workspaceId, workflowId])
   const inspect = (runId: string) => discovery.mutate({ runId, generation: sessionGeneration(), ticket: ++request.current })
   const listedIds = new Set(listed.map((item) => item.id))
   return <div className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
@@ -61,25 +69,26 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     {denied ? <Alert tone="warning" title="You don’t have access to this workflow’s runs." /> : runs.isError ? <Alert tone="danger" title="Runs couldn’t be loaded."
       action={<Button size="sm" onClick={() => void refreshFirstInspectionPage(client, boardRunListKey(workspaceId, workflowId))}>Try again</Button>} /> : null}
     {runs.isPending && !denied ? <LoadingState label="Loading runs…" rows={3} /> : null}
-    {!runs.isPending && !listed.length && !active.length && !denied && !runs.isError ? <EmptyState icon="history" title="No runs yet" description="Start a run from the board. It shows up here." /> : null}
+    {!runs.isPending && !listed.length && !fresh.length && !denied && !runs.isError ? <EmptyState icon="history" title="No runs yet" description="Start a run from the board. It shows up here." /> : null}
     <ul className="board-run-list">
-      {active.filter((run) => !listedIds.has(run.id)).map((run) => <li key={run.id}>
+      {fresh.filter((run) => !listedIds.has(run.id)).map((run) => <li key={run.id}>
         <button type="button" className="board-run-row" disabled={reading === run.id} onClick={() => void inspect(run.id)} aria-label={`Inspect ${run.id}`}>
           <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
           <code>{run.id.slice(-8)}</code><span>{run.cleanupPending ? 'Cleaning up' : when(run.startedAt)}</span>
         </button></li>)}
       {listed.map((run) => {
+        const facts = freshById.get(run.id) ?? run
         let scope: ReturnType<typeof scopeForBoardRun>
         try { scope = scopeForBoardRun(run) } catch {
           return <li key={run.id}><p className="next-draft-hint">Run {run.id.slice(-8)} can’t be shown on this board.</p></li>
         }
         const current = !!selected && sameCanonicalGraphScope(scope, selected)
         return <li key={run.id}><button type="button" className="board-run-row" aria-pressed={current}
-          aria-label={`Open Run ${run.id} · ${run.executionState} · ${run.outcome}`}
+          aria-label={`Open Run ${run.id} · ${facts.executionState} · ${facts.outcome}`}
           onClick={() => { ++request.current; resetDiscovery(); selectRun(current ? undefined : scope) }}>
-          <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
-          <code>{run.id.slice(-8)}</code><span>{when(run.startedAt)}</span>
-          <span>{run.executionState === 'completed' ? 'Past Run' : 'Current Run'} · saved version <code>{run.workflowVersionId}</code></span>
+          <StatusBadge label={runLabel(facts.executionState, facts.outcome)} tone={runTone(facts.executionState, facts.outcome)} busy={facts.executionState === 'running'} />
+          <code>{run.id.slice(-8)}</code><span>{when(facts.startedAt)}</span>
+          <span>{facts.executionState === 'completed' ? 'Past Run' : 'Current Run'} · saved version <code>{run.workflowVersionId}</code></span>
         </button></li>
       })}
     </ul>
