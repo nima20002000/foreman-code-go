@@ -7,6 +7,11 @@ import pg from 'pg'
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 
+function commitWasRejected(error: unknown): boolean {
+  if (!(error instanceof pg.DatabaseError) || !error.code) return false
+  // These server errors abort COMMIT; transport errors cannot establish its outcome.
+  return error.code.startsWith('23') || ['40001', '40P01', 'P0001'].includes(error.code)
+}
 
 export class PostgresCommandCoordinator {
   constructor(private readonly pool: pg.Pool) {}
@@ -22,6 +27,8 @@ export class PostgresCommandCoordinator {
     /** Revalidate live authority under the command lock, including receipt reads.
      * Transactional callers may retain their authority row locks through COMMIT. */
     authorize?(client: pg.PoolClient): Promise<void>
+    /** Compensate external effects only after a confirmed rollback, using the idle connection. */
+    afterRollback?(client: pg.PoolClient): Promise<void>
     /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
     dedicatedConnection?: true
     /** Prepare immutable bytes or installed metadata outside SQL under retained
@@ -41,6 +48,8 @@ export class PostgresCommandCoordinator {
     let releaseError: Error | undefined
     let inTransaction = false
     let lifecycleLock = false
+    let committing = false
+    let performing = false
     const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
     try {
       await client.query('begin')
@@ -81,6 +90,7 @@ export class PostgresCommandCoordinator {
         inTransaction = true
         await input.authorize?.(client)
       }
+      performing = true
       const value = await input.perform(client)
       if (dedicatedConnection && !input.prepare) {
         await client.query('begin')
@@ -97,18 +107,34 @@ export class PostgresCommandCoordinator {
          values ($1, $2, $3, $4, 'succeeded', $5::jsonb)`,
         [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({ commandId: input.commandId })],
       )
+      committing = true
       await client.query('commit')
       inTransaction = false
       return { value, replayed: false }
     } catch (error) {
+      let failure = error
+      let rolledBack = false
       if (inTransaction) {
         try {
           await client.query('rollback')
           inTransaction = false
+          rolledBack = true
         } catch (rollbackError) {
           // A failed rollback leaves connection state unknown. Evict it, and
           // preserve the command error rather than replacing it with cleanup.
           releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command rollback failed.')
+        }
+      }
+      if (performing && rolledBack && (!committing || commitWasRejected(error))) {
+        try {
+          await input.afterRollback?.(client)
+        } catch (cleanupError) {
+          failure = new AggregateError([error, cleanupError], 'The command and rollback cleanup failed.')
+          try {
+            await client.query('rollback')
+          } catch (rollbackError) {
+            releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command cleanup rollback failed.')
+          }
         }
       }
       if (!releaseError) {
@@ -119,11 +145,12 @@ export class PostgresCommandCoordinator {
            values ($1, $2, $3, $4, 'failed', $5::jsonb)`,
           [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({
             commandId: input.commandId,
-            code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
+            code: failure instanceof DomainError ? failure.code : 'INTERNAL_ERROR',
+            ...(failure !== error ? { cleanupFailed: true } : {}),
           })],
         ).catch(() => undefined)
       }
-      throw error
+      throw failure
     } finally {
       if (lifecycleLock && !releaseError) {
         await client.query('select pg_advisory_unlock(hashtext($1))', [commandLock]).catch((error: unknown) => {

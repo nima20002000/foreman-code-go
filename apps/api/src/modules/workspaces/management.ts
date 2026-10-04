@@ -1,4 +1,4 @@
-import { rmdir } from 'node:fs/promises'
+import { lstat, realpath, rmdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -86,10 +86,40 @@ export class WorkspaceManagementService {
 
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceCreateInput) {
     requireAuthorization(principal, 'workspaces:create')
+    let folder: Awaited<ReturnType<WorkspaceLocationService['createProjectFolder']>> | undefined
     return this.commands.execute({
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.create', commandId: input.commandId,
       targetKey: 'workspaces:new', payload: input,
+      afterRollback: async (client) => {
+        if (!folder) return
+        const rootPath = folder.validation.location.rootPath
+        await client.query('begin')
+        try {
+          await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+          const referenced = await client.query(
+            `select 1 from workspaces where execution_location->>'rootPath' = $1
+             or created_project_folder->>'rootPath' = $1 limit 1`, [rootPath],
+          )
+          if (!referenced.rows.length) {
+            let details
+            try { details = await lstat(rootPath, { bigint: true }) }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+            if (details) {
+              if (!details.isDirectory() || String(details.dev) !== folder.identity.device
+                || String(details.ino) !== folder.identity.inode || await realpath(rootPath) !== rootPath) {
+                throw new Error('The created project directory was replaced; it was not removed.')
+              }
+              // rmdir preserves any content added since this attempt created the directory.
+              await rmdir(rootPath)
+            }
+          }
+          await client.query('commit')
+        } catch (error) {
+          await client.query('rollback')
+          throw error
+        }
+      },
       authorize: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         const live = await readLiveManagementPrincipal(client, principal.id)
@@ -116,7 +146,6 @@ export class WorkspaceManagementService {
         const existingNames = input.name === undefined
           ? new Set((await client.query<{ name: string }>("select record->>'name' as name from workspaces where archived_at is null")).rows.map((row) => row.name))
           : new Set<string>()
-        let folder: Awaited<ReturnType<WorkspaceLocationService['createProjectFolder']>> | undefined
         for (let suffix = 0; ; suffix++) {
           const ending = suffix ? ` (${suffix})` : ''
           workspace.name = baseName.slice(0, 200 - ending.length).trimEnd() + ending
@@ -130,25 +159,19 @@ export class WorkspaceManagementService {
             if (input.name !== undefined || !(error instanceof DomainError) || error.code !== 'WORKSPACE_FOLDER_EXISTS') throw error
           }
         }
-        try {
-          const result = await client.query<WorkspaceRow>(
-            `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)
-             values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6::jsonb)
-             returning record, revision, archived_at`,
-            [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
-              folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0,
-              folder ? JSON.stringify({ ...folder.validation.location, identity: folder.identity }) : null],
-          )
-          const value = managed(result.rows[0]!)
-          return folder ? ManagedWorkspaceSchema.parse({ ...value,
-            executionLocation: folder.validation.location, locationRevision: 1,
-            locationValidation: { status: 'ready', checkedAt: folder.validation.checkedAt },
-          }) : value
-        } catch (error) {
-          // Only remove the empty folder created by this attempt, never existing project content.
-          if (folder) await rmdir(folder.validation.location.rootPath).catch(() => undefined)
-          throw error
-        }
+        const result = await client.query<WorkspaceRow>(
+          `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)
+           values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6::jsonb)
+           returning record, revision, archived_at`,
+          [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
+            folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0,
+            folder ? JSON.stringify({ ...folder.validation.location, identity: folder.identity }) : null],
+        )
+        const value = managed(result.rows[0]!)
+        return folder ? ManagedWorkspaceSchema.parse({ ...value,
+          executionLocation: folder.validation.location, locationRevision: 1,
+          locationValidation: { status: 'ready', checkedAt: folder.validation.checkedAt },
+        }) : value
       },
     })
   }
