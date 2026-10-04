@@ -53,13 +53,14 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
   const listed = denied || runs.isError ? [] : [...new Map(runs.data?.pages.flatMap((page) => page.items.map((run) => [run.id, run] as const)) ?? []).values()]
   const fresh = denied ? [] : summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId)
   const freshById = new Map(fresh.map((run) => [run.id, run]))
-  const activeIds = JSON.stringify([workspaceId, workflowId, fresh.filter(isActiveRun).map((run) => run.id).sort()])
-  const previousActiveIds = useRef(activeIds)
+  const summaryRuns = JSON.stringify([workspaceId, workflowId,
+    fresh.map((run) => `${run.id}:${isActiveRun(run)}`).sort()])
+  const previousSummaryRuns = useRef(summaryRuns)
   useEffect(() => {
-    if (previousActiveIds.current === activeIds) return
-    previousActiveIds.current = activeIds
+    if (previousSummaryRuns.current === summaryRuns) return
+    previousSummaryRuns.current = summaryRuns
     if (!denied) void client.invalidateQueries({ queryKey: boardRunListKey(workspaceId, workflowId), exact: true })
-  }, [activeIds, client, denied, workspaceId, workflowId])
+  }, [summaryRuns, client, denied, workspaceId, workflowId])
   const inspect = (runId: string) => discovery.mutate({ runId, generation: sessionGeneration(), ticket: ++request.current })
   const listedIds = new Set(listed.map((item) => item.id))
   return <div className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">

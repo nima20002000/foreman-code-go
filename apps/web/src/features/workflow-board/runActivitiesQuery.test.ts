@@ -92,6 +92,28 @@ describe('bounded public Run Activities client', () => {
     expect(feed).toMatchObject({ olderCursor: 'older-2', nextCursor: 'cursor-3', retainedFrom: '1' })
   })
 
+  it('keeps a retained older anchor when the floor advances below the loaded history', async () => {
+    const cursors: Array<string | null> = []
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      return HttpResponse.json({ scope, items: cursor === 'older-951'
+        ? Array.from({ length: 50 }, (_, index) => item(String(901 + index))) : [item('1001')],
+      mode: cursor === 'older-951' ? 'older' : 'newer', highWater: '1001', retainedFrom: '2',
+      nextCursor: 'cursor-1001', olderCursor: cursor === 'older-951' ? 'older-901' : null, hasMore: false })
+    }))
+    const feed = await readRunActivityFeed(scope, {
+      items: Array.from({ length: 50 }, (_, index) => item(String(951 + index))),
+      olderCursor: 'older-951', nextCursor: 'cursor-1000', retainedFrom: '1', unchangedReads: 0,
+    })
+    expect(feed.olderCursor).toBe('older-951')
+    const older = mergeOlderRunActivities(feed, await readRunActivities(scope, feed.olderCursor))
+    expect(older.olderCursor).toBe('older-901')
+    expect(older.items.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 101 }, (_, index) => String(901 + index)))
+    expect(cursors).toEqual(['cursor-1000', 'older-951'])
+  })
+
   it.each(['older page', 'newer page'] as const)('keeps retention monotonic when the %s has a later floor', (later) => {
     const page: RunActivitiesPage = { scope, items: later === 'older page' ? [item('3')] : [item('2'), item('3')],
       mode: 'older', highWater: '5',

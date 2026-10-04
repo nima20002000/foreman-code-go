@@ -175,13 +175,18 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
   const error = olderReadRejected ? older.error : feed.error ?? older.error
   const retentionGap = ApiError.is(error) && error.status === 410
   const transient = isTransientRunActivityError(error)
+  const olderFailed = !feed.error && !!older.error && transient
   let errorTitle = 'Activities are unavailable.'
   if (retentionGap) errorTitle = 'Activity history has a retention gap.'
+  else if (olderFailed) errorTitle = 'Older Activities couldn’t be loaded.'
   else if (transient) errorTitle = 'Activities refresh failed.'
   let errorHint: string | undefined
   if (retentionGap) errorHint = 'Refresh to read the retained history. '
+  else if (olderFailed) errorHint = 'Try loading the older page again. '
   else if (transient) errorHint = 'Refresh failed. Retrying automatically. '
   else if (!selection) errorHint = 'Loaded Activities are hidden until this Run is read again. '
+  let retryLabel = selection ? 'Retry' : 'Reload this Run’s Activities'
+  if (olderFailed) retryLabel = 'Retry older Activities'
   const items = visit.isCurrent() && (!error || retentionGap || transient) && !denied && feed.isFetchedAfterMount
     ? scopedItems : undefined
   const agents = [...new Map(items?.flatMap((item) => [item.actor, item.subject]
@@ -198,7 +203,9 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     {denied ? <Alert tone="warning" title="Activities access was withdrawn." /> : error ?
       <Alert tone="warning" title={errorTitle}>
         {errorHint}
-        <Button size="sm" onClick={refresh}>{selection ? 'Retry' : 'Reload this Run’s Activities'}</Button>
+        <Button size="sm" disabled={olderFailed && (feed.isFetching || older.isPending)}
+          onClick={olderFailed ? loadOlder : refresh}>
+          {retryLabel}</Button>
       </Alert> : null}
     {!error && !denied && !items ? <p role="status">{feed.isPaused ? 'Activities refresh is offline or paused.' : 'Loading Activities…'}</p> : null}
     {items ? <>

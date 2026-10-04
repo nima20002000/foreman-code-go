@@ -46,6 +46,21 @@ afterEach(() => {
 })
 
 describe('Run activity list summary freshness', () => {
+  it('persists a Run first observed after completion when it leaves the summary window', async () => {
+    let reads = 0
+    server.use(http.get(listRoute, () => {
+      reads++
+      return HttpResponse.json({ items: reads === 1 ? [] : [completedRun], pageInfo: { nextCursor: null } })
+    }))
+    const mounted = mount()
+    await screen.findByText('No runs yet')
+    mounted.update([summary(completedRun)])
+    await screen.findByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })
+    expect(reads).toBe(2)
+    mounted.update([])
+    expect(screen.getByRole('button', { name: `Open Run ${fixture.run.id} · completed · succeeded` })).toBeVisible()
+  })
+
   it('overlays queued, running and completed summaries and preserves the saved selection pins', async () => {
     let reads = 0
     server.use(http.get(listRoute, () => {

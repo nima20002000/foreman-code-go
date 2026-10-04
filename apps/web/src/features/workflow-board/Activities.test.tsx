@@ -255,6 +255,35 @@ describe('Activities pagination and refresh', () => {
 })
 
 describe('Activities automatic recovery', () => {
+  it('reports an exhausted older-page request separately from recovered live polling', async () => {
+    let olderReads = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      if (cursor === 'older-1') {
+        olderReads++
+        if (olderReads <= 3) return new HttpResponse(null, { status: 503 })
+        return HttpResponse.json(page({ items: [event('1', 'Recovered older work', {})],
+          mode: 'older', olderCursor: null }))
+      }
+      return HttpResponse.json(cursor ? page({ items: [event('6', 'Live work', {})],
+        mode: 'newer', highWater: '6', nextCursor: 'cursor-6', olderCursor: null }) : page({ items: items.slice(1) }))
+    }))
+    await mount({ timed: true, expectedText: 'Agent worked' })
+    fireEvent.click(screen.getByRole('button', { name: 'Load older Activities' }))
+    await eventually(() => expect(olderReads).toBe(1))
+    await advance(1000)
+    await eventually(() => expect(olderReads).toBe(2))
+    await advance(2000)
+    await eventually(() => expect(screen.getByText('Older Activities couldn’t be loaded.')).toBeVisible())
+    await advance(3000)
+    await eventually(() => expect(screen.getByText('Live work')).toBeVisible())
+    expect(screen.queryByText('Refresh failed. Retrying automatically.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry older Activities' }))
+    await eventually(() => expect(screen.getByText('Recovered older work')).toBeVisible())
+    expect(screen.queryByText('Older Activities couldn’t be loaded.')).not.toBeInTheDocument()
+    expect(olderReads).toBe(4)
+  })
+
   it('retries one failed poll with backoff and recovers without navigation or browser events', async () => {
     let polls = 0
     server.use(http.get(activitiesPath, ({ request }) => {

@@ -73,7 +73,7 @@ export function mergeOlderRunActivities(current: RunActivityFeed, page: RunActiv
     ...current,
     items: mergeRunActivities(current.items, page.items)
       .filter((item) => BigInt(item.sequence) >= BigInt(retainedFrom)),
-    olderCursor: retainedFrom === page.retainedFrom ? page.olderCursor : null,
+    olderCursor: page.items[0] && BigInt(page.items[0].sequence) >= BigInt(retainedFrom) ? page.olderCursor : null,
     retainedFrom,
     unchangedReads: retainedFrom === current.retainedFrom ? current.unchangedReads : 0,
   }
@@ -109,7 +109,8 @@ export async function readRunActivityFeed(scope: RunActivityScope, previous?: Ru
       ...(activitySnapshot ? { activitySnapshot } : {}),
       items: mergeRunActivities(result.items, page.items)
         .filter((item) => BigInt(item.sequence) >= BigInt(page.retainedFrom)),
-      olderCursor: BigInt(page.retainedFrom) > BigInt(result.retainedFrom) ? null : result.olderCursor,
+      olderCursor: result.items[0] && BigInt(result.items[0].sequence) >= BigInt(page.retainedFrom)
+        ? result.olderCursor : null,
       nextCursor: page.nextCursor,
       retainedFrom: page.retainedFrom,
       unchangedReads: 0,
