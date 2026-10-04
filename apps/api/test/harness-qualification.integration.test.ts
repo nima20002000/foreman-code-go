@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -67,7 +68,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     const writeClient = await connect(writer.token)
     const readClient = await connect(reader.token)
     expect((await readClient.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_qualification_run')
-    await expect(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } }))
     const started = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })
     expect(started.isError).not.toBe(true)
     await viWaitFor(async () => expect((await repository.list())[0]?.status).toBe('qualified'))

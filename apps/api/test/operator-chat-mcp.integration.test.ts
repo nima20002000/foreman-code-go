@@ -90,15 +90,11 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
   }
 
   async function denied(client: Client, name: string, args: Record<string, unknown>) {
-    try {
-      const result = await client.callTool({ name, arguments: args })
-      expect(result.isError).toBe(true)
-      expect(result.structuredContent).toBeUndefined()
-      return JSON.stringify(result)
-    } catch (error) {
-      expect(String(error)).toMatch(/not found|ACCESS_DENIED/)
-      return String(error)
-    }
+    const result = await client.callTool({ name, arguments: args })
+    expect(result.isError).toBe(true)
+    expect(result.structuredContent).toBeUndefined()
+    expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
+    return JSON.stringify(result)
   }
 
   it('requires read and write for fresh sends and receipt-only recovery without exposing protected state', async () => {

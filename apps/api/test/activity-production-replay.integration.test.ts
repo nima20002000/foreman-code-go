@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -293,8 +294,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.writer.principal.id,
       JSON.stringify([{ actions: ['agent_chat:read'], scope: {} }])])
     // A fresh MCP session omits actions removed from the principal's live grants.
-    await expect(f.call('agent_chat_respond', { workspaceId, conversationId: id, ...request }))
-      .rejects.toThrow('Tool agent_chat_respond not found')
+    await expectMcpAccessDenied(f.call('agent_chat_respond', { workspaceId, conversationId: id, ...request }))
     const denied = await f.http('POST', `${base}/conversations/${id}/responses`, request)
     expect(denied.statusCode, denied.body).toBe(403)
     expect(f.replay.responses).toHaveLength(1)

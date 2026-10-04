@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rename, rm, lstat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -80,7 +81,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     expect(tools).not.toContain('workspace_storage_folder_delete')
     const capabilities = (await denied.callTool({ name: 'operator_get_capabilities', arguments: {} })).structuredContent as { tools: string[] }
     expect(capabilities.tools).not.toContain('workspace_storage_folder_delete')
-    await expect(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: input })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: input }))
     const deniedHttp = await app.inject({ method: 'POST', url: '/api/management/workspace-storage/folders/delete',
       headers: { authorization: `Bearer ${reader.token}` }, payload: input })
     expect(deniedHttp.statusCode).toBe(403)
@@ -101,7 +102,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     expect(bulkFolders).toHaveLength(2)
     for (const item of bulkFolders) {
       const command = { commandId: randomUUID(), path: item.path, expectedIdentity: item.identity }
-      await expect(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: command }))
       const result = c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent)
       expect(result.value.path).toBe(item.path)
       expect(c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent).replayed).toBe(true)

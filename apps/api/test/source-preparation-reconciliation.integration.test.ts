@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -206,7 +207,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const revoked=await access.issue({name:'Later revoked reader',audience:'operator',expiresAt:new Date(Date.now()+60000),grants:[{actions:['sources:read','source_roots:read'],scope:{workspaceIds:[workspaceId]}}]})
     const deniedClient=await client(reader.token)
     expect((await deniedClient.listTools()).tools.some(tool=>tool.name==='source_preparation_reconcile')).toBe(false)
-    await expect(deniedClient.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,operationId:rows[0]!.operation_id,commandId:randomUUID()}})).rejects.toThrow('not found')
+    await expectMcpAccessDenied(deniedClient.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,operationId:rows[0]!.operation_id,commandId:randomUUID()}}))
     const foreign=await operator.callTool({name:'source_preparation_get',arguments:{workspaceId:'foreign',operationId:rows[0]!.operation_id}});expect(foreign.isError).toBe(true)
     await database.pool.query('update management_principals set revoked_at=now() where id=$1',[revoked.principal.id])
     await expect(sources.preparationGet(revoked.principal,'mcp',{workspaceId,operationId:rows[0]!.operation_id})).rejects.toMatchObject({code:'AUTH_REVOKED'})

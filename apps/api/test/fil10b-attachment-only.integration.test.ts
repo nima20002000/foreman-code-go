@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -332,7 +333,7 @@ describe.skipIf(!postgresEnabled)('FIL-10b attachment-only admission and legacy 
       expect(await persisted(id, input.requestId)).toEqual(stored)
       const rejected = { ...input, requestId: randomUUID() }
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('agent_chat_send')
-      await expect(denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: rejected } })).rejects.toThrow(/not found/)
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: rejected } }))
       expect((await agentSend(rejected, reader.token)).statusCode).toBe(403)
       expect(await persisted(id, rejected.requestId)).toEqual({ messages: [], turns: [] })
       expect(nativeEffects()).toEqual(before)

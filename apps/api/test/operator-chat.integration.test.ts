@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
@@ -200,7 +201,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
       const deniedClient = await connect(denied.token)
       expect((await deniedClient.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_get')
-      await expect(deniedClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(deniedClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } }))
       await expect(chat.get(source.id, denied.principal)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
       expect(await facts()).toEqual(before)
       expect(await repository.acceptedConfiguration(source.id, first.requestId)).toEqual(acceptedFirst)
@@ -248,7 +249,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect(prepared).toEqual([configuration])
       expect((await read()).value.operator.harnessProfileSelection).toEqual(selection)
       const denied = await connect(['settings:read'])
-      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } }))
       expect((await read()).revision).toBe(accepted.value.revision)
       expect(validated).toHaveLength(1)
       expect(prepared).toHaveLength(1)
@@ -418,7 +419,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await reader.callTool({ name: 'operator_handoff_history_get', arguments: { sourceConversationId: 'unrelated-chat' } })).isError).toBe(true)
       const denied = await connect(['operator_chat:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
-      await expect(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } }))
     })
   })
   it('inspects persisted Claude setup through read-only HTTP and MCP without creating an execution owner', async () => {
@@ -488,8 +489,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const deniedClient = new Client({ name: 'claude-setup-denied', version: '1' }); clients.push(deniedClient)
       await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
       expect((await deniedClient.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
-      await expect(deniedClient.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
-      await expect(client.callTool({ name: 'operator_chat_create', arguments: {} })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(deniedClient.callTool({ name: 'operator_mcp_setup_get', arguments: {} }))
+      await expectMcpAccessDenied(client.callTool({ name: 'operator_chat_create', arguments: {} }))
       expect(managersCreated).toBe(0)
       expect((await pool.query('select id from operator_conversations')).rowCount).toBe(0)
       expect((await pool.query('select request_id from operator_conversation_turns')).rowCount).toBe(0)
@@ -683,8 +684,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', harness: 'codex' })
       const denied = await connect(['settings:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
-      await expect(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
-      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} }))
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } }))
       expect((await read()).revision).toBe(accepted.value.revision)
     } finally { for (const client of clients) await client.close(); await app.close() }
   })

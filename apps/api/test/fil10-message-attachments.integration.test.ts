@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -387,7 +388,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       const read = await writer.callTool({ name: 'agent_chat_read', arguments: { workspaceId: fixture.scope.workspaceId, query: query() } })
       expect(AgentChatStateSchema.parse(read.structuredContent).messages.find((message) => message.requestId === input.requestId)!.attachments).toEqual([file])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('agent_chat_send')
-      await expect(denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } })).rejects.toThrow(/not found/)
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } }))
       expect((await agentSend(input, reader.token)).statusCode).toBe(403)
       const credential = await access.issue({ name: 'revoked FIL-10 writer', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
         grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: { workspaceIds: [fixture.scope.workspaceId] } }] })

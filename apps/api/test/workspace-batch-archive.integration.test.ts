@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -47,7 +48,7 @@ it('batch archives workspaces through authenticated MCP with atomic conflicts, a
     const reader = await access.issue({ name: 'Reader', audience: 'operator', grants: [{ actions: ['workspaces:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const denied = await connect(reader.token)
     expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_batch_archive')
-    await expect(denied.callTool({ name: 'workspace_batch_archive', arguments: input })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workspace_batch_archive', arguments: input }))
     const scoped = await access.issue({ name: 'Scoped', audience: 'operator', grants: [{ actions: ['workspaces:archive'], scope: { workspaceIds: [first.workspace.id] } }], expiresAt: new Date(Date.now() + 60_000) })
     expect((await (await connect(scoped.token)).callTool({ name: 'workspace_batch_archive', arguments: input })).isError).toBe(true)
     const rejected = await client.callTool({ name: 'workspace_batch_archive', arguments: { ...input, commandId: randomUUID(),

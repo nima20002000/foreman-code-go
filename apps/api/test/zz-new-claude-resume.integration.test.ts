@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -87,7 +88,7 @@ describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
                   expect((await f.db.pool.query('select record from workspaces where id=$1', [id])).rows[0]?.record).toMatchObject({ id, name: workspaceName })
                 } else {
                   expect(names).not.toContain('workspace_create')
-                  await expect(query.transport!.callTool(create)).rejects.toThrow('not found')
+                  await expectMcpAccessDenied(query.transport!.callTool(create))
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: createdId! } })
                   expect(read.structuredContent).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
                 }

@@ -85,8 +85,10 @@ test('failed-log selection includes only discovered failures once', () => {
 })
 
 test('exact-file selection runs only requested discovered files once', () => {
-  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts',
+    'apps/api/test/c.integration.test.ts']
   assert.deepEqual(selectExactFiles(files, [files[1], files[1]]), [files[1]])
+  assert.deepEqual(selectExactFiles(files, [files[2], files[0], files[2]]), [files[0], files[2]])
   assert.throws(() => selectExactFiles(files, []), /at least one/)
   assert.throws(() => selectExactFiles(files, ['apps/api/test/unknown.integration.test.ts']), /Unknown --files/)
 })

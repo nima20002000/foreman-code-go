@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -472,7 +473,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       const denied = await app.inject({ method: 'POST', url: `${base}/messages`, headers: { authorization: `Bearer ${readOnlyToken}` },
         payload: request(codexNode, 'must not send', id) })
       expect(denied.statusCode).toBe(403)
-      await expect(client.callTool({ name: 'agent_chat_send', arguments: { workspaceId, request: request(codexNode, 'must not send via mcp', id) } })).rejects.toThrow(/not found/)
+      await expectMcpAccessDenied(client.callTool({ name: 'agent_chat_send', arguments: { workspaceId, request: request(codexNode, 'must not send via mcp', id) } }))
       expect((await repository.state(id))!.messages).toEqual(state.messages)
       expect(native.prompts).toHaveLength(0)
     } finally {
@@ -513,8 +514,8 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
         request: request(codexNode, 'via mcp', state.conversation!.id) } })
       expect(sendResult.isError).not.toBe(true)
       // A read-only caller does not get the write tool at all; calling it is refused.
-      await expect(reader.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId,
-        request: request(codexNode, 'denied mcp', state.conversation!.id) } })).rejects.toThrow(/not found/)
+      await expectMcpAccessDenied(reader.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId,
+        request: request(codexNode, 'denied mcp', state.conversation!.id) } }))
       const final = await settled(service, () => service.read(writer, fixture.scope.workspaceId, query(codexNode)))
       const readback = await app.inject({ method: 'GET', url: `${url}?workflowId=${fixture.scope.workflowId}&workflowNodeId=${codexNode.id}&agentId=${codexNode.agentId}`,
         headers: { authorization: `Bearer ${readOnlyToken}` } })
@@ -654,8 +655,8 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
           expect(response.statusCode, response.body).toBe(403)
           expect(response.body).not.toContain('protected transcript')
           expect(available).not.toContain(command.tool)
-          await expect(mcp.callTool({ name: command.tool, arguments: { workspaceId: fixture.scope.workspaceId, conversationId: id,
-            ...(command.tool === 'agent_chat_send' ? { request: command.body } : command.body) } })).rejects.toThrow(/not found/)
+          await expectMcpAccessDenied(mcp.callTool({ name: command.tool, arguments: { workspaceId: fixture.scope.workspaceId, conversationId: id,
+            ...(command.tool === 'agent_chat_send' ? { request: command.body } : command.body) } }))
         }
         const history = await f.app.inject({ method: 'GET', url: `${path}/conversations/${id}/history`, headers })
         expect(history.statusCode).toBe(action === 'agent_chat:read' ? 200 : 403)
