@@ -132,7 +132,6 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
       const reader = await connect(f.reader.token)
       const prepared = deferred()
       const release = deferred()
-      const finished = deferred()
       const accepted = deferred()
       const principals: string[] = []
       const errors: unknown[] = []
@@ -145,16 +144,10 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
         await f.startUsing()(principal, input, guard)
         accepted.resolve()
       })
-      const dispatcher = new WorkflowScheduleDispatcher({
-        listDueSchedules: (input) => port.listDueSchedules(input),
-        dispatch: async (...args) => {
-          await port.dispatch(...args)
-          finished.resolve()
-        },
-      }, {
-        clock: f.clock, reportError: (error) => { errors.push(error) },
+      const dispatcher = new WorkflowScheduleDispatcher(port, {
+        clock: f.clock, pollIntervalMs: 20, reportError: (error) => { errors.push(error) },
       })
-      const work = dispatcher.tick()
+      dispatcher.start()
       try {
         await prepared.promise
         const input = {
@@ -181,14 +174,9 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
         })
 
         release.resolve()
-        await work
-        await finished.promise
-        // Allow admission to retry immediately or on the next scan. Its outcome
-        // must use the new revision and owner for the original due instant.
-        await dispatcher.tick()
         await accepted.promise
         await dispatcher.stop()
-        await dispatcher.tick()
+        await f.dispatcher().dispatch(changed.value)
         expect(errors).toEqual([])
         expect(principals[0]).toBe(f.writer.principal.id)
         expect(principals).toContain(replacement.principal.id)
@@ -210,7 +198,6 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
         expect(ScheduleOccurrencePageSchema.parse(httpHistory.json()).items).toEqual(history)
       } finally {
         release.resolve()
-        await work
         await dispatcher.stop()
       }
     }, 60_000)
