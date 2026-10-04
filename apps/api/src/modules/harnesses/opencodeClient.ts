@@ -1,6 +1,8 @@
 import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from './opencodeTransport.js'
 import { openCodeMediaStream } from './opencodeMedia.js'
 
+const historyTransfers = new WeakMap<ReadableStream<Uint8Array>, Promise<PromiseSettledResult<void>[]>>()
+
 export interface OpenCodeHttpEvidence {
   readonly operation: { readonly method: string; readonly path: string }
   readonly ownerAgentId: string
@@ -91,7 +93,10 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
     if (history && response.ok && response.body) {
       const headers = new Headers(response.headers)
       headers.delete('content-length')
-      return new Response(response.body.pipeThrough(openCodeMediaStream(), { signal: combined }), {
+      const media = openCodeMediaStream()
+      // The projected reader reports errors; settlement also waits for upstream cancellation.
+      historyTransfers.set(media.readable, Promise.allSettled([response.body.pipeTo(media.writable, { signal: combined })]))
+      return new Response(media.readable, {
         status: response.status, statusText: response.statusText, headers,
       })
     }
@@ -114,6 +119,7 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
   const signal = ownerSignal ? AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000)
   if (signal.aborted) {
     await response.body?.cancel().catch(() => undefined)
+    if (response.body) await historyTransfers.get(response.body)
     signal.throwIfAborted()
   }
   if (!response.body) return ''
@@ -136,6 +142,7 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
   } finally {
     signal.removeEventListener('abort', abort)
     await reader.cancel().catch(() => undefined)
+    await historyTransfers.get(response.body)
     reader.releaseLock()
   }
 }

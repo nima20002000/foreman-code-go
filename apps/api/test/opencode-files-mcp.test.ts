@@ -22,25 +22,42 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     const status: Record<string, { status: string }> = { graphql: { status: 'disabled' } }
     const native = {
       expectedVersion: '1.18.31', async ensure() {}, async dispose() {},
-      async request(path: string) {
-        return Response.json(new URL(path, 'http://127.0.0.1').pathname === '/config' ? { mcp: config } : status)
+      async request(path: string, init?: RequestInit) {
+        const route = new URL(path, 'http://127.0.0.1').pathname
+        if (route === '/config') return Response.json({ mcp: config })
+        if (route === '/mcp' && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body)) as { name: string }
+          status[body.name] = { status: 'connected' }
+        }
+        if (route.endsWith('/disconnect')) {
+          const name = route.split('/')[2]!
+          status[name] = { status: 'disabled' }
+        }
+        return Response.json(status)
       },
     }
-    const turn = new OpenCodeFileTurn({ service: f.service, host, server: native,
-      endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
-      maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
-    Object.assign(turn, { accepted: { directory: tmpdir() } })
-    const signal = AbortSignal.timeout(10_000)
-    await expect(turn['assertChat'](signal)).resolves.toBeUndefined()
+    const prepare = async () => {
+      const turn = new OpenCodeFileTurn({ service: f.service, host, server: native,
+        endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
+        maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
+      const signal = AbortSignal.timeout(10_000)
+      try {
+        await turn.prepare({ context: f.context, attachments: [], mode: 'write', directory: tmpdir(),
+          executionHostId: host.executionHostId, expiresAt: new Date(f.clock().getTime() + 60_000) }, signal)
+      } finally {
+        await turn.finish('definite_rejection', signal)
+      }
+    }
+    await expect(prepare()).resolves.toBeUndefined()
     for (const name of ['graphql-app', 'graphql-operator']) {
       config[name] = { enabled: true }
-      await expect(turn['assertChat'](signal)).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
+      await expect(prepare()).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
       config[name] = { enabled: false }
       status[name] = { status: 'connected' }
-      await expect(turn['assertChat'](signal)).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
+      await expect(prepare()).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
       status[name] = { status: 'disabled' }
     }
-    await expect(turn['assertChat'](signal)).resolves.toBeUndefined()
+    await expect(prepare()).resolves.toBeUndefined()
   })
 
   it('synchronizes tool and native edits, publishes their bytes and preserves credential and scope denials', async () => {
@@ -70,12 +87,15 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
       endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
       maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
     registerFileToolsMcp(app, createOpenCodeFileMcpFacade(f.service, () => turn))
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const call = async (name: string, input: unknown, credential = token) => {
-      const response = await app.inject({ method: 'POST', url: '/mcp/files',
-        headers: { host: 'localhost', authorization: `Bearer ${credential}`, accept: 'application/json, text/event-stream' },
-        payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } } })
-      const data = response.body.split('\n').find((line) => line.startsWith('data: '))?.slice(6) ?? response.body
-      return { status: response.statusCode, body: JSON.parse(data) }
+      const response = await fetch(new URL('/mcp/files', address), { method: 'POST',
+        headers: { authorization: `Bearer ${credential}`, accept: 'application/json, text/event-stream',
+          'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
+      const text = await response.text()
+      const data = text.split('\n').find((line) => line.startsWith('data: '))?.slice(6) ?? text
+      return { status: response.status, body: JSON.parse(data) }
     }
     try {
       const source = await f.upload()
