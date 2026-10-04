@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { describe, it } from 'vitest'
 import type { FileRevision } from '@graphql/contracts/files'
 import { sha256 } from '../src/modules/harnesses/opencodeFiles/attachments.js'
+import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from '../src/modules/harnesses/opencodeFiles/cleanup.js'
 import { LocalOpenCodeExecutionFiles } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { OpenCodeFileTurn } from '../src/modules/harnesses/opencodeFiles/turn.js'
 import { OpenCodeFileCleanupError } from '../src/modules/harnesses/opencodeFiles/types.js'
@@ -198,6 +199,34 @@ it('retains a native write between snapshot validation and replacement, includin
     }
   } finally {
     await host.remove(handle)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('cleans root-level sidecars and extraction directories while preserving a replaced turn root', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'opencode-turn-root-'))
+  const turn = join(root, 'turn')
+  await mkdir(turn)
+  const owned = await ownOpenCodeDirectory(turn)
+  try {
+    await writeFile(join(root, 'foreign.md'), 'foreign')
+    await writeFile(join(turn, 'backup.md'), 'backup')
+    await mkdir(join(turn, 'extraction', 'nested'), { recursive: true })
+    await writeFile(join(turn, 'extraction', 'nested', 'data'), 'data')
+    await symlink(root, join(turn, 'outside'))
+    const held = join(root, 'held')
+    await rename(turn, held)
+    await mkdir(turn)
+    await writeFile(join(turn, 'replacement.md'), 'replacement')
+    await assert.rejects(cleanupOpenCodeDirectory(owned), hasFileCode('FILE_CLEANUP_REQUIRED'))
+    assert.equal(await readFile(join(turn, 'replacement.md'), 'utf8'), 'replacement')
+    await rm(turn, { recursive: true })
+    await rename(held, turn)
+    await cleanupOpenCodeDirectory(owned)
+    await cleanupOpenCodeDirectory(owned)
+    assert.deepEqual(await readdir(root), ['foreign.md'])
+    assert.equal(await readFile(join(root, 'foreign.md'), 'utf8'), 'foreign')
+  } finally {
     await rm(root, { recursive: true, force: true })
   }
 })

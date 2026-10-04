@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rmdir } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
@@ -11,6 +11,7 @@ import { productionFileTools } from '../../files/tools/production.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 import type { OpenCodeChatFiles } from './chat.js'
 import { LocalOpenCodeExecutionFiles } from './host.js'
+import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from './cleanup.js'
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from './postgres.js'
 import { OpenCodeFileError } from './types.js'
 
@@ -74,11 +75,16 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
       adoptPublished: (context) => admissions.adoptPublished(pool, context),
       mount: async (facade) => {
         await mkdir(root, { recursive: true, mode: 0o700 })
+        const owned = await ownOpenCodeDirectory(root)
         try {
           const unmount = mountOpenCodeFileMcp(app(), mountId, facade)
-          return async () => { unmount(); await rmdir(root) }
+          return async () => {
+            unmount()
+            host.assertReleased()
+            await cleanupOpenCodeDirectory(owned)
+          }
         } catch (error) {
-          await rmdir(root)
+          await cleanupOpenCodeDirectory(owned)
           throw error
         }
       },

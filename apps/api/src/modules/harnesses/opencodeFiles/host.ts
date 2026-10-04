@@ -30,14 +30,14 @@ export async function openDirectory(path: string): Promise<FileHandle> {
   } catch (error) { await fd.close(); throw error }
 }
 
-async function assertDirectoryEntry(parent: FileHandle, name: string, directory: FileHandle): Promise<void> {
+export async function assertDirectoryEntry(parent: FileHandle, name: string, directory: FileHandle): Promise<void> {
   const held = await directory.stat({ bigint: true })
   const named = await lstat(at(parent, name), { bigint: true })
   checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
     'FILE_CLEANUP_REQUIRED', 'The owned directory moved; do not remove an unregistered replacement.')
 }
 
-async function removeDirectoryContents(directory: FileHandle): Promise<void> {
+export async function removeDirectoryContents(directory: FileHandle): Promise<void> {
   const parent = await directory.stat({ bigint: true })
   for (const name of await readdir(at(directory, '.'))) {
     const path = at(directory, name)
@@ -250,6 +250,11 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
         await versions.close()
       }
     })
+  }
+
+  assertReleased(): void {
+    checkFileCondition(this.entries.size === 0, 'FILE_CLEANUP_REQUIRED',
+      'Registered handles must be released before removing the owned turn directory.')
   }
 
   remove(handle: string): Promise<void> {
