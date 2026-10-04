@@ -105,7 +105,7 @@ describe('original accepted artifact authority', () => {
     expect(JSON.parse(audit.args[2] as string)).toEqual({ operationId: t.intent.operationId, attemptId: t.intent.attemptId,
       bindingHash: t.intent.bindingHash, agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'] })
   })
-  it.each(['readonly', 'read-grant', 'revoked', 'stopped', 'ended', 'cleanup', 'grant', 'configuration', 'origin-boot', 'origin-generation', 'foreign-intent', 'foreign-placement'] as const)(
+  it.each(['readonly', 'read-grant', 'revoked', 'stopped', 'ended', 'cleanup', 'grant', 'configuration', 'origin-boot', 'unacknowledged-reconnect', 'foreign-intent', 'foreign-placement'] as const)(
     'denies declaration authority for %s without auditing success', async reason => {
       const t = fixture(), request = structuredClone(t.declarationsRequest), connection = structuredClone(t.state.receipt.connection)
       if (reason === 'readonly') t.state.configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'read-only' }
@@ -117,7 +117,10 @@ describe('original accepted artifact authority', () => {
       if (reason === 'grant') t.state.grantLive = false
       if (reason === 'configuration') t.state.configuration.id = 'foreign'
       if (reason === 'origin-boot') connection.bootId = randomUUID()
-      if (reason === 'origin-generation') connection.connectionGeneration++
+      if (reason === 'unacknowledged-reconnect') {
+        connection.connectionGeneration++
+        delete t.state.receipt.native
+      }
       if (reason === 'foreign-intent') request.intent.inputDigest = 'sha256:' + 'b'.repeat(64)
       if (reason === 'foreign-placement') request.placement.destination.canonicalCwd = '/foreign'
       await expect(t.authority.authorizeNativeOutputDeclarations(request, connection, t.sql)).rejects.toThrow()
@@ -131,7 +134,22 @@ describe('original accepted artifact authority', () => {
     t.state.receipt.stopFence = true
     await expect(t.authority.assertNativeOutputConnection(request, t.state.receipt.connection, t.sql)).rejects.toMatchObject({ status: 403 })
     t.state.receipt.stopFence = false
-    await expect(t.authority.assertNativeOutputConnection(request, { ...t.state.receipt.connection, connectionGeneration: 2 }, t.sql)).rejects.toMatchObject({ status: 403 })
+    await expect(t.authority.assertNativeOutputConnection({ ...request, turnId: 'foreign' },
+      { ...t.state.receipt.connection, connectionGeneration: 2 }, t.sql)).rejects.toMatchObject({ status: 403 })
+  })
+
+  it('keeps native output authority for the original acknowledged turn after authenticated reconnect', async () => {
+    const t = fixture()
+    const original = structuredClone(t.state.receipt)
+    const connection = { ...t.state.receipt.connection, connectionGeneration: 2 }
+    expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, connection, t.sql))
+      .toMatchObject({ agentConfigurationVersionId: 'configuration' })
+    await t.authority.assertNativeOutputConnection({ ...t.declarationsRequest,
+      operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
+      nativeSessionId: 'original-session', turnId: 'original-turn' }, connection, t.sql)
+    expect(t.state.receipt).toEqual(original)
+    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement,
+      expect.objectContaining({ id: 'run-owner' }), 'workspace', { purpose: 'resident' })
   })
 
   it('resolves only an already admitted original workflow context from saved Run/configuration facts', async () => {
@@ -141,7 +159,8 @@ describe('original accepted artifact authority', () => {
     const conversation = t.state.queries.find(q => q.text.includes('native_session_id=$6'))!
     expect(conversation.text).toContain("record #>> '{origin,sourceNativeSessionId}'=$6")
     expect(conversation.args).toContain('/original/worktree'); expect(conversation.args).toContain('/original/runtime')
-    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement, expect.objectContaining({ id: 'run-owner' }), 'workspace')
+    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement,
+      expect.objectContaining({ id: 'run-owner' }), 'workspace', { purpose: 'resident' })
     expect(t.state.queries.some(q => /insert|update operator_conversations/i.test(q.text))).toBe(false)
   })
   it.each([0, 2])('reports missing/ambiguous persisted workflow conversation (%i) without inventing one', async count => {

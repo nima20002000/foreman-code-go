@@ -31,7 +31,8 @@ export interface NativeArtifactAuthorityPorts {
 }
 const denied = (): never => { throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original accepted artifact attempt or native authority is unavailable.', 403) }
 /** Shared SQL-only accepted attempt fence; consumer need not have launched a native session. */
-async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPorts, raw: ArtifactAttempt, sql: FileQuery, grant?: ArtifactAuthority) {
+async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPorts, raw: ArtifactAttempt, sql: FileQuery,
+  options: { grant?: ArtifactAuthority; purpose?: 'resident' } = {}) {
   const attempt = ArtifactAttemptSchema.parse(raw)
   const original = await readDispatchIntent(sql, attempt.executionId)
   const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
@@ -53,11 +54,13 @@ async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPor
     || configuration.agentId !== execution.agentId || configuration.workspaceId !== attempt.workspaceId) return denied()
   const principal = await readLiveManagementPrincipal(sql, row.authorization_principal_id)
   await ports.locations.revalidateRunAuthorization(principal.id, attempt.workspaceId, attempt.workflowId, sql, true)
-  await ports.producer.assertPinsCurrent(sql, placement, principal, attempt.workspaceId)
+  await ports.producer.assertPinsCurrent(sql, placement, principal, attempt.workspaceId,
+    options.purpose ? { purpose: options.purpose } : undefined)
   const registration = await assertDeviceHostInstallation(sql, placement.hostRef, placement.registration?.workerInstallationId ?? placement.mainInstallationId)
   if (placement.registration && (!registration || registration.keyRevision !== placement.registration.keyRevision
     || registration.authorizationRevision !== placement.registration.authorizationRevision)) return denied()
-  if (grant && (grant.grantId !== intent.owner.grantId || grant.grantRevision !== intent.owner.epoch)) return denied()
+  if (options.grant && (options.grant.grantId !== intent.owner.grantId
+    || options.grant.grantRevision !== intent.owner.epoch)) return denied()
   const live = await sql.query(`select 1 from execution_dispatch_owner_grants
     where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
   [attempt.executionId, intent.operationId, intent.owner.grantId, intent.owner.epoch])
@@ -82,17 +85,31 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     const attempt: ArtifactAttempt = { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: input.intent.runId,
       nodeId: input.intent.nodeId, executionId: input.intent.executionId, attemptId: input.intent.attemptId,
       placementHash: input.intent.bindingHash }
-    const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql)
+    const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share',
+      [input.intent.operationId])).rows[0]
+    if (!origin) return denied()
+    const originalConnection = DeviceConnectionIdentitySchema.parse(origin.connection)
+    if (!isDeepStrictEqual(originalConnection,
+      { ...identity, connectionGeneration: originalConnection.connectionGeneration })) return denied()
+    const reconnected = originalConnection.connectionGeneration !== identity.connectionGeneration
+    if (reconnected) {
+      const row = (await sql.query<{ receipt: unknown }>(
+        'select receipt from remote_execution_receipts where operation_id=$1 for share',
+        [input.intent.operationId])).rows[0]
+      const receipt = RemoteOperationReceiptSchema.safeParse(row?.receipt)
+      if (!receipt.success || !receipt.data.native || !isDeepStrictEqual(receipt.data.intent, input.intent)
+        || !isDeepStrictEqual(receipt.data.connection, originalConnection)
+        || receipt.data.stopFence || !['start_acknowledged', 'running'].includes(receipt.data.phase)) return denied()
+    }
+    const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql,
+      reconnected ? { purpose: 'resident' } : {})
     if (!isDeepStrictEqual(current.intent, input.intent) || !isDeepStrictEqual(current.placement, input.placement)
       || current.placement.payload.kind !== 'agent' || !current.placement.payload.artifactOutputs
       || current.placement.payload.agentId !== input.applicationAccess.agentId
       || current.stopped || !['starting', 'running', 'waiting'].includes(current.execution.state)) return denied()
     const cleanup = await sql.query('select 1 from run_cleanup_intents where run_id=$1 and pending for share', [input.intent.runId])
     if (cleanup.rowCount !== 0) return denied()
-    const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share',
-      [input.intent.operationId])).rows[0]
-    if (!origin || !isDeepStrictEqual(DeviceConnectionIdentitySchema.parse(origin.connection), identity)) return denied()
-    return { ...current, attempt, identity }
+    return { ...current, attempt, identity: originalConnection }
   }
   /** Original connection and durable native ACK are required for every mutation; reconnect is not a replacement turn. */
   async assertNativeOutputConnection(raw: Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>,
@@ -131,7 +148,7 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
   /** Resolves an already admitted workflow conversation. It never creates a chat or forks a native session. */
   resolveWorkflowContext(attempt: ArtifactAttempt, transferContext: TransferContext, query?: FileQuery): Promise<AcceptedArtifactPublication> {
     const resolve = async (sql: FileQuery): Promise<AcceptedArtifactPublication> => {
-      const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql)
+      const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql, { purpose: 'resident' })
       if (current.configuration.harness.harness !== 'codex' || !current.execution.nativeSessionId) return denied()
       const conversation = await sql.query<{ id: string }>(`select id from operator_conversations where kind='agent' and deleted_at is null
         and workspace_id=$1 and workflow_id=$2 and agent_id=$3 and origin_run_id=$4 and origin_execution_id=$5
@@ -158,7 +175,7 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     return query ? resolve(query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(resolve))
   }
   private async locked(accepted: AcceptedArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
-    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql)
+    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql, { purpose: 'resident' })
     const { context, transferContext: transfer } = accepted, scope = context.scope.chat
     if (current.placement.hostRef.kind !== 'device' || !current.placement.registration || scope.kind !== 'agent'
       || scope.workspaceId !== accepted.attempt.workspaceId || scope.workflowId !== accepted.attempt.workflowId
@@ -233,7 +250,7 @@ export class PostgresAcceptedArtifactAttemptFence implements AcceptedArtifactAtt
   async assertCurrent(attempt: ArtifactAttempt, authority: ArtifactAuthority, query: FileQuery): Promise<void> {
     const principal = await readLiveManagementPrincipal(query, authority.principalId)
     requireAuthorization(principal, 'agent_chat:read', { workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, runId: attempt.runId })
-    const current = await acceptedAttempt(this.mainId, this.ports, attempt, query, authority)
+    const current = await acceptedAttempt(this.mainId, this.ports, attempt, query, { grant: authority })
     if (principal.id !== current.principal.id) {
       const sender = await query.query(`select 1 from run_authority_principals where principal_id=$1 and run_id=$2 and caller_principal_id=$3 for share`,
         [current.principal.id, attempt.runId, principal.id])

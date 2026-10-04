@@ -48,7 +48,7 @@ import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
-import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
+import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
 import type { CodexNativeOutputTurnPin, CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
 import type { NativeOutputStorageOwner } from './installedNativeOutputStorage.js'
@@ -361,7 +361,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       const log=await journal();current(context.binding)
       // Other executions may publish this generation's host while the journal opens.
       host = hosts.get(generation)
-      if (host) return host
+      if (host) {
+        owned.host = host
+        return host
+      }
       const managers=new ExecutionScopedNativeSessionManagerResolver(configurationContext=>{
         const resident=operations.get(configurationContext.executionId)
         if(!resident||configurationContext.harness!=='codex'||!isDeepStrictEqual(configurationContext.configuration,resident.capture.facts.configuration)
@@ -396,12 +399,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           closeNativeOutputWriters: async owner => {
             if (!actual.native || !actual.session) unavailable('original_native_output_owner_conflict')
             actual.physicalClosure = await closeInstalledNativeOutputWriters({ journal: log, registry,
-              intent: actual.intent, binding: actual.context.binding, session: actual.session!, captured: actual.native!, owner })
+              intent: actual.intent, binding: outputContext.binding, session: actual.session!, captured: actual.native!, owner })
           },
           observeArtifactPublication: (publication, result) => actual.artifacts.observe(publication, result),
           assertCurrent: async (pin, effectSignal) => {
             effectSignal?.throwIfAborted(); current(actual.context.binding)
-            await before(); effectSignal?.throwIfAborted(); current(actual.context.binding)
+            if (actual.native) {
+              await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'read')
+              installations.assertCurrent(selection)
+            } else {
+              await before()
+            }
+            effectSignal?.throwIfAborted(); current(actual.context.binding)
             if (operations.get(actual.intent.executionId) !== actual) unavailable('original_native_owner_closed')
             if (pin) {
               pin.assertCurrent()
@@ -432,7 +441,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           assertCurrent: async effectSignal => { await outputContext.assertCurrent(undefined, effectSignal); await outputPorts.assertCurrent(effectSignal) },
           storage: (prepared, pin) => {
             const storage = outputPorts.storage(prepared, pin)
-            if (!isDeepStrictEqual(storage.owner.binding, actual.context.binding)) unavailable('original_native_output_connection_conflict')
+            if (!isDeepStrictEqual(storage.owner.binding, outputContext.binding)) unavailable('original_native_output_connection_conflict')
             return storage
           },
           authorize: async (pin, operation, effectSignal) => {
@@ -615,17 +624,19 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(frame.method==='physical-ack') {
           const resident = operation(frame.intent)
           const status = await log.status(frame.intent.operationId)
-          const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })
-            || resident.retainedHistory && frame.sourceDigest === remoteWorkflowSourceDigest({
-              type: 'history', history: resident.retainedHistory,
-            })
-          if (terminalSource && resident.physicalClosure
+          if (resident.physicalClosure
             && status.status === 'known' && status.receipt.terminal && status.receipt.sequence === frame.receiptSequence) {
-            await physical.read(frame)
-            await log.retireSettled(frame.intent, frame.receiptSequence)
-            const ack = await physical.ack(frame)
-            await releaseSettled(frame.intent)
-            return {payload:ack}
+            const readout = await physical.read(frame)
+            const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })
+              || readout.history && frame.sourceDigest === remoteWorkflowSourceDigest({
+                type: 'history', history: remoteWorkflowNativeHistory(readout.history),
+              })
+            if (terminalSource) {
+              await log.retireSettled(frame.intent, frame.receiptSequence)
+              const ack = await physical.ack(frame)
+              await releaseSettled(frame.intent)
+              return {payload:ack}
+            }
           }
           return {payload:await physical.ack(frame)}
         }

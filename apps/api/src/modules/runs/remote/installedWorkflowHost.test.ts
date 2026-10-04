@@ -270,7 +270,8 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   })
   const history: NativeHistory = { events: [{ sequence: 1, type: 'native.notification',
     occurredAt: new Date().toISOString(), payload: { text: 'original output' } }],
-    correlationId: 'execution:execution', nativeTurnId: 'original-turn', pendingInteractions: [] }
+    correlationId: 'execution:execution', nativeTurnId: 'original-turn', pendingInteractions: [],
+    firstRetainedSequence: 1, nextSequence: 2 }
   if (phase === 'approval wait') history.pendingInteractions = [{ session, turn: { nativeTurnId: 'original-turn', nativeRequestId: 'question' },
     nativeRequestType: 'question', request: {}, responseOptions: [CODEX_APPROVAL_OPTIONS_FIXTURE[0]!] }]
   let release!: () => void
@@ -350,13 +351,39 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
       operationId: f.intent.operationId, attemptId: f.intent.attemptId, executionId: f.intent.executionId,
       bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: initialStatus.receipt.native, action: { kind: 'stop' } } })
   }
-  return { ...f, host, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
+  return { ...f, host, journal: log, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
     disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
     renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
     changeProcess: () => { observed = { ...launch, provider: { pid: 201, startTicks: 'changed' } } } }
 }
 
 describe('installed host resident execution continuity', () => {
+  it('retires a completed owner when Main acknowledges a bounded terminal history page', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.history.events = Array.from({ length: 24 }, (_, sequence) => ({
+        sequence, type: 'native.notification', occurredAt: new Date().toISOString(),
+        payload: { text: 'x'.repeat(80_000) },
+      }))
+      f.history.firstRetainedSequence = 0
+      f.history.nextSequence = 24
+      f.finish('succeeded')
+      await f.settled
+      const response = await f.call('history')
+      const value = response.payload as { history: NativeHistory; status: { receipt: { sequence: number } } }
+      expect(value.history.events.length).toBeLessThan(f.history.events.length)
+      const selector = { receiptSequence: value.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: value.history }) }
+      expect(await f.call('physical-ack', selector)).toMatchObject({ payload: { status: 'retired' } })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      expect(await f.call('status')).toMatchObject({ payload: { receipt: { terminal: { kind: 'completed' } } } })
+      expect(f.create).toHaveBeenCalledOnce()
+    } finally {
+      f.finish('cancelled')
+      await f.host.close()
+    }
+  })
+
   it.each(['generation', 'approval wait'] as const)('rebinds %s to the original resident before history and Stop', async phase => {
     const f = await runningInstalledFixture(phase)
     try {
