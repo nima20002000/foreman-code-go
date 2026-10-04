@@ -483,9 +483,22 @@ export function createClaudeNativeSessionManager(options: {
             ? { outcome: 'succeeded', output: typeof frame.result === 'string' ? frame.result : '' }
             : matched.cancelRequested ? { outcome: 'canceled' }
             : { outcome: 'failed', error: { code: 'CLAUDE_NATIVE_RESULT_ERROR', message: Array.isArray(frame.errors) ? frame.errors.join('\n') : 'Claude returned an error result.', retryable: false } }
+          let persistenceFailure: { error: unknown } | undefined
+          try {
+            await matched.input.onTerminal?.({
+              submission: { kind: 'message', nativeSessionId: runtime.session!.nativeSessionId,
+                nativeMessageId: matched.nativeMessageId!, clientCorrelationId: matched.correlationId },
+              result: matched.terminal,
+              ...(matched.assistantMessageId ? { nativeMessageId: matched.assistantMessageId } : {}),
+            })
+          } catch (error) {
+            // Keep the result resident so the caller can retry saving it before native disposal.
+            persistenceFailure = { error }
+            matched.observing = false
+          }
           record(runtime, 'turn.completed', { nativeSessionId: frame.session_id, nativeMessageId: matched.nativeMessageId, clientCorrelationId: matched.correlationId, result: matched.terminal,
             ...(typeof frame.uuid === 'string' ? { source: { eventId: frame.uuid } } : {}) }, matched)
-          matched.events.close()
+          matched.events.close(persistenceFailure?.error)
           matched.observing = false
           if (active === matched) delete runtime.active
         }

@@ -24,7 +24,9 @@ import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operat
 
 import { DomainError } from '../errors.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'
-import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission } from '../harnesses/port.js'
+import type {
+  ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission, NativeTerminalObservation,
+} from '../harnesses/port.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -78,6 +80,8 @@ export interface NativeManagerResolver {
   /** After durable native acknowledgement, before either file bridge issues authority. */
   recordFileSubmission?(conversationId: string, requestId: string, nativeTurnId: string): Promise<void>
   recordFileMessageSubmission?(conversationId: string, requestId: string, receipt: NativeMessageSubmission): Promise<void>
+  /** Close the persisted process owner; absence of a registration is not positive closure. */
+  closeRecoveredRuntime?(conversationId: string, signal: AbortSignal): Promise<boolean>
   release?(conversationId: string): void
 }
 export interface OperatorChatAuthority {
@@ -496,6 +500,14 @@ export class OperatorChatService {
       if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
         'OPERATOR_FILE_DELIVERY_UNAVAILABLE', 'The accepted Operator attachments have no native delivery binding.', 409)
       const runtime = await this.runtime(id, row, configuration, signal, fileInputs)
+      const onTerminal = async (observation: NativeTerminalObservation) => {
+        submitted = true
+        if (!await this.repository.journalTerminal(id, input.requestId, observation.result, {
+          submission: observation.submission,
+          ...(observation.nativeMessageId ? { nativeMessageId: observation.nativeMessageId } : {}),
+          retryable: false, requiresRuntimeClosure: true,
+        })) throw new Error('Native terminal ownership was lost.')
+      }
       if (!runtime.session) {
         if (!await this.repository.phase(id, input.requestId, 'creating')) {
           await this.control(id, () => this.complete(id, input.requestId, { outcome: 'canceled' })); return
@@ -519,6 +531,7 @@ export class OperatorChatService {
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
             prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`,
             clientCorrelationId: start.correlationId,
+            onTerminal,
             onSessionObserved: async (observed) => {
               await this.control(id, async () => {
                 const current = await this.repository.active(id)
@@ -581,6 +594,7 @@ export class OperatorChatService {
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
+        onTerminal,
         onMessageSubmitted: async (receipt) => {
           submitted = true
           await this.control(id, async () => {
@@ -670,18 +684,64 @@ export class OperatorChatService {
   }
 
   private async complete(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false) {
-    // Callers serialize terminal decisions with cancel/response delivery through control().
-    await this.release(id)
+    if (!await this.repository.journalTerminal(id, requestId, result, {
+      ...(nativeMessageId ? { nativeMessageId } : {}), retryable,
+      requiresRuntimeClosure: this.runtimes.has(id),
+    })) return
+    await this.settleTerminal(id, requestId)
+  }
+  private async settleTerminal(id: string, requestId: string): Promise<void> {
+    const terminal = await this.repository.terminal(id, requestId)
+    if (!terminal) return
+    const { result, nativeMessageId, retryable } = terminal.observation
+    if (terminal.closureState !== 'closed') {
+      const runtime = this.runtimes.get(id)
+      const recovered = terminal.observation.requiresRuntimeClosure && !runtime
+      if (recovered && !this.managers.closeRecoveredRuntime) {
+        throw new DomainError('OPERATOR_NATIVE_CLOSURE_UNCERTAIN',
+          'The result was saved, but closure of its original native runtime is unconfirmed.', 409)
+      }
+      if (runtime?.session && runtime.session.nativeSessionId !== terminal.observation.nativeSessionId) {
+        throw new DomainError('OPERATOR_NATIVE_CLOSURE_CONFLICT', 'The result belongs to a different native runtime.', 409)
+      }
+      if (!await this.repository.closurePending(id, requestId)) return
+      if (recovered) await this.closeRecoveredRuntime(id, requestId)
+      else await this.stopRuntime(id, runtime)
+      this.runtimes.delete(id)
+      this.managers.release?.(id)
+    }
     if (await this.repository.finish(id, requestId, result, nativeMessageId, retryable)) {
       this.events.publish(id, 'message', { requestId })
       this.events.publish(id, 'state', { requestId, turnState: result.outcome === 'failed' ? 'error' : 'idle' })
     }
   }
+  private async closeRecoveredRuntime(id: string, requestId: string): Promise<void> {
+    const results = await Promise.allSettled([
+      this.authority.release(id),
+      this.managers.closeRecoveredRuntime!(id, AbortSignal.timeout(10_000)),
+    ])
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Operator recovered runtime closure failed.')
+    const closure = results[1]!
+    if (closure.status !== 'fulfilled' || closure.value !== true) {
+      throw new DomainError('OPERATOR_NATIVE_CLOSURE_UNCERTAIN',
+        'The result was saved, but closure of its original native runtime is unconfirmed.', 409)
+    }
+    if (!await this.repository.closureProven(id, requestId)) throw new Error('Native closure ownership was lost.')
+  }
   private async stopRuntime(id: string, runtime: Runtime | undefined): Promise<void> {
-    // Start revocation first, but a database failure must not skip native disposal.
+    // Revoke credentials even when saving a terminal result prevents native disposal.
     const revoking = this.authority.release(id)
     if (runtime && !runtime.disposal) {
       const disposal = (async () => {
+        await this.journalResidentTerminal(id, runtime)
+        const row = await this.repository.active(id)
+        if (row?.active_request_id) {
+          const terminal = await this.repository.terminal(id, row.active_request_id)
+          if (terminal?.closureState === 'observed' && !await this.repository.closurePending(id, row.active_request_id)) {
+            throw new Error('Native closure ownership was lost.')
+          }
+        }
         if (runtime.manager.dispose) await runtime.manager.dispose()
         else if (runtime.session) await runtime.manager.close(runtime.session)
       })()
@@ -691,6 +751,32 @@ export class OperatorChatService {
     const results = await Promise.allSettled([revoking, ...(runtime?.disposal ? [runtime.disposal] : [])])
     const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Operator native disposal or credential revocation failed.')
+    const row = await this.repository.active(id)
+    if (row?.active_request_id) {
+      const terminal = await this.repository.terminal(id, row.active_request_id)
+      if (terminal?.closureState === 'pending' && !await this.repository.closureProven(id, row.active_request_id)) {
+        throw new Error('Native closure ownership was lost.')
+      }
+    }
+  }
+  private async journalResidentTerminal(id: string, runtime: Runtime): Promise<void> {
+    if (!runtime.session) return
+    const row = await this.repository.active(id)
+    if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId
+      || await this.repository.terminal(id, row.active_request_id)) return
+    const correlationId = nativeCorrelation(id, row.active_request_id)
+    const history = await runtime.manager.reconcile(runtime.session, correlationId, AbortSignal.timeout(5_000))
+    const submission = history.nativeSubmission
+    const messageMatches = submission?.kind === 'message' && submission.nativeSessionId === row.native_session_id
+      && submission.clientCorrelationId === correlationId && history.terminalTurn?.correlationId === correlationId
+      && history.terminalTurn.providerId === submission.nativeMessageId
+    const turnMatches = row.harness !== 'claude'
+      && Boolean(history.nativeTurnId && history.nativeTurnId === row.active_native_turn_id)
+    if (!history.terminalResult || history.correlationId !== correlationId || !messageMatches && !turnMatches) return
+    await this.repository.journalTerminal(id, row.active_request_id, history.terminalResult, {
+      ...(history.nativeMessageId ? { nativeMessageId: history.nativeMessageId } : {}),
+      ...(messageMatches ? { submission: submission! } : {}), retryable: false, requiresRuntimeClosure: true,
+    })
   }
   private async release(id: string) {
     await this.stopRuntime(id, this.runtimes.get(id))
@@ -716,6 +802,14 @@ export class OperatorChatService {
       if (!await this.repository.submitted(id, requestId, history.nativeTurnId!,
         { nativeSessionId: runtime.session.nativeSessionId, principalId: row.owner_principal_id })) return
       if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, requestId, history.nativeTurnId!)
+    }
+    const terminalMatches = history.terminalResult && (!messageIdentity
+      || history.terminalTurn?.correlationId === correlationId && history.terminalTurn.providerId === receipt!.nativeMessageId)
+    if (terminalMatches) {
+      await this.repository.journalTerminal(id, requestId, history.terminalResult!, {
+        ...(history.nativeMessageId ? { nativeMessageId: history.nativeMessageId } : {}),
+        retryable: false, requiresRuntimeClosure: true,
+      })
     }
     let precedingActivityId: string | null = null
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
@@ -915,7 +1009,11 @@ export class OperatorChatService {
     for (const candidate of await this.repository.unfinished()) {
       if (this.closing) break
       let revoked = false
-      try { revoked = await this.recoveryAuthority(candidate) } catch (error) {
+      try {
+        if (!await this.repository.terminal(candidate.id, candidate.active_request_id!)) {
+          revoked = await this.recoveryAuthority(candidate)
+        }
+      } catch (error) {
         await this.repository.uncertain(candidate.id, candidate.active_request_id!,
           error instanceof Error ? error.message : 'Owner recovery authority is unavailable.')
         continue
@@ -930,6 +1028,10 @@ export class OperatorChatService {
         try {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
           if (this.tasks.has(row.id)) return
+          if (await this.repository.terminal(row.id, requestId)) {
+            await this.settleTerminal(row.id, requestId)
+            return
+          }
           if (row.active_phase === 'accepted' || row.active_phase === 'ready') {
             await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
               : failure(new Error('The server stopped before native submission. Retry the same request.')), undefined, !row.cancel_requested)

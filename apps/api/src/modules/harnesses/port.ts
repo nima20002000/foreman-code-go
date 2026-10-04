@@ -66,6 +66,14 @@ export interface NativeTurnInput {
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
   onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
+  /** Save the matched native result before publishing completion or releasing its runtime. */
+  onTerminal?(observation: NativeTerminalObservation): Promise<void>
+}
+
+export interface NativeTerminalObservation {
+  submission: NativeMessageSubmission
+  result: ExecutionResult
+  nativeMessageId?: string
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
