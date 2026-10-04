@@ -183,6 +183,48 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(f.accept).not.toHaveBeenCalled()
     expect((await database.pool.query('select 1 from job_preparations where workspace_id=$1', [f.workspaceId])).rowCount).toBe(0)
   })
+  it('rejects stale definition/start revisions and read-only edits through authenticated MCP with persisted readback', async () => {
+    const f = await fixture()
+    await f.enroll(0, true, 100)
+    const definition = await f.save()
+    const client = await f.connect(writer.token)
+    const readOnly = await f.connect(reader.token)
+    const edit = { workspaceId: f.workspaceId, commandId: randomUUID(), id: definition.id,
+      expectedRevision: definition.revision, name: 'Updated build', spec: definition.spec }
+    const denied = await readOnly.callTool({ name: 'job_definition_save', arguments: edit })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    expect(await f.jobs.getDefinition(writer.principal, f.workspaceId, definition.id)).toEqual(definition)
+    const updated = await client.callTool({ name: 'job_definition_save', arguments: edit })
+    expect(updated.isError).not.toBe(true)
+    const saved = updated.structuredContent?.definition as JobDefinition
+    expect(saved.revision).toBe(definition.revision + 1)
+    const staleEdit = await client.callTool({ name: 'job_definition_save', arguments: {
+      ...edit, commandId: randomUUID(),
+    } })
+    expect(staleEdit.isError).toBe(true)
+    expect(JSON.stringify(staleEdit.content)).toContain('REVISION_CONFLICT')
+    const staleStart = await client.callTool({ name: 'job_start', arguments: {
+      workspaceId: f.workspaceId, commandId: randomUUID(), definitionId: saved.id,
+      expectedRevision: definition.revision,
+    } })
+    expect(staleStart.isError).toBe(true)
+    expect(JSON.stringify(staleStart.content)).toContain('REVISION_CONFLICT')
+    expect(f.accept).not.toHaveBeenCalled()
+    expect((await client.callTool({ name: 'job_definition_get', arguments: {
+      workspaceId: f.workspaceId, definitionId: saved.id,
+    } })).structuredContent).toEqual(updated.structuredContent)
+    const start = { workspaceId: f.workspaceId, commandId: randomUUID(), definitionId: saved.id,
+      expectedRevision: saved.revision }
+    const accepted = await client.callTool({ name: 'job_start', arguments: start })
+    expect(accepted.isError).not.toBe(true)
+    const conflict = await client.callTool({ name: 'job_start', arguments: {
+      ...start, expectedRevision: definition.revision,
+    } })
+    expect(conflict.isError).toBe(true)
+    expect(JSON.stringify(conflict.content)).toContain('COMMAND_ID_CONFLICT')
+    expect(f.accept).toHaveBeenCalledTimes(1)
+  })
   it('atomically places concurrent starts on separate available computers and refuses overcommit', async () => {
     const f = await fixture()
     await f.enroll(1, true, 50)
