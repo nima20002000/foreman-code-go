@@ -50,6 +50,9 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
 
     dispatch = new PostgresJobDispatch(pool, new RemoteJobCarrierDispatch(pool, { request }, undefined), {
       revalidate: async () => {}, authorizeControl: async () => {}, observe: async () => { throw new Error('No receipt was returned.') },
+      authorizeLaunch: async (sql, execution) => {
+        if (placementMode === 'auto') await settings.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
+      },
     }, workerExecution)
     const jobs = new JobService(pool, commands, {
       workerExecution,
