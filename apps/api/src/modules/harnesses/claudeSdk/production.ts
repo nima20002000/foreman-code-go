@@ -97,6 +97,7 @@ export function productionClaudeManager(input: {
     } })
     allocated = manager => {
       actual = manager
+      let sessionStart: NativeSessionStart | undefined
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const readHistory = manager.history.bind(manager)
       manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
@@ -112,6 +113,7 @@ export function productionClaudeManager(input: {
           'This Claude owner cannot inherit an application MCP credential.', 403)
         callbackAuthority = await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
+        sessionStart = structuredClone(start)
         yield* initial(start, { ...message, callbackAuthority }, effectSignal)
       }
       const attach = manager.attachSession.bind(manager)
@@ -120,14 +122,19 @@ export function productionClaudeManager(input: {
           'This Claude owner cannot inherit an application MCP credential.', 403)
         await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
-        return attach(session, start, effectSignal)
+        const attached = await attach(session, start, effectSignal)
+        sessionStart = structuredClone(start)
+        return attached
       }
       const turn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, effectSignal) {
         callbackAuthority = await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
+        if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
+          'The message requires its admitted native session context.', 409)
+        const attached = await attach(session, sessionStart, effectSignal)
         const acceptedMessage = { ...message, callbackAuthority }
-        yield* turn(session, acceptedMessage, effectSignal)
+        yield* turn(attached, acceptedMessage, effectSignal)
       }
     }
     if (input.files) {
