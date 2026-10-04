@@ -15,7 +15,8 @@ import { PostgresSourceReservations } from '../src/modules/sources/reservations.
 import { JobService } from '../src/modules/jobs/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
-import { buildComputerFixture } from './helpers/buildComputerFixture.js'
+import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
+import { JobAdmissionResultSchema } from '@graphql/contracts/job-admission'
 import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
 
 // Real settings/command/admission SQL and authenticated transports; runtime/source I/O is a bounded fixture.
@@ -45,7 +46,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     await Promise.allSettled(apps.map(app => app.close()))
     await database?.close()
   })
-  async function fixture(options: { startupEnabled?: boolean } = {}) {
+  async function fixture(options: { startupEnabled?: boolean; queued?: boolean } = {}) {
     const workspaceId = randomUUID()
     await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
       [workspaceId, JSON.stringify({ id: workspaceId, name: 'Build selection fixture' })])
@@ -63,6 +64,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       ...spec, source: { ...spec.source, materializationId: randomUUID(), materializationDigest: '1'.repeat(64) },
     }))
     const jobs = new JobService(database.pool, commands, { placement, workerExecution,
+      ...(options.queued ? { queue: buildQueueConfigurationFixture(writer.principal, computers[0]!.candidate.profile.limits) } : {}),
       preparation: { accept, choices: async () => ({ targets: [], sources: [], policies: [] }),
         validate: async () => ({ valid: true, reasons: [], sideEffects: false }),
         revalidateAccepted: async () => {}, adoptFinalBinding: async () => {} },
@@ -145,7 +147,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect((await f.jobs.getExecution(reader.principal, f.workspaceId, first.id)).acceptedSpec).toEqual(first.acceptedSpec)
   })
   it('saves, starts and reads an Auto Job through authenticated MCP while denying a read-only start', async () => {
-    const f = await fixture()
+    const f = await fixture({ queued: true })
     await f.enroll(0, true, 100)
     const client = await f.connect(writer.token)
     const saved = await client.callTool({ name: 'job_definition_save', arguments: {
@@ -163,12 +165,22 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(f.accept).not.toHaveBeenCalled()
     const started = await client.callTool({ name: 'job_start', arguments: command })
     expect(started.isError).not.toBe(true)
-    const { execution } = z.object({ execution: JobExecutionSchema }).parse(started.structuredContent)
+    const { admission } = z.object({ admission: JobAdmissionResultSchema }).parse(started.structuredContent)
+    expect(admission.kind).not.toBe('retained-execution')
+    await f.jobs.wakeQueue()
+    let ticketId = ''
+    if (admission.kind === 'pending-admission') ticketId = admission.ticket.id
+    if (admission.kind === 'accepted') ticketId = admission.ticketId
+    const ticket = await f.jobs.getQueueTicket(writer.principal, f.workspaceId, ticketId)
+    expect(ticket.state).toBe('accepted')
+    const execution = JobExecutionSchema.parse(await f.jobs.getExecution(writer.principal, f.workspaceId, ticket.executionId))
     expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
-    expect((await client.callTool({ name: 'job_start', arguments: command })).structuredContent).toEqual(started.structuredContent)
+    expect((await client.callTool({ name: 'job_start', arguments: command })).structuredContent).toEqual({
+      admission: { kind: 'accepted', ticketId, executionId: execution.id },
+    })
     expect((await readOnly.callTool({ name: 'job_get', arguments: {
       workspaceId: f.workspaceId, executionId: execution.id,
-    } })).structuredContent).toEqual(started.structuredContent)
+    } })).structuredContent).toEqual({ execution })
     expect((await f.jobs.getExecution(writer.principal, f.workspaceId, execution.id)).acceptedSpec).toEqual(execution.acceptedSpec)
     expect(f.accept).toHaveBeenCalledTimes(1)
   })
@@ -184,7 +196,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect((await database.pool.query('select 1 from job_preparations where workspace_id=$1', [f.workspaceId])).rowCount).toBe(0)
   })
   it('rejects stale definition/start revisions and read-only edits through authenticated MCP with persisted readback', async () => {
-    const f = await fixture()
+    const f = await fixture({ queued: true })
     await f.enroll(0, true, 100)
     const definition = await f.save()
     const client = await f.connect(writer.token)
@@ -223,6 +235,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     } })
     expect(conflict.isError).toBe(true)
     expect(JSON.stringify(conflict.content)).toContain('COMMAND_ID_CONFLICT')
+    await f.jobs.wakeQueue()
     expect(f.accept).toHaveBeenCalledTimes(1)
   })
   it('atomically places concurrent starts on separate available computers and refuses overcommit', async () => {

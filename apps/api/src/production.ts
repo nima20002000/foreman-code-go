@@ -363,6 +363,7 @@ export function buildProductionApp(
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
+      setImmediate(() => { if (!signal.aborted) jobRuntime?.requestQueueWake() })
     },
   })
   const commands = new PostgresCommandCoordinator(database.pool)

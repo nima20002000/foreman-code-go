@@ -38,7 +38,8 @@ function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.statu
   const producer={capture:vi.fn(async()=>fingerprint),run:vi.fn(async()=>({outcome:'denied' as const,closure:'unconfirmed' as const,reasons:['DESCENDANT_CLOSURE_UNCONFIRMED']})),revalidate:vi.fn(async()=>({ready:false,reasons:['UNQUALIFIED']}))}
   const human={require:vi.fn(async()=>undefined)}
   const commands={execute:async(input:{authorize:(sql:unknown)=>Promise<void>;prepare?:()=>Promise<void>;perform:(sql:unknown)=>Promise<unknown>})=>{await input.authorize({query});await input.prepare?.();return {value:await input.perform({query}),replayed:false}}} as unknown as PostgresCommandCoordinator
-  return {state,producer,human,query,sql:{query:vi.fn().mockImplementation(query)},service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,human)}
+  const changed = vi.fn(() => state.profile.status)
+  return {state,producer,human,changed,query,sql:{query:vi.fn().mockImplementation(query)},service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,human,changed)}
 }
 describe('CI runtime metadata authority and original qualification ownership',()=>{
   it('lists scoped pending approval fingerprints without probing or approving',async()=>{
@@ -50,6 +51,7 @@ describe('CI runtime metadata authority and original qualification ownership',()
     const f=fixture(),read=await f.service.getQualification(principal,profile.workspaceId,approval.id)
     expect(read.readiness).toEqual({ready:false,reasons:['RUNTIME_UNQUALIFIED'],sideEffects:false})
     expect(read.measurement).toBeNull();expect(f.producer.run).not.toHaveBeenCalled();expect(f.producer.capture).not.toHaveBeenCalled();expect(f.producer.revalidate).not.toHaveBeenCalled()
+    expect(f.changed).not.toHaveBeenCalled()
   })
   it('denies revoked principal before exposing stored profile or evidence',async()=>{
     const f=fixture({revoked:true})
@@ -75,6 +77,8 @@ describe('CI runtime metadata authority and original qualification ownership',()
     const result=await f.service.qualify(principal,'mcp',profile.workspaceId,'original-command',approval.id)
     expect(result.status).toBe('recovery-required');expect(result.measurement).toBeNull()
     expect(f.state.approval.status).toBe('recovery-required');expect(f.producer.run).toHaveBeenCalledOnce()
+    expect(f.changed).toHaveBeenCalledOnce()
+    expect(f.changed.mock.results[0]?.value).toBe('recovery-required')
     const read=await f.service.getQualification(principal,profile.workspaceId,approval.id)
     expect(read.readiness.reasons).toEqual(['DESCENDANT_CLOSURE_UNCONFIRMED'])
   })

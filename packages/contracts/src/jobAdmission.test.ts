@@ -4,11 +4,25 @@ import {
   JobComputerEligibilitySchema, JobComputerSelectionRequestSchema, JOB_COMPUTER_ORDER, JOB_QUEUE_ORDER,
   JobAvailableCapacitySchema,
   JobBuildQueueConfigurationSchema,
+  JobAdmissionResultSchema,
 } from './jobAdmission.js'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, AcceptedJobSpecSchema } from './jobs.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
 
 describe('pending Job admission', () => {
+  it('reads a retained concrete execution without fabricating a queue ticket or widening accepted placement', () => {
+    const { acceptedBuild, ticket } = verificationFixture()
+    const execution = { schemaVersion: 1, id: ticket.executionId, workspaceId: ticket.workspaceId,
+      acceptedSpec: acceptedBuild, operationId: ticket.operationId, attemptId: ticket.attemptId,
+      owner: { grantId: verificationId, epoch: '1' }, workflow: null,
+      process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false },
+      transport: 'unknown', publication: 'pending', startedAt: null, finishedAt: null, lastSeenAt: null,
+      resultIssue: null, cancelRequestedAt: null, createdAt: verificationTime, updatedAt: verificationTime }
+    expect(JobAdmissionResultSchema.parse({ kind: 'retained-execution', execution }))
+      .toEqual({ kind: 'retained-execution', execution })
+    expect(JobAdmissionResultSchema.safeParse({ kind: 'retained-execution', execution: { ...execution,
+      acceptedSpec: { ...acceptedBuild, target: { kind: 'auto' } } } }).success).toBe(false)
+  })
   it('retains an unresolved Auto ticket before preparation without making accepted execution unresolved', () => {
     const { build, resources, ticket, acceptedBuild } = verificationFixture()
     const spec = AutoJobDefinitionSpecSchema.parse({

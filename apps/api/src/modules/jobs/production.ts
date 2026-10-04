@@ -177,7 +177,8 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const host = qualification.host
-  const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands, sources: source.sources, host })
+  const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands,
+    sources: source.sources, host, changed: requestQueueWake })
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const buildComputers = new BuildComputerSettings(input.pool, input.commands, buildComputerReadiness({
     endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(input.infrastructure?.localExecution),
@@ -277,9 +278,16 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     queueConfiguration: reviewedQueue,
     requestQueueWake,
     async close() {
-      await jobs.closeQueue()
-      await dispatch.close()
-      await outputs.close()
-      if (qualificationJournal) await (await qualificationJournal).close()
+      const failures: unknown[] = []
+      const resources = [() => jobs.closeQueue(), () => dispatch.close(), () => outputs.close(),
+        async () => { if (qualificationJournal) await (await qualificationJournal).close() }]
+      for (const close of resources) {
+        try {
+          await close()
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, 'Job resources could not all close.')
     } }
 }

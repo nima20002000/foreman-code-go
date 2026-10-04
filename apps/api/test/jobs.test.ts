@@ -13,6 +13,11 @@ describe('CI durable authority/result invariants',()=>{
     await expect(service.start(principal,'mcp','workspace-fixture',{commandId:'command',definitionId:'definition',expectedRevision:1})).rejects.toMatchObject({code:'ACCESS_DENIED'})
     await expect(service.validate(principal,'foreign-workspace',jobSpec())).rejects.toMatchObject({code:'ACCESS_DENIED'})
     expect(connect).not.toHaveBeenCalled();expect(accept).not.toHaveBeenCalled();expect(recordDenied).toHaveBeenCalledTimes(2)
+    await expect(service.enqueue(principal,'http','workspace-fixture',{
+      commandId:'queued-command',definitionId:'definition',expectedRevision:1,
+    })).rejects.toMatchObject({code:'ACCESS_DENIED'})
+    expect(connect).not.toHaveBeenCalled();expect(accept).not.toHaveBeenCalled()
+    expect(recordDenied).toHaveBeenCalledWith(principal.id,'http','jobs:start','workspace-fixture')
   })
   it('hashes accepted specifications independently of object key insertion order',()=>{
     expect(jobDigest({argv:['node','test'],source:{b:2,a:1}})).toEqual(jobDigest({source:{a:1,b:2},argv:['node','test']}))

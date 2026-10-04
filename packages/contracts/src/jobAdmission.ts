@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { DeviceDigestSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
-import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema } from './jobs.js'
+import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema, JobExecutionSchema } from './jobs.js'
 import { JobDefinitionRecordSchema, JobDefinitionSpecRecordSchema } from './jobVerification.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobWorkflowAdmissionReferenceSchema } from './jobWorkflow.js'
@@ -144,6 +144,7 @@ export const JobPendingAdmissionSchema = z.object({
 export const JobAdmissionResultSchema = z.discriminatedUnion('kind', [
   JobPendingAdmissionSchema,
   z.object({ kind: z.literal('accepted'), ticketId: z.uuid(), executionId: IdSchema }).strict(),
+  z.object({ kind: z.literal('retained-execution'), execution: JobExecutionSchema }).strict(),
 ])
 export const JobQueueCancelSchema = z.object({
   commandId: IdSchema, ticketId: z.uuid(), expectedRevision: PositiveInteger,

@@ -24,6 +24,15 @@ describe('job client identity and retry boundary', () => {
     expect(await jobsClient.start(definition.workspaceId,
       { commandId: queueTicket.commandId, definitionId: definition.id, expectedRevision: 1 })).toEqual(admission)
   })
+  it('reads a retained pre-queue execution without inventing a ticket and rejects changed scope or definition', async () => {
+    const admission = { kind: 'retained-execution', execution }
+    server.use(http.post(`${root}/executions`, () => HttpResponse.json({ admission })))
+    const command = { commandId: 'historical-start', definitionId: definition.id, expectedRevision: 1 }
+    expect(await jobsClient.start(definition.workspaceId, command)).toEqual(admission)
+    await expect(jobsClient.start('foreign-workspace', command)).rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
+    await expect(jobsClient.start(definition.workspaceId, { ...command, expectedRevision: 2 }))
+      .rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
+  })
   it('rejects a pending response for another command or saved definition revision', async () => {
     server.use(http.post(`${root}/executions`, () =>
       HttpResponse.json({ admission: { kind: 'pending-admission', ticket: queueTicket } })))

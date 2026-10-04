@@ -187,8 +187,11 @@ export class JobComputerSelection {
         selectedHost: hostKey, exceedsMaximum: false }
     }
     const diagnosticCodes = [...new Set(reasons.length ? reasons : ['setup_required'])]
+    const authorizedCandidate = enrolled.some(candidate =>
+      !candidate.reasons.some(code => jobEligibilityReason(code) === 'authorization_revoked'))
     const normalized = diagnosticCodes.map(jobEligibilityReason)
       .filter(reason => reason !== 'request_exceeds_maximum' || exceedsMaximum)
+      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpec(definition.spec) || !authorizedCandidate)
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }

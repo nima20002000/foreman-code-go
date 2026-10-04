@@ -11,6 +11,24 @@ import { definition, execution, queueTicket } from './fixtures'
 import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 
+it('opens a retained pre-queue execution after an authenticated same-command retry without inventing a ticket', async () => {
+  const accepted = vi.fn()
+  const queueReads = vi.fn()
+  server.use(
+    http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+    http.post(`${root}/executions`, () => HttpResponse.json({ admission: { kind: 'retained-execution', execution } })),
+    http.get(`${root}/executions/:id`, () => HttpResponse.json({ execution })),
+    http.get(`${root}/queue/:id`, () => { queueReads(); return HttpResponse.json({ ticket: queueTicket }) }),
+  )
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <JobLaunch workspaceId={definition.workspaceId} definition={definition} onClose={vi.fn()} onAccepted={accepted} />
+  </QueryClientProvider>)
+  await screen.findByText('Ready to start')
+  await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
+  await waitFor(() => expect(accepted).toHaveBeenCalledWith(execution))
+  expect(queueReads).not.toHaveBeenCalled()
+})
+
 it('keeps a long reviewed Job name in the dialog description and permits closing before launch', async () => {
   const longDefinition = { ...definition, name: '長い名前'.repeat(50) }
   const close = vi.fn()

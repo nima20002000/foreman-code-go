@@ -59,7 +59,11 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       expect(limit).toMatchObject({state:'limited'})
       expect(limit!.detail).toContain('current host-bound CI qualification')
       expect(limit!.detail).toContain('Connecting a computer or listing tools is not qualification')
-      expect(limit!.detail).toContain('No automatic default build routing')
+      expect(limit!.detail).toContain('Auto selects')
+      expect(limit!.detail).toContain('owner-reviewed')
+      for (const [name, action] of [['job_queue_get', 'jobs:read'], ['job_queue_list', 'jobs:read'], ['job_queue_cancel', 'jobs:cancel']]) {
+        expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name, actions: [action] }))
+      }
       expect(capabilities.runtimeLimits!.find(limit=>limit.feature==='remote_runners_and_host_browsing')!.detail).not.toContain('No arbitrary host browsing or remote dispatch')
     }
     expect(f.choices).not.toHaveBeenCalled();expect(f.listProfiles).not.toHaveBeenCalled()
@@ -67,6 +71,9 @@ describe('Job capability summary matches mounted Operator tools',()=>{
   it('keeps read-only discovery read-only and retains audited direct-write denial',async()=>{
     const f=await fixture(principal(readerActions)),listed=jobNames((await f.client.listTools()).tools.map(tool=>tool.name))
     expect(listed).toContain('job_get');expect(listed).not.toContain('job_start')
+    expect(listed).toContain('job_queue_get')
+    expect(listed).toContain('job_queue_list')
+    expect(listed).not.toContain('job_queue_cancel')
     expect(listed).not.toContain('job_definition_save');expect(listed).not.toContain('job_cancel')
     const capabilities=await f.capabilities('workspace-a')
     expect(jobNames(capabilities.tools)).toEqual(listed)

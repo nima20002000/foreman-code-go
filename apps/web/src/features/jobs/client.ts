@@ -48,6 +48,9 @@ export const jobsClient = {
       if (ticket.workspaceId !== workspaceId || ticket.commandId !== input.commandId
         || ticket.definition.id !== input.definitionId || ticket.definition.revision !== input.expectedRevision) mismatch()
     }
+    if (admission.kind === 'retained-execution' && (admission.execution.workspaceId !== workspaceId
+      || admission.execution.acceptedSpec.definitionId !== input.definitionId
+      || admission.execution.acceptedSpec.definitionRevision !== input.expectedRevision)) mismatch()
     return admission
   },
   async queue(workspaceId: string, options?: RequestOptions) {

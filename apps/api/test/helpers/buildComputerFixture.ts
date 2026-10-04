@@ -20,6 +20,17 @@ import { JobService } from '../../src/modules/jobs/service.js'
 import { JobWorkerService } from '../../src/modules/jobs/worker.js'
 import type { JobQueueConfiguration } from '../../src/modules/jobs/ports.js'
 
+export function buildQueueConfigurationFixture(principal: ManagementPrincipal,
+  limits: JobComputerCandidate['profile']['limits']): JobQueueConfiguration {
+  return { revision: 1,
+    review: { reviewedByPrincipalId: principal.id, reviewedAt: new Date().toISOString(), decisionDigest: '1'.repeat(64) },
+    limits: { maxPendingPerPrincipal: 20, maxPendingPerWorkspace: 40, maxBackfillClaims: 0 },
+    resources: async () => ({ schemaVersion: 1, limits,
+      mutableInodes: 100, controlTempBytes: 1024, scratchBytes: 1048576, scratchExecutable: false,
+      shmBytes: 1024, spoolBytes: 4096, reportBytes: 4096 }),
+  }
+}
+
 // Runtime readiness is an inventory fixture; these tests make no physical qualification claim.
 export function buildComputerFixture(mainId: string, workspaceId: string, deviceId: string = randomUUID()) {
   const spec = jobSpec()
@@ -58,10 +69,11 @@ export function buildComputerFixture(mainId: string, workspaceId: string, device
 /** PostgreSQL queue behavior with trusted runtime/source events supplied by the fixture. */
 export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrincipal, options: {
   computerCount?: number; maxBackfillClaims?: number; maxPendingPerPrincipal?: number; clock?: () => Date
+  workspaceId?: string; mainComputer?: boolean; settingsPrincipal?: ManagementPrincipal
 } = {}) {
-  const workspaceId = randomUUID()
+  const workspaceId = options.workspaceId ?? randomUUID()
   const mainId = (await pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
-  await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+  if (!options.workspaceId) await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
     [workspaceId, JSON.stringify({ id: workspaceId, name: 'Queued builds' })])
   const source = { ...jobSpec().source, approvedSourceId: randomUUID(), snapshotId: randomUUID() }
   const computers = Array.from({ length: options.computerCount ?? 1 }, () => buildComputerFixture(mainId, workspaceId))
@@ -76,6 +88,16 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
     state: 'ready', reasons: [], remoteExecutionEnabled: true,
   }))
   for (const computer of computers) {
+    if (options.mainComputer) {
+      const target = { ...computer.candidate.spec.target, hostRef: { kind: 'main' as const, mainId }, registration: null }
+      computer.candidate.spec.target = target
+      computer.target = buildComputerTarget(target)
+      computer.candidate.sourceReservation.scopeId = `${mainId}:main:main:1:3`
+      computer.candidate.profile.root = SourceRootRecordSchema.parse({ ...computer.candidate.profile.root,
+        selection: { ...computer.candidate.profile.root.selection, hostRef: target.hostRef },
+        binding: { ...computer.candidate.profile.root.binding, deviceId: null, workerInstallationId: null },
+        registration: null })
+    }
     computer.candidate.spec.source = source
     computer.auto.source = source
     computer.candidate.profile.root = SourceRootRecordSchema.parse({ ...computer.candidate.profile.root,
@@ -91,7 +113,7 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
       values($1,$2,$3,1)`, [root.binding.rootId, workspaceId, randomUUID()])
     await pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
       values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, source.snapshotId, JSON.stringify(root)])
-    await settings.update(principal, 'http', { target: computer.target, commandId: randomUUID(),
+    await settings.update(options.settingsPrincipal ?? principal, 'http', { target: computer.target, commandId: randomUUID(),
       expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
   }
   const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,

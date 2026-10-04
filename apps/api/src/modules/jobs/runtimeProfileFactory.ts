@@ -22,7 +22,7 @@ export interface InstalledJobRuntimeHost {
   currentConnection(sql:JobSql,profile:JobRuntimeProfile):Promise<DeviceSessionBinding|null>
   reserveQualification(input:{approval:JobRuntimeApproval;profile:JobRuntimeProfile;candidate:JobQualificationCandidate;nativeAdmission:JobRuntimeNativeAdmission;assertAdmission():Promise<void>;operationId:string;signal:AbortSignal}):Promise<QualificationNativeOwner>
 }
-export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:PostgresCommandCoordinator;sources:PostgresSourceService;host:InstalledJobRuntimeHost}) {
+export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:PostgresCommandCoordinator;sources:PostgresSourceService;host:InstalledJobRuntimeHost;changed?: () => void}) {
   const human=new PostgresJobRuntimeHumanAuthority()
   async function transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>) {
     const sql=await input.pool.connect()
@@ -110,5 +110,5 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
       return result
     },
   }
-  return new JobRuntimeProfiles(input.pool,input.commands,input.sources,producer,human)
+  return new JobRuntimeProfiles(input.pool,input.commands,input.sources,producer,human,input.changed)
 }

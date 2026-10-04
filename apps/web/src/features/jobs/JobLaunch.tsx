@@ -36,21 +36,26 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
     },
   })
   const admission = start.data
-  const ticketId = admission?.kind === 'pending-admission' ? admission.ticket.id : admission?.ticketId ?? ''
+  const retained = admission?.kind === 'retained-execution' ? admission.execution : undefined
+  let ticketId = ''
+  if (admission?.kind === 'pending-admission') ticketId = admission.ticket.id
+  if (admission?.kind === 'accepted') ticketId = admission.ticketId
   const queue = useJobQueueTicket(workspaceId, ticketId)
   const ticket = queue.data
   const ticketMatches = ticket && ticket.commandId === start.variables?.commandId
     && ticket.definition.id === definition.id && ticket.definition.revision === definition.revision
     && ticket.definition.versionId === definition.versionId
     && (admission?.kind !== 'accepted' || ticket.executionId === admission.executionId)
-  const executionId = ticket && ticketMatches && ticket.state === 'accepted' ? ticket.executionId : ''
+  let executionId = retained?.id ?? ''
+  if (ticket && ticketMatches && ticket.state === 'accepted') executionId = ticket.executionId
   const result = useQuery({ queryKey: jobKeys.execution(workspaceId, executionId), enabled: Boolean(executionId),
     queryFn: ({ signal }) => jobsClient.execution(workspaceId, executionId, { signal }),
     select: execution => {
       if (execution.acceptedSpec.definitionId !== definition.id
         || execution.acceptedSpec.definitionRevision !== definition.revision
         || execution.acceptedSpec.definitionVersionId !== definition.versionId
-        || execution.attemptId !== ticket?.attemptId || execution.operationId !== ticket?.operationId) {
+        || execution.attemptId !== (ticket ?? retained)?.attemptId
+        || execution.operationId !== (ticket ?? retained)?.operationId) {
         throw new ApiError({ code: 'JOB_SELECTION_MISMATCH', message: 'The execution belongs to another start request.' }, 409)
       }
       return execution
@@ -93,7 +98,7 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
       {uncertain ? 'Start acknowledgment is unknown. Retrying sends the same commandId and saved revision; it does not request another execution.' : jobError(start.error)}
       {start.variables && <> Request <code>{start.variables.commandId}</code></>}
     </Alert>}
-    {admission && !ticket && !queue.error && <p role="status">Request saved. Loading queue status…</p>}
+    {ticketId && !ticket && !queue.error && <p role="status">Request saved. Loading queue status…</p>}
     {queue.error && <Alert title="Queue status unavailable" tone="warning">{jobError(queue.error)}
       <Button onClick={() => { void queue.refetch() }}>Refresh queue status</Button>
     </Alert>}

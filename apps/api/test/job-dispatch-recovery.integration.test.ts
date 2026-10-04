@@ -1,6 +1,6 @@
 import { BuildComputerSettings, buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
-import { buildComputerFixture } from './helpers/buildComputerFixture.js'
+import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -14,7 +14,6 @@ import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { JobService } from '../src/modules/jobs/service.js'
 import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { RemoteJobCarrierDispatch } from '../src/modules/runs/remote/jobCarrierDispatch.js'
-import { jobSpec } from './helpers/jobFixture.js'
 
 // Own random schema on the explicitly selected loopback server. No physical
 // qualification/native entry or journal absence as proof of nonexecution.
@@ -26,6 +25,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
   const pool = new pg.Pool({ connectionString, max: 4, options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined, dispatch: PostgresJobDispatch | undefined
+  let jobs: JobService | undefined
   await admin.query(`create schema ${schema}`)
   try {
     await applyApplicationMigrations(pool)
@@ -54,9 +54,9 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
         if (placementMode === 'auto') await settings.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
       },
     }, workerExecution)
-    const jobs = new JobService(pool, commands, {
+    jobs = new JobService(pool, commands, {
       workerExecution,
-      ...(placementMode === 'auto' ? { placement } : {}),
+      placement, queue: buildQueueConfigurationFixture(writer.principal, automatic.candidate.profile.limits),
       preparation: { choices: async () => ({ targets: [], sources: [], policies: [] }), validate: async () => ({ valid: true, reasons: [], sideEffects: false }),
         revalidateAccepted: async () => {}, adoptFinalBinding: async () => {}, accept: async (_sql, _principal, _workspace, spec) => ({ ...spec, source: { ...spec.source, materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } }) },
       dispatch, artifacts: { list: async () => [], read: async () => { throw new Error('No physical artifact.') } },
@@ -70,22 +70,24 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     }
     const client = await connect(writer.token), deniedClient = await connect(reader.token)
     const root = `/api/management/workspaces/${workspaceId}/jobs`, headers = { authorization: `Bearer ${writer.token}` }
-    const spec = jobSpec()
-    spec.target.hostRef = { kind: 'device', mainId: spec.target.mainId, deviceId }
-    spec.target.registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
+    const spec = automatic.candidate.spec
     const saved = await app.inject({ method: 'POST', url: `${root}/definitions`, headers, payload: { commandId: randomUUID(), expectedRevision: null, name: 'Retained dispatch', spec: placementMode === 'auto' ? automatic.auto : spec } })
     expect(saved.statusCode).toBe(200)
     const command = { commandId: randomUUID(), definitionId: saved.json().definition.id, expectedRevision: 1 }
     const start = await app.inject({ method: 'POST', url: `${root}/executions`, headers, payload: command })
-    expect(start.statusCode).toBe(503)
-    expect(start.json().error).toMatchObject({ code: 'JOB_DISPATCH_PENDING', details: { retryable: true } })
+    expect(start.statusCode).toBe(200)
+    expect(['pending-admission', 'accepted']).toContain(start.json().admission.kind)
+    await expect(jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING', details: { retryable: true } })
     expect(JSON.stringify(start.json())).not.toContain('secret')
     const original = (await pool.query('select e.record,d.delivery_attempted,d.receipt_sequence,d.last_receipt from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.workspace_id=$1', [workspaceId])).rows
     expect(original).toHaveLength(1)
     const execution = original[0].record
     expect(original[0]).toMatchObject({ delivery_attempted: true, receipt_sequence: '0', last_receipt: null })
     expect(execution.process).toMatchObject({ phase: 'queued', outcome: null, processStopped: false })
-    expect(start.json().error.details).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId })
+    const tickets = await jobs.listQueue(writer.principal, workspaceId)
+    expect(tickets).toHaveLength(1)
+    expect(tickets[0]).toMatchObject({ state: 'accepted', executionId: execution.id,
+      attemptId: execution.attemptId, operationId: execution.operationId })
     await dispatch.close()
     if (placementMode === 'auto') {
       const selected = buildComputerTarget(execution.acceptedSpec.target)
@@ -94,7 +96,9 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
       expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
     }
     const retry = await client.callTool({ name: 'job_start', arguments: { workspaceId, ...command } })
-    expect(retry.isError).toBe(true); expect(JSON.stringify(retry.content)).toContain('JOB_DISPATCH_PENDING')
+    expect(retry.isError).not.toBe(true)
+    expect(retry.structuredContent).toEqual({ admission: { kind: 'accepted', ticketId: tickets[0]!.id, executionId: execution.id } })
+    await expect(jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(request.mock.calls.map(([, , raw]) => (raw as { method: string }).method)).toEqual(['job-dispatch', 'job-status'])
     const cancel = await client.callTool({ name: 'job_cancel', arguments: { workspaceId, executionId: execution.id, commandId: randomUUID() } })
     expect(cancel.isError).toBe(true); expect(JSON.stringify(cancel.content)).toContain('JOB_DISPATCH_PENDING')
@@ -110,7 +114,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     expect(request).toHaveBeenCalledTimes(4)
     expect((await pool.query('select id from job_executions where workspace_id=$1', [workspaceId])).rows).toEqual([{ id: execution.id }])
   } finally {
-    await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await dispatch?.close(); await pool.end()
+    await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await jobs?.closeQueue(); await dispatch?.close(); await pool.end()
     try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() }
   }
 }, 90000)

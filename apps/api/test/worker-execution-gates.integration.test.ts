@@ -21,6 +21,8 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { jobSpec } from './helpers/jobFixture.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
+import { buildQueueFixture } from './helpers/buildComputerFixture.js'
+import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
 
 describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
@@ -41,7 +43,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     return spec
   }
 
-  async function jobFixture(options: { enabled?: boolean } = {}) {
+  async function jobFixture(options: { enabled?: boolean; queued?: boolean; mainComputer?: boolean } = {}) {
     const workspaceId = randomUUID()
     await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [
       workspaceId, JSON.stringify({ id: workspaceId, name: 'Worker gate fixture' }),
@@ -57,6 +59,15 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
       name: 'Job gate reader', audience: 'operator', expiresAt: new Date(Date.now() + 300_000),
       grants: [{ actions: ['jobs:read'], scope: { workspaceIds: [workspaceId] } }],
     })
+    let queueFixture: Awaited<ReturnType<typeof buildQueueFixture>> | undefined
+    if (options.queued) {
+      const settingsOwner = await access.issue({ name: 'Build settings fixture', audience: 'operator',
+        expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] })
+      queueFixture = await buildQueueFixture(database.pool, writer.principal, { workspaceId,
+        settingsPrincipal: settingsOwner.principal, mainComputer: options.mainComputer ?? false })
+      queueFixture.online()
+      resources.push(() => queueFixture!.jobs.closeQueue())
+    }
     const preparation: JobPreparationPort = {
       choices: async () => ({ targets: [], sources: [], policies: [] }),
       validate: vi.fn<JobPreparationPort['validate']>(async () => ({ valid: true, reasons: [], sideEffects: false })),
@@ -84,8 +95,11 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
       resources.push(() => dispatch.close())
       const jobs = new JobService(database.pool, commands, {
         preparation, dispatch, workerExecution,
+        ...(queueFixture ? { queue: queueFixture.queue,
+          placement: new JobComputerSelection(queueFixture.settings, queueFixture.inventory, workerExecution) } : {}),
         artifacts: { list: async () => [], read: async () => { throw new Error('No artifact in this fixture') } },
       })
+      resources.push(() => jobs.closeQueue())
       const app = buildApp({ logger: false,
         readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
         operator: { access, services: { jobs, commands } as unknown as OperatorServices },
@@ -108,6 +122,8 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const root = `/api/management/workspaces/${workspaceId}/jobs`
     const headers = { authorization: `Bearer ${writer.token}` }
     const save = async (spec: JobDefinitionSpec) => {
+      if (queueFixture) spec = { ...queueFixture.computers[0]!.candidate.spec, argv: spec.argv,
+        inputs: spec.inputs, outputs: spec.outputs }
       const response = await application.app.inject({ method: 'POST', url: `${root}/definitions`, headers,
         payload: { commandId: randomUUID(), expectedRevision: null, name: 'Saved Job', spec } })
       expect(response.statusCode).toBe(200)
@@ -123,19 +139,23 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     }
   }
 
-  it('rejects new Worker manual Jobs through HTTP and authenticated MCP before source reservation', async () => {
-    const fixture = await jobFixture()
+  it('queues disabled Worker manual Jobs through HTTP and authenticated MCP without source reservation', async () => {
+    const fixture = await jobFixture({ queued: true })
     const definition = await fixture.save(workerSpec())
     const input = { definitionId: definition.id, expectedRevision: definition.revision, commandId: randomUUID() }
     const http = await fixture.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
       headers: fixture.headers, payload: input })
-    expect(http.statusCode).toBe(409)
-    expect(http.json()).toMatchObject({ error: { code: 'WORKER_EXECUTION_DISABLED' } })
+    expect(http.statusCode).toBe(200)
+    expect(http.json().admission.kind).toBe('pending-admission')
+    await fixture.jobs.wakeQueue()
+    expect(await fixture.jobs.getQueueTicket(fixture.writer.principal, fixture.workspaceId, http.json().admission.ticket.id))
+      .toMatchObject({ state: 'blocked', waitingReasons: ['remote_execution_disabled'] })
     const client = await fixture.connect(fixture.writer.token)
     const mcp = await client.callTool({ name: 'job_start',
       arguments: { workspaceId: fixture.workspaceId, ...input, commandId: randomUUID() } })
-    expect(mcp.isError).toBe(true)
-    expect(JSON.stringify(mcp.content)).toContain('WORKER_EXECUTION_DISABLED')
+    expect(mcp.isError).not.toBe(true)
+    expect(mcp.structuredContent?.admission).toMatchObject({ kind: 'pending-admission' })
+    await fixture.jobs.wakeQueue()
     expect(fixture.preparation.accept).not.toHaveBeenCalled()
     expect(fixture.remote.deliver).not.toHaveBeenCalled()
     await expectNoJobAllocation(fixture.workspaceId)
@@ -146,13 +166,14 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     expect(receipts.rows).toEqual([])
   })
 
-  it('leaves Main Job admission and dispatch unchanged with the default setting', async () => {
-    const fixture = await jobFixture()
+  it('queues and dispatches Main Jobs with Worker execution disabled', async () => {
+    const fixture = await jobFixture({ queued: true, mainComputer: true })
     const definition = await fixture.save(jobSpec())
     const response = await fixture.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
       headers: fixture.headers, payload: { definitionId: definition.id, expectedRevision: 1, commandId: randomUUID() } })
-    expect(response.statusCode).toBe(503)
-    expect(response.json()).toMatchObject({ error: { code: 'JOB_DISPATCH_PENDING' } })
+    expect(response.statusCode).toBe(200)
+    expect(['pending-admission', 'accepted']).toContain(response.json().admission.kind)
+    await expect(fixture.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(fixture.preparation.accept).toHaveBeenCalledOnce()
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
     const rows = (await database.pool.query('select record from job_executions where workspace_id=$1',
@@ -255,21 +276,22 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
   })
 
   it('allows enabled Worker admission while retaining target qualification and scoped permission checks', async () => {
-    const fixture = await jobFixture({ enabled: true })
+    const fixture = await jobFixture({ enabled: true, queued: true })
     const definition = await fixture.save(workerSpec())
     const input = { definitionId: definition.id, expectedRevision: 1, commandId: randomUUID() }
     fixture.host.revalidate.mockRejectedValue(new DomainError('PLACEMENT_NOT_QUALIFIED', 'Worker is not qualified', 409))
     const response = await fixture.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
       headers: fixture.headers, payload: input })
-    expect(response.statusCode).toBe(409)
-    expect(response.json()).toMatchObject({ error: { code: 'PLACEMENT_NOT_QUALIFIED' } })
+    expect(response.statusCode).toBe(200)
+    await expect(fixture.jobs.wakeQueue()).rejects.toMatchObject({ code: 'PLACEMENT_NOT_QUALIFIED' })
     expect(fixture.preparation.accept).toHaveBeenCalledOnce()
     expect(fixture.remote.deliver).not.toHaveBeenCalled()
     fixture.host.revalidate.mockResolvedValue()
     const client = await fixture.connect(fixture.writer.token)
     const permitted = await client.callTool({ name: 'job_start', arguments: { workspaceId: fixture.workspaceId, ...input } })
-    expect(permitted.isError).toBe(true)
-    expect(JSON.stringify(permitted.content)).toContain('JOB_DISPATCH_PENDING')
+    expect(permitted.isError).not.toBe(true)
+    expect(permitted.structuredContent?.admission).toMatchObject({ kind: 'accepted' })
+    await expect(fixture.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
     const denied = await fixture.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
       headers: { authorization: `Bearer ${fixture.reader.token}` }, payload: { ...input, commandId: randomUUID() } })
@@ -313,6 +335,17 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     expect(retained).toMatchObject({ intent: { executionId: execution.id }, phase: 'confirmed_terminal' })
     const replay = await restarted.jobs.start(fixture.writer.principal, 'mcp', fixture.workspaceId, input)
     expect(replay).toEqual(execution)
+    const client = await restarted.connect(fixture.writer.token)
+    const retainedStart = await client.callTool({ name: 'job_start', arguments: {
+      workspaceId: fixture.workspaceId, ...input,
+    } })
+    expect(retainedStart.isError).not.toBe(true)
+    expect(retainedStart.structuredContent).toEqual({ admission: { kind: 'retained-execution', execution } })
+    const httpRetry = await restarted.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
+      headers: fixture.headers, payload: input })
+    expect(httpRetry.statusCode).toBe(200)
+    expect(httpRetry.json()).toEqual(retainedStart.structuredContent)
+    expect(await restarted.jobs.listQueue(fixture.writer.principal, fixture.workspaceId)).toEqual([])
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
     expect(fixture.remote.reconcile).not.toHaveBeenCalled()
   })

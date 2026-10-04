@@ -21,7 +21,8 @@ import type { JobRuntimeHumanAuthority, JobRuntimeQualificationProducer, JobRunt
 /** Main CI policy metadata; machine/root identity continues to come from W07/W09/W12. */
 export class JobRuntimeProfiles implements JobRuntimeInventory {
   constructor(private readonly pool:pg.Pool,private readonly commands:PostgresCommandCoordinator,private readonly sources:PostgresSourceService,
-    private readonly producer:JobRuntimeQualificationProducer,private readonly human:JobRuntimeHumanAuthority=new PostgresJobRuntimeHumanAuthority()) {}
+    private readonly producer:JobRuntimeQualificationProducer,private readonly human:JobRuntimeHumanAuthority=new PostgresJobRuntimeHumanAuthority(),
+    private readonly changed?: () => void) {}
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>) {
     const sql=await this.pool.connect()
     try {await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
@@ -57,7 +58,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
   async save(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobRuntimeProfileSave) {
     const input=JobRuntimeProfileSaveSchema.parse(raw)
     requireAuthorization(principal,'job_definitions:write',{workspaceId})
-    return (await this.commands.execute({principal,source,operation:'job.runtime-profile.save',commandId:input.commandId,targetKey:workspaceId,payload:input,
+    const result = await this.commands.execute({principal,source,operation:'job.runtime-profile.save',commandId:input.commandId,targetKey:workspaceId,payload:input,
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),perform:async sql=>{
         await lockActiveWorkspace(sql,workspaceId)
         const old=input.id?await this.record(sql,workspaceId,input.id,true):null
@@ -73,13 +74,15 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         await sql.query('insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record) values($1,$2,$3,$4,$5,$6::jsonb) on conflict(id) do update set revision=excluded.revision,root_id=excluded.root_id,binding_revision=excluded.binding_revision,record=excluded.record',[id,workspaceId,revision,root.binding.rootId,root.binding.bindingRevision,JSON.stringify(profile)])
         await sql.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,$2,$3::jsonb)',[id,revision,JSON.stringify(profile)])
         return profile
-      }})).value
+      }})
+    this.changed?.()
+    return result.value
   }
   async requestQualification(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:unknown) {
     const input=JobRuntimeQualificationRequestSchema.parse(raw)
     requireAuthorization(principal,'job_definitions:write',{workspaceId})
     let captured:{profile:JobRuntimeProfile;fingerprint:ReturnType<typeof JobRuntimeFingerprintSchema.parse>}|undefined
-    return (await this.commands.execute({principal,source,operation:'job.runtime-profile.request',commandId:input.commandId,targetKey:workspaceId,payload:input,dedicatedConnection:true,
+    const result = await this.commands.execute({principal,source,operation:'job.runtime-profile.request',commandId:input.commandId,targetKey:workspaceId,payload:input,dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),
       prepare:async()=>{
         const profile=await this.transaction(async sql=>{await this.authorize(sql,principal,workspaceId,true);return this.record(sql,workspaceId,input.profileId)})
@@ -97,25 +100,30 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const approval=JobRuntimeApprovalSchema.parse({schemaVersion:1,id:randomUUID(),qualificationId:randomUUID(),workspaceId,profileId:profile.id,profileRevision:profile.revision,fingerprint:captured.fingerprint,fingerprintDigest:jobDigest(captured.fingerprint),requestedByPrincipalId:principal.id,status:'awaiting-approval',approvedByPrincipalId:null,approvedAt:null,expiresAt:new Date(Date.now()+3600000).toISOString()})
         await sql.query('insert into job_runtime_qualification_approvals(id,qualification_id,profile_id,profile_revision,workspace_id,record,requested_by) values($1,$2,$3,$4,$5,$6::jsonb,$7)',[approval.id,approval.qualificationId,profile.id,profile.revision,workspaceId,JSON.stringify(approval),principal.id])
         await this.put(sql,{...profile,status:'awaiting-approval',updatedAt:new Date().toISOString()});return approval
-      }})).value
+      }})
+    this.changed?.()
+    return result.value
   }
   async approve(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,commandId:string,approvalId:string) {
     if(source!=='http')throw new DomainError('JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED','Physical runtime qualification approval is a human-only action; MCP can request and read it.',403)
     requireAuthorization(principal,'job_definitions:write',{workspaceId})
-    return (await this.commands.execute({principal,source,operation:'job.runtime-profile.approve',commandId,targetKey:workspaceId,payload:{approvalId},
+    const result = await this.commands.execute({principal,source,operation:'job.runtime-profile.approve',commandId,targetKey:workspaceId,payload:{approvalId},
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),perform:async sql=>{
         const live=await this.authorize(sql,principal,workspaceId,true),approval=await this.approval(sql,workspaceId,approvalId,true)
         const profile=await this.record(sql,workspaceId,approval.profileId,true)
         if(approval.status!=='awaiting-approval'||profile.revision!==approval.profileRevision||profile.specDigest!==approval.fingerprint.specDigest||Date.parse(approval.expiresAt)<=Date.now())throw new DomainError('JOB_RUNTIME_APPROVAL_EXPIRED','Approve a new exact installed fingerprint.',409)
         const approved={...approval,status:'approved' as const,approvedByPrincipalId:live.id,approvedAt:new Date().toISOString()}
         await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb,approved_by=$3 where id=$1',[approvalId,JSON.stringify(approved),live.id]);return approved
-      }})).value
+      }})
+    this.changed?.()
+    return result.value
   }
   async qualify(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,commandId:string,approvalId:string) {
     let measurement:ReturnType<typeof JobRuntimeMeasurementSchema.parse>|undefined
     let result:JobRuntimeQualificationResult|undefined
     let claimed=false
-    try {return (await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
+    try {
+      const outcome = await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),prepare:async()=>{
         const approval=await this.transaction(async sql=>{
           await this.authorize(sql,principal,workspaceId,true)
@@ -154,7 +162,10 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const current=await this.producer.revalidate(sql,qualified)
         if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The actual approved host/root/runtime fingerprint changed.',409,{reasons:current.reasons})
         await this.put(sql,qualified);await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb,measurement=$3::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'complete'}),JSON.stringify(measurement)]);return qualified
-      }})).value} catch(error) {
+      }})
+      this.changed?.()
+      return outcome.value
+    } catch(error) {
       if(claimed) {
         try {await this.transaction(async sql=>{
           await this.authorize(sql,principal,workspaceId,true)
@@ -166,7 +177,9 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'recovery-required'})])
           const profile=await this.record(sql,workspaceId,approval.profileId,true)
           if(profile.status==='qualifying'&&profile.revision===approval.profileRevision&&profile.specDigest===approval.fingerprint.specDigest)await this.put(sql,{...profile,status:'recovery-required',measurement:null,updatedAt:new Date().toISOString()})
-        })} catch(settlementError) {throw new AggregateError([error,settlementError],'Qualification failed and its recovery state could not be persisted.',{cause:settlementError})}
+        })
+        this.changed?.()
+        } catch(settlementError) {throw new AggregateError([error,settlementError],'Qualification failed and its recovery state could not be persisted.',{cause:settlementError})}
       }
       throw error
     }

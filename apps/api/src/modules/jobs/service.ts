@@ -191,9 +191,18 @@ export class JobService {
   }
   async enqueue(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {
     const input = parse(JobQueuedStartSchema, raw)
-    const configuration = this.queueConfiguration()
+    const historical = await this.read(principal, workspaceId, 'jobs:start', async sql =>
+      (await sql.query(`select 1 from job_preparations p
+        where p.principal_id=$1 and p.command_id=$2 and p.workspace_id=$3
+        and not exists(select 1 from job_admission_queue q where q.execution_id=p.execution_id)`,
+      [principal.id, input.commandId, workspaceId])).rows.length > 0, source)
+    if (historical) {
+      const execution = await this.start(principal, source, workspaceId, parse(JobStartSchema, input))
+      return JobAdmissionResultSchema.parse({ kind: 'retained-execution', execution })
+    }
     const result = await this.command(principal, source, workspaceId, 'jobs:start', input.commandId,
       'job.enqueue', input, async (sql, live) => {
+        const configuration = this.queueConfiguration()
         await sql.query('select pg_advisory_xact_lock(810038,hashtext($1))', ['job-admission-order'])
         const original = (await sql.query<{ execution_id: string }>(
           'select execution_id from job_preparations where principal_id=$1 and command_id=$2',

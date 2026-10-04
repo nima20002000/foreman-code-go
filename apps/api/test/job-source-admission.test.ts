@@ -16,6 +16,7 @@ describe('actual manual job source admission',()=>{
       if(text==='commit'||text==='rollback')transactions--
       let rows:unknown[]=[]
       if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:null,delegated_from:null}]
+      if(text.includes('as queued'))rows=[{queued:false,preparing:false}]
       if(text.startsWith('select created_at from job_preparations'))rows=[{created_at:new Date()}]
       if(text.includes('select archived_at'))rows=[{archived_at:null}]
       if(text.includes('select record from job_definitions'))rows=[{record:definition}]

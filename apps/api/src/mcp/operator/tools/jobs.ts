@@ -27,7 +27,7 @@ const actions:Record<JobToolName,ManagementAction> = {
   job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_cancellation_recovery_propose:'jobs:cancel',job_cancellation_recovery_get:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
   job_queue_get: 'jobs:read', job_queue_list: 'jobs:read', job_queue_cancel: 'jobs:cancel',
 }
-export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs support saved Auto or fixed placement. '
+export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs require owner-reviewed Main queue configuration and support saved Auto or fixed placement. '
   + 'Requests wait for capacity before source preparation. '
   + 'Auto selects an authorized eligible computer with available capacity by build priority; fixed placement waits for its saved computer. '
   + 'Workflow-node queuing, Start placement overrides and start estimates are not implemented. '
@@ -69,7 +69,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if(jobToolAvailable(context,'job_validate')) server.registerTool('job_validate',{description:'Validate static Auto source/configuration authority or fixed-target readiness without installation. Computer eligibility and capacity are rechecked when the queued request is claimed; unavailable computers can wait.',inputSchema:scope.extend({spec:JobDefinitionSpecSchema}),outputSchema:JobValidationSchema,annotations:read},input=>invoke(context,'job_validate',()=>service.validate(context.principal,input.workspaceId,input.spec,'mcp')))
   if (jobToolAvailable(context, 'job_start')) server.registerTool('job_start', {
     description: JOB_QUEUE_CAPABILITY_DETAIL + ' Persist a request using the saved definition revision. '
-      + 'The admission result is pending with a ticket or accepted with the original executionId. '
+      + 'The admission result is pending with a ticket or accepted with the original executionId. Retrying a retained pre-queue command returns its original execution without creating a ticket. '
       + 'Retry the same commandId and payload after an unknown acknowledgment; read job_queue_get for waiting or claim state and job_get after acceptance. '
       + 'Claimed cancellation and disconnected execution do not prove process closure or released capacity.',
     inputSchema: JobQueuedStartSchema.extend({ workspaceId: z.string().min(1) }),
