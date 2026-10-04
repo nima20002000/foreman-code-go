@@ -119,7 +119,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     )
     const { router } = await mount(runsUrl('run-a', scope))
     await savedY()
-    await userEvent.click(await screen.findByRole('button', { name: 'Run child, codex, running' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Run child, Codex, Running' }))
     expect(await screen.findByRole('dialog', { name: 'Run child' })).toBeVisible()
     expect(reads).toEqual([`/api/management/workspaces/${scope.workspaceId}/runs/run-a/subagents`])
     expect(router.history.location.hash).toContain('selectedSubagentId=child-1')

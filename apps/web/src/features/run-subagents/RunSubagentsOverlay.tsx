@@ -1,6 +1,8 @@
 import { useRef } from 'react'
 import { ViewportPortal } from '@xyflow/react'
-import { layoutSubagents, isTerminalSubagent, type SubagentLayoutNode } from './layout'
+import { Button } from '../../shared/ui/nocturne'
+import { layoutSubagents, isTerminalSubagent, SUBAGENT_CHIP, type SubagentLayoutNode } from './layout'
+import { subagentLabel, subagentName, subagentStatus } from './presentation'
 import { useRunSubagents, type SubagentsScope } from './query'
 import { useSelectedSubagent } from './selection'
 import { SubagentPanel } from './SubagentPanel'
@@ -15,36 +17,43 @@ export function RunSubagentsOverlay({ scope, nodes }: {
   const closePanel = () => {
     void select(null).then(() => trigger.current?.focus())
   }
-  // A failed read (including revoked access) cannot leave cached circles visible.
+  // A failed read (including revoked access) cannot leave cached chips visible.
   const children = query.isError ? [] : query.data?.pages.flatMap((page) => page.items.map((item) => item.subagent)) ?? []
-  const circles = layoutSubagents(nodes, children)
+  const chips = layoutSubagents(nodes, children)
+  const unplaced = children.length - chips.length
+  const syncing = query.data?.pages.some((page) => page.projection === 'catching-up')
   return <>
     <ViewportPortal>
       <div className="run-subagents-overlay">
         <svg className="run-subagents-links" aria-hidden="true">
-          {circles.map(({ subagent, x, y, fromX, fromY }) => <line key={subagent.id} x1={fromX} y1={fromY} x2={x} y2={y} />)}
+          {chips.map(({ subagent, x, y, spineX, fromY }) =>
+            <path key={subagent.id} d={`M ${spineX} ${fromY} V ${y + SUBAGENT_CHIP.height / 2} H ${x}`} />)}
         </svg>
-        {circles.map(({ subagent, x, y, parentId }) => {
-          const name = subagent.name || 'Subagent'
-          const label = `${name}, ${subagent.provider}, ${subagent.status}${subagent.evidence !== 'confirmed' ? `, ${subagent.evidence}` : ''}`
+        {chips.map(({ subagent, x, y, parentId }) => {
+          const status = subagentStatus(subagent.status)
+          const label = subagentLabel(subagent)
           return <button key={subagent.id} ref={(element) => {
             if (selected === subagent.id && element) trigger.current = element
-          }} type="button" className="run-subagent-circle nodrag nopan"
-            data-parent-id={parentId} data-subagent-id={subagent.id} data-inactive={isTerminalSubagent(subagent.status)}
+          }} type="button" className="run-subagent-chip nodrag nopan"
+            data-parent-id={parentId} data-subagent-id={subagent.id} data-tone={status.tone}
+            data-inactive={isTerminalSubagent(subagent.status)} data-live={subagent.status === 'running'}
             data-uncertain={subagent.evidence !== 'confirmed' || subagent.status === 'unknown'}
             style={{ left: x, top: y }} title={label} aria-label={label} aria-pressed={selected === subagent.id}
             onClick={(event) => { event.stopPropagation(); trigger.current = event.currentTarget; void select(subagent.id) }}>
-            <span aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+            <span className="run-subagent-dot" aria-hidden="true" />
+            <span className="run-subagent-chip-name" aria-hidden="true">{subagentName(subagent)}</span>
+            <span className="run-subagent-chip-status" aria-hidden="true">{status.label}</span>
           </button>
         })}
       </div>
     </ViewportPortal>
-    {(query.isError || query.hasNextPage || query.data?.pages.some((page) => page.projection === 'catching-up') || circles.length < children.length) &&
+    {(query.isError || query.hasNextPage || syncing || unplaced > 0) &&
       <div className="run-subagents-notice nopan nodrag" role="status">
-        {query.isError ? <><span>Subagents unavailable. </span><button type="button" onClick={() => void query.refetch()}>Retry</button></> : <>
-          {query.hasNextPage && <button type="button" disabled={query.isFetching} onClick={() => void query.fetchNextPage()}>Load more subagents</button>}
-          {query.data?.pages.some((page) => page.projection === 'catching-up') && <span>Subagent evidence catching up.</span>}
-          {circles.length < children.length && <span>Some attachments await parent evidence.</span>}
+        {query.isError ? <><span>Couldn't load subagents.</span><Button size="sm" onClick={() => void query.refetch()}>Retry</Button></> : <>
+          {syncing && <span>Updating subagent activity…</span>}
+          {unplaced > 0 && <span>{unplaced === 1 ? '1 subagent isn\'t shown yet because its parent hasn\'t reported in.'
+            : `${unplaced} subagents aren't shown yet because their parents haven't reported in.`}</span>}
+          {query.hasNextPage && <Button size="sm" loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>Show more subagents</Button>}
         </>}
       </div>}
     {!query.isError && selected && <SubagentPanel key={`${scope.runId}:${selected}`} scope={scope} subagentId={selected} onClose={closePanel} />}

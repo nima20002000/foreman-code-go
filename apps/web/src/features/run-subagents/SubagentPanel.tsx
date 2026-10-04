@@ -1,18 +1,28 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
-import { SUBAGENT_LIMITS, type RunSubagent, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
-import { Button, Dialog, Textarea } from '../../shared/ui/nocturne'
+import { SUBAGENT_LIMITS, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import { Button, CodeBlock, Drawer, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'
+import { formatBytes, formatClock, providerNames, subagentName, subagentStatus, subagentTiming, toolStatus } from './presentation'
 import { subagentsKey, useSubagentDetail, useSubagentMessages, useSubagentTools, type SubagentsScope } from './query'
 
 type CommandVariables = { operation: 'input' | 'interrupt'; commandId: string; expectedRevision: string; text: string }
-const providerNames = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' }
-function capabilityLabel(capability: RunSubagent['capabilities']['sendInput'], provider: string, action: string) {
-  if (capability.support === 'unsupported') return `${action} not supported by ${provider}.`
-  if (capability.support !== 'supported' || capability.qualification !== 'passed') return `${action} not yet qualified for ${provider}.`
-  return `${action} unavailable for this session or your access.`
+
+const coverageNote = (coverage: 'complete' | 'partial' | 'unavailable', what: string, provider: string) =>
+  coverage === 'partial' ? `Only part of this subagent's ${what} was captured.`
+    : coverage === 'unavailable' ? `${provider} doesn't share this subagent's ${what}.` : undefined
+
+/** Plain-language command outcome. Delivery is not completion: the subagent decides what to do with it. */
+function receiptText(receipt: RunSubagentCommandReceipt) {
+  const what = receipt.operation === 'run_subagent_interrupt_v1' ? 'Interrupt' : 'Message'
+  switch (receipt.state) {
+    case 'accepted': case 'dispatching': return `${what} is being sent…`
+    case 'acknowledged': return `${what} delivered to the subagent.`
+    case 'rejected': return `${what} was not delivered.`
+    case 'uncertain': return `${what} delivery isn't confirmed yet.`
+  }
 }
 
 export function SubagentPanel({ scope, subagentId, onClose }: { scope: SubagentsScope; subagentId: string; onClose: () => void }) {
@@ -23,6 +33,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const tools = useSubagentTools(scope, subagentId, Boolean(child))
   const ui = useMemo(() => createStore(() => ({ text: '' })), [])
   const text = useStore(ui, (state) => state.text)
+  const [tab, setTab] = useState('messages')
   const queryClient = useQueryClient()
   const mutationKey = [...subagentsKey(scope), subagentId, 'command']
   const commands = useMutationState({ filters: { mutationKey, exact: true }, select: (mutation) => ({
@@ -55,74 +66,88 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
     if (!child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
     command.mutate({ operation, commandId: crypto.randomUUID(), expectedRevision: child.revision, text })
   }
-  const provider = child ? providerNames[child.provider] : 'provider'
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose() }} title={child?.name || 'Subagent'}
-    size="lg" busy={pending} closeLabel="Close subagent" className="run-subagent-panel">
-    {detail.isError ? <p role="alert">Subagent unavailable. <Button onClick={() => void detail.refetch()}>Retry</Button></p>
-      : !child ? <p role="status">Loading subagent…</p> : <div className="n-stack">
-        <section aria-label="Lifecycle">
-          <p><strong>{provider}</strong> · {child.status} · {child.evidence}</p>
-          <dl className="run-subagent-lifecycle">
-            <dt>First observed</dt><dd>{child.firstObservedAt}</dd>
-            {child.startedAt && <><dt>Started</dt><dd>{child.startedAt}</dd></>}
-            {child.finishedAt && <><dt>Finished</dt><dd>{child.finishedAt}</dd></>}
-            <dt>Last observed</dt><dd>{child.lastObservedAt}</dd>
-          </dl>
-          {child.evidence !== 'confirmed' && <p role="status">Lifecycle is {child.evidence}; completion is not confirmed.</p>}
-          {child.coverage.gaps && <p>Some native evidence is missing.</p>}
+  const recheck = () => { if (lastCommand?.variables) command.mutate(lastCommand.variables) }
+  const refresh = async () => {
+    const fresh = await detail.refetch()
+    if (fresh.isSuccess && lastCommand) { queryClient.getMutationCache().remove(lastCommand.mutation); command.reset() }
+  }
+  const provider = child ? providerNames[child.provider] : 'Provider'
+  const status = child ? subagentStatus(child.status) : undefined
+  const messageItems = messages.data?.pages.flatMap((page) => page.items) ?? []
+  const toolItems = tools.data?.pages.flatMap((page) => page.items) ?? []
+  const canSend = allowed('sendInput'), canInterrupt = allowed('interrupt')
+  const footer = child && (canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
+    {canSend && <Textarea label="Message to subagent" value={text} maxLength={SUBAGENT_LIMITS.text} rows={2}
+      hint={child.capabilities.inputTiming === 'idle' ? 'Delivered when the subagent is waiting for input.' : undefined}
+      disabled={pending || unsettled} onChange={(event) => ui.setState({ text: event.currentTarget.value })}
+      onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); if (text.trim()) send('input') } }} />}
+    <div className="run-subagent-steer-actions">
+      <div className="run-subagent-steer-status" role="status">
+        {pending ? <Spinner label="Sending" />
+          : revisionConflict ? <span>The subagent changed since you opened it.</span>
+          : commandError ? <span role="alert">Couldn't confirm delivery.</span>
+          : receipt ? <span data-state={receipt.state}>{receiptText(receipt)}</span> : null}
+      </div>
+      {revisionConflict ? <Button size="sm" loading={detail.isFetching} onClick={() => void refresh()}>Refresh</Button>
+        : unsettled && lastCommand?.variables ? <Button size="sm" disabled={pending} onClick={recheck}>Check again</Button> : null}
+      {canInterrupt && <Button variant="danger" disabled={pending || unsettled} onClick={() => send('interrupt')}>Interrupt</Button>}
+      {canSend && <Button variant="primary" disabled={!text.trim() || pending || unsettled} onClick={() => send('input')}>Send</Button>}
+    </div>
+  </div> : undefined
+  return <Drawer open onOpenChange={(open) => { if (!open) onClose() }} title={child ? subagentName(child) : 'Subagent'}
+    description={child ? `${provider} subagent` : undefined} size="lg" busy={pending} closeLabel="Close subagent"
+    className="run-subagent-panel" footer={footer}>
+    {detail.isError ? <ErrorState title="Couldn't load this subagent" description="It may have been removed, or you may no longer have access."
+      onRetry={() => void detail.refetch()} retrying={detail.isFetching} />
+      : !child || !status ? <Spinner label="Loading subagent" /> : <div className="run-subagent-body">
+        <section className="run-subagent-summary" aria-label="Status">
+          <StatusBadge label={status.label} tone={status.tone} busy={child.status === 'running'} />
+          <span>{subagentTiming(child)}</span>
+          {child.evidence !== 'confirmed' && <p className="run-subagent-note">This status isn't confirmed yet and may still change.</p>}
+          {!canSend && !canInterrupt && <p className="run-subagent-note">View only — {provider} subagents can't be messaged or interrupted from here.</p>}
         </section>
-        <section aria-label="Messages"><h3>Messages</h3>
-          <p>Transcript coverage: {messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript}.</p>
-          {child.capabilities.transcript.support !== 'supported' && <p>{capabilityLabel(child.capabilities.transcript, provider, 'Transcript')}</p>}
-          {messages.isError ? <p role="alert">Messages unavailable. <Button onClick={() => void messages.refetch()}>Retry messages</Button></p>
-            : messages.isPending ? <p>Loading messages…</p> : <>
-              {messages.data?.pages.some((page) => page.coverage.gaps) && <p>Transcript has gaps.</p>}
-              {messages.data?.pages.flatMap((page) => page.items).map((item) => <Message key={item.id} item={item} />)}
-              {messages.data?.pages.every((page) => page.items.length === 0) && <p>No messages recorded.</p>}
-              {messages.hasNextPage && <Button disabled={messages.isFetching} onClick={() => void messages.fetchNextPage()}>Load more messages</Button>}
-            </>}
-        </section>
-        <section aria-label="Tool calls"><h3>Tool calls</h3>
-          <p>Tool coverage: {tools.data?.pages.at(-1)?.coverage.tools ?? child.coverage.tools}.</p>
-          {child.capabilities.toolCalls.support !== 'supported' && <p>{capabilityLabel(child.capabilities.toolCalls, provider, 'Tool calls')}</p>}
-          {child.capabilities.toolResults.support !== 'supported' && <p>{capabilityLabel(child.capabilities.toolResults, provider, 'Tool results')}</p>}
-          {tools.isError ? <p role="alert">Tools unavailable. <Button onClick={() => void tools.refetch()}>Retry tools</Button></p>
-            : tools.isPending ? <p>Loading tools…</p> : <>
-              {tools.data?.pages.some((page) => page.coverage.gaps) && <p>Tool evidence has gaps.</p>}
-              {tools.data?.pages.flatMap((page) => page.items).map((item) => <Tool key={item.id} item={item} />)}
-              {tools.data?.pages.every((page) => page.items.length === 0) && <p>No tool calls recorded.</p>}
-              {tools.hasNextPage && <Button disabled={tools.isFetching} onClick={() => void tools.fetchNextPage()}>Load more tool calls</Button>}
-            </>}
-        </section>
-        <section aria-label="Steering"><h3>Steering</h3>
-          {allowed('sendInput') ? <><Textarea label="Message to subagent" value={text} maxLength={SUBAGENT_LIMITS.text}
-            disabled={pending || unsettled} onChange={(event) => ui.setState({ text: event.currentTarget.value })} />
-            <p>Supported input timing: {child.capabilities.inputTiming}.</p>
-            <Button disabled={!text.trim() || pending || unsettled} onClick={() => send('input')}>Send input</Button></>
-            : <p>{capabilityLabel(child.capabilities.sendInput, provider, 'Input')}</p>}
-          {allowed('interrupt') ? <Button disabled={pending || unsettled} onClick={() => send('interrupt')}>Interrupt subagent</Button>
-            : <p>{capabilityLabel(child.capabilities.interrupt, provider, 'Interrupt')}</p>}
-          {record?.availableActions.blockedReason && <details><summary>Control availability</summary><p>{record.availableActions.blockedReason}</p></details>}
-          {pending && <p role="status">Submitting command…</p>}
-          {receipt && <p role="status">Command {receipt.state}{receipt.reasonCode ? `: ${receipt.reasonCode}` : ''}. {receipt.state === 'acknowledged' && 'Native acceptance does not confirm consumption or completion.'}</p>}
-          {commandError && <p role="alert">{revisionConflict ? 'Subagent changed. Read the latest revision before sending again.' : 'Command result unavailable. Recheck the same command before sending another.'}</p>}
-          {revisionConflict && <Button disabled={detail.isFetching} onClick={async () => { const fresh = await detail.refetch(); if (fresh.isSuccess && lastCommand) { queryClient.getMutationCache().remove(lastCommand.mutation); command.reset() } }}>Use latest revision</Button>}
-          {unsettled && !revisionConflict && lastCommand?.variables && <Button disabled={pending} onClick={() => lastCommand?.variables && command.mutate(lastCommand?.variables)}>Recheck command</Button>}
-        </section>
+        <Tabs label="Subagent activity" value={tab} onValueChange={setTab} items={[
+          { value: 'messages', label: 'Messages', ...(messageItems.length ? { badge: `${messageItems.length}${messages.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
+            {coverageNote(messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript, 'conversation', provider) &&
+              <p className="run-subagent-note">{coverageNote(messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript, 'conversation', provider)}</p>}
+            {messages.isError ? <ErrorState title="Couldn't load messages" description="Try again in a moment." onRetry={() => void messages.refetch()} retrying={messages.isFetching} />
+              : messages.isPending ? <Spinner label="Loading messages" /> : <>
+                {messageItems.map((item) => <Message key={item.id} item={item} name={subagentName(child)} />)}
+                {!messageItems.length && <EmptyState title="No messages yet" description="Messages appear here as the subagent works." icon="chat" />}
+                {messages.hasNextPage && <Button size="sm" loading={messages.isFetchingNextPage} onClick={() => void messages.fetchNextPage()}>Load more messages</Button>}
+              </>}
+          </div> },
+          { value: 'tools', label: 'Tool calls', ...(toolItems.length ? { badge: `${toolItems.length}${tools.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
+            {coverageNote(tools.data?.pages.at(-1)?.coverage.tools ?? child.coverage.tools, 'tool calls', provider) &&
+              <p className="run-subagent-note">{coverageNote(tools.data?.pages.at(-1)?.coverage.tools ?? child.coverage.tools, 'tool calls', provider)}</p>}
+            {tools.isError ? <ErrorState title="Couldn't load tool calls" description="Try again in a moment." onRetry={() => void tools.refetch()} retrying={tools.isFetching} />
+              : tools.isPending ? <Spinner label="Loading tool calls" /> : <>
+                {toolItems.map((item) => <Tool key={item.id} item={item} />)}
+                {!toolItems.length && <EmptyState title="No tool calls yet" description="Tools the subagent uses appear here." icon="terminal" />}
+                {tools.hasNextPage && <Button size="sm" loading={tools.isFetchingNextPage} onClick={() => void tools.fetchNextPage()}>Load more tool calls</Button>}
+              </>}
+          </div> },
+        ]} />
       </div>}
-  </Dialog>
+  </Drawer>
 }
-function Message({ item }: { item: RunSubagentMessage }) {
-  return <article className="run-subagent-message"><strong>{item.role}</strong><p>{item.text}</p>
-    {!item.final && <span>Message in progress</span>}
-    {item.truncation.truncated && <p>Message clipped from {item.truncation.originalBytes} bytes.</p>}
-  </article>
+
+function Message({ item, name }: { item: RunSubagentMessage; name: string }) {
+  return <MessageBubble author={item.role === 'assistant' ? name : 'Parent agent'} role={item.role}
+    time={formatClock(item.occurredAt)} dateTime={item.occurredAt} status={!item.final ? <span className="run-subagent-note">writing…</span> : undefined}>
+    <p className="run-subagent-text">{item.text}</p>
+    {item.truncation.truncated && <p className="run-subagent-note">Shortened — the full message was {formatBytes(item.truncation.originalBytes)}.</p>}
+  </MessageBubble>
 }
+
+const json = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 function Tool({ item }: { item: RunSubagentTool }) {
-  return <article className="run-subagent-tool"><h4>{item.name} · {item.status}</h4>
-    {item.input !== undefined && <details><summary>Input</summary><pre>{JSON.stringify(item.input, null, 2)}</pre></details>}
-    {item.output !== undefined && <details><summary>Result</summary><pre>{JSON.stringify(item.output, null, 2)}</pre></details>}
-    {item.error !== undefined && <details><summary>Error</summary><pre>{JSON.stringify(item.error, null, 2)}</pre></details>}
-    {item.truncation.truncated && <p>Tool evidence clipped from {item.truncation.originalBytes} bytes.</p>}
-  </article>
+  const status = toolStatus(item.status)
+  return <ToolCallCard title={item.name} status={status.label} tone={status.tone}
+    summary={item.durationMs !== undefined ? `Took ${(item.durationMs / 1000).toFixed(1)}s` : undefined}>
+    {item.input !== undefined && <CodeBlock label="Input" code={json(item.input)} language="json" />}
+    {item.output !== undefined && <CodeBlock label="Result" code={json(item.output)} />}
+    {item.error !== undefined && <CodeBlock label="Error" code={json(item.error)} />}
+    {item.truncation.truncated && <p className="run-subagent-note">Shortened — the full record was {formatBytes(item.truncation.originalBytes)}.</p>}
+  </ToolCallCard>
 }
