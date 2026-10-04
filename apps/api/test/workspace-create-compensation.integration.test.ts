@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { fork, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import * as contracts from '@graphql/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -116,5 +119,60 @@ describe('workspace project folder compensation through authenticated MCP', () =
       expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
         [input.commandId])).rows[0].count).toBe(0)
     } finally { await f.close() }
+  }, 30_000)
+
+  it.each([true, false])('recovers an interrupted %s-name creation in a fresh process without suffixes', async explicit => {
+    const f = await workspaceMcpFixture()
+    const children: ChildProcess[] = []
+    const launch = (input: contracts.WorkspaceCreateInput, interrupt: boolean) => {
+      const child = fork(fileURLToPath(new URL('./helpers/workspaceCreateProcess.ts', import.meta.url)), [], {
+        cwd: fileURLToPath(new URL('..', import.meta.url)), execArgv: ['--import', 'tsx'], silent: true,
+      })
+      children.push(child)
+      child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token, input, interrupt })
+      return child
+    }
+    try {
+      const name = 'Recovered after crash'
+      await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+      const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicit ? { name } : {}) }
+      const interrupted = launch(input, true)
+      const [paused] = await once(interrupted, 'message')
+      expect(paused).toEqual({ phase: 'provisioned' })
+      expect(await readdir(f.parentPath)).toEqual([name])
+      expect((await f.pool.query('select id from workspaces')).rows).toEqual([])
+      expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
+        .toEqual([{ identity: { device: expect.any(String), inode: expect.any(String) } }])
+      const exited = once(interrupted, 'exit')
+      interrupted.kill('SIGKILL')
+      expect(await exited).toEqual([null, 'SIGKILL'])
+      const restarted = launch(input, false)
+      const completion = once(restarted, 'exit')
+      const [message] = await once(restarted, 'message')
+      expect(message.phase).toBe('completed')
+      expect(message.result.isError).not.toBe(true)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      expect(saved.replayed).toBe(false)
+      expect(saved.value.workspace.name).toBe(name)
+      expect(await completion).toEqual([0, null])
+      const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+        { workspaceId: saved.value.workspace.id })
+      expect(readback.executionLocation?.rootPath).toBe(join(f.parentPath, name))
+      expect(readback.locationValidation.status).toBe('ready')
+      expect(await readdir(f.parentPath)).toEqual([name])
+      expect((await f.pool.query('select id from workspaces')).rows).toEqual([{ id: saved.value.workspace.id }])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, 'exit')
+          child.kill('SIGKILL')
+          await exited
+        }
+      }
+      await f.close()
+    }
   }, 30_000)
 })

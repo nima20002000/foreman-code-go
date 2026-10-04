@@ -69,7 +69,8 @@ export class WorkspaceLocationService {
     this.managedRuntimeRoot = managedRuntimeRoot ? resolve(managedRuntimeRoot) : undefined
   }
 
-  async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string) {
+  async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string,
+    provisioning?: { create(path: string): Promise<void> }) {
     requireAuthorization(principal, 'workspace_locations:provision', { workspaceId })
     requireAuthorization(principal, 'workspace_locations:update', { workspaceId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
@@ -79,14 +80,21 @@ export class WorkspaceLocationService {
     }
     const parent = await this.validatePath(workspaceId, this.runnerId, parentPath, 'read-write')
     const path = resolve(parent.validation.location.rootPath, name)
-    try { await mkdir(path) } catch (error) {
+    try {
+      if (provisioning) await provisioning.create(path)
+      else await mkdir(path)
+    } catch (error) {
+      if (error instanceof DomainError) throw error
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new DomainError('WORKSPACE_FOLDER_EXISTS', 'A folder with this name already exists. Choose another name or location.', 409)
       }
       throw locationError(error, path)
     }
     try { return await this.validatePath(workspaceId, this.runnerId, path, 'read-write') }
-    catch (error) { await rmdir(path).catch(() => undefined); throw error }
+    catch (error) {
+      if (!provisioning) await rmdir(path)
+      throw error
+    }
   }
 
   private async validatePath(

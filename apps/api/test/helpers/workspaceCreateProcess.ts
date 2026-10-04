@@ -1,0 +1,59 @@
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import type { WorkspaceCreateInput } from '@graphql/contracts/management'
+import pg from 'pg'
+import { buildApp } from '../../src/app.js'
+import type { OperatorServices } from '../../src/mcp/operator/types.js'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../../src/modules/settings/foundation.js'
+import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
+
+interface Request {
+  database: pg.PoolConfig
+  parentPath: string
+  token: string
+  input: WorkspaceCreateInput
+  interrupt: boolean
+}
+
+process.once('message', async (request: Request) => {
+  const pool = new pg.Pool(request.database)
+  const commands = new PostgresCommandCoordinator(pool)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', request.parentPath)
+  const defaults = new PostgresFoundationSettingsRepository(pool, request.parentPath)
+  const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, request.parentPath)
+  const app = buildApp({ logger: false, readiness: {
+    database: { ping: async () => {} }, checkpoints: { ping: async () => {} },
+  }, operator: { access: new PostgresAccessService(pool),
+    services: { commands, locations, workspaces } as unknown as OperatorServices } })
+  const client = new Client({ name: 'workspace-recovery-process', version: '1' })
+  try {
+    if (request.interrupt) {
+      const query = pg.Client.prototype.query as unknown as
+        (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
+      // Hold a real uncommitted command after its directory is published.
+      pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+        if (typeof args[0] === 'string' && args[0].includes('insert into workspaces')) {
+          process.send!({ phase: 'provisioned' })
+          return new Promise(() => {})
+        }
+        return query.apply(this, args)
+      } as never
+    }
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      authProvider: { token: async () => request.token },
+    }))
+    const result = await client.callTool({ name: 'workspace_create', arguments: request.input })
+    process.send!({ phase: 'completed', result })
+  } catch (error) {
+    process.send!({ phase: 'failed', message: error instanceof Error ? error.message : String(error) })
+    process.exitCode = 1
+  } finally {
+    await client.close()
+    await app.close()
+    await pool.end()
+    process.disconnect()
+  }
+})

@@ -1,4 +1,3 @@
-import { lstat, realpath, rmdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -22,6 +21,7 @@ import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { cleanupWorkspaceProjectFolders, WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
 import { WorkspaceStorageFolders } from './storageFolders.js'
 import { workspaceStorageRoot } from './storage.js'
+import { WorkspaceProjectProvisioning } from './projectProvisioning.js'
 
 interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null; created_project_folder?: unknown }
 
@@ -87,93 +87,91 @@ export class WorkspaceManagementService {
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceCreateInput) {
     requireAuthorization(principal, 'workspaces:create')
     let folder: Awaited<ReturnType<WorkspaceLocationService['createProjectFolder']>> | undefined
-    return this.commands.execute({
-      replayResult: replayWorkspaceResult,
-      principal, source, operation: 'workspace.create', commandId: input.commandId,
-      targetKey: 'workspaces:new', payload: input,
-      afterRollback: async (client) => {
-        if (!folder) return
-        const rootPath = folder.validation.location.rootPath
-        await client.query('begin')
-        try {
+    const provisioning = input.parentPath ? new WorkspaceProjectProvisioning(this.pool) : undefined
+    try {
+      await provisioning?.connect()
+      const result = await this.commands.execute({
+        replayResult: replayWorkspaceResult,
+        principal, source, operation: 'workspace.create', commandId: input.commandId,
+        targetKey: 'workspaces:new', payload: input,
+        afterRollback: async (client) => {
+          if (!provisioning || !input.parentPath) return
+          await client.query('begin')
+          try {
+            await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+            await provisioning.reconcile(client, input.parentPath)
+            await client.query('commit')
+          } catch (error) {
+            await client.query('rollback')
+            throw error
+          }
+        },
+        authorize: async (client) => {
           await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
-          const referenced = await client.query(
-            `select 1 from workspaces where execution_location->>'rootPath' = $1
-             or created_project_folder->>'rootPath' = $1 limit 1`, [rootPath],
-          )
-          if (!referenced.rows.length) {
-            let details
-            try { details = await lstat(rootPath, { bigint: true }) }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-            if (details) {
-              if (!details.isDirectory() || String(details.dev) !== folder.identity.device
-                || String(details.ino) !== folder.identity.inode || await realpath(rootPath) !== rootPath) {
-                throw new Error('The created project directory was replaced; it was not removed.')
-              }
-              // rmdir preserves any content added since this attempt created the directory.
-              await rmdir(rootPath)
+          const live = await readLiveManagementPrincipal(client, principal.id)
+          requireAuthorization(live, 'workspaces:create')
+          if (input.parentPath) {
+            for (const action of ['workspace_locations:provision', 'workspace_locations:update', 'workspace_locations:read'] as const) {
+              requireAuthorization(principal, action)
+              requireAuthorization(live, action)
             }
           }
-          await client.query('commit')
-        } catch (error) {
-          await client.query('rollback')
-          throw error
-        }
-      },
-      authorize: async (client) => {
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
-        const live = await readLiveManagementPrincipal(client, principal.id)
-        requireAuthorization(live, 'workspaces:create')
-        if (input.parentPath) {
-          for (const action of ['workspace_locations:provision', 'workspace_locations:update', 'workspace_locations:read'] as const) {
-            requireAuthorization(principal, action)
-            requireAuthorization(live, action)
+        },
+        perform: async (client) => {
+          await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+          const defaults = input.name === undefined || input.description === undefined
+            ? await this.defaults.getWorkspaceDefaults(client) : undefined
+          const description = input.description ?? defaults?.value.description ?? ''
+          const now = new Date().toISOString()
+          const workspace = WorkspaceSchema.parse({
+            id: `workspace-${randomUUID()}`, name: input.name ?? defaults!.value.suggestedName,
+            ...(description ? { description } : {}),
+            createdAt: now, updatedAt: now,
+          })
+          const baseName = workspace.name
+          const existingNames = input.name === undefined
+            ? new Set((await client.query<{ name: string }>("select record->>'name' as name from workspaces where archived_at is null")).rows.map((row) => row.name))
+            : new Set<string>()
+          for (let suffix = 0; ; suffix++) {
+            const ending = suffix ? ` (${suffix})` : ''
+            workspace.name = baseName.slice(0, 200 - ending.length).trimEnd() + ending
+            if (existingNames.has(workspace.name)) continue
+            try {
+              folder = input.parentPath
+                ? await this.locations.createProjectFolder(principal, workspace.id, input.parentPath, workspace.name, {
+                  create: async (path) => {
+                    await provisioning!.reconcile(client, input.parentPath!)
+                    await provisioning!.create(path, {
+                      principalId: principal.id, commandId: input.commandId, workspaceId: workspace.id,
+                    })
+                  },
+                })
+                : undefined
+              break
+            } catch (error) {
+              if (input.name !== undefined || !(error instanceof DomainError) || error.code !== 'WORKSPACE_FOLDER_EXISTS') throw error
+            }
           }
-        }
-      },
-      perform: async (client) => {
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
-        const defaults = input.name === undefined || input.description === undefined
-          ? await this.defaults.getWorkspaceDefaults(client) : undefined
-        const description = input.description ?? defaults?.value.description ?? ''
-        const now = new Date().toISOString()
-        const workspace = WorkspaceSchema.parse({
-          id: `workspace-${randomUUID()}`, name: input.name ?? defaults!.value.suggestedName,
-          ...(description ? { description } : {}),
-          createdAt: now, updatedAt: now,
-        })
-        const baseName = workspace.name
-        const existingNames = input.name === undefined
-          ? new Set((await client.query<{ name: string }>("select record->>'name' as name from workspaces where archived_at is null")).rows.map((row) => row.name))
-          : new Set<string>()
-        for (let suffix = 0; ; suffix++) {
-          const ending = suffix ? ` (${suffix})` : ''
-          workspace.name = baseName.slice(0, 200 - ending.length).trimEnd() + ending
-          if (existingNames.has(workspace.name)) continue
-          try {
-            folder = input.parentPath
-              ? await this.locations.createProjectFolder(principal, workspace.id, input.parentPath, workspace.name)
-              : undefined
-            break
-          } catch (error) {
-            if (input.name !== undefined || !(error instanceof DomainError) || error.code !== 'WORKSPACE_FOLDER_EXISTS') throw error
-          }
-        }
-        const result = await client.query<WorkspaceRow>(
-          `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)
-           values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6::jsonb)
-           returning record, revision, archived_at`,
-          [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
-            folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0,
-            folder ? JSON.stringify({ ...folder.validation.location, identity: folder.identity }) : null],
-        )
-        const value = managed(result.rows[0]!)
-        return folder ? ManagedWorkspaceSchema.parse({ ...value,
-          executionLocation: folder.validation.location, locationRevision: 1,
-          locationValidation: { status: 'ready', checkedAt: folder.validation.checkedAt },
-        }) : value
-      },
-    })
+          const result = await client.query<WorkspaceRow>(
+            `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)
+             values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6::jsonb)
+             returning record, revision, archived_at`,
+            [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
+              folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0,
+              folder ? JSON.stringify({ ...folder.validation.location, identity: folder.identity }) : null],
+          )
+          const value = managed(result.rows[0]!)
+          return folder ? ManagedWorkspaceSchema.parse({ ...value,
+            executionLocation: folder.validation.location, locationRevision: 1,
+            locationValidation: { status: 'ready', checkedAt: folder.validation.checkedAt },
+          }) : value
+        },
+      })
+      await provisioning?.complete(principal.id, input.commandId)
+      return result
+    } finally {
+      await provisioning?.close()
+    }
   }
 
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {

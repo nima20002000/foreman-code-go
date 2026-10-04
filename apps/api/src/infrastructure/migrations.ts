@@ -80,6 +80,7 @@ import { fileRetentionMigration } from './fileRetentionMigration.js'
 import { fileReferenceAccessMigration } from './fileReferenceAccessMigration.js'
 import { fileToolsMigration } from '../modules/files/tools/migration.js'
 import { harnessQualificationMigration } from './harnessQualificationMigration.js'
+import { workspaceProvisioningMigration } from './workspaceProvisioningMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
@@ -821,6 +822,7 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  workspaceProvisioningMigration,
   localHumanMigration,
 ] as const
 
