@@ -51,7 +51,8 @@ export function useWorkflowSchedule(scope: ScheduleGetInput, open = true) {
     queryKey: scheduleKeys.read(scope, generation),
     queryFn: ({ signal }) => { assertSession(generation); return scheduleApi.get(scope, { signal }) },
     enabled: open, staleTime: 0, retry: false,
-    refetchOnMount: 'always', refetchOnWindowFocus: false, refetchOnReconnect: false,
+    refetchOnMount: 'always', refetchOnWindowFocus: true, refetchOnReconnect: true,
+    refetchInterval: open ? 5_000 : false,
   })
 }
 
