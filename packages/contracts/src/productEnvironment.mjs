@@ -8,7 +8,7 @@ function effectiveValue(suffix, value) {
     return String(Number(trimmed))
   }
   if (suffix.endsWith('ORIGIN')) {
-    try { return new URL(trimmed).toString() } catch { return trimmed }
+    try { return new globalThis.URL(trimmed).toString() } catch { return trimmed }
   }
   return trimmed
 }

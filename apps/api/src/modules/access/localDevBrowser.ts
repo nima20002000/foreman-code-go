@@ -50,7 +50,7 @@ export class LocalDevBrowserAccess {
             principalId = eligible.rows[0]!.id
           } else if ((await client.query('select 1 from management_principals limit 1')).rowCount) {
             throw new DomainError('DEV_BROWSER_PRINCIPAL_REQUIRED',
-              'Select an existing root Operator with GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID for this local database.', 503)
+              'Select an existing root Operator with FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID for this local database.', 503)
           } else {
             await client.query(`insert into management_principals
               (id,name,audience,token_hash,grants,expires_at)

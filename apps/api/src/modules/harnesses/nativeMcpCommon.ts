@@ -77,7 +77,7 @@ function assertAppRenamePolicies(snapshot: NativeMcpSnapshot): void {
 const connectionFields = ['url', 'bearer_token_env_var', 'headers', 'http_headers', 'env_http_headers',
   'oauth', 'type', 'command', 'args', 'env_vars', 'env', 'environment', 'enabled']
 function legacyAppPolicies(snapshot: NativeMcpSnapshot): JsonObject {
-  let policies: JsonObject = {}
+  const policies: JsonObject = {}
   let enabled = true
   for (const name of LEGACY_APP_MCP_SERVER_NAMES) {
     if (!Object.hasOwn(snapshot.user, name) && !Object.hasOwn(snapshot.effective, name)) continue
