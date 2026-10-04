@@ -56,7 +56,7 @@ export class OpenCodeManagedFileTurn {
 
   private async close(operation: () => Promise<void>): Promise<void> {
     const errors: unknown[] = []
-    let released = false
+    let released: boolean
     try {
       await operation()
       released = true

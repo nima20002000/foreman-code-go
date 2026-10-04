@@ -200,6 +200,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const temporaryPath = at(entry.directory, temporaryName)
       const temporary = await open(temporaryPath,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+      const errors: unknown[] = []
       try {
         await temporary.writeFile(bytes)
         await temporary.sync()
@@ -218,11 +219,14 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
         const publishedDirectory = await lstat(at(root, handle))
         checkFileCondition(publishedDirectory.dev === held.dev && publishedDirectory.ino === held.ino
           && publishedDirectory.isDirectory(), 'FILE_ARTIFACT_CHANGED', 'The working-copy path moved during replacement.')
-      } finally {
-        await temporary.close()
-        try { await unlink(temporaryPath) }
-        catch (error) { if (code(error) !== 'ENOENT') throw error }
+      } catch (error) {
+        errors.push(error)
       }
+      try { await temporary.close() } catch (error) { errors.push(error) }
+      try { await unlink(temporaryPath) }
+      catch (error) { if (code(error) !== 'ENOENT') errors.push(error) }
+      if (errors.length === 1) throw errors[0]
+      if (errors.length > 1) throw new AggregateError(errors, 'Working-copy replacement and temporary cleanup failed.')
     })
   }
 
