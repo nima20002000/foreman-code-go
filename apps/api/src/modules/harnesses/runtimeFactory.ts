@@ -187,6 +187,10 @@ export class NativeHarnessFactories {
       && (input.appMcpAccess !== 'none' || input.credentialEnvironmentVariable)) {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This runtime role has no application MCP credentials.', 403)
     }
+    if (input.chatFiles && input.appMcpAccess === 'scoped' && input.role !== 'operator') {
+      throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
+        'Only Operator chat can combine file tools with application management credentials.', 403)
+    }
     const auxiliary = input.role === 'diagnostics' || input.role === 'qualification'
     if (auxiliary && this.auxiliaryClosing) throw new DomainError(
       'NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)

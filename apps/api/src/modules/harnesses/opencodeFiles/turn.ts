@@ -109,10 +109,19 @@ export class OpenCodeFileTurn {
     const config = object(await this.json('/config', signal))
     const mcp = object(config.mcp)
     const names = chatExcludedAppMcpServerNames(this.options.appMcpServerName)
-    checkFileCondition(object(mcp[this.options.appMcpServerName]).enabled === false,
-      'FILE_CHAT_ISOLATION_REQUIRED', 'Workflow App MCP must already be disabled for chat.')
     const status = object(await this.json('/mcp', signal))
+    const operator = this.preparation === 'post_ack' && this.accepted?.context.scope.chat.kind === 'operator'
+    if (operator) {
+      checkFileCondition(Object.hasOwn(mcp, this.options.appMcpServerName)
+        && object(mcp[this.options.appMcpServerName]).enabled !== false
+        && object(status[this.options.appMcpServerName]).status === 'connected',
+      'FILE_CHAT_ISOLATION_REQUIRED', 'Operator files require the separately authorized management connection.')
+    } else {
+      checkFileCondition(object(mcp[this.options.appMcpServerName]).enabled === false,
+        'FILE_CHAT_ISOLATION_REQUIRED', 'Workflow App MCP must already be disabled for chat.')
+    }
     for (const name of names) {
+      if (operator && name === this.options.appMcpServerName) continue
       checkFileCondition((!Object.hasOwn(mcp, name) || object(mcp[name]).enabled === false)
         && (!Object.hasOwn(status, name) || object(status[name]).status === 'disabled'),
       'FILE_CHAT_ISOLATION_REQUIRED', 'Chat cannot acquire workflow or Operator MCP authority.')

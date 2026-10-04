@@ -417,7 +417,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly expectedVersion?: string,
     private readonly appMcpServerName: string = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
-    /** Chat disables only its App MCP entry with a verified process-local override. */
+    /** Agent chat disables only its App MCP entry with a verified process-local override. */
     private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
     private readonly chatFiles?: CodexChatFiles,
     dependencies: CodexSessionDependencies = { mode: 'native' },
@@ -449,9 +449,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
     }
     this.dependencies = { ...defaults, ...dependencies }
-
-    if (chatFiles && appMcpAccess !== 'none') throw new HarnessExecutionError(
-      'CODEX_FILE_CHAT_ISOLATION_REQUIRED', 'File-enabled chat cannot receive workflow App MCP or Operator/worker credentials.')
   }
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -616,7 +613,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
         ...(creation.source ? { threadId: creation.source.nativeSessionId, excludeTurns: true } : {}),
         // Codex persists declarations at thread/start; thread/resume cannot add
-        // them when a text-first Operator later switches to a file-only manager.
+        // them when a text-first Operator later attaches files.
         // Declarations grant no access: handlers still require an admitted file
         // turn and its durable ACK, never the credentialed text-mode process.
         ...(!creation.source && (this.chatFiles || prepared.input.kind === 'operator')
@@ -1718,6 +1715,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const input = structuredClone(source)
     validateEnvironmentOwner(input)
     validateEnvironmentVariables(input.environment)
+    if (this.chatFiles && this.appMcpAccess === 'scoped' && input.kind !== 'operator') {
+      throw new HarnessExecutionError('CODEX_FILE_CHAT_ISOLATION_REQUIRED',
+        'Only Operator chat can combine file tools with application management credentials.')
+    }
     if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }

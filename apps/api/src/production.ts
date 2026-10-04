@@ -830,8 +830,8 @@ export function buildProductionApp(
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector: configuration.harnessProfileSelection, binding: { kind: 'operator', conversationId, repository: operatorConversations },
         configuration: configuration.harness, role: 'operator', workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
-        recovery, appMcpAccess: fileInputs ? 'none' : 'scoped',
-        ...(!fileInputs && configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
+        recovery, appMcpAccess: 'scoped',
+        ...(configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
         ...(fileInputs ? { files: productionCodexChatFiles(() => app, conversationId, operatorCodexFileAdmissions(() => app, database.pool,
           configuration, operatorWorkingDirectory, fileStorageRoot)),
           openCodeFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost, {

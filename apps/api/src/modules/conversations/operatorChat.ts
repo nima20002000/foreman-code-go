@@ -453,8 +453,9 @@ export class OperatorChatService {
     const resident = this.runtimes.get(id)
     if (resident && (resident.observationOnly || Boolean(resident.fileInputs) !== fileInputs)) await this.release(id)
     const existing = this.runtimes.get(id)
+    const fileOnly = fileInputs && configuration.harness.harness === 'claude'
     if (existing?.session) {
-      if (!fileInputs && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
+      if (!fileOnly && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the Foreman Code MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
@@ -462,10 +463,9 @@ export class OperatorChatService {
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.
-    // File turns never acquire the management token, including on an existing
-    // native session. Fence an older token before attaching a file-only child.
-    if (fileInputs) await this.authority.release(id)
-    const environment = fileInputs ? { agentId: configuration.operatorId, variables: {} }
+    // Claude's file runtime has separate credential delivery composition.
+    if (fileOnly) await this.authority.release(id)
+    const environment = fileOnly ? { agentId: configuration.operatorId, variables: {} }
       : await this.authority.prepare(runtime.manager, configuration, id, row.owner_principal_id!, signal)
     runtime.environment = environment
     signal.throwIfAborted(); this.assertOpen()
@@ -510,7 +510,8 @@ export class OperatorChatService {
         // This is deliberately NOT an issued credential: the App rejects it.
         // Do not mint fresh owner authority merely to inspect/stop old work.
         environment: { agentId: configuration.operatorId,
-          variables: fileInputs ? {} : { [APP_MCP_TOKEN]: 'operator-cleanup-disabled' } },
+          variables: fileInputs && configuration.harness.harness === 'claude'
+            ? {} : { [APP_MCP_TOKEN]: 'operator-cleanup-disabled' } },
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }

@@ -162,9 +162,6 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private readonly pendingFileCleanup = new Set<OpenCodeManagedFileTurn>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
-    if (options.chatFiles && options.appMcpAccess !== 'none') {
-      throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'File chat requires a credential-free, App-MCP-disabled native manager.')
-    }
     if (options.server.ownerAgentId !== undefined && options.server.ownerAgentId !== options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The native manager and resident server must have the same credential owner.')
     }
@@ -1563,6 +1560,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private configuration(input: NativeSessionStart): OpenCodeHarnessConfiguration {
+    if (this.options.chatFiles && this.options.appMcpAccess !== 'none' && input.kind !== 'operator') {
+      throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE',
+        'Only Operator chat can combine file tools with application management credentials.')
+    }
     const configuration = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
     if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a different harness configuration.')
     const parsed = OpenCodeHarnessConfigurationSchema.safeParse(configuration)
