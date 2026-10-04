@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import type {
   AgentConfigurationVersion, AgentHarness, ApprovalResponseOption, DurableInteraction,
-  ExecutionResult, HarnessExecution, HarnessExecutionRequest, McpDetection,
+  ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@graphql/contracts'
 import { afterEach, it } from 'vitest'
@@ -342,14 +342,21 @@ it('captures complete native history only when needed for a pending request or t
   assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
 })
 
-it('commits complete exact terminal history while its original stream still has queued transcript', async () => {
+it('publishes queued native events before committing their complete terminal history', async () => {
   const f = fixture()
+  const published: HarnessNativeEvent[] = []
+  const append = f.runs.appendNativeEvent.bind(f.runs)
+  f.runs.appendNativeEvent = async (...args) => {
+    await append(...args)
+    published.push(structuredClone(args[0]))
+  }
   const update = f.runs.updateExecution.bind(f.runs)
   f.runs.updateExecution = async (...args) => {
     if (args[0].state === 'completed') {
       const lane = await f.interactions.coordination.getLane('codex', f.manager.session.nativeSessionId)
       assert.equal(lane?.currentTurnOrMessageId, 'workflow-turn')
       assert.ok(lane?.leaseToken)
+      assert.deepEqual(published, events.map(event => ({ ...event, executionId: f.candidate.id })))
     }
     return update(...args)
   }
@@ -363,7 +370,7 @@ it('commits complete exact terminal history while its original stream still has 
   }
   const completed = await f.coordinator.observeExact(f.input)
   assert.equal(completed.state, 'completed')
-  assert.equal(consumed, 1)
+  assert.equal(consumed, events.length)
   assert.equal(f.manager.turns.length, 1)
   assert.deepEqual(f.executions.get(f.candidate.id)?.result, success)
   assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)

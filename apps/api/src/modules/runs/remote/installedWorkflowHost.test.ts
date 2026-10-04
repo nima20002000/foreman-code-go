@@ -345,7 +345,10 @@ describe('original physical source selectors and Main SQL consumer',()=>{
     expect(f.request).toHaveBeenCalledOnce()
     await f.sqlConnection.transaction(sql=>f.producer.assertOriginal(sql,f.owner,original))
     expect(f.request).toHaveBeenCalledOnce()
-    expect(()=>f.producer.bind(original,{kind:'original-remote-physical'},f.owner,f.lifetime)).toThrow('Actual authenticated')
+    expect(() => f.producer.bind(original, { kind: 'original-remote-physical' }, f.owner, f.lifetime))
+      .toThrowError(expect.objectContaining({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'main_lifetime' },
+      }))
     await f.sqlConnection.transaction(async sql=>{
       await expect(f.producer.assertOriginal(sql,f.owner,JSON.parse(JSON.stringify(original)))).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
     })
@@ -521,6 +524,60 @@ it('retires only an authenticated exact original reply and leaves journal/native
   await expect(readouts.read(selector)).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
   expect(await f.journal.status(f.intent.operationId)).toEqual({status:'known',receipt:f.readout.receipt})
   expect(f.registry.snapshot().launches[0]!.lifecycle).toBe('active')
+  await f.sqlConnection.close()
+})
+
+it.each(['same', 'overlapping'] as const)('refreshes event observations from a fresh %s authenticated history', async kind => {
+  const f = await physicalFixture()
+  const readouts = new InstalledWorkflowPhysicalReadouts()
+  const now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+  const event = { sequence: 1, type: 'native.notification', occurredAt: new Date(now).toISOString(),
+    payload: { value: 'original event' } }
+  const history = { ...f.source.history, events: [event] }
+  const source = { type: 'history' as const, history }
+  const observation = {
+    readout: { ...f.readout, history, expiresAt: new Date(now + 60_000).toISOString() },
+    placement: f.placement, source, leaseExpiresAt: '2099-01-01T00:00:00.000Z',
+    assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+    observe: () => f.captured.launch, closure: () => null,
+  }
+  readouts.remember(observation)
+  clock.mockReturnValue(now + 50_000)
+  const refreshed = kind === 'same' ? history : { ...history, nextSequence: 2 }
+  readouts.remember({ ...observation,
+    source: { type: 'history', history: refreshed },
+    readout: { ...observation.readout, history: refreshed, expiresAt: new Date(now + 110_000).toISOString() },
+  })
+  clock.mockReturnValue(now + 65_000)
+  const selected = { type: 'event' as const, event: { ...event, executionId: f.intent.executionId } }
+  const result = await readouts.read({ intent: f.intent, placement: f.placement,
+    receiptSequence: f.readout.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(selected) })
+  expect(result.history?.events[0]?.payload.value).toBe('original event')
+  expect(result.expiresAt).toBe(new Date(now + 110_000).toISOString())
+  await f.sqlConnection.close()
+})
+
+it('authorizes observation retirement without reopening an already published physical source', async () => {
+  const f = await physicalFixture()
+  const readouts = new InstalledWorkflowPhysicalReadouts()
+  const physical = vi.fn(async () => {})
+  const owner = vi.fn(async () => {})
+  const observation = { readout: f.readout, placement: f.placement, source: f.source,
+    leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: owner, assertCurrent: physical,
+    observe: () => f.captured.launch, closure: () => null }
+  const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,
+    sourceDigest: remoteWorkflowSourceDigest(f.source) }
+  readouts.remember(observation)
+  expect(await readouts.read(selector)).toEqual(f.readout)
+  physical.mockRejectedValue(new Error('Physical source is no longer readable'))
+  expect(await readouts.ack(selector)).toMatchObject({ status: 'retired' })
+  readouts.remember(observation)
+  await expect(readouts.read(selector)).rejects.toThrow('Physical source is no longer readable')
+  readouts.remember(observation)
+  owner.mockRejectedValue(new Error('Original owner revoked'))
+  await expect(readouts.ack(selector)).rejects.toThrow('Original owner revoked')
+  expect(await f.journal.status(f.intent.operationId)).toEqual({ status: 'known', receipt: f.readout.receipt })
   await f.sqlConnection.close()
 })
 it('cannot ACK physical packet delivery or precommit verification; only the exact durable canonical source permits ACK',async()=>{

@@ -40,6 +40,68 @@ async function setup(expectedToken?: string) {
   return { host, manager, session, journal, intent, placement, request, state, ports }
 }
 describe('actual worker native-port adapter', () => {
+  it('reuses a streamed history and acknowledges a refreshed turn before its next event', async () => {
+    const f = await setup()
+    const events = [1, 2].map(sequence => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { sequence } }))
+    const submitted: string[] = []
+    const observedEvents: Array<{ sequence: number; turnId: string | undefined; submitted: string[] }> = []
+    let historyReads = 0
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: async (method, frame) => {
+        if (method === 'start-turn') {
+          await f.journal.reserveTurn(f.intent.operationId, {
+            correlationId: 'execution:execution', promptDigest: createHash('sha256').update('prompt').digest('hex'),
+          })
+          return f.journal.status(f.intent.operationId)
+        }
+        if (method !== 'history') return f.host.handle(frame)
+        historyReads++
+        const status = await f.journal.status(f.intent.operationId)
+        if (status.status !== 'known') throw new Error('Original receipt is unavailable')
+        const turnId = status.receipt.native?.turnId
+        return { status, history: { events, pendingInteractions: [], correlationId: 'execution:execution',
+          ...(turnId ? { nativeTurnId: turnId } : {}) } }
+      } },
+      observeReceipt: async () => {},
+      observeOriginalSource: async (receipt, source) => {
+        if (source.type === 'event') {
+          observedEvents.push({ sequence: source.event.sequence, turnId: receipt.native?.turnId,
+            submitted: [...submitted] })
+        }
+      },
+      controlFor: async () => { throw new Error('No control is requested') },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    const stream = proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: 'execution:execution',
+      onSubmitted: async id => { submitted.push(id) } })
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      expect((await stream.next()).value).toEqual(events[0])
+      expect((await proxy.history(session)).events).toEqual(events)
+      expect((await proxy.history(session)).events).toEqual(events)
+      expect(historyReads).toBe(1)
+      await f.journal.acknowledgeTurn(f.intent.operationId, 'native-turn')
+      clock.mockReturnValue(now + 30_001)
+      expect((await proxy.history(session)).nativeTurnId).toBe('native-turn')
+      expect(historyReads).toBe(2)
+      expect((await stream.next()).value).toEqual(events[1])
+      expect(observedEvents).toEqual([
+        { sequence: 1, turnId: undefined, submitted: [] },
+        { sequence: 2, turnId: 'native-turn', submitted: ['native-turn'] },
+      ])
+      await stream.return(undefined)
+      await proxy.history(session)
+      expect(historyReads).toBe(3)
+      expect(f.state.starts).toBe(1)
+    } finally {
+      await stream.return(undefined)
+      clock.mockRestore()
+    }
+  })
+
   it('retains the real terminal provider history when an authoritative closure callback disposes the manager', async () => {
     const { host, manager, ports, intent, placement, request } = await setup()
     const history = { events: [], pendingInteractions: [], correlationId: 'execution:execution', terminalResult: { outcome: 'succeeded' as const, output: { answer: 'original provider result' } } }

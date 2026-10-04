@@ -43,6 +43,41 @@ async function fixture() {
     change: (next?: DeviceSessionBinding) => { current = next }, dispose: () => rm(root, { recursive: true, force: true }) }
 }
 describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () => {
+  it('retires an interrupted receiver after its original byte lease has been stopped', async () => {
+    const f = await fixture()
+    try {
+      const receiver = await f.store.receive(f.intent, signal())
+      await f.ownership.stop(f.intent, signal())
+      await expect(receiver.interrupt()).resolves.toBeUndefined()
+      await f.store.retire(f.intent, 'execution-closed')
+      expect(f.quota.retire).toHaveBeenCalledWith(f.intent)
+      await expect(f.store.receive(f.intent, signal())).rejects.toThrow('admission is closed')
+    } finally { await f.dispose() }
+  })
+
+  it('recognizes the latest retirement owner when a lock retains a historical writer inode', async () => {
+    const f = await fixture()
+    try {
+      const lease = f.ownership.access(f.intent, f.binding, 'receiver')
+      const lock = join(f.root, `${f.intent.transferId}.lock`)
+      const retainedLock = join(f.root, 'original-lock')
+      await lease.run(async () => {
+        await mkdir(lock, { mode: 0o700 })
+        lease.captureLock()
+      })
+      await lease.close()
+      await f.ownership.retire(f.intent, async () => {
+        f.ownership.captureRetirementLock(f.intent)
+        expect(() => f.ownership.assertLock(f.intent)).not.toThrow()
+        await rename(lock, retainedLock)
+        await mkdir(lock, { mode: 0o700 })
+        expect(() => f.ownership.assertLock(f.intent)).toThrow('lock owner conflicts')
+        await rmdir(lock)
+        await rename(retainedLock, lock)
+      })
+    } finally { await f.dispose() }
+  })
+
   it('persists exact original binding, root and actual host process identity before any executable handoff', async () => {
     const f = await fixture()
     try {

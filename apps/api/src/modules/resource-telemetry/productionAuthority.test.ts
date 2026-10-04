@@ -68,7 +68,15 @@ function setup() {
   const getNativeOwners = vi.fn(() => remoteOwner ? [] : sources.map(value => structuredClone(value.capture)))
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
     let rows: unknown[] = []
-    if (text.includes('from management_principals')) rows = [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
+    if (text.startsWith('select id from runs where id=any')) {
+      const ids = values[0] as string[]
+      rows = sources.filter(value => ids.includes(value.capture.execution.runId))
+        .map(value => ({ id: value.capture.execution.runId }))
+    } else if (text.startsWith('select id from harness_executions where id=any')) {
+      const ids = values[0] as string[]
+      rows = sources.filter(value => ids.includes(value.capture.execution.id))
+        .map(value => ({ id: value.capture.execution.id }))
+    } else if (text.includes('from management_principals')) rows = [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
       expires_at: new Date(live.expiresAt), revoked_at: revoked ? new Date() : null, delegated_from: null }]
     else if (text.includes('from native_session_lanes')) {
       const found = sources.find(value => value.lane.id === values[0] && value.lane.leaseToken === values[1])
