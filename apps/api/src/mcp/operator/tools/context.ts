@@ -6,7 +6,7 @@ import { currentWorkflowAvailable, currentWorkflowRequirements, type CurrentWork
 import { runInspectionToolAvailable, runInspectionRequirements } from './runInspection.js'
 import { runGraphToolAvailable } from './runGraph.js'
 import { ScheduleOperatorCapabilitiesSchema, workflowScheduleCapabilities } from './workflowSchedules.js'
-import { jobCapabilities } from './jobs.js'
+import { jobCapabilities, JOB_QUEUE_CAPABILITY_DETAIL } from './jobs.js'
 import { jobRuntimeCapabilities } from './jobRuntimeProfiles.js'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -74,7 +74,12 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules, ...jobs, ...jobRuntime],
       runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context), ...(jobs.length ? [{ feature: 'ci_jobs', state: 'limited' as const,
-        detail: 'Saved Jobs can explicitly select Main or a connected computer. Only the listed Job operations are available to this caller. job_start requires live scoped jobs:start authority, an approved source/root and current host-bound CI qualification. Connecting a computer or listing tools is not qualification. The saved Job target stays pinned. No automatic default build routing or redirection of Agent shell commands is provided. Job management tools remain Operator-only; Coder and Orchestrator roles cannot invoke them. Revoked-Worker no-entry cleanup requires a fresh, action-specific browser-owner approval; MCP may propose/read/apply it but cannot approve itself or enable execution.' }] : []), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
+        detail: JOB_QUEUE_CAPABILITY_DETAIL + ' Only listed operations are available to this caller. '
+          + 'Launch requires an approved source/root and current host-bound CI qualification. '
+          + 'Connecting a computer or listing tools is not qualification. '
+          + 'Job management tools remain Operator-only; Coder and Orchestrator roles cannot invoke them. '
+          + 'Revoked-Worker cleanup requires separate browser-owner approval; MCP cannot approve itself or enable execution.'
+      }] : []), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
         detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. '
           + (scheduleRuntime?.configured ? 'Timed Run admission is composed; see schedule_delivery for policy and readiness. '
             : 'This persistence-only composition has no dispatcher or timed Run admission. ')

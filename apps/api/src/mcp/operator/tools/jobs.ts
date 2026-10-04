@@ -1,9 +1,11 @@
 import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema,
   JobCancellationRecoveryReadSchema } from '@graphql/contracts/job-cancellation-recovery'
 import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
+import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
+  JobQueueTicketSchema } from '@graphql/contracts/job-admission'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobStartSchema, JobValidationSchema } from '@graphql/contracts/jobs'
+import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobValidationSchema } from '@graphql/contracts/jobs'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
@@ -12,20 +14,37 @@ import type { PostgresCommandCoordinator } from '../../../modules/commands/postg
 import { toolFailure, toolResult } from '../../shared/results.js'
 import { componentLogger } from '../../../infrastructure/logger.js'
 const log = componentLogger('jobs')
-export const JOB_TOOLS = ['job_choices_get','job_workflow_execution_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_cancellation_recovery_propose','job_cancellation_recovery_get','job_logs_read','job_artifacts_list','job_artifact_read'] as const
+export const JOB_TOOLS = [
+  'job_choices_get', 'job_workflow_execution_get', 'job_definition_list', 'job_definition_get',
+  'job_definition_version_get', 'job_definition_save', 'job_validate', 'job_start',
+  'job_queue_get', 'job_queue_list', 'job_queue_cancel', 'job_get', 'job_list', 'job_cancel',
+  'job_cancellation_recovery_propose', 'job_cancellation_recovery_get', 'job_logs_read',
+  'job_artifacts_list', 'job_artifact_read',
+] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
   job_choices_get:'job_definitions:read',job_workflow_execution_get:'jobs:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
   job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_cancellation_recovery_propose:'jobs:cancel',job_cancellation_recovery_get:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
+  job_queue_get: 'jobs:read', job_queue_list: 'jobs:read', job_queue_cancel: 'jobs:cancel',
 }
+export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs support saved Auto or fixed placement. '
+  + 'Requests wait for capacity before source preparation. '
+  + 'Auto selects an authorized eligible computer with available capacity by build priority; fixed placement waits for its saved computer. '
+  + 'Workflow-node queuing, Start placement overrides and start estimates are not implemented. '
+  + 'Queue reads require jobs:read and have no side effects; enqueue requires jobs:start and cancellation requires jobs:cancel. '
+  + 'Live grants, saved revisions, command retries and original execution identities remain enforced.'
 export interface JobMcpContext {principal:ManagementPrincipal;services:{jobs?:JobService;commands:PostgresCommandCoordinator}}
 export function jobToolAvailable(context:JobMcpContext,name:JobToolName,resource:AuthorizedResource={}) {
   return !!context.services.jobs && (Object.keys(resource).length ? isAuthorized(context.principal,actions[name],resource) : hasAction(context.principal,actions[name]))
 }
 export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResource) {
-  return JOB_TOOLS.filter(name=>jobToolAvailable(context,name,resource)).map(name=>({name,actions:[actions[name]],detail: name.startsWith('job_cancellation_recovery')
-    ? 'Cleanup requires jobs:cancel and separate browser-owner approval. MCP cannot approve itself or authorize execution.'
-    : 'Workspace-scoped job authority is rechecked live. Accepted specifications and file revisions are immutable. No Agent, provider login or Operator credential enters the build.'}))
+  return JOB_TOOLS.filter(name => jobToolAvailable(context, name, resource)).map(name => ({
+    name, actions: [actions[name]],
+    detail: name.startsWith('job_cancellation_recovery')
+      ? 'Cleanup requires jobs:cancel and separate browser-owner approval. MCP cannot approve itself or authorize execution.'
+      : JOB_QUEUE_CAPABILITY_DETAIL + ' Accepted specifications and file revisions are immutable. '
+        + 'No Agent, provider login or Operator credential enters the build.',
+  }))
 }
 async function invoke(context:JobMcpContext,name:JobToolName,work:()=>Promise<unknown>) {
   try {return toolResult(await work())} catch(error) {
@@ -46,9 +65,44 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if(jobToolAvailable(context,'job_definition_list')) server.registerTool('job_definition_list',{description:'List workspace job definitions.',inputSchema:scope,outputSchema:z.object({definitions:z.array(JobDefinitionSchema)}),annotations:read},input=>invoke(context,'job_definition_list',async()=>({definitions:await service.listDefinitions(context.principal,input.workspaceId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_get')) server.registerTool('job_definition_get',{description:'Read an exact workspace job definition and revision.',inputSchema:scope.extend({definitionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_get',async()=>({definition:await service.getDefinition(context.principal,input.workspaceId,input.definitionId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_version_get')) server.registerTool('job_definition_version_get',{description:'Read one exact immutable saved job version. Current definition edits never substitute its source, target, command or policy.',inputSchema:scope.extend({definitionId:z.string().min(1),versionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_version_get',async()=>({definition:await service.getDefinitionVersion(context.principal,input.workspaceId,input.definitionId,input.versionId,'mcp')})))
-  if(jobToolAvailable(context,'job_definition_save')) server.registerTool('job_definition_save',{description:'Create or edit an Auto or fixed Job definition with command receipt and optimistic revision. Auto saves exact source, command, input/output revisions and host-independent runtime policy/limits without requiring an online computer. Selection and capacity are checked at Start. No execution or installation.',inputSchema:JobDefinitionSaveSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:write},input=>invoke(context,'job_definition_save',async()=>{const {workspaceId,...body}=input;return {definition:await service.saveDefinition(context.principal,'mcp',workspaceId,body)}}))
-  if(jobToolAvailable(context,'job_validate')) server.registerTool('job_validate',{description:'Validate static Auto source/configuration authority or fixed-target readiness without installation. Auto computer eligibility and capacity are checked at Start.',inputSchema:scope.extend({spec:JobDefinitionSpecSchema}),outputSchema:JobValidationSchema,annotations:read},input=>invoke(context,'job_validate',()=>service.validate(context.principal,input.workspaceId,input.spec,'mcp')))
-  if(jobToolAvailable(context,'job_start')) server.registerTool('job_start',{description:'Resolve Auto to an enrolled, ready computer/root/compatible runtime by priority and reserve capacity before transfer; fixed definitions keep their selected computer. Accept one immutable job using the definition revision. No eligible computer fails before transfer. The same commandId and payload reconcile the original execution. Retryable JOB_DISPATCH_PENDING identifies its executionId, attemptId and operationId: read job_get and retry the original commandId and payload. An attempted delivery is never redelivered; pending or empty journal state does not prove that execution never started.',inputSchema:JobStartSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({execution:JobExecutionSchema}),annotations:write},input=>invoke(context,'job_start',async()=>{const {workspaceId,...body}=input;return {execution:await service.start(context.principal,'mcp',workspaceId,body)}}))
+  if(jobToolAvailable(context,'job_definition_save')) server.registerTool('job_definition_save',{description:'Create or edit an Auto or fixed Job definition with command receipt and optimistic revision. Auto saves exact source, command, input/output revisions and host-independent runtime policy/limits without requiring an online computer. Selection and capacity are checked when the queued request is claimed. No execution or installation.',inputSchema:JobDefinitionSaveSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:write},input=>invoke(context,'job_definition_save',async()=>{const {workspaceId,...body}=input;return {definition:await service.saveDefinition(context.principal,'mcp',workspaceId,body)}}))
+  if(jobToolAvailable(context,'job_validate')) server.registerTool('job_validate',{description:'Validate static Auto source/configuration authority or fixed-target readiness without installation. Computer eligibility and capacity are rechecked when the queued request is claimed; unavailable computers can wait.',inputSchema:scope.extend({spec:JobDefinitionSpecSchema}),outputSchema:JobValidationSchema,annotations:read},input=>invoke(context,'job_validate',()=>service.validate(context.principal,input.workspaceId,input.spec,'mcp')))
+  if (jobToolAvailable(context, 'job_start')) server.registerTool('job_start', {
+    description: JOB_QUEUE_CAPABILITY_DETAIL + ' Persist a request using the saved definition revision. '
+      + 'The admission result is pending with a ticket or accepted with the original executionId. '
+      + 'Retry the same commandId and payload after an unknown acknowledgment; read job_queue_get for waiting or claim state and job_get after acceptance. '
+      + 'Claimed cancellation and disconnected execution do not prove process closure or released capacity.',
+    inputSchema: JobQueuedStartSchema.extend({ workspaceId: z.string().min(1) }),
+    outputSchema: z.object({ admission: JobAdmissionResultSchema }), annotations: write,
+  }, input => invoke(context, 'job_start', async () => {
+    const { workspaceId, ...body } = input
+    return { admission: await service.enqueue(context.principal, 'mcp', workspaceId, body) }
+  }))
+  if (jobToolAvailable(context, 'job_queue_get')) server.registerTool('job_queue_get', {
+    description: 'Read one workspace-scoped build queue ticket, original enqueue/deadline, state, waiting reasons, compatible-target count and workspace queue position. '
+      + 'Accepted tickets reference the original executionId; job_get provides concrete computer facts. Start estimates are unknown. No selection or launch.',
+    inputSchema: scope.extend({ ticketId: z.uuid() }),
+    outputSchema: z.object({ ticket: JobQueueTicketSchema }), annotations: read,
+  }, input => invoke(context, 'job_queue_get', async () => ({
+    ticket: await service.getQueueTicket(context.principal, input.workspaceId, input.ticketId, 'mcp'),
+  })))
+  if (jobToolAvailable(context, 'job_queue_list')) server.registerTool('job_queue_list', {
+    description: 'Read up to 100 newest workspace-scoped standalone build queue tickets, including claimed, accepted and terminal requests. '
+      + 'Queue positions describe this workspace only. Reading never wakes, selects or starts work.',
+    inputSchema: scope, outputSchema: z.object({ tickets: z.array(JobQueueTicketSchema) }), annotations: read,
+  }, input => invoke(context, 'job_queue_list', async () => ({
+    tickets: await service.listQueue(context.principal, input.workspaceId, 'mcp'),
+  })))
+  if (jobToolAvailable(context, 'job_queue_cancel')) server.registerTool('job_queue_cancel', {
+    description: 'Cancel a standalone build request with its current ticket revision and a retryable commandId. '
+      + 'Waiting cancellation persists without contacting a computer. Claimed or accepted cancellation keeps the original attempt and retains capacity until confirmed closure. '
+      + 'Read-only callers cannot cancel; a cancellation request is not confirmation that processes stopped.',
+    inputSchema: JobQueueCancelSchema.extend({ workspaceId: z.string().min(1) }),
+    outputSchema: z.object({ ticket: JobQueueTicketSchema }), annotations: write,
+  }, input => invoke(context, 'job_queue_cancel', async () => {
+    const { workspaceId, ...body } = input
+    return { ticket: await service.cancelQueued(context.principal, 'mcp', workspaceId, body) }
+  }))
   if(jobToolAvailable(context,'job_get')) server.registerTool('job_get',{description:'Read exact accepted job and separate process, transport and publication facts.',inputSchema:execution,outputSchema:z.object({execution:JobExecutionSchema}),annotations:read},input=>invoke(context,'job_get',async()=>({execution:await service.getExecution(context.principal,input.workspaceId,input.executionId,'mcp')})))
   if(jobToolAvailable(context,'job_list')) server.registerTool('job_list',{description:'List workspace job executions.',inputSchema:scope,outputSchema:z.object({executions:z.array(JobExecutionSchema)}),annotations:read},input=>invoke(context,'job_list',async()=>({executions:await service.listExecutions(context.principal,input.workspaceId,'mcp')})))
   if (jobToolAvailable(context, 'job_cancel')) server.registerTool('job_cancel', {
