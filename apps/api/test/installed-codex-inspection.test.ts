@@ -66,6 +66,26 @@ describe('passive installed worker Codex evidence producer', () => {
       expect(afterBinary.currentTarget?.binarySha256).not.toBe(before.currentTarget?.binarySha256)
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
+  it('rejects an installation when its pinned tool host is missing', async () => {
+    const f = await fixture()
+    try {
+      const helper = join(f.root, 'codex-code-mode-host')
+      await writeFile(f.path, JSON.stringify({ schemaVersion: 1, codexBinary: f.binary,
+        appMcpLauncher: '/installed/graphql-mcp-launcher', expectedVersion: '0.132.0', payloadPaths: [helper] }), { mode: 0o600 })
+      const missing = await inspectInstalledCodex(f.input)
+      expect(missing.currentTarget).toBeNull()
+      expect(missing.inventory.installations[0]).toMatchObject({ installed: false, qualified: false })
+      await writeFile(helper, 'pinned tool host', { mode: 0o500 })
+      const installed = await inspectInstalledCodex(f.input)
+      expect(installed.currentTarget).not.toBeNull()
+      expect(installed.inventory.installations[0]?.launcher.payloadFingerprints)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ path: helper })]))
+      await rm(helper)
+      expect((await inspectInstalledCodex(f.input)).currentTarget).toBeNull()
+    } finally {
+      await rm(f.root, { recursive: true, force: true })
+    }
+  })
   it('returns unavailable selection without scanning PATH when configuration is absent and rejects local trust flags', async () => {
     const f = await fixture()
     try {

@@ -8,7 +8,7 @@ import { z } from 'zod'
 
 import { HarnessExecutionError } from './errors.js'
 import { requireHarnessQualification } from './qualification/gate.js'
-import { harnessProfile } from './qualification/profiles.js'
+import { harnessProfile, normalizeHarnessVersion } from './qualification/profiles.js'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
@@ -252,7 +252,8 @@ export async function qualifyCodex(
   const actual = (version.stdout || version.stderr).trim()
   const schema = qualifiedSchemas[actual]
   if (version.exitCode === 0) await requireHarnessQualification('codex', actual, resolved)
-  if (version.exitCode !== 0 || (expectedVersion !== undefined && actual !== expectedVersion)) {
+  if (version.exitCode !== 0 || (expectedVersion !== undefined
+    && normalizeHarnessVersion('codex', actual) !== normalizeHarnessVersion('codex', expectedVersion))) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'The installed Codex version has no qualified protocol profile.')
   }
   if (requireAuthentication) {

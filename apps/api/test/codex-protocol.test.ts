@@ -24,14 +24,14 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     assert.equal(await registry.closeOwner(owner), true)
   })
 
-  it('F28: the right version and authentication cannot substitute for an installed schema measurement', async () => {
-    await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true),
+  it.each([QUALIFIED_CODEX_VERSION, '0.154.0'])('keeps schema verification after matching version %s', async expectedVersion => {
+    await assert.rejects(qualifyCodex(f.binary, expectedVersion, f.directory, { ...process.env }, true),
       (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
     assert((await calls(f.directory)).some((entry) => Array.isArray(entry.cli) && entry.cli.includes('generate-json-schema')))
   })
 
-  it('F27: an arbitrary expected version cannot bypass qualification', async () => {
-    await assert.rejects(qualifyCodex(f.binary, 'codex-cli 99.0.0', f.directory, { ...process.env }, false),
+  it.each(['codex-cli 99.0.0', '0.156.1'])('rejects a different expected version %s before schema commands', async expectedVersion => {
+    await assert.rejects(qualifyCodex(f.binary, expectedVersion, f.directory, { ...process.env }, false),
       (error: unknown) => errorCode(error) === 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
     assert.equal((await calls(f.directory)).length, 1)
   })
