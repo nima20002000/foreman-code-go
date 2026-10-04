@@ -8,13 +8,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { JobArtifactSchema, AcceptedJobSpecSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema,
-  JobStartSchema, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec, type JobStart } from '@graphql/contracts/jobs'
+  JobStartSchema, isAutoJobSpec, type ResolvedJobDefinitionSpec, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec, type JobStart } from '@graphql/contracts/jobs'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { releaseUnstartedJobComputer, type JobComputerSelection, type JobPreparationIdentity } from './computerSelection.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
@@ -32,6 +33,7 @@ export class JobService {
   private readonly workerExecution: WorkerExecutionPolicy
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly ports: {
+      placement?: JobComputerSelection
       preparation: JobPreparationPort
       dispatch: JobDispatchPort
       artifacts: JobArtifactPort
@@ -136,7 +138,11 @@ export class JobService {
   }
   validate(principal:ManagementPrincipal,workspaceId:string,raw:JobDefinitionSpec,source:'http'|'mcp'='http') {
     const spec=parse(JobDefinitionSpecSchema,raw)
-    return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.validate(sql,live,workspaceId,spec),source)
+    return this.read(principal,workspaceId,'job_definitions:read',async (sql,live) => {
+      const checked = await this.ports.preparation.validate(sql,live,workspaceId,spec)
+      if (checked.valid && !isAutoJobSpec(spec) && this.ports.placement) return this.ports.placement.validateFixed(sql, spec)
+      return checked
+    },source)
   }
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>):Promise<T> {
     const sql=await this.pool.connect()
@@ -148,6 +154,7 @@ export class JobService {
     try {requireAuthorization(principal,'jobs:start',{workspaceId})} catch(error) {
       await this.commands.recordDenied(principal.id,source,'job.start',workspaceId);throw error
     }
+    let allocatedIdentity: JobPreparationIdentity | undefined
     let admission:{kind:'existing';execution:JobExecution}|{kind:'prepared';definition:JobDefinition;spec:PreparedJobSpec;identity:{executionId:string;attemptId:string;operationId:string}}|undefined
     const result=await this.commands.execute({principal,source,commandId:input.commandId,operation:'job.start',targetKey:workspaceId,payload:input,dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,'jobs:start').then(()=>undefined),
@@ -161,12 +168,13 @@ export class JobService {
             return {definition,principal:live,identity:{executionId:existing.execution_id,attemptId:existing.attempt_id,operationId:existing.operation_id}}
           }
           const definition=await this.repository.definition(sql,workspaceId,input.definitionId,true)
-          this.workerExecution.requireEnabled(definition.spec.target.hostRef)
           if(definition.revision!==input.expectedRevision)throw new DomainError('REVISION_CONFLICT','The job definition changed since it was read.',409)
           const identity={executionId:randomUUID(),attemptId:randomUUID(),operationId:randomUUID()}
           await sql.query('insert into job_preparations(execution_id,attempt_id,operation_id,workspace_id,definition_version_id,principal_id,command_id,definition) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)',[identity.executionId,identity.attemptId,identity.operationId,workspaceId,definition.versionId,live.id,input.commandId,JSON.stringify(definition)])
+          await this.resolveDefinition(sql, live, definition, identity)
           return {definition,principal:live,identity}
         })
+        allocatedIdentity = reserved.identity
         const existing=await this.transaction(async sql=>{
           await this.authorize(sql,principal,workspaceId,'jobs:start')
           const row=(await sql.query<{record:unknown}>('select record from job_executions where id=$1',[reserved.identity.executionId])).rows[0]
@@ -185,25 +193,49 @@ export class JobService {
           await requireJobPreparationDeadline(sql,'manual',identity.executionId,definition.spec.policy.preparationTimeoutMs,this.clock().getTime())
           const current=await this.repository.definition(sql,workspaceId,input.definitionId,true)
           if(current.versionId!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The job definition changed during preparation.',409)
-          const ready=await this.ports.preparation.validate(sql,live,workspaceId,definition.spec)
+          const resolved = await this.resolvedDefinition(sql, definition, identity)
+          const ready=await this.ports.preparation.validate(sql,live,workspaceId,resolved)
           if(!ready.valid)throw new DomainError('JOB_NOT_READY','Job authority changed during preparation.',409,{reasons:ready.reasons})
           const execution=await this.admitPrepared(sql,live,definition,null,null,spec,identity)
           await this.authorize(sql,principal,workspaceId,'jobs:start');return execution
-      }})
+      }}).catch(async error => {
+        if (this.ports.placement && allocatedIdentity) {
+          const identity = allocatedIdentity
+          await this.transaction(sql => releaseUnstartedJobComputer(sql, identity))
+        }
+        throw error
+      })
     const execution=JobExecutionSchema.parse(result.value)
     await this.wakeAccepted(execution)
     return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id),source)
   }
-  prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:{executionId:string;attemptId:string;operationId:string}) {
+  async resolveDefinition(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
+    identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+    if (this.ports.placement) return this.ports.placement.reserve(sql, principal, definition, identity)
+    if (isAutoJobSpec(definition.spec)) {
+      throw new DomainError('JOB_AUTO_UNAVAILABLE', 'Automatic build selection is unavailable.', 503)
+    }
     this.workerExecution.requireEnabled(definition.spec.target.hostRef)
-    return this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,identity)
+    return definition.spec
+  }
+  private async resolvedDefinition(sql: JobSql, definition: JobDefinition, identity: JobPreparationIdentity) {
+    if (this.ports.placement) return this.ports.placement.prepare(sql, definition, identity)
+    if (isAutoJobSpec(definition.spec)) throw new DomainError('JOB_AUTO_UNAVAILABLE', 'Automatic build selection is unavailable.', 503)
+    return definition.spec
+  }
+  async prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:JobPreparationIdentity) {
+    const resolved = await this.resolvedDefinition(sql, definition, identity)
+    this.workerExecution.requireEnabled(resolved.target.hostRef)
+    const prepared = await this.ports.preparation.accept(sql,principal,definition.workspaceId,resolved,identity)
+    const selection = await this.ports.placement?.selection(sql, identity)
+    return selection ? { ...prepared, computerSelection: selection } : prepared
   }
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
   async admit(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null=null):Promise<JobExecution> {
-    this.workerExecution.requireEnabled(definition.spec.target.hostRef)
     if((workflow===null)!==(workflowInput===null))throw new DomainError('JOB_INPUT_BINDING_MISSING','A workflow job requires its exact accepted input snapshot.',409)
     const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID(),operationId=randomUUID()
-    const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId,operationId})
+    await this.resolveDefinition(sql, principal, definition, {executionId:id,attemptId,operationId})
+    const spec=await this.prepareDefinition(sql,principal,definition,{executionId:id,attemptId,operationId})
     return this.admitPrepared(sql,principal,definition,workflow,workflowInput,spec,{executionId:id,attemptId,operationId})
   }
   /** Same admission writer after a workflow driver performs source I/O outside the Run-owner transaction. */
@@ -211,10 +243,14 @@ export class JobService {
     this.workerExecution.requireEnabled(spec.target.hostRef)
     if((workflow===null)!==(workflowInput===null)||workflow&&workflow.nodeExecutionId!==identity.executionId)throw new DomainError('JOB_INPUT_BINDING_MISSING','The prepared job must match its exact workflow execution and input.',409)
     const {executionId:id,attemptId,operationId}=identity
-    const request=definition.spec
+    const request=await this.resolvedDefinition(sql, definition, identity)
+    const computerSelection = await this.ports.placement?.selection(sql, identity)
+    if (canonical(computerSelection ?? null) !== canonical(spec.computerSelection ?? null)) {
+      throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'Preparation changed its original computer selection.', 409)
+    }
     const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
     void _materialization;void _digest
-    const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
+    const selection=(target:ResolvedJobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
       rootPolicyId:target.destination.rootPolicyId,rootPolicyRevision:target.destination.rootPolicyRevision,locationRevision:target.destination.locationRevision})
     if(canonical(source)!==canonical(request.source)||canonical(selection(spec.target))!==canonical(selection(request.target))
       ||canonical({argv:spec.argv,inputs:spec.inputs,policy:spec.policy,outputs:spec.outputs,relativeCwd:spec.relativeCwd??null})!==canonical({argv:request.argv,inputs:request.inputs,policy:request.policy,outputs:request.outputs,relativeCwd:request.relativeCwd??null})) {

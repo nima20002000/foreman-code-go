@@ -13,11 +13,19 @@ import { requireAuthorization } from '../../access/policy.js'
 /** Authenticated W07 handler invokes this with trusted carrier binding, never payload identity. */
 export class JobApplicationBridge {
   private readonly repository = new JobRepository()
-  constructor(private readonly pool: pg.Pool, private readonly dispatch: Pick<PostgresJobDispatch, 'require'|'requireControl'|'requireEvidence'|'observeReceipt'>,
+  constructor(private readonly pool: pg.Pool, private readonly dispatch: Pick<PostgresJobDispatch, 'require'|'requireLaunch'|'requireControl'|'requireEvidence'|'observeReceipt'>,
     private readonly workers: Pick<JobWorkerService, 'appendLog'>, private readonly publication: Pick<JobPublicationAuthority, 'authorizePublication'>) {}
   private async authorize(intent: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>, action: 'start'|'read'|'control'|'publish') {
     const sql = await this.pool.connect()
-    try { return await this.authorizeInSql(sql, intent, binding, action) } finally { sql.release() }
+    try {
+      await sql.query('begin')
+      const execution = await this.authorizeInSql(sql, intent, binding, action)
+      await sql.query('commit')
+      return execution
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally { sql.release() }
   }
   private async authorizeInSql(sql: pg.PoolClient, intent: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>, action: 'start'|'read'|'control'|'publish') {
     const execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
@@ -36,6 +44,7 @@ export class JobApplicationBridge {
     const fence = { attemptId: intent.attemptId, owner: intent.owner }
     if (action === 'control') await this.dispatch.requireControl(sql, execution, fence)
     else if (action === 'read') await this.dispatch.requireEvidence(sql, execution, fence)
+    else if (action === 'start') await this.dispatch.requireLaunch(sql, execution, fence)
     else await this.dispatch.require(sql, execution, fence)
     if (action === 'publish') await this.publication.authorizePublication(sql, { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: intent.attemptId, owner: intent.owner })
     return execution

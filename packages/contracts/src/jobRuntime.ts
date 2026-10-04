@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { DeviceResourceLimitsSchema, DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionFields,
   DeviceSafeIntegerSchema, DeviceRevisionSchema, DEVICE_RESOURCE_CONTROL_RESERVE, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
-import { JobPolicySchema, JobTargetSchema } from './jobs.js'
+import { JobPolicySchema, JobTargetSchema, JobRuntimeLimitsSchema } from './jobs.js'
+export { JobRuntimeLimitsSchema } from './jobs.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
@@ -10,7 +11,6 @@ export const JOB_RUNTIME_WORKSPACE_LAYOUT='source-inputs-private-git-scheduler-v
 // Missing/unsupported layout stays readable in immutable history. Never default
 // it to the current layout: admission uses the Current schemas/issue below.
 const HistoricalWorkspaceLayout=z.string().min(1).max(200).optional()
-export const JobRuntimeLimitsSchema=z.object({cpuLimit:z.number().positive().max(256),memoryBytes:z.number().int().positive(),pidsLimit:z.number().int().positive(),diskBytes:z.number().int().positive()}).strict()
 export const JobRuntimeQualificationSpoolBytesSchema=z.number().int().min(131072).max(67108864)
 /** Policy metadata refers to an existing authorized root, never a caller filesystem path. */
 export const JobRuntimeProfileInputSchema=z.object({rootId:z.uuid(),bindingRevision:z.number().int().positive(),limits:JobRuntimeLimitsSchema,

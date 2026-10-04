@@ -1,3 +1,4 @@
+import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -20,11 +21,12 @@ import { registerJobTools, unavailableJobToolCall } from '../src/mcp/operator/to
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
-const databaseUrl=process.env.TEST_DATABASE_URL,schema=`ci_artifacts_${randomUUID().replaceAll('-','')}`
+const databaseUrl=process.env.TEST_DATABASE_URL
 const digest=(v:Uint8Array|string)=>createHash('sha256').update(v).digest('hex')
 /** Root-only fixture: real canonical storage/ledger, live grants, actual CI HTTP and SDK MCP tools.
  * Qualified W07/container launch remains a separate real-device acceptance gate. */
-describe.skipIf(!databaseUrl)('CI canonical artifact authenticated persistence',()=>{
+describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical artifact authenticated persistence (%s)', placementMode=>{
+  const schema=`ci_artifacts_${randomUUID().replaceAll('-','')}`
   let admin:pg.Pool,pool:pg.Pool,root:string,app:FastifyInstance
   let artifacts:ReturnType<typeof createCanonicalJobArtifactPort>
   const execution=jobExecution(),ownerToken=`fixture-owner-${randomUUID()}`,deniedToken=`fixture-denied-${randomUUID()}`
@@ -47,8 +49,12 @@ describe.skipIf(!databaseUrl)('CI canonical artifact authenticated persistence',
     }
     execution.process={phase:'terminal',outcome:'succeeded',exitCode:0,signal:null,processStopped:true};execution.finishedAt=execution.createdAt
     execution.acceptedSpec.outputs=[{path:outputPath,required:true,mediaType:'application/json'}]
+    if (placementMode === 'auto') execution.acceptedSpec.computerSelection = { mode: 'auto', buildPriority: 100, settingsRevision: 1 }
     await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',[execution.id,execution.workspaceId,JSON.stringify(execution),JSON.stringify(execution.acceptedSpec),'owner'])
-    const definition={schemaVersion:1,id:execution.acceptedSpec.definitionId,workspaceId:execution.workspaceId,name:'Original',revision:execution.acceptedSpec.definitionRevision,versionId:execution.acceptedSpec.definitionVersionId,spec:{...jobSpec(),outputs:execution.acceptedSpec.outputs},createdAt:execution.createdAt,updatedAt:execution.createdAt}
+    const definition={schemaVersion:1,id:execution.acceptedSpec.definitionId,workspaceId:execution.workspaceId,name:'Original',revision:execution.acceptedSpec.definitionRevision,versionId:execution.acceptedSpec.definitionVersionId,spec:placementMode === 'auto' ? AutoJobDefinitionSpecSchema.parse({ ...jobSpec(),
+      outputs: execution.acceptedSpec.outputs, target: { kind: 'auto' }, policy: jobPolicyRequirements(jobSpec().policy),
+      limits: { cpuLimit: 1, memoryBytes: 67108864, diskBytes: 8388608, pidsLimit: 32 } })
+      : {...jobSpec(),outputs:execution.acceptedSpec.outputs},createdAt:execution.createdAt,updatedAt:execution.createdAt}
     await pool.query('insert into job_definition_versions values($1,$2,$3,$4::jsonb)',[definition.versionId,definition.workspaceId,definition.id,JSON.stringify(definition)])
     root=await mkdtemp(join(process.cwd(),'.ci-artifact-db-'))
     const authority=new JobPublicationAuthority({require:async(sql,job,fence)=>{
@@ -96,6 +102,7 @@ describe.skipIf(!databaseUrl)('CI canonical artifact authenticated persistence',
     expect(counts).toEqual({publications:1,allocations:1,explicit_scopes:1})
     const stored=JobExecutionSchema.parse((await pool.query('select record from job_executions where id=$1',[execution.id])).rows[0].record)
     expect(stored.workflow).toBe(null)
+    expect(stored.acceptedSpec.computerSelection).toEqual(execution.acceptedSpec.computerSelection)
     await pool.query('update job_fixture_owner set revoked=true')
     await expect(artifacts.publishAccepted(input)).rejects.toMatchObject({code:'JOB_OWNER_REVOKED'})
     await pool.query("update files set state='expired' where file_id=$1",[p.fileId])

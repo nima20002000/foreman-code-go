@@ -11,6 +11,7 @@ import { CanonicalJobPreparationSources } from '../src/modules/jobs/sourcePrepar
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { DeviceAccessError } from '../src/modules/devices/access.js'
 import { DomainError } from '../src/modules/errors.js'
+import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
 import { jobSpec } from './helpers/jobFixture.js'
 
 function fixture() {
@@ -99,13 +100,23 @@ function fixture() {
   })
   const runtime = { choices: vi.fn(async () => [spec.policy]), revalidate: vi.fn() }
   const service = new CanonicalJobPreparationSources(
-    {} as PostgresSourceService, runtime, { prepare: vi.fn() },
+    { resolveApprovedSource: vi.fn(async () => source) } as unknown as PostgresSourceService, runtime, { prepare: vi.fn() },
     { validateDeclaredJobInputs: vi.fn(async () => undefined) }, { resolve },
   )
-  return { service, sql, query, principal, workspaceId, roots, devices, source, resolve, spec }
+  return { service, sql, query, principal, workspaceId, roots, devices, source, resolve, spec, runtime }
 }
 
 describe('job source choices', () => {
+  it('validates Auto source and permissions without checking computer presence or materializing source', async () => {
+    const f = fixture()
+    const auto = AutoJobDefinitionSpecSchema.parse({ ...f.spec, target: { kind: 'auto' },
+      policy: jobPolicyRequirements(f.spec.policy), limits: { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 } })
+    expect(await f.service.validateAuto(f.sql, f.principal, f.workspaceId, auto)).toMatchObject({ valid: true, sideEffects: false })
+    expect(f.runtime.revalidate).not.toHaveBeenCalled()
+    expect(f.resolve).not.toHaveBeenCalled()
+    await expect(f.service.validateAuto(f.sql, f.principal, 'foreign', auto)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+  })
+
   it('keeps a paired target available when another retained root belongs to a revoked device', async () => {
     const f = fixture()
     const history = structuredClone({ roots: f.roots, devices: f.devices, source: f.source })

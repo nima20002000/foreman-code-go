@@ -31,6 +31,9 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
       <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
       <Badge tone={execution.publication === 'failed' ? 'danger' : 'neutral'}>Artifacts: {execution.publication}</Badge>
     </div>
+    {execution.launchIssue === 'build_disabled' && <Alert title="Builds disabled before launch" tone="warning">
+      This Job kept its selected computer and did not start. Enable builds on that computer before creating a new Start request.
+    </Alert>}
     {execution.transport !== 'connected' && <Alert title="Computer connection lost" tone="warning">Connection unavailable. The process may still be running. Reconnect to read persisted observations.</Alert>}
     {cancel.error && <Alert title="Cancellation not confirmed" tone="warning">Cancellation acknowledgment unavailable: {jobError(cancel.error)} <Button onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Retry same cancellation request</Button></Alert>}
     <dl className="job-facts"><dt>Exit / signal</dt><dd>{execution.process.exitCode ?? 'Not observed'} / {execution.process.signal ?? 'None observed'}</dd>

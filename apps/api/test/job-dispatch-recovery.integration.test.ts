@@ -1,3 +1,6 @@
+import { BuildComputerSettings, buildComputerTarget } from '../src/modules/settings/buildComputers.js'
+import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
+import { buildComputerFixture } from './helpers/buildComputerFixture.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -15,7 +18,7 @@ import { jobSpec } from './helpers/jobFixture.js'
 
 // Own random schema on the explicitly selected loopback server. No physical
 // qualification/native entry or journal absence as proof of nonexecution.
-it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL)('reports retained delivery/reconciliation failures through HTTP and MCP without redispatch or fabricated cancellation', async () => {
+it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as const)('reports retained delivery/reconciliation failures through HTTP and MCP without redispatch or fabricated cancellation (%s)', async placementMode => {
   const connectionString = process.env.JOB_DISPATCH_DATABASE_URL!
   if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(connectionString).hostname)) throw new Error('Use the authorized local PostgreSQL server.')
   const schema = `job_dispatch_${randomUUID().replaceAll('-', '')}`
@@ -29,18 +32,28 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL)('reports retained delivery/rec
     const workspaceId = randomUUID(), deviceId = randomUUID()
     await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId, JSON.stringify({ id: workspaceId, name: 'Dispatch recovery fixture' })])
     const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
-    const writer = await access.issue({ name: 'Job writer', audience: 'operator', expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:cancel', 'jobs:read'], scope: { workspaceIds: [workspaceId] } }] })
+    const writer = await access.issue({ name: 'Job writer', audience: 'operator', expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:cancel', 'jobs:read'], scope: { workspaceIds: [workspaceId] } }, { actions: ['settings:read', 'settings:update'], scope: {} }] })
     const reader = await access.issue({ name: 'Job reader', audience: 'operator', expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['jobs:read'], scope: { workspaceIds: [workspaceId] } }] })
     const request = vi.fn(async (_device: string, _namespace: string, raw: unknown): Promise<{ payload: unknown }> => {
       if ((raw as { method: string }).method === 'job-dispatch') throw new Error('transport rejected before a receipt; secret must not be exposed')
       return { payload: { status: 'unknown', reason: 'journal_absence_requires_reconciliation' } }
     })
     const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
+    const mainId = (await pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const automatic = buildComputerFixture(mainId, workspaceId, deviceId)
+    await pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
+      values($1,$2,$3,'fixture',$4::jsonb)`, [deviceId, mainId, automatic.registration.workerInstallationId, JSON.stringify(automatic.registration)])
+    const settings = new BuildComputerSettings(pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
+    await settings.update(writer.principal, 'http', { target: automatic.target, commandId: randomUUID(),
+      expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
+    const placement = new JobComputerSelection(settings, { candidates: async () => [automatic.candidate] }, workerExecution)
+
     dispatch = new PostgresJobDispatch(pool, new RemoteJobCarrierDispatch(pool, { request }, undefined), {
       revalidate: async () => {}, authorizeControl: async () => {}, observe: async () => { throw new Error('No receipt was returned.') },
     }, workerExecution)
     const jobs = new JobService(pool, commands, {
       workerExecution,
+      ...(placementMode === 'auto' ? { placement } : {}),
       preparation: { choices: async () => ({ targets: [], sources: [], policies: [] }), validate: async () => ({ valid: true, reasons: [], sideEffects: false }),
         revalidateAccepted: async () => {}, adoptFinalBinding: async () => {}, accept: async (_sql, _principal, _workspace, spec) => ({ ...spec, source: { ...spec.source, materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } }) },
       dispatch, artifacts: { list: async () => [], read: async () => { throw new Error('No physical artifact.') } },
@@ -57,7 +70,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL)('reports retained delivery/rec
     const spec = jobSpec()
     spec.target.hostRef = { kind: 'device', mainId: spec.target.mainId, deviceId }
     spec.target.registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
-    const saved = await app.inject({ method: 'POST', url: `${root}/definitions`, headers, payload: { commandId: randomUUID(), expectedRevision: null, name: 'Retained dispatch', spec } })
+    const saved = await app.inject({ method: 'POST', url: `${root}/definitions`, headers, payload: { commandId: randomUUID(), expectedRevision: null, name: 'Retained dispatch', spec: placementMode === 'auto' ? automatic.auto : spec } })
     expect(saved.statusCode).toBe(200)
     const command = { commandId: randomUUID(), definitionId: saved.json().definition.id, expectedRevision: 1 }
     const start = await app.inject({ method: 'POST', url: `${root}/executions`, headers, payload: command })
@@ -71,6 +84,12 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL)('reports retained delivery/rec
     expect(execution.process).toMatchObject({ phase: 'queued', outcome: null, processStopped: false })
     expect(start.json().error.details).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId })
     await dispatch.close()
+    if (placementMode === 'auto') {
+      const selected = buildComputerTarget(execution.acceptedSpec.target)
+      await settings.update(writer.principal, 'http', { target: selected, commandId: randomUUID(),
+        expectedRevision: 1, buildEnabled: false, buildPriority: 0 })
+      expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
+    }
     const retry = await client.callTool({ name: 'job_start', arguments: { workspaceId, ...command } })
     expect(retry.isError).toBe(true); expect(JSON.stringify(retry.content)).toContain('JOB_DISPATCH_PENDING')
     expect(request.mock.calls.map(([, , raw]) => (raw as { method: string }).method)).toEqual(['job-dispatch', 'job-status'])

@@ -6,7 +6,33 @@ import { it, expect, vi } from 'vitest'
 import { server } from '../../mocks/server'
 import { JobEditor } from './JobEditor'
 import { definition } from './fixtures'
+import { jobPolicyRequirements } from '@graphql/contracts/jobs'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
+it('defaults to Auto and saves runtime requirements while every computer is offline', async () => {
+  const limits = { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 }
+  const requirement = { policy: jobPolicyRequirements(definition.spec.policy), limits }
+  const saved: unknown[] = []
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [definition.spec.source],
+    policies: [], autoPolicies: [requirement] })),
+  http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+  http.post(`${root}/definitions`, async ({ request }) => {
+    const input = await request.json() as { spec: unknown }
+    saved.push(input)
+    return HttpResponse.json({ definition: { ...definition, spec: input.spec } })
+  }))
+  render(<QueryClientProvider client={new QueryClient()}><JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} /></QueryClientProvider>)
+  const user = userEvent.setup()
+  expect(screen.getByRole('combobox', { name: 'Computer and validated root' })).toHaveValue('auto')
+  await screen.findByRole('option', { name: /Image/ })
+  await user.type(screen.getByRole('textbox', { name: 'Job name' }), 'Automatic build')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }),
+    `${definition.spec.source.snapshotId}:${definition.spec.source.manifestDigest}`)
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Required isolation and toolchain policy' }), '0')
+  await user.click(screen.getByRole('button', { name: 'Save job definition' }))
+  expect(saved).toHaveLength(1)
+  expect(saved[0]).toMatchObject({ spec: { target: { kind: 'auto' }, policy: requirement.policy, limits,
+    source: definition.spec.source } })
+})
 it('keeps the full long Job name as its focused dialog title and allows Close', async () => {
   const longDefinition = { ...definition, name: '長い名前'.repeat(50) }
   const close = vi.fn()
@@ -45,6 +71,7 @@ it('disambiguates repeated commit and policy labels and exposes exact pins befor
   server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [definition.spec.source, secondSource], policies: [definition.spec.policy, secondPolicy] })))
   render(<QueryClientProvider client={new QueryClient()}><JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} /></QueryClientProvider>)
   const user = userEvent.setup()
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Computer and validated root' }), 'fixed')
   const sourceChoice = await screen.findByRole('option', { name: `Commit ${secondSource.commit.slice(0, 8)}… · ${secondSource.snapshotId.slice(0, 8)}…` })
   await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }), sourceChoice)
   const policyChoice = screen.getByRole('option', { name: `${secondPolicy.isolationPolicyId} · rev ${secondPolicy.isolationPolicyRevision} · dddddddd…` })

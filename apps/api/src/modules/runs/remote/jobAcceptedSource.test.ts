@@ -50,7 +50,7 @@ function fixture() {
     throw new Error('Unexpected source read SQL')
   })
   const sql = { query, release: vi.fn() }, pool = { connect: async () => sql } as unknown as pg.Pool
-  const dispatch = { require: vi.fn(), requireControl: vi.fn(), requireEvidence: vi.fn(async () => { if (state.denied) throw new Error('evidence denied') }), observeReceipt: vi.fn() }
+  const dispatch = { requireLaunch: vi.fn(), require: vi.fn(), requireControl: vi.fn(), requireEvidence: vi.fn(async () => { if (state.denied) throw new Error('evidence denied') }), observeReceipt: vi.fn() }
   const bridge = new JobApplicationBridge(pool, dispatch, { appendLog: vi.fn() }, { authorizePublication: vi.fn() })
   return { execution, intent, binding, materialization, root, profile, approved, state, query, sql, dispatch, bridge }
 }

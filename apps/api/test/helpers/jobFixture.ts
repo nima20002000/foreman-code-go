@@ -1,8 +1,8 @@
 import { jobDigest } from '../../src/modules/jobs/service.js'
-import { JobDefinitionSpecSchema, type JobExecution } from '@graphql/contracts/jobs'
+import { ResolvedJobDefinitionSpecSchema, type JobExecution } from '@graphql/contracts/jobs'
 export function jobSpec() {
   const digest='1'.repeat(64),mainId='11111111-1111-4111-8111-111111111111'
-  return JobDefinitionSpecSchema.parse({source:{approvedSourceId:mainId,snapshotId:mainId,commit:'2'.repeat(40),manifestDigest:digest},
+  return ResolvedJobDefinitionSpecSchema.parse({source:{approvedSourceId:mainId,snapshotId:mainId,commit:'2'.repeat(40),manifestDigest:digest},
     target:{schemaVersion:1,mainId,hostRef:{kind:'main',mainId},registration:null,mainInstallationId:'test-main',destination:{canonicalProjectRoot:'/approved/project',canonicalCwd:'/approved/project',managedRuntimeRoot:'/approved/runtime',directoryIdentityHash:digest,rootPolicyId:'root',rootPolicyRevision:'1',locationRevision:'1',attestationId:'attestation',attestationHash:digest}},
     argv:['node','scripts/ci-fixtures/failure.mjs'],inputs:[],outputs:[],policy:{isolationPolicyId:'approved-container',isolationPolicyRevision:1,imageDigest:`sha256:${digest}`,toolchainDigest:digest,environmentScopeRefs:[],network:'none',queueTimeoutMs:10000,preparationTimeoutMs:10000,executionTimeoutMs:10000,cancellationGraceMs:1000,maxLogChunkBytes:1024,maxLogBytes:4096,maxWorkerSpoolBytes:4096,logOverflow:'stop',maxOutputBytes:4096,retentionSeconds:3600}})
 }

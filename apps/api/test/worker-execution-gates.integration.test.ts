@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { JobDefinitionSchema, type JobDefinitionSpec, type JobExecution } from '@graphql/contracts/jobs'
+import { PreparedJobSpecSchema, JobDefinitionSchema, type JobDefinitionSpec, type JobExecution } from '@graphql/contracts/jobs'
 import { RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort } from '@graphql/contracts/remote-job-execution'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -167,12 +167,12 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const identity = { executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() }
     const workflow = { workflowId: randomUUID(), runId: randomUUID(), nodeId: 'build',
       nodeExecutionId: identity.executionId }
-    expect(() => fixture.jobs.prepareDefinition(database.pool, fixture.writer.principal, definition, identity))
-      .toThrow(expect.objectContaining({ code: 'WORKER_EXECUTION_DISABLED' }))
+    await expect(fixture.jobs.prepareDefinition(database.pool, fixture.writer.principal, definition, identity))
+      .rejects.toMatchObject({ code: 'WORKER_EXECUTION_DISABLED' })
     await expect(fixture.jobs.admit(database.pool, fixture.writer.principal, definition, workflow, {}))
       .rejects.toMatchObject({ code: 'WORKER_EXECUTION_DISABLED' })
-    const prepared = { ...definition.spec, source: { ...definition.spec.source,
-      materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } }
+    const prepared = PreparedJobSpecSchema.parse({ ...definition.spec, source: { ...definition.spec.source,
+      materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } })
     await expect(fixture.jobs.admitPrepared(database.pool, fixture.writer.principal,
       definition, workflow, {}, prepared, identity)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_DISABLED' })
     expect(fixture.preparation.accept).not.toHaveBeenCalled()

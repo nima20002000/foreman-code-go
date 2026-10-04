@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { JobDefinitionSchema } from '@graphql/contracts/jobs'
+import { readJobComputerSelection } from '../jobs/computerSelection.js'
+import { JobDefinitionSchema, isAutoJobSpec } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { SourcePreparationGetInputSchema, SourcePreparationReconcileInputSchema, SourcePreparationSchema,
   SourcePreparationClosureSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema,
@@ -20,17 +21,28 @@ import type { SourceExecutionHostPort } from './service.js'
 import { assertWorkflowPreparationClosed, loadWorkflowPreparation } from './workflowPreparationCleanup.js'
 
 async function load(sql: GraphSqlClient, workspaceId: string, operationId: string) {
-  const row = (await sql.query<{ execution_id: string; attempt_id: string; principal_id: string; start_command_id: string; definition: unknown; created_at: Date;
+  const row = (await sql.query<{ execution_id: string; attempt_id: string; principal_id: string; start_command_id: string; definition: unknown; created_at: Date; workflow_run_id: string | null;
     reservation_id: string; scope_id: string; reservation: SourceReservation; reservation_state: string; reserved_bytes: string; materialization: unknown | null;
-    reconciliation_id: string | null; command_id: string | null; status: string | null; owner: unknown | null; closure: unknown | null }>(`select
+    reconciliation_id: string | null; command_id: string | null; status: string | null; owner: unknown | null; closure: unknown | null }>(`with preparations as (
+    select execution_id,attempt_id,operation_id,workspace_id,principal_id,command_id,definition,created_at,null::text as workflow_run_id
+      from job_preparations
+    union all select s.execution_id,s.attempt_id,s.operation_id,s.workspace_id,
+      r.record->>'authorizationPrincipalId',w.slot_id,v.record,w.created_at,w.run_id
+      from workflow_job_preparations w join job_computer_selections s on s.execution_id=w.preparation->>'executionId'
+      join runs r on r.id=w.run_id join job_definition_versions v on v.id=s.definition_version_id
+    ) select
     j.execution_id,j.attempt_id,j.principal_id,j.command_id as start_command_id,j.definition,j.created_at,r.reservation_id,r.scope_id,r.record as reservation,r.state as reservation_state,r.reserved_bytes,
-    m.record as materialization,c.reconciliation_id,c.command_id,c.status,c.owner,c.closure
-    from job_preparations j join source_storage_reservations r on r.owner_kind='materialization' and r.owner_id=j.operation_id
+    m.record as materialization,c.reconciliation_id,c.command_id,c.status,c.owner,c.closure,j.workflow_run_id
+    from preparations j join source_storage_reservations r on r.owner_kind='materialization' and r.owner_id=j.operation_id
     left join source_execution_materializations m on m.operation_id=j.operation_id
     left join source_preparation_reconciliations c on c.operation_id=j.operation_id
-    where j.workspace_id=$1 and j.operation_id=$2 for share of j,r`, [workspaceId, operationId])).rows[0]
+    where j.workspace_id=$1 and j.operation_id=$2 for share of r`, [workspaceId, operationId])).rows[0]
   if (!row) return loadWorkflowPreparation(sql, workspaceId, operationId)
-  const definition = JobDefinitionSchema.parse(row.definition)
+  const saved = JobDefinitionSchema.parse(row.definition)
+  const spec = isAutoJobSpec(saved.spec) ? await readJobComputerSelection(sql, saved, {
+    executionId: row.execution_id, attemptId: row.attempt_id, operationId,
+  }) : saved.spec
+  const definition = { ...saved, spec }
   const record = row.materialization === null ? null : SourceMaterializationRecordSchema.parse(row.materialization)
   const roots = (await sql.query<{ record: unknown }>(`select record from source_root_bindings
     where workspace_id=$1 and record->>'attestationId'=$2 for share`, [workspaceId, definition.spec.target.destination.attestationId])).rows
@@ -66,6 +78,17 @@ function metadata(state: State) {
 }
 async function admissionClosed(sql: GraphSqlClient, state: State) {
   if (state.kind === 'workflow') return assertWorkflowPreparationClosed(sql, state)
+  if (state.workflow_run_id) {
+    const run = (await sql.query<{ closed: boolean }>(`select (stop_requested_at is not null
+      or execution_state in ('completed','interrupted') or exists(select 1 from run_cleanup_intents c
+      where c.run_id=r.id and c.pending)) as closed from runs r where id=$1 for share`, [state.workflow_run_id])).rows[0]
+    if (!run?.closed) throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'Stop the workflow before reconciling this Job preparation.', 409)
+    if ((await sql.query('select 1 from job_executions where id=$1 or operation_id=$2 for share',
+      [state.attempt.executionId, state.operationId])).rowCount) {
+      throw new DomainError('SOURCE_PREPARATION_ADMITTED', 'An admitted Job requires its original execution cancellation/reconciliation path.', 409)
+    }
+    return
+  }
   const lock = (await sql.query<{locked: boolean}>('select pg_try_advisory_xact_lock(hashtext($1)) as locked',
     [`command:${state.principal_id}:job.start:${state.start_command_id}`])).rows[0]
   if (!lock?.locked) throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'The original Job Start command is still active.', 409)

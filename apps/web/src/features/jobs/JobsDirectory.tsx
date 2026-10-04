@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { JobDefinition, JobExecution } from '@graphql/contracts/jobs'
+import { isAutoJobSpec, type JobDefinition, type JobExecution } from '@graphql/contracts/jobs'
 import { Alert, Button, Card, CardBody, EmptyState, PageHeader } from '../../shared/ui/nocturne'
 import { useJobDefinitions, useJobHistory } from './query'
 import { jobsClient } from './client'
@@ -17,8 +17,8 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
   return <div className="jobs-page"><PageHeader title="Jobs" description="Versioned build and test commands on an authorized computer." actions={<Button variant="primary" onClick={() => setEditor({})}>New job</Button>} />
     <section aria-label="Saved jobs"><h2>Saved jobs</h2>{Boolean(definitions.error) && <Alert title="Saved jobs unavailable" tone="danger">{jobError(definitions.error)}</Alert>}
       {definitions.isPending && <p role="status">Loading jobs…</p>}
-      {definitions.data?.length === 0 && <EmptyState title="No jobs saved" description="Choose a qualified computer, pinned source and isolation policy to save your first command." />}
-      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
+      {definitions.data?.length === 0 && <EmptyState title="No jobs saved" description="Choose a pinned source and runtime requirements. Auto selects a participating build computer at Start." />}
+      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {isAutoJobSpec(definition.spec) ? 'Auto' : definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
     </section>
     <section aria-label="Execution history"><h2>Execution history</h2>{Boolean(history.error) && <Alert title="History unavailable" tone="danger">{jobError(history.error)}</Alert>}{history.isPending && <p role="status">Loading execution history…</p>}
       {history.data?.length === 0 && <p>No executions yet. Use “Review and start” on a saved job.</p>}

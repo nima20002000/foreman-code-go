@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { JobDefinition, JobExecution, RunInput } from '@graphql/contracts'
+import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, RunInput } from '@graphql/contracts'
 import { ManagementPrincipalSchema } from '@graphql/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
@@ -68,7 +68,7 @@ async function admit(workflowInput: RunInput | null) {
   const fixture = execution()
   const { source, target, argv, policy, outputs } = fixture.acceptedSpec
   const selectedSource = { approvedSourceId: source.approvedSourceId, snapshotId: source.snapshotId, commit: source.commit, manifestDigest: source.manifestDigest }
-  const definition: JobDefinition = { schemaVersion: 1, id, workspaceId: id, name: 'Accepted producer fixture', revision: 1, versionId: id,
+  const definition: JobDefinition & { spec: ResolvedJobDefinitionSpec } = { schemaVersion: 1, id, workspaceId: id, name: 'Accepted producer fixture', revision: 1, versionId: id,
     createdAt: fixture.createdAt, updatedAt: fixture.updatedAt, spec: { source: selectedSource, target: structuredClone(target), argv, policy, outputs,
       relativeCwd: 'build', inputs: [{ path: 'inputs/config.json', fileId: id, revisionId: id, sha256: digest, byteSize: 12 }] } }
   definition.spec.target.destination.canonicalCwd = `/private/${id}/tree/build`

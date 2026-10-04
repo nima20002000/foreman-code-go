@@ -1,7 +1,8 @@
+import { readJobComputerSelection } from './computerSelection.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { JobDefinitionSchema, type JobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, isAutoJobSpec, type ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
 import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { RemoteJobDispatchIntentSchema } from '@graphql/contracts/remote-job-execution'
 import { SourceRootRecordSchema, type SourceMaterializationRecord, type SourceRootRecord } from '@graphql/contracts/source-admission'
@@ -30,7 +31,7 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
       const accepted=(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length>0
       if(!accepted&&current?.version_id!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The saved job changed before admission.',409)
       if(!accepted&&Date.now()-manual.created_at.getTime()>definition.spec.policy.preparationTimeoutMs)throw new DomainError('JOB_PREPARATION_TIMEOUT','The actual job preparation exceeded its accepted budget.',409)
-      return {principal:actor,workspaceId:manual.workspace_id,spec:definition.spec}
+      return {principal:actor,workspaceId:manual.workspace_id,spec:isAutoJobSpec(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
     }
     const workflow=(await sql.query<{preparation:unknown}>('select preparation from workflow_job_preparations where preparation->>\'executionId\'=$1 and preparation->>\'attemptId\'=$2 and preparation->>\'operationId\'=$3 for share',[executionId,attemptId,operationId])).rows[0]
     if(!workflow)throw new DomainError('JOB_PREPARATION_MISSING','No actual manual job or Run slot allocated this source attempt.',409)
@@ -49,9 +50,9 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
     const definition=await new JobRepository().version(sql,run.workspaceId,node.jobDefinitionVersionId,node.jobDefinitionId)
     if(!(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length)await requireJobPreparationDeadline(sql,'workflow',executionId,definition.spec.policy.preparationTimeoutMs)
     if(definition.revision!==node.jobDefinitionRevision)throw new DomainError('JOB_VERSION_PIN_CONFLICT','The saved job version differs from the accepted workflow.',409)
-    return {principal:actor,workspaceId:run.workspaceId,spec:definition.spec}
+    return {principal:actor,workspaceId:run.workspaceId,spec:isAutoJobSpec(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
   }
-  private check(root:SourceRootRecord,spec:JobDefinitionSpec) {
+  private check(root:SourceRootRecord,spec:ResolvedJobDefinitionSpec) {
     if(canonical(root.source)!==canonical({approvedSourceId:spec.source.approvedSourceId,snapshotId:spec.source.snapshotId,manifestDigest:spec.source.manifestDigest})
       ||root.binding.accessMode!=='exclusive-write'||canonical(root.selection.hostRef)!==canonical(spec.target.hostRef)||canonical(root.registration)!==canonical(spec.target.registration)
       ||root.attestationId!==spec.target.destination.attestationId||root.attestationDigest!==spec.target.destination.attestationHash

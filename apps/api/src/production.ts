@@ -1,3 +1,4 @@
+import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
@@ -1060,6 +1061,7 @@ export function buildProductionApp(
     provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
   })
   const runtimeServices: OperatorServices & { jobs?: import('./modules/jobs/service.js').JobService;
+    buildComputers?: import('./modules/settings/buildComputers.js').BuildComputerSettings
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const localDevBrowserAccess = config.localDevBrowserAccess
     ? new LocalDevBrowserAccess(database.pool, access,
@@ -1303,6 +1305,8 @@ export function buildProductionApp(
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
+      runtimeServices.buildComputers = jobRuntime.buildComputers
+      registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       registerSourceRoutes(app, jobRuntime.sources)

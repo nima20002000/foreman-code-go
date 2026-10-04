@@ -22,6 +22,7 @@ export interface JobDispatchHost {
   /** Actual W07 registration/boot/current connection and W09 source/root qualification. */
   revalidate(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
   authorizeControl(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
+  authorizeLaunch?(sql:JobSql,execution:JobExecution):Promise<void>
   observe(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<void>
   settleSource?(executionId: string): Promise<void>
 }
@@ -73,6 +74,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(await readRunJobCleanup(sql,execution))return
     await this.require(sql,execution,fence)
   }
+  async requireLaunch(sql: JobSql, execution: JobExecution, fence: JobWorkerFence): Promise<void> {
+    await this.require(sql, execution, fence)
+    await this.host.authorizeLaunch?.(sql, execution)
+  }
   /** Only trusted carrier receipt ingress uses this. No file write/read capability. */
   async requireEvidence(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {return this.requireControl(sql,execution,fence)}
   async wake(executionId:string):Promise<void> {
@@ -107,7 +112,22 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
           await this.repository.putExecution(sql,execution)
           return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:'none' as const,cancelCommandId:row.cancel_command_id}
         }
-        if (!row.delivery_attempted) this.workerExecution.requireEnabled(execution.acceptedSpec.target.hostRef)
+        if (!row.delivery_attempted) {
+          this.workerExecution.requireEnabled(execution.acceptedSpec.target.hostRef)
+          try { await this.host.authorizeLaunch?.(sql, execution) } catch (error) {
+            if (!(error instanceof DomainError) || error.code !== 'BUILD_COMPUTER_DISABLED') throw error
+            execution.process = { phase: 'terminal', outcome: 'preparation_failed', exitCode: null,
+              signal: null, processStopped: true }
+            execution.finishedAt = new Date().toISOString()
+            execution.updatedAt = execution.finishedAt
+            execution.publication = 'complete'
+            execution.launchIssue = 'build_disabled'
+            await sql.query("update job_dispatch_intents set launch_blocked_reason='build_disabled' where execution_id=$1", [executionId])
+            await this.repository.putExecution(sql, execution)
+            return { execution, intent: RemoteJobDispatchIntentSchema.parse(row.intent),
+              action: 'none' as const, cancelCommandId: row.cancel_command_id }
+          }
+        }
         await sql.query('update job_dispatch_intents set delivery_attempted=true where execution_id=$1',[executionId])
         return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:row.delivery_attempted?'reconcile' as const:'deliver' as const,cancelCommandId:row.cancel_command_id}
       })

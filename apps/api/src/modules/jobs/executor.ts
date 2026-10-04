@@ -131,7 +131,8 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
       if (!spec.argv[0] || spec.argv.some(argument => argument.includes('\0'))) throw new Error('Executable/argv rejected.')
       if ((execution.workflow === null) !== (spec.workflowInput === null)) throw new Error('Accepted workflow input binding mismatch.')
       const preparedSpec: PreparedJobSpec = { source: spec.source, target: spec.target, argv: spec.argv, inputs: spec.inputs,
-        policy: spec.policy, outputs: spec.outputs, ...(spec.relativeCwd ? { relativeCwd: spec.relativeCwd } : {}) }
+        policy: spec.policy, outputs: spec.outputs, ...(spec.computerSelection ? { computerSelection: spec.computerSelection } : {}),
+        ...(spec.relativeCwd ? { relativeCwd: spec.relativeCwd } : {}) }
       for (const [key, digest] of Object.entries(jobSpecDigests(preparedSpec, spec.workflowInput))) {
         if (spec[key as keyof ReturnType<typeof jobSpecDigests>] !== digest) throw new Error('Accepted specification digest mismatch.')
       }

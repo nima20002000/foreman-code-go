@@ -6,6 +6,7 @@ import { activitySourcesMigration } from './activitySourcesMigration.js'
 import { activityCommandSourcesMigration } from './activityCommandSourcesMigration.js'
 import { harnessInstanceSettingsMigration } from '../modules/harnesses/instanceSettings/migration.js'
 import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/instanceSettings/profileMigration.js'
+import { buildComputersMigration } from './buildComputersMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
 import { workflowJobsMigration } from './workflowJobsMigration.js'
@@ -791,6 +792,7 @@ export const migrations = [
   harnessInstanceSettingsMigration,
   harnessInstanceProfileEvidenceMigration,
   jobsMigration,
+  buildComputersMigration,
   currentMultiNodeAgentMigration,
   workflowJobsMigration,
   jobRuntimeProfilesMigration,

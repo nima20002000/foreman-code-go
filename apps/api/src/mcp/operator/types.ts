@@ -33,6 +33,7 @@ export interface OperatorServices {
   harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService
   harnessRegistry?: import('../../modules/harnesses/productionRegistry.js').ProductionHarnessRegistry
   trustedConnections?: import('../../modules/devices/trustedConnectionManagement.js').TrustedConnectionManagementService
+  buildComputers?: import('../../modules/settings/buildComputers.js').BuildComputerSettings
   devices?: DeviceManagementService
   sources?: import('../../modules/sources/service.js').PostgresSourceService
   fileReferences?: FileReferenceService

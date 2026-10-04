@@ -113,6 +113,7 @@
       "types": "./dist/remoteExecution.d.ts",
       "import": "./dist/remoteExecution.js"
     },
+    "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
     "./jobs": {
       "types": "./dist/jobs.d.ts",
       "import": "./dist/jobs.js"

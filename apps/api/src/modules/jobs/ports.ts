@@ -2,7 +2,7 @@ import type { JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import type { JobSql } from './repository.js'
-import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec } from '@graphql/contracts/jobs'
+import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, ResolvedJobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 /** W08 adapter owns durable dispatch and owner/cancel identity. No job scheduler. */
@@ -20,7 +20,7 @@ export interface JobPreparationPort {
   adoptFinalBinding(client:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   choices(client: JobSql, principal: ManagementPrincipal, workspaceId: string): Promise<JobAuthoringChoices>
   validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>
-  accept(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec, identity:{executionId:string;attemptId:string;operationId:string}): Promise<PreparedJobSpec>
+  accept(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: ResolvedJobDefinitionSpec, identity:{executionId:string;attemptId:string;operationId:string}): Promise<PreparedJobSpec>
 }
 /** Canonical W09 file revisions, never a job artifact byte store. */
 export interface JobArtifactPort {

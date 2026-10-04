@@ -1,7 +1,7 @@
-import type { JobDefinition, JobExecution, JobLogPage } from '@graphql/contracts/jobs'
+import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, JobLogPage } from '@graphql/contracts/jobs'
 const digest = 'a'.repeat(64)
 const uuid = '11111111-1111-4111-8111-111111111111'
-export const definition: JobDefinition = {
+export const definition: JobDefinition & { spec: ResolvedJobDefinitionSpec } = {
   schemaVersion: 1, id: 'job-a', workspaceId: 'workspace-a', name: 'Web build', revision: 1, versionId: 'version-a', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
   spec: { argv: ['corepack', 'pnpm', 'build'], inputs: [], outputs: [{ path: 'apps/web/dist/index.html', required: true, mediaType: 'text/html' }],
     source: { approvedSourceId: uuid, snapshotId: uuid, commit: 'b'.repeat(40), manifestDigest: digest },

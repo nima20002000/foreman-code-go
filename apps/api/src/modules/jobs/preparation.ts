@@ -1,4 +1,4 @@
-import { JobAuthoringChoicesSchema, PreparedJobSpecSchema, type JobAuthoringChoices, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec } from '@graphql/contracts/jobs'
+import { JobAuthoringChoicesSchema, PreparedJobSpecSchema, type JobAuthoringChoices, isAutoJobSpec, type JobDefinitionSpec, type ResolvedJobDefinitionSpec, type JobExecution, type PreparedJobSpec } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
@@ -9,7 +9,7 @@ export interface JobPreparationSources {
   adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string):Promise<JobAuthoringChoices>
   /** Real W09 verified private repository materialization, bound to this genuine job/attempt. */
-  materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<PreparedJobSpec>
+  materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<PreparedJobSpec>
 }
 /** Source/target/profile authority is drawn from current inventory, never trusted caller attestations. */
 export class JobPreparationService implements JobPreparationPort {
@@ -22,6 +22,7 @@ export class JobPreparationService implements JobPreparationPort {
     return JobAuthoringChoicesSchema.parse(await this.sources.choices(sql,principal,workspaceId))
   }
   async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpec) {
+    if (isAutoJobSpec(spec)) return { valid: false, reasons: ['AUTO_SOURCE_VALIDATION_UNAVAILABLE'], sideEffects: false as const }
     const choices=await this.choices(sql,principal,workspaceId),reasons:string[]=[]
     const target=choices.targets.find(choice=>canonical(choice.target)===canonical(spec.target))
     if(!target)reasons.push('TARGET_AUTHORITY_CHANGED')
@@ -30,7 +31,7 @@ export class JobPreparationService implements JobPreparationPort {
     if(!choices.policies.some(policy=>canonical(policy)===canonical(spec.policy)))reasons.push('ISOLATION_POLICY_UNAVAILABLE')
     return {valid:reasons.length===0,reasons,sideEffects:false as const}
   }
-  async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}) {
+  async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}) {
     const ready=await this.validate(sql,principal,workspaceId,spec)
     if(!ready.valid)throw new DomainError('JOB_NOT_READY','Current source, target or isolation authority does not match the saved job.',409,{reasons:ready.reasons})
     return PreparedJobSpecSchema.parse(await this.sources.materialize(sql,principal,workspaceId,spec,identity))

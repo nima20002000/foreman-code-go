@@ -5,7 +5,7 @@ import { JobRuntimeApprovalSchema, JobRuntimeFingerprintSchema, JobRuntimeMeasur
   JobRuntimeQualificationRequestSchema, type JobRuntimeProfile, type JobRuntimeProfileSave, type JobRuntimeApproval } from '@graphql/contracts/job-runtime'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { SourceRootRecord } from '@graphql/contracts/source-admission'
-import type { JobDefinitionSpec } from '@graphql/contracts/jobs'
+import type { ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -195,7 +195,13 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     for(const profile of profiles)if(profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()&&(await this.producer.revalidate(sql,profile)).ready)policies.push(profile.policy)
     return policies
   }
-  async revalidate(sql:JobSql,principal:ManagementPrincipal,root:SourceRootRecord,spec:JobDefinitionSpec) {
+  readiness(sql: JobSql, profile: JobRuntimeProfile) {
+    if (profile.status !== 'qualified' || !profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) {
+      return Promise.resolve({ ready: false, reasons: ['runtime_setup_required'] })
+    }
+    return this.producer.revalidate(sql, profile)
+  }
+  async revalidate(sql:JobSql,principal:ManagementPrincipal,root:SourceRootRecord,spec:ResolvedJobDefinitionSpec) {
     requireAuthorization(principal,'source_roots:read',{workspaceId:root.binding.workspaceId})
     requireAuthorization(await readLiveManagementPrincipal(sql,principal.id),'source_roots:read',{workspaceId:root.binding.workspaceId})
     const currentProfile=await this.record(sql,root.binding.workspaceId,spec.policy.isolationPolicyId)

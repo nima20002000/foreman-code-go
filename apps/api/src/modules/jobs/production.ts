@@ -28,7 +28,7 @@ import type { ResumableByteTransferService } from '../byte-transfer/service.js'
 import type { MainJobOutputRsyncPorts } from '../files/jobs/rsyncProduction.js'
 import type { TrustedJobOutputReader } from '../files/jobs/port.js'
 import { JobService } from './service.js'
-import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { JobWorkerService } from './worker.js'
 import { projectJobReceiptLocked } from './receiptProjection.js'
 import { publishWorkflowJobReceiptLocked } from './workflowReceiptPublication.js'
@@ -39,6 +39,9 @@ import { createWorkflowJobComposition } from './workflowComposition.js'
 import { JobApplicationBridge } from '../runs/remote/jobApplicationBridge.js'
 import { join } from 'node:path'
 import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
+import { BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
+import { buildComputerReadiness } from '../settings/buildComputerReadiness.js'
+import { JobComputerSelection, releaseClosedJobComputers } from './computerSelection.js'
 
 export interface ProductionJobInfrastructure {
   installedConfiguration: InstalledRuntimeHostDependencies['configuration']
@@ -95,6 +98,10 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   })
   const host = qualification.host
   const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands, sources: source.sources, host })
+  const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
+  const buildComputers = new BuildComputerSettings(input.pool, input.commands, buildComputerReadiness({
+    endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(input.infrastructure?.localExecution),
+  }))
   const preparationPort: JobPreparationPort = {
     choices: (...args) => preparation.choices(...args), validate: (...args) => preparation.validate(...args),
     accept: (...args) => preparation.accept(...args), revalidateAccepted: (...args) => preparation.revalidateAccepted(...args),
@@ -103,6 +110,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const carrier = new RemoteJobCarrierDispatch(input.pool, { request: (deviceId, namespace, payload) => input.endpoint().request(deviceId, namespace, payload) }, input.infrastructure?.localExecution)
   const dispatch = new PostgresJobDispatch(input.pool, carrier, {
     revalidate: (sql, execution, principal) => preparationPort.revalidateAccepted(sql, principal, execution),
+    authorizeLaunch: async (sql, execution) => {
+      await buildComputers.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
+    },
     authorizeControl: async (sql, execution) => {
       const target = execution.acceptedSpec.target
       await assertDeviceHostInstallation(sql, target.hostRef, target.hostRef.kind === 'main' ? target.hostRef.mainId : target.registration!.workerInstallationId)
@@ -112,8 +122,12 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         `select record,state from source_execution_materializations where execution_id=$1`,
         [executionId])).rows[0]
       if (!row) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original Job source materialization is missing.', 409)
-      if (row.state === 'closed' && !input.transferMaterializationClosed) return
+      if (row.state === 'closed' && !input.transferMaterializationClosed) {
+        await releaseClosedJobComputers(input.pool)
+        return
+      }
       await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record))
+      await releaseClosedJobComputers(input.pool)
     },
     async observe(sql, execution, receipt) {
       if (execution.workflow) {
@@ -143,8 +157,20 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       await source.sources.verifyPreparation({ principal, record })
       await source.executions.privateRepository(record, manifest)
     } })
-  const preparation = new CanonicalJobPreparationService(new CanonicalJobPreparationSources(source.sources, profiles, privateRepositories,
-    { validateDeclaredJobInputs: inputs.validateDeclaredJobInputs }, source.policies))
+  const preparationSources = new CanonicalJobPreparationSources(source.sources, profiles, privateRepositories,
+    { validateDeclaredJobInputs: inputs.validateDeclaredJobInputs }, source.policies)
+  const preparation = new CanonicalJobPreparationService(preparationSources)
+  const placement = new JobComputerSelection(buildComputers, {
+    candidates: async (...args) => {
+      const candidates = await preparationSources.candidates(...args)
+      return candidates.map(candidate => {
+        const target = candidate.spec.target.hostRef
+        const available = target.kind === 'main' ? Boolean(input.infrastructure?.localExecution)
+          : Boolean(input.endpoint().captureRequest(target.deviceId, 'execution-v1'))
+        return available ? candidate : { ...candidate, ready: false, reasons: [...candidate.reasons, 'executor_unavailable'] }
+      })
+    },
+  }, workerExecution)
   const publication = new JobPublicationAuthority(dispatch, preparation)
   const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
     endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,
@@ -152,6 +178,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ...(input.transferReceiver?{receiver:input.transferReceiver}:{}),...(input.outputRsync?{rsync:input.outputRsync}:{})})
   const artifacts = outputs.artifacts
   const jobs = new JobService(input.pool, input.commands, {
+    placement,
     preparation,
     dispatch,
     artifacts,
@@ -162,6 +189,6 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)
   const workflow = createWorkflowJobComposition({ jobs, dispatch, outputs: artifacts })
-  return { ...source, jobs, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
+  return { ...source, jobs, buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
     async close() { await dispatch.close(); await outputs.close(); if (qualificationJournal) await (await qualificationJournal).close() } }
 }

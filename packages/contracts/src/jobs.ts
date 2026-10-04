@@ -26,6 +26,18 @@ export const JobPolicySchema = z.object({
   maxLogBytes: z.number().int().positive(), maxWorkerSpoolBytes: z.number().int().positive(),
   logOverflow: z.enum(['stop', 'explicit-truncation']), maxOutputBytes: z.number().int().positive(), retentionSeconds: JobArtifactRetentionSchema,
 }).strict()
+export const JobPolicyRequirementsSchema = JobPolicySchema.omit({
+  isolationPolicyId: true, isolationPolicyRevision: true,
+})
+export function jobPolicyRequirements(policy: z.infer<typeof JobPolicySchema>): z.infer<typeof JobPolicyRequirementsSchema> {
+  return JobPolicyRequirementsSchema.parse(Object.fromEntries(Object.entries(policy).filter(
+    ([key]) => key !== 'isolationPolicyId' && key !== 'isolationPolicyRevision',
+  )))
+}
+export const JobRuntimeLimitsSchema = z.object({
+  cpuLimit: z.number().positive().max(256), memoryBytes: z.number().int().positive(),
+  pidsLimit: z.number().int().positive(), diskBytes: z.number().int().positive(),
+}).strict()
 export const JobOutputSpecSchema = z.object({
   path: RelativePath, required: z.boolean(), mediaType: JobArtifactMediaTypeSchema,
 }).strict()
@@ -40,7 +52,7 @@ export const JobTargetSchema = z.object({
     context.addIssue({code:'custom',message:'Job target main/registration identity mismatch.'})
   }
 })
-export const JobDefinitionSpecSchema = z.object({
+export const ResolvedJobDefinitionSpecSchema = z.object({
   source: JobDefinitionSourceSchema, target: JobTargetSchema, argv: z.array(z.string().max(8192)).min(1).max(128),
   relativeCwd: RelativePath.optional(), inputs: z.array(JobInputRevisionSchema).max(128),
   policy: JobPolicySchema, outputs: z.array(JobOutputSpecSchema).max(64),
@@ -48,6 +60,27 @@ export const JobDefinitionSpecSchema = z.object({
   if(new Set(spec.inputs.map(input=>input.path)).size!==spec.inputs.length) context.addIssue({code:'custom',path:['inputs'],message:'Immutable input paths must be unique.'})
   if(new Set(spec.outputs.map(output=>output.path)).size!==spec.outputs.length) context.addIssue({code:'custom',path:['outputs'],message:'Accepted output paths must be unique.'})
 })
+export const AutoJobDefinitionSpecSchema = z.object({
+  ...ResolvedJobDefinitionSpecSchema.shape,
+  target: z.object({ kind: z.literal('auto') }).strict(),
+  policy: JobPolicyRequirementsSchema,
+  limits: JobRuntimeLimitsSchema,
+}).strict().superRefine((spec, context) => {
+  if (new Set(spec.inputs.map(input => input.path)).size !== spec.inputs.length)
+    context.addIssue({ code: 'custom', path: ['inputs'], message: 'Immutable input paths must be unique.' })
+  if (new Set(spec.outputs.map(output => output.path)).size !== spec.outputs.length)
+    context.addIssue({ code: 'custom', path: ['outputs'], message: 'Accepted output paths must be unique.' })
+})
+export const JobDefinitionSpecSchema = z.union([ResolvedJobDefinitionSpecSchema, AutoJobDefinitionSpecSchema])
+export type ResolvedJobDefinitionSpec = z.infer<typeof ResolvedJobDefinitionSpecSchema>
+export type AutoJobDefinitionSpec = z.infer<typeof AutoJobDefinitionSpecSchema>
+export function isAutoJobSpec(spec: JobDefinitionSpec): spec is AutoJobDefinitionSpec {
+  return 'kind' in spec.target && spec.target.kind === 'auto'
+}
+export const JobComputerSelectionSchema = z.object({
+  mode: z.enum(['auto', 'fixed']), buildPriority: z.number().int().min(0).max(100),
+  settingsRevision: z.number().int().nonnegative(),
+}).strict()
 export const JobDefinitionSchema = z.object({
   schemaVersion: z.literal(1), id: IdSchema, workspaceId: IdSchema, name: z.string().trim().min(1).max(200),
   revision: Revision, versionId: IdSchema, spec: JobDefinitionSpecSchema, createdAt: TimestampSchema, updatedAt: TimestampSchema,
@@ -56,7 +89,9 @@ export const JobDefinitionSaveSchema = z.object({
   commandId: IdSchema, id: IdSchema.optional(), expectedRevision: Revision.nullable(), name: z.string().trim().min(1).max(200), spec: JobDefinitionSpecSchema,
 }).strict()
 export const JobStartSchema = z.object({ commandId: IdSchema, definitionId: IdSchema, expectedRevision: Revision }).strict()
-export const PreparedJobSpecSchema=JobDefinitionSpecSchema.safeExtend({source:JobSourceSchema}).strict()
+export const PreparedJobSpecSchema=ResolvedJobDefinitionSpecSchema.safeExtend({
+  source:JobSourceSchema, computerSelection: JobComputerSelectionSchema.optional(),
+}).strict()
 export type PreparedJobSpec=z.infer<typeof PreparedJobSpecSchema>
 export const AcceptedJobSpecSchema = PreparedJobSpecSchema.safeExtend({
   ...HistoricalDeviceExecutionAdmissionFields,
@@ -84,6 +119,7 @@ export const JobExecutionSchema = z.object({
   publication: z.enum(['pending', 'collecting', 'complete', 'failed', 'expired']),
   startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(), lastSeenAt: TimestampSchema.nullable(),
   resultIssue: z.enum(['missing_output', 'corrupt_output', 'publication_failed', 'log_overflow', 'log_delivery_unknown']).nullable(),
+  launchIssue: z.literal('build_disabled').optional(),
   cancelRequestedAt: TimestampSchema.nullable(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
 export const CurrentJobExecutionSchema = JobExecutionSchema.safeExtend({ acceptedSpec: CurrentAcceptedJobSpecSchema })
@@ -129,5 +165,6 @@ export interface JobsService {
 export const JobAuthoringChoicesSchema = z.object({
   targets: z.array(z.object({id:IdSchema,label:z.string(),target:JobTargetSchema,ready:z.boolean(),reasons:z.array(z.string())}).strict()),
   sources: z.array(JobDefinitionSourceSchema), policies: z.array(JobPolicySchema),
+  autoPolicies: z.array(z.object({ policy: JobPolicyRequirementsSchema, limits: JobRuntimeLimitsSchema }).strict()).optional(),
 }).strict()
 export type JobAuthoringChoices = z.infer<typeof JobAuthoringChoicesSchema>

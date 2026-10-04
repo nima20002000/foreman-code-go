@@ -1,8 +1,9 @@
+import { releaseUnstartedJobComputer } from './computerSelection.js'
 import { readRunJobCleanup } from './runCleanup.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
-import type { JobArtifact, JobExecution } from '@graphql/contracts/jobs'
+import type { PreparedJobSpec, JobArtifact, JobExecution } from '@graphql/contracts/jobs'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -53,7 +54,11 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
       verifyResult:async(sql,execution)=>{
         owner.assertOwned();await owner.readOneShotFence(sql)
         if(execution.workflow?.runId!==owner.runId||execution.workflow.workflowId!==version.workflowId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The settled Job belongs to another Run.',409)
-        const row=(await sql.query<{last_receipt:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select last_receipt,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
+        const row=(await sql.query<{last_receipt:unknown;delivery_attempted:boolean;launch_blocked_reason:string|null;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select last_receipt,delivery_attempted,launch_blocked_reason,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
+        if (row?.launch_blocked_reason === 'build_disabled' && !row.delivery_attempted && row.last_receipt === null
+          && execution.launchIssue === 'build_disabled' && execution.startedAt === null
+          && execution.process.outcome === 'preparation_failed' && execution.process.processStopped
+          && execution.publication === 'complete') return
         if(row && !row.delivery_attempted && row.last_receipt===null && row.cancel_command_id && execution.process.outcome==='cancelled' && execution.process.processStopped && execution.startedAt===null && execution.finishedAt && execution.publication==='complete') {
           if(!await readRunJobCleanup(sql,execution)) {
             if(!row.cancel_principal_id||!row.cancel_action)throw new DomainError('JOB_STOP_AUTHORITY_MISSING','The original main cancellation authority is missing.',409)
@@ -70,9 +75,18 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
     const driver:WorkflowJobDriver={
       prepare:async(preparation:WorkflowJobPreparation,signal)=>{
         signal.throwIfAborted()
-        const captured=await owner.oneShotConnection().transaction(sql=>authorize(sql,preparation.nodeId))
+        const captured=await owner.oneShotConnection().transaction(async sql => {
+          const captured = await authorize(sql, preparation.nodeId)
+          await input.jobs.resolveDefinition(sql, captured.principal, captured.definition, preparation)
+          return captured
+        })
         // Only source/byte preparation crosses this gap. The final writer rereads exact Run, input and authority.
-        const spec=await input.jobs.prepareDefinition(owner.oneShotConnection(),captured.principal,captured.definition,preparation)
+        let spec: PreparedJobSpec
+        try { spec=await input.jobs.prepareDefinition(owner.oneShotConnection(),captured.principal,captured.definition,preparation) }
+        catch (error) {
+          await owner.oneShotConnection().transaction(sql => releaseUnstartedJobComputer(sql, preparation))
+          throw error
+        }
         signal.throwIfAborted();owner.assertOwned();return spec
       },
       observe:async(execution,signal,observe)=>{
