@@ -4,6 +4,7 @@ import { AcceptedNodePlacementSchema, DispatchIntentSchema } from '@graphql/cont
 import { SourceMaterializationRecordSchema, SourcePreparationClosureSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { SourceOperationOwnerSchema } from '@graphql/contracts/source-operations'
 import { DomainError } from '../errors.js'
+import { readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { sourceBindingHash } from './bindingHash.js'
@@ -116,4 +117,20 @@ export async function remoteWorkflowPreparationClosed(sql: GraphSqlClient, execu
     && closure.workerInstallationId === binding.workerInstallationId
     && closure.keyRevision === state.attempt.keyRevision && closure.authorizationRevision === state.attempt.authorizationRevision
     && isDeepStrictEqual(closure.filesystem, binding.filesystem)
+}
+
+export async function localWorkflowPreparationClosed(
+  sql: GraphSqlClient, owner: ReturnType<typeof SourceOperationOwnerSchema.parse>,
+): Promise<boolean> {
+  const state = await loadWorkflowPreparation(sql, owner.root.binding.workspaceId, owner.identity.operationId)
+  await assertWorkflowPreparationClosed(sql, state)
+  if (state.execution_state !== 'completed' || state.execution.state !== 'completed' || state.cleanup_pending
+    || state.root.selection.hostRef.kind !== 'main' || !isDeepStrictEqual(state.root, owner.root)
+    || !isDeepStrictEqual(state.attempt, owner.attempt)) return false
+  const entry = (await sql.query<{ phase: string }>(
+    'select phase from workflow_native_entries where execution_id=$1 and run_id=$2',
+    [state.execution.id, state.execution.runId],
+  )).rows[0]
+  if (entry?.phase === 'not_submitted') return true
+  return Boolean(await readUnboundWorkflowClosure(sql, state.execution))
 }

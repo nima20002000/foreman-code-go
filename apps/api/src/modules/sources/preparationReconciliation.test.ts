@@ -9,6 +9,7 @@ import { PrivateSourceMaterializer, reconcileSourcePreparation } from './materia
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceBindingHash } from './bindingHash.js'
+import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost } from './executionHosts.js'
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 async function fixture(copy = true) {
@@ -52,6 +53,25 @@ it('retains a pre-activation failure with no Main materialization record or loca
   const f = await fixture(false)
   const proof = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
   expect(proof.materializationId).toBeNull(); expect(proof.evidencePreserved).toBe(true)
+})
+
+it('routes Main workflow cleanup through original authorization and positive closure before releasing its claim', async () => {
+  const f = await fixture()
+  f.owner.preparationKind = 'workflow'
+  const closed = vi.fn(async () => false)
+  const authorize = vi.fn(async () => {})
+  const hosts = new InstalledSourceExecutionHosts(f.owner.root.binding.mainId,
+    { read: async () => { throw new Error('Cleanup must not copy source bytes') } },
+    {} as SourceAttemptAuthority, {} as RemoteSourceMaterializationHost,
+    async () => { throw new Error('Cleanup must not allocate a native session') }, { authorize, closed })
+  await expect(hosts.reconcilePreparation(f.reconciliationId, f.owner))
+    .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+  expect(await readdir(f.directory)).toContain(`binding-${f.owner.root.binding.rootId}.lock`)
+  closed.mockResolvedValue(true)
+  const closure = await hosts.reconcilePreparation(f.reconciliationId, f.owner)
+  expect(closure).toMatchObject({ deviceId: null, workerInstallationId: null, claimReleased: true })
+  expect(authorize).toHaveBeenCalledWith(f.reconciliationId, f.owner)
+  expect(await readFile(join(f.directory, f.owner.record!.receipt.materializationId, 'tree/source.txt'))).toEqual(f.bytes)
 })
 it('does not accept an empty task set while an original namespace child is still live', async () => {
   const f = await fixture(), child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: f.directory, stdio: 'ignore' })

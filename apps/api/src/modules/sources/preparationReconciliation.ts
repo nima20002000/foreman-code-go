@@ -94,8 +94,7 @@ async function hostAuthority(sql: GraphSqlClient, state: State) {
     : registration !== null) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'The original cleanup host registration changed.', 409)
 }
 
-/** Main grants only cleanup of a closed, never-admitted original Job. Worker
- * independently proves process/claim closure; this grants no execution writes. */
+/** Cleanup authority is separate from the host's physical closure confirmation. */
 export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient, reconciliationId: string) {
   const row = (await sql.query<{ workspace_id: string; operation_id: string; principal_id: string; status: string; owner: unknown }>(
     'select workspace_id,operation_id,principal_id,status,owner from source_preparation_reconciliations where reconciliation_id=$1 for share', [reconciliationId])).rows[0]
@@ -147,7 +146,9 @@ export class PostgresSourcePreparationReconciliation {
         const pending = await this.transaction(async sql => {
           await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
           const live = await authorize(sql, principal, input.workspaceId, true), state = await load(sql, input.workspaceId, input.operationId)
-          if (state.root.selection.hostRef.kind !== 'device') throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'This operation requires the original installed worker closure journal; Main-host cleanup is not supported.', 409)
+          if (state.root.selection.hostRef.kind !== 'device' && state.kind !== 'workflow') {
+            throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Job preparation cleanup requires its original worker journal.', 409)
+          }
           await admissionClosed(sql, state); await hostAuthority(sql, state)
           if (state.status === 'closed') { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
           if (state.owner) {

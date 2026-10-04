@@ -50,9 +50,8 @@ to `retained`, freeing active materialization/preparing slots. Retained evidence
 continues to count against the aggregate disk budget; no evidence is deleted and
 no limits are raised. Reconciled preparations cannot regain execution authority.
 
-This operation requires the original installed worker closure journal. Main-host
-preparations are explicitly unsupported here. Already-admitted Jobs must use
-their original execution cancellation/reconciliation path.
+Job preparation cleanup requires the original installed worker closure journal.
+Already-admitted Jobs use their original execution cancellation/reconciliation path.
 
 Workflow preparations can be addressed by `operationId` after Main has fenced
 the Run for Stop or cleanup, when no native session was acknowledged on Main.
@@ -62,3 +61,7 @@ and checks its protected journal. A known worker session requires positive
 closure of its original process registry owner. Unknown native entry remains
 held. Main can then use the committed worker closure to finish the interrupted
 Run without starting another session or claiming a successful result.
+
+Main-local workflow preparation cleanup requires a completed execution and a
+persisted no-submission or native-closure record. It uses the same guarded claim
+reconciliation and retains all source bytes.

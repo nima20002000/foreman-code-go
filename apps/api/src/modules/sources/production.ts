@@ -40,6 +40,8 @@ import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
+import { localWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
+import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -180,7 +182,23 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       } }
   } }
   const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
-  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession)
+  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession, {
+    closed: owner => localWorkflowPreparationClosed(input.pool, owner),
+    async authorize(reconciliationId, owner) {
+      const sql = await input.pool.connect()
+      try {
+        await sql.query('begin')
+        const authorized = await resolvePreparationReconciliationOwner(sql, reconciliationId)
+        if (!isDeepStrictEqual(authorized, owner)) {
+          throw new DomainError('SOURCE_RECONCILIATION_CONFLICT', 'The original Main cleanup owner changed.', 409)
+        }
+        await sql.query('commit')
+      } catch (error) {
+        await sql.query('rollback')
+        throw error
+      } finally { sql.release() }
+    },
+  })
   const sources = new PostgresSourceService(input.pool, input.commands, input.locations, snapshots, input.mainId, roots, executions, {
     async confirmedClosed(record) {
       const sql = await input.pool.connect()
