@@ -34,6 +34,11 @@
 .schedule-note, .schedule-next, .schedule-feedback p { margin: 0; font: var(--type-body); }
 .schedule-next { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
 .schedule-policy { font: var(--type-caption); color: var(--text-faint); }
+.schedule-last-attempt { display: grid; gap: 4px; min-width: 0; border-top: 1px solid var(--border); padding-top: 8px; }
+.schedule-last-attempt h3 { margin: 0; font: var(--type-control); color: var(--text-strong); }
+.schedule-last-attempt p { margin: 0; font: var(--type-body); color: var(--text-muted); overflow-wrap: anywhere; }
+.schedule-last-attempt a { font: var(--type-control); color: var(--text-strong); text-decoration: underline; }
+.schedule-last-attempt a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .schedule-feedback { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--danger); }
 .schedule-clock-disabled { display: inline-flex; border-radius: var(--radius-sm); }
 .schedule-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

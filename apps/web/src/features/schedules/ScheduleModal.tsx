@@ -8,6 +8,7 @@ import {
   type ScheduleEditorStore, type ScheduleMode,
 } from './editorStore'
 import { useScheduleCommand, useWorkflowSchedule } from './queries'
+import { ScheduleLastAttempt } from './ScheduleLastAttempt'
 
 const modes: readonly { value: ScheduleMode; label: string }[] = [
   { value: 'weekly', label: 'Weekly' }, { value: 'interval', label: 'Interval' }, { value: 'once', label: 'Once' },
@@ -163,6 +164,7 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
         ? <time dateTime={nextAt} title={nextLabel ?? undefined}>{nextLabel}</time>
         : query.isFetching && !query.data ? '…' : '—'}</p>
       <Tooltip content="Runs latest saved workflow"><span className="schedule-policy" tabIndex={0}>Runs latest saved workflow</span></Tooltip>
+      <ScheduleLastAttempt scope={scope} open={state.open} />
       {(failure || state.errors.form) && <div className="schedule-feedback"><p role="alert">{state.errors.form ?? failure}</p>
         {conflict && <Button size="sm" onClick={reload}>Reload</Button>}</div>}
     </form>

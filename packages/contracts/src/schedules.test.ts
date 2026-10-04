@@ -5,7 +5,8 @@ import {
   MAX_SCHEDULE_PREVIEW_OCCURRENCES, SCHEDULE_DEFAULTS,
   ScheduleConfigurationSchema, ScheduleDisableInputSchema, ScheduleDisableResultSchema,
   ScheduleGetInputSchema, ScheduleGetResultSchema, ScheduleInstantSchema,
-  ScheduleLocalDateSchema, ScheduleOccurrenceSchema, ScheduleSaveInputSchema, ScheduleSaveResultSchema,
+  ScheduleLocalDateSchema, ScheduleOccurrenceListInputSchema, ScheduleOccurrencePageSchema, ScheduleOccurrenceSchema,
+  ScheduleSaveInputSchema, ScheduleSaveResultSchema,
   ScheduleTimeSchema, ScheduleTimeZoneSchema, WorkflowScheduleSchema,
   nextOccurrences, parseScheduleSaveInput, scheduleAdmissionDecision, scheduleOccurrenceId,
   type ScheduleConfiguration,
@@ -31,6 +32,20 @@ function without(input: object, key: string) {
 }
 
 describe("SCH-02 schedule contracts", () => {
+  it("shares bounded, strict occurrence paging across UI, HTTP and MCP", () => {
+    expect(ScheduleOccurrenceListInputSchema.parse(scope)).toEqual({ ...scope, limit: 50 });
+    expect(ScheduleOccurrenceListInputSchema.parse({ ...scope, limit: 1 })).toEqual({ ...scope, limit: 1 });
+    for (const limit of [0, 101, 1.5, "1"]) {
+      expect(ScheduleOccurrenceListInputSchema.safeParse({ ...scope, limit }).success).toBe(false);
+    }
+    const items = [accepted, { ...occurrence, status: "rejected", reason: "workflow_not_executable" }];
+    const page = { items, pageInfo: { nextCursor: "workflow-bound-cursor" } };
+    expect(ScheduleOccurrencePageSchema.parse(page)).toEqual(page);
+    expect(ScheduleOccurrencePageSchema.safeParse({ ...page, items: Array.from({ length: 101 }, () => accepted) }).success)
+      .toBe(false);
+    expect(ScheduleOccurrencePageSchema.safeParse({ ...page, pageInfo: {} }).success).toBe(false);
+  });
+
   it.each([weekly, interval, once])("accepts the $mode configuration", (configuration) => {
     expect(ScheduleConfigurationSchema.parse(configuration)).toEqual(configuration);
     expect(ScheduleSaveInputSchema.parse(save(configuration)).schedule).toEqual(configuration);

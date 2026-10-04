@@ -92,6 +92,8 @@ beforeEach(() => {
       scheduleReads.push(new URL(request.url).pathname)
       return HttpResponse.json({ schedule: null })
     }),
+    http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/schedule/occurrences',
+      () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
   )
 })
 afterEach(() => {

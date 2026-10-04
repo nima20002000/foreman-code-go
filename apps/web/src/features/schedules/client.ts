@@ -1,7 +1,7 @@
 import {
   ScheduleDisableInputSchema, ScheduleDisableResultSchema, ScheduleGetInputSchema, ScheduleGetResultSchema,
-  ScheduleSaveInputSchema, ScheduleSaveResultSchema,
-  type ScheduleDisableInput, type ScheduleGetInput, type ScheduleSaveInput, type WorkflowSchedule,
+  ScheduleOccurrenceListInputSchema, ScheduleOccurrencePageSchema, ScheduleSaveInputSchema, ScheduleSaveResultSchema,
+  type ScheduleDisableInput, type ScheduleGetInput, type ScheduleOccurrenceListInput, type ScheduleSaveInput,
 } from '@foreman-code/contracts/schedules'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
@@ -10,7 +10,7 @@ export function schedulePath(scope: ScheduleGetInput): string {
   return `/api/management/workspaces/${encodeURIComponent(scope.workspaceId)}/workflows/${encodeURIComponent(scope.workflowId)}/schedule`
 }
 
-function checkScope(value: WorkflowSchedule | null, scope: ScheduleGetInput): void {
+function checkScope(value: ScheduleGetInput | null, scope: ScheduleGetInput): void {
   if (value && (value.workspaceId !== scope.workspaceId || value.workflowId !== scope.workflowId)) {
     throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The schedule belongs to a different workflow.' })
   }
@@ -29,6 +29,14 @@ export const scheduleApi = {
     const scope = ScheduleGetInputSchema.parse(input)
     const result = await apiClient.request(schedulePath(scope), ScheduleGetResultSchema, options)
     checkScope(result.schedule, scope)
+    return result
+  },
+  async occurrences(input: ScheduleOccurrenceListInput, options?: RequestOptions) {
+    const value = ScheduleOccurrenceListInputSchema.parse(input)
+    const query = new URLSearchParams({ limit: String(value.limit) })
+    if (value.cursor) query.set('cursor', value.cursor)
+    const result = await apiClient.request(`${schedulePath(value)}/occurrences?${query}`, ScheduleOccurrencePageSchema, options)
+    for (const item of result.items) checkScope(item, value)
     return result
   },
   async save(input: ScheduleSaveInput, options?: RequestOptions) {

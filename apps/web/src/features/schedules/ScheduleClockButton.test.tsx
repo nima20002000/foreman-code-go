@@ -63,6 +63,8 @@ beforeEach(() => {
   const receipts = new Map<string, ScheduleSaveResult>()
   server.use(
     http.get(path, () => { reads++; return HttpResponse.json({ schedule: persisted }) }),
+    http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId/schedule/occurrences',
+      () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
     http.put(path, async ({ request }) => {
       const input = ScheduleSaveInputSchema.parse({ ...scope, ...(await request.json() as object) }); saves.push(input)
       const replay = receipts.get(input.commandId)
