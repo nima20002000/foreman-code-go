@@ -16,7 +16,9 @@ import type { OperatorRequestContext } from '../types.js'
 
 export function registerRunTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
-    description: 'List authorized Runs newest-first by creation time and ID. Pass the returned nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: RunListInputSchema,
+    description: 'List authorized execution-semantics-3 Runs newest-first by creation time and ID. '
+      + 'Retained historical Runs remain readable through run_board_snapshot_get. '
+      + 'Pass the returned nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: RunListInputSchema,
     outputSchema: SavedRunPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))

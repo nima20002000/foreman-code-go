@@ -90,6 +90,7 @@ export class RunManagementService {
         }>(`select id,workspace_id,workflow_id,record,
             to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as admitted_at
           from runs where workspace_id = $1 and ($2::text is null or workflow_id = $2)
+            and record->'executionSemanticsVersion'='3'::jsonb
             and ($3::timestamptz is null or
               (created_at,id collate "C") < ($3::timestamptz,$4::text collate "C"))
           order by created_at desc,id collate "C" desc limit $5`,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
+import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -36,6 +36,23 @@ describe('workspace Run summaries', () => {
       const accepted = await f.services.runs.get(f.writer.principal, f.f.run.workspaceId, f.f.run.id)
       expect(accepted.run.id).toBe(f.f.run.id)
       expect(accepted.run.workflowVersionId).toBe(f.f.run.workflowVersionId)
+      const listInput = { workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId, limit: 1 }
+      const listUrl = `/api/management/workspaces/${listInput.workspaceId}/runs?workflowId=${listInput.workflowId}&limit=1`
+      const listed = await f.app.inject({ method: 'GET', url: listUrl,
+        headers: { authorization: `Bearer ${f.writer.token}` } })
+      expect(listed.statusCode, listed.body).toBe(200)
+      const currentPage = SavedRunPageSchema.parse(listed.json())
+      expect(currentPage.items.map((run) => run.id)).toEqual([f.f.run.id])
+      expect(currentPage.pageInfo.nextCursor).toBeNull()
+      const remoteList = await f.client.callTool({ name: 'run_list', arguments: listInput })
+      expect(remoteList.isError).not.toBe(true)
+      expect(remoteList.structuredContent).toEqual(currentPage)
+      const denied = await f.access.issue({ name: 'Denied Run reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'],
+          scope: { workspaceIds: ['another-workspace'] } }] })
+      expect((await f.app.inject({ method: 'GET', url: listUrl,
+        headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+      expect((await (await f.connect(denied.token)).callTool({ name: 'run_list', arguments: listInput })).isError).toBe(true)
       for (const runId of historicalIds) {
         const scope = {
           workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId, runId,
@@ -44,6 +61,11 @@ describe('workspace Run summaries', () => {
         expect(await f.services.runs.history.snapshot(f.writer.principal, scope)).toEqual(snapshot)
         expect((await f.client.callTool({ name: 'run_board_snapshot_get', arguments: scope })).structuredContent)
           .toEqual(snapshot)
+        const historicalRead = await f.app.inject({ method: 'GET',
+          url: `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/${runId}/snapshot`,
+          headers: { authorization: `Bearer ${f.writer.token}` } })
+        expect(historicalRead.statusCode, historicalRead.body).toBe(200)
+        expect(historicalRead.json()).toEqual(snapshot)
       }
       const records = (await f.db.pool.query('select id,record from runs where id=any($1::text[]) order by id',
         [historicalIds])).rows
