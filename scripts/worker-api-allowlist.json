@@ -14,6 +14,7 @@
   "apps/api/src/modules/byte-transfer/service.ts",
   "apps/api/src/modules/devices/connectionSupervisor.ts",
   "apps/api/src/modules/devices/deviceApplicationChannel.ts",
+  "apps/api/src/modules/devices/deviceApplicationError.ts",
   "apps/api/src/modules/devices/deviceCarrier.ts",
   "apps/api/src/modules/devices/deviceWire.ts",
   "apps/api/src/modules/devices/installedWorkerDomains.ts",
