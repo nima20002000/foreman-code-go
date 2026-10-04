@@ -88,6 +88,8 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
     expect(handoff).toContain('Foreman Code work-handoff result contract (version 1)')
     expect(handoff).toContain('"send_to_d"')
     expect(handoff).toContain('the exact request ID in your received work')
+    expect(handoff).toContain('parentRequest.requestId')
+    expect(handoff).toContain('work.request.requestId')
     expect(handoff.startsWith('Review.\n\n')).toBe(true)
   })
   it('preserves the authored task and never mutates the declaration', () => {
