@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { createStreamFixture } from './claude-streams.testSupport.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import {
@@ -1272,4 +1273,71 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
     await waitFor(async () => Boolean(await repository.submittedMessageId(conversation.id, 'claude-after-stop')))
     await Promise.allSettled(claude.managers.map(manager => manager.dispose?.()))
   }, 60_000)
+})
+
+describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () => {
+  it('persists the bounded prefix and terminal result after message storage pauses both event queues', async () => {
+    const harness = { harness: 'claude' as const, model: 'fixture', authMode: 'subscription' as const,
+      configDirectory: '/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
+      tools: ['Read'], permissionRules: [], instructions: '', mcpServers: {} }
+    await operators.update(harness, (await operators.ensure()).configuration.id)
+    const f = createStreamFixture({ outputCapacity: 2, workingDirectory: '/tmp/graphql-test-operator' })
+    chat = new OperatorChatService(repository, operators, () => f.manager, '/tmp/graphql-test-operator', authority)
+    const conversation = await chat.create(owner)
+    let resume!: () => void
+    const paused = new Promise<void>(resolve => { resume = resolve })
+    let blocked = false
+    const save = repository.appendAssistantMessage.bind(repository)
+    const storage = vi.spyOn(repository, 'appendAssistantMessage').mockImplementation(async (...args) => {
+      if (!blocked) {
+        blocked = true
+        await paused
+      }
+      return save(...args)
+    })
+    try {
+      await chat.send(conversation.id, { requestId: 'bounded-stream', content: 'Stream text' }, owner)
+      await vi.waitFor(() => expect(f.queries).toHaveLength(1))
+      const query = f.queries[0]!
+      const message = (await query.messages.next()).value!
+      await query.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session',
+        claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+      const prefix = 'é'.repeat(24000)
+      await query.frames.offer(f.frame({ type: 'assistant', uuid: 'public-parts', message: { id: 'public-message',
+        content: [{ type: 'text', text: prefix + 'tail' },
+          ...Array.from({ length: 299 }, (_, index) => ({ type: 'text', text: `part-${index}` }))] } }, message.uuid))
+      let finished = false
+      const producer = (async () => {
+        for (let index = 0; index < 10; index++) {
+          await query.frames.offer(f.frame({ type: 'assistant', uuid: `next-${index}`,
+            message: { id: 'public-message', content: [{ type: 'text', text: `next-${index}` }] } }, message.uuid))
+        }
+        await query.frames.offer(f.frame({ type: 'result', uuid: 'native-terminal', subtype: 'success',
+          is_error: false, result: 'done' }, message.uuid))
+        finished = true
+      })()
+      await vi.waitFor(() => {
+        expect(blocked).toBe(true)
+        expect(query.reads).toBeGreaterThanOrEqual(4)
+      })
+      expect(query.reads).toBeLessThanOrEqual(5)
+      expect(finished).toBe(false)
+      expect(query.closed).toBe(false)
+      expect(await repository.submittedMessageId(conversation.id, 'bounded-stream')).toBe(message.uuid)
+      resume()
+      await producer
+      await vi.waitFor(async () => expect((await chat.get(conversation.id, owner)).turnState).toBe('idle'),
+        { timeout: 30000 })
+      const state = await chat.get(conversation.id, owner)
+      expect(state.messages.some(item => item.role === 'assistant' && item.content === prefix)).toBe(true)
+      const result = await pool.query('select result,payload from operator_conversation_turns where conversation_id=$1 and request_id=$2',
+        [conversation.id, 'bounded-stream'])
+      expect(result.rows[0]?.result).toEqual({ outcome: 'succeeded', output: 'done' })
+      expect(result.rows[0]?.payload.nativeSubmission.nativeMessageId).toBe(message.uuid)
+    } finally {
+      resume()
+      storage.mockRestore()
+      await f.manager.dispose?.()
+    }
+  }, 30000)
 })
