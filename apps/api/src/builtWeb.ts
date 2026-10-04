@@ -19,7 +19,11 @@ export async function registerBuiltWeb(app: FastifyInstance, root: string): Prom
       response.setHeader('x-content-type-options', 'nosniff')
     },
   })
-  for (const path of ['/', '/workspaces', '/workspaces/*', '/settings', '/settings/*', '/account', '/terminal']) {
+  const shellRoutes = [
+    '/', '/workspaces', '/workspaces/*', '/settings', '/settings/*',
+    '/account', '/terminal', '/approvals', '/sign-in', '/setup',
+  ]
+  for (const path of shellRoutes) {
     app.get(path, async (_request, reply) => reply.sendFile('index.html'))
   }
 }
