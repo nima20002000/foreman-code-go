@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { selectRequestedFiles } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -54,6 +55,13 @@ test('resume includes the selected file so a repaired failure is rerun', () => {
   assert.deepEqual(selectFiles(files, 'b'), ['b', 'c'])
   assert.deepEqual(selectFiles(files, 'c'), ['c'])
   assert.throws(() => selectFiles(files, 'missing'), /Unknown --start-at/)
+})
+
+test('explicit selection runs only requested integration files and rejects unknown or empty selections', () => {
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  assert.deepEqual(selectRequestedFiles(files, [files[1], files[1]]), [files[1]])
+  assert.throws(() => selectRequestedFiles(files, []), /at least one/)
+  assert.throws(() => selectRequestedFiles(files, ['apps/api/test/missing.integration.test.ts']), /Unknown integration file/)
 })
 
 test('failed-log selection includes only discovered failures once', () => {
