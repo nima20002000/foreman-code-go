@@ -15,6 +15,7 @@ import { createWorkLimitNotice } from '../src/modules/runs/workHandoffNotice.js'
 import { repeatDigest, repeatId } from '../src/modules/runs/repeatResolution.js'
 import { nim2691TaskDatabase as taskDatabase } from './helpers/nim2691Database.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
+import { transaction } from './eng04-migration-fixtures.js'
 
 const text = (value: unknown) => canonicalGraphJson(value, 4 * 1024 * 1024)
 
@@ -41,19 +42,6 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
     ] } }, reviewer],
   } })
   const run = { ...fixture.run, executionState: 'running' as const }
-  await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [run.workspaceId, text({ id: run.workspaceId })])
-  await pool.query('insert into workflows(id,workspace_id,record) values($1,$2,$3::jsonb)',
-    [run.workflowId, run.workspaceId, text({ id: run.workflowId, workspaceId: run.workspaceId })])
-  for (const config of fixture.configurations) {
-    await pool.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)',
-      [config.agentId, run.workspaceId, text({ id: config.agentId, workspaceId: run.workspaceId })])
-    await pool.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
-      values($1,$2,$3,1,$4::jsonb)`, [config.id, run.workspaceId, config.agentId, text(config)])
-  }
-  await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
-    values($1,$2,$3,1,$4,3,$5::jsonb)`, [version.id, run.workspaceId, run.workflowId, version.entryNodeId, text(version)])
-  await pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
-    values($1,$2,$3,$4,'running',$5::jsonb)`, [run.id, run.workspaceId, run.workflowId, version.id, text(run)])
   const requestId = output.routing.kind === 'return' ? output.routing.requestId : 'review-request'
   const sourceResult: ExecutionResult = { outcome: 'succeeded', output: {
     routing: { kind: 'request', outcome: 'review' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
@@ -62,34 +50,49 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
     requesterActivationId: 'requester-activation', requesterExecutionId: 'requester-execution',
     destinationActivationId: 'review-activation', requesterNodeId: source.id, destinationNodeId: reviewer.id,
     payloadDigest: repeatDigest(sourceResult), acceptedAt: fixture.createdAt, ordinal: 1 }
-  const executions = []
-  for (const [index, node] of [source, reviewer].entries()) {
-    const activationId = index ? request.destinationActivationId : request.requesterActivationId
-    const executionId = index ? 'review-execution' : request.requesterExecutionId
-    const cause = index ? { kind: 'work_request', requestId } : { kind: 'entry' }
-    const activation = { scope: fixture.scope, activationId, workflowNodeId: node.id, lineageId: run.id, cause }
-    await pool.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
-      cause_kind,cause_id,state,record) values($1,$2,$3,$4,$5,$6,'completed',$7::jsonb)`,
-      [activationId, run.id, version.id, node.id, cause.kind, index ? requestId : run.id, text(activation)])
-    const result = index ? ExecutionResultSchema.parse({ outcome: 'succeeded', output }) : sourceResult
-    const execution = HarnessExecutionSchema.parse({ id: executionId, runId: run.id, workflowNodeId: node.id,
-      agentId: node.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
-      attempt: 1, input: {}, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
-    await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
-      values($1,$2,$3,$4,1,$5,$6::jsonb,$7)`,
-      [executionId, run.id, node.id, node.agentId, index ? options.reviewAccepted : true, text(execution), activationId])
-    if (!index || options.reviewAccepted) await pool.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
-      values($1,$2,$3,$4,$5,$6)`, [executionId, run.id, activationId, text(result), repeatDigest(result), fixture.createdAt])
-    executions.push(execution)
-  }
-  await pool.query(`insert into run_work_connection_usage(run_id,workflow_version_id,relationship_id,used,maximum)
-    values($1,$2,$3,1,1)`, [run.id, version.id, edge.id])
-  await pool.query(`insert into run_work_requests(request_id,run_id,workflow_version_id,relationship_id,
-    requester_activation_id,requester_execution_id,destination_activation_id,requester_node_id,destination_node_id,
-    ordinal,payload_digest,record,accepted_at)
-    values($1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,$11::jsonb,$12)`, [requestId, run.id, version.id, edge.id,
-    request.requesterActivationId, request.requesterExecutionId, request.destinationActivationId,
-    source.id, reviewer.id, request.payloadDigest, text(request), fixture.createdAt])
+  const executions: HarnessExecution[] = []
+  await transaction(pool, async (sql) => {
+    await sql.query('insert into workspaces(id,record) values($1,$2::jsonb)', [run.workspaceId, text({ id: run.workspaceId })])
+    await sql.query('insert into workflows(id,workspace_id,record) values($1,$2,$3::jsonb)',
+      [run.workflowId, run.workspaceId, text({ id: run.workflowId, workspaceId: run.workspaceId })])
+    for (const config of fixture.configurations) {
+      await sql.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)',
+        [config.agentId, run.workspaceId, text({ id: config.agentId, workspaceId: run.workspaceId })])
+      await sql.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+        values($1,$2,$3,1,$4::jsonb)`, [config.id, run.workspaceId, config.agentId, text(config)])
+    }
+    await sql.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
+      values($1,$2,$3,1,$4,3,$5::jsonb)`, [version.id, run.workspaceId, run.workflowId, version.entryNodeId, text(version)])
+    await sql.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+      values($1,$2,$3,$4,'running',$5::jsonb)`, [run.id, run.workspaceId, run.workflowId, version.id, text(run)])
+    for (const [index, node] of [source, reviewer].entries()) {
+      const activationId = index ? request.destinationActivationId : request.requesterActivationId
+      const executionId = index ? 'review-execution' : request.requesterExecutionId
+      const cause = index ? { kind: 'work_request', requestId } : { kind: 'entry' }
+      const activation = { scope: fixture.scope, activationId, workflowNodeId: node.id, lineageId: run.id, cause }
+      await sql.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
+        cause_kind,cause_id,state,record) values($1,$2,$3,$4,$5,$6,'completed',$7::jsonb)`,
+        [activationId, run.id, version.id, node.id, cause.kind, index ? requestId : run.id, text(activation)])
+      const result = index ? ExecutionResultSchema.parse({ outcome: 'succeeded', output }) : sourceResult
+      const execution = HarnessExecutionSchema.parse({ id: executionId, runId: run.id, workflowNodeId: node.id,
+        agentId: node.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
+        attempt: 1, input: {}, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
+      await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
+        values($1,$2,$3,$4,1,$5,$6::jsonb,$7)`,
+        [executionId, run.id, node.id, node.agentId, index ? options.reviewAccepted : true, text(execution), activationId])
+      if (!index || options.reviewAccepted) await sql.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+        values($1,$2,$3,$4,$5,$6)`, [executionId, run.id, activationId, text(result), repeatDigest(result), fixture.createdAt])
+      executions.push(execution)
+    }
+    await sql.query(`insert into run_work_connection_usage(run_id,workflow_version_id,relationship_id,used,maximum)
+      values($1,$2,$3,1,1)`, [run.id, version.id, edge.id])
+    await sql.query(`insert into run_work_requests(request_id,run_id,workflow_version_id,relationship_id,
+      requester_activation_id,requester_execution_id,destination_activation_id,requester_node_id,destination_node_id,
+      ordinal,payload_digest,record,accepted_at)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,$11::jsonb,$12)`, [requestId, run.id, version.id, edge.id,
+      request.requesterActivationId, request.requesterExecutionId, request.destinationActivationId,
+      source.id, reviewer.id, request.payloadDigest, text(request), fixture.createdAt])
+  })
 
   const host: RepeatRepositoryHost = { openLocked: async () => ({ run,
     assertAuthorityLocked: async () => undefined, assertAdmissionLocked: async () => undefined,

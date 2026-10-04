@@ -55,7 +55,7 @@ async function fixture() {
 
 async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId?: string) {
   const pending = await runtime.repository.list({ runId: f.f.run.id, status: 'pending', limit: 100 })
-  expect(pending).toHaveLength(1)
+  expect(pending, await runtimeDetails(f, runtime)).toHaveLength(1)
   const interaction = pending[0]!
   const reviewerId = interaction.approval.designatedOrchestratorAgentId!
   const job = await runtime.repository.coordination.findReviewJob(interaction.id, reviewerId)
@@ -138,6 +138,13 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
   }
 }
 
+async function runtimeDetails(f: Fixture, runtime: Runtime): Promise<string> {
+  const run = await runtime.runs.get(f.f.run.id)
+  const executions = (await f.db.pool.query('select record from harness_executions where run_id=$1',
+    [f.f.run.id])).rows.map((row) => row.record)
+  return JSON.stringify({ run, executions })
+}
+
 describe.skipIf(!postgresEnabled)('handoff Worker approval through the designated Orchestrator', () => {
   it.each([false, true])('resumes each business activation with persisted reviewer ownership (restart=%s)', async (restart) => {
     const f = await fixture()
@@ -185,7 +192,7 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
         runtime = f.compose(new ApprovalPostgresSaver(f.db.pool, undefined, { schema: f.db.schema }))
         vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
         await runtime.engine.resume(f.f.run.id)
-        expect(f.counts().sessions).toBe(2)
+        expect(f.counts().sessions, await runtimeDetails(f, runtime)).toBe(2)
       } else {
         pause.mockRestore()
         await runtime.engine.start(f.f.run.id)

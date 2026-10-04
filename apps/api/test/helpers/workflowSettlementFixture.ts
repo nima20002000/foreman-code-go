@@ -13,6 +13,7 @@ import { finishWorkflowCleanup, persistWorkDirectionWait, requestWorkflowCleanup
   settleWorkflowRun } from '../../src/modules/runs/workflowLifecycle.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { markRepeatRunRunning } from '../../src/modules/runs/repeatLifecycle.js'
+import { repeatDigest, repeatId } from '../../src/modules/runs/repeatResolution.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import type { currentDatabase } from './eng04CurrentDatabase.js'
 import { writerFixture } from '../eng04-writer-fixtures.js'
@@ -100,8 +101,19 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
         const { execution } = await store.readExecution(executionId)
         const next = HarnessExecutionSchema.parse({ ...execution, state: 'completed', result,
           finishedAt: new Date().toISOString() })
-        await db.pool.query('update harness_executions set record=$2::jsonb where id=$1',
-          [executionId, JSON.stringify(next)])
+        await owner!.oneShotConnection().transaction(async (sql) => {
+          const publication = await openRepeatCanonicalPublicationLocked(sql, scope, owner!)
+          const source = { execution: next }
+          const sourceDigest = repeatDigest(source)
+          await publication.publishNativeLocked({ kind: 'observation', scope,
+            ref: { nodeId: execution.workflowNodeId, occurrence: null }, previous: execution, next,
+            source, sourceDigest, sourceRevision: '1', effect: null,
+            sourceId: repeatId('repeat-native', run.id, 'outside', executionId, 'observation', sourceDigest),
+          }, async () => {
+            await sql.query('update harness_executions set record=$2::jsonb where id=$1',
+              [executionId, JSON.stringify(next)])
+          })
+        })
         return next
       },
       async accept(executionId: string) {

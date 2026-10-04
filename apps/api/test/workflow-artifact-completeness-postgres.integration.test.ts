@@ -2,7 +2,9 @@ import { randomUUID, createHash } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { HarnessExecution } from '@foreman-code/contracts'
-import { makeCurrentWorkflowFixture, canonicalGraphJson, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, canonicalGraphJson, WorkActivationInputSchema,
+  type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import type { RemoteWorkflowPhysicalReadout } from '@foreman-code/contracts/remote-workflow-physical'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
@@ -15,7 +17,7 @@ import { freezePlacement, deriveDispatch } from '../src/modules/placement/bindin
 import { bindingIdentity } from '../src/modules/files/tools/context.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { AcceptedArtifactPublication } from '../src/modules/files/distributed/publication.js'
-import { repeatDigest, repeatExecutionIdentity } from '../src/modules/runs/repeatResolution.js'
+import { repeatDigest, repeatExecutionIdentity, repeatId, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../src/modules/runs/workflowNativeProof.js'
 import { NativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
 import { PostgresNativeArtifactOutputRepository } from '../src/modules/runs/remote/nativeArtifactOutputPostgres.js'
@@ -41,6 +43,11 @@ function facts(handoff = false) {
       outputs: ['z', 'a'].map(outputKey => ({ outputKey, commandId: `original-command-${outputKey}` })) } }) } } }
   if (handoff) {
     f.version.definition.handoffs = { contractVersion: 1 }
+    execution.input = HarnessExecutionSchema.parse({ ...execution, input: WorkActivationInputSchema.parse({
+      ...execution.input as object,
+      work: { kind: 'entry', activation: { scope: f.scope, activationId: repeatId('work-entry', run.id),
+        workflowNodeId: node.id, lineageId: run.id, cause: { kind: 'entry' } } },
+    }) }).input
     const envelope = JSON.parse((execution.result!.output as { text: string }).text)
     execution.result = { outcome: 'succeeded', output: { text: JSON.stringify({ ...envelope,
       routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
@@ -132,10 +139,20 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
       await client.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
         values($1,$2,$3,$4,'queued',$5::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, text({ ...run, executionState: 'queued' })])
       await client.query('insert into run_node_placements(run_id,node_id,binding_hash,record) values($1,$2,$3,$4::jsonb)', [run.id, node.id, placement.bindingHash, text(placement)])
-      const slotId = randomUUID()
-      await client.query('insert into run_repeat_slots(slot_id,run_id,workflow_node_id,input_json,input_digest) values($1,$2,$3,$4,$5)', [slotId, run.id, node.id, text(execution.input), repeatDigest(execution.input)])
-      await client.query('insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)', [execution.id, run.id, node.id, execution.agentId, text(execution)])
-      await client.query('insert into run_repeat_executions(execution_id,run_id,slot_id,technical_attempt,identity) values($1,$2,$3,1,$4::jsonb)', [execution.id, run.id, slotId, text(repeatExecutionIdentity(execution))])
+      const activation = handoff ? WorkActivationInputSchema.parse(execution.input).work.activation : undefined
+      if (activation) await client.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,
+        workflow_node_id,cause_kind,cause_id,state,record) values($1,$2,$3,$4,'entry',$2,'queued',$5::jsonb)`,
+      [activation.activationId, run.id, x.f.version.id, node.id, text(activation)])
+      const slotId = activation ? workActivationSlotId(run.id, activation.activationId) : randomUUID()
+      await client.query(`insert into run_repeat_slots(slot_id,run_id,workflow_node_id,input_json,input_digest,
+        work_activation_id) values($1,$2,$3,$4,$5,$6)`,
+      [slotId, run.id, node.id, text(execution.input), repeatDigest(execution.input), activation?.activationId ?? null])
+      await client.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record,
+        work_activation_id) values($1,$2,$3,$4,1,$5::jsonb,$6)`,
+      [execution.id, run.id, node.id, execution.agentId, text(execution), activation?.activationId ?? null])
+      await client.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,technical_attempt,identity,
+        work_activation_id) values($1,$2,$3,1,$4::jsonb,$5)`,
+      [execution.id, run.id, slotId, text(repeatExecutionIdentity(execution)), activation?.activationId ?? null])
       await client.query(`insert into execution_dispatch_intents(operation_id,execution_id,run_id,node_id,binding_hash,attempt_id,record,scheduler_owner_id,scheduler_owner_fence)
         values($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`, [intent.operationId, execution.id, run.id, node.id, intent.bindingHash, intent.attemptId, text(intent), owner.owner_id, owner.fence])
       await client.query('insert into remote_execution_receipts(operation_id,sequence,receipt) values($1,$2,$3::jsonb)', [intent.operationId, x.remote.sequence, text(x.remote)])

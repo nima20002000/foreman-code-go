@@ -13,11 +13,15 @@ describe.skipIf(!postgresEnabled)('exhausted saved work routes', () => {
         const t = await workHandoffFixture(db.pool, `exhaust-${disposition}-${recover}`, (version) => ({ ...version,
           definition: { ...version.definition, handoffs: { contractVersion: 1 },
             executionPolicy: { maxParallelism: 1, maxNodeExecutions: 20 },
-            nodes: version.definition.nodes.map((node, index) => ({ ...node, join: undefined,
-              ...(named && index === 0 ? { choice: { outcomes: [
-                { outcome: 'review', target: { kind: 'edge' as const, relationshipId: 'a-b' } },
-              ] } } : {}),
-            })),
+            nodes: version.definition.nodes.map((node, index) => {
+              const configured = { ...node,
+                ...(named && index === 0 ? { choice: { outcomes: [
+                  { outcome: 'review', target: { kind: 'edge' as const, relationshipId: 'a-b' } },
+                ] } } : {}),
+              }
+              delete configured.join
+              return configured
+            }),
             edges: [{ id: 'a-b', kind: 'execution', source: version.entryNodeId,
               target: version.definition.nodes[1]!.id, maxWorkHandoffsPerRun: 1 }],
           } }))
@@ -81,7 +85,11 @@ describe.skipIf(!postgresEnabled)('exhausted saved work routes', () => {
       const t = await workHandoffFixture(db.pool, `automatic-alternative-${recover}`, (version) => ({ ...version,
         definition: { ...version.definition, handoffs: { contractVersion: 1 },
           executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
-          nodes: version.definition.nodes.map((node) => ({ ...node, join: undefined })),
+          nodes: version.definition.nodes.map((node) => {
+            const configured = { ...node }
+            delete configured.join
+            return configured
+          }),
           edges: [
             { id: 'a-b', kind: 'execution', source: version.entryNodeId,
               target: version.definition.nodes[1]!.id, maxWorkHandoffsPerRun: 1 },

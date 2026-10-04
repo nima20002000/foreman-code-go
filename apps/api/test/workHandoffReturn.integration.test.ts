@@ -10,7 +10,11 @@ describe.skipIf(!postgresEnabled)('nested work returns', () => {
       const t = await workHandoffFixture(db.pool, `nested-return-${recover}`, (version) => ({ ...version,
         definition: { ...version.definition, handoffs: { contractVersion: 1 },
           executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
-          nodes: version.definition.nodes.map((node) => ({ ...node, join: undefined })),
+          nodes: version.definition.nodes.map((node) => {
+            const configured = { ...node }
+            delete configured.join
+            return configured
+          }),
           edges: [
             { id: 'a-b', kind: 'execution', source: version.definition.nodes[0]!.id, target: version.definition.nodes[1]!.id },
             { id: 'b-c', kind: 'execution', source: version.definition.nodes[1]!.id, target: version.definition.nodes[2]!.id },
@@ -54,7 +58,11 @@ describe.skipIf(!postgresEnabled)('nested work returns', () => {
       const t = await workHandoffFixture(db.pool, `denied-return-${recover}`, (version) => ({ ...version,
         definition: { ...version.definition, handoffs: { contractVersion: 1 },
           executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
-          nodes: version.definition.nodes.map((node) => ({ ...node, join: undefined })),
+          nodes: version.definition.nodes.map((node) => {
+            const configured = { ...node }
+            delete configured.join
+            return configured
+          }),
           edges: [
             { id: 'a-b', kind: 'execution', source: version.definition.nodes[0]!.id, target: version.definition.nodes[1]!.id },
             { id: 'b-c', kind: 'execution', source: version.definition.nodes[1]!.id,
