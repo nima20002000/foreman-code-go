@@ -32,6 +32,18 @@ async function fixture(bytes = Buffer.from('abcdefgh')) {
     time: (ms: number) => { now += ms }, fail: (point?: string) => { failure = point } }
 }
 describe('bounded authenticated transfer staging', () => {
+  it('returns verified bytes with the original workflow execution identifier', async () => {
+    const f = await fixture()
+    f.intent.executionId = `execution-${randomUUID()}`
+    await f.service.start(f.intent, f.context)
+    await f.service.append(f.intent.transferId, f.context, f.chunk(0))
+    await f.service.append(f.intent.transferId, f.context, f.chunk(4))
+    const receipt = await f.service.finish(f.intent.transferId, f.context)
+    expect(receipt.intent.executionId).toBe(f.intent.executionId)
+    const chunks = []
+    for await (const chunk of await f.service.openVerified(receipt, f.context)) chunks.push(chunk)
+    expect(Buffer.concat(chunks)).toEqual(f.bytes)
+  })
   it('resumes authoritative offset across reconnect/restart and returns one final receipt after lost ACK', async () => {
     const f = await fixture(); await f.service.start(f.intent, f.context)
     await f.service.append(f.intent.transferId, f.context, f.chunk(0))

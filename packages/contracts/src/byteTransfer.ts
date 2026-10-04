@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { MAX_FILE_BYTES } from './files.js'
+import { GraphIdSchema } from './schemaPrimitives.js'
 
 export const BYTE_TRANSFER_VERSION = 1
 export const BYTE_TRANSFER_CAPABILITY = 'resumable-binary-transfer-v1'
@@ -19,7 +20,7 @@ export const TransferContextSchema = z.object({
 export type TransferContext = z.infer<typeof TransferContextSchema>
 export const TransferIntentSchema = TransferContextSchema.extend({
   version: z.literal(1), transferId: z.uuid(), operationId: z.uuid(),
-  executionId: z.uuid(), attemptId: z.uuid(), placementHash: Hash,
+  executionId: GraphIdSchema, attemptId: z.uuid(), placementHash: Hash,
   rootId: z.uuid(), rootBindingRevision: z.number().int().positive(),
   direction: z.enum(['to-main', 'to-worker']), byteClass: z.enum(['artifact', 'source']),
   sha256: Hash, byteSize: z.number().int().nonnegative().max(BYTE_TRANSFER_POLICY.maxSourceBytes),

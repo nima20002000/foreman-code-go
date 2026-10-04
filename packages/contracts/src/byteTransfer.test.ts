@@ -9,6 +9,14 @@ const intent = () => ({ version: 1, transferId: randomUUID(), mainId: randomUUID
   rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'source', sha256: '0'.repeat(64),
   byteSize: 128 * 1024 * 1024, manifestDigest: '0'.repeat(64), expiresAt: new Date().toISOString(), chunkBytes: 1024 * 1024 })
 describe('byte transfer v1 contract', () => {
+  it('preserves Job and workflow execution IDs while rejecting paths and unbounded IDs', () => {
+    for (const executionId of [randomUUID(), `execution-${randomUUID()}`]) {
+      expect(TransferIntentSchema.parse({ ...intent(), executionId }).executionId).toBe(executionId)
+    }
+    for (const executionId of ['', '../execution', '/tmp/execution', 'x'.repeat(201)]) {
+      expect(TransferIntentSchema.safeParse({ ...intent(), executionId }).success).toBe(false)
+    }
+  })
   it('keeps source and artifact budgets distinct and forbids arbitrary paths', () => {
     expect(TransferIntentSchema.safeParse(intent()).success).toBe(true)
     expect(TransferIntentSchema.safeParse({ ...intent(), byteClass: 'artifact' }).success).toBe(false)
