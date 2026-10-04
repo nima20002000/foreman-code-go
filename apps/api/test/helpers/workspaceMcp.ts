@@ -28,7 +28,7 @@ export async function workspaceMcpFixture() {
   const parentPath = await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
   const admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
-  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, application_name: schema })
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
@@ -86,7 +86,8 @@ export async function waitForWorkspaceBlocker(pool: pg.Pool, blockerPid: number)
   for (let attempt = 0; attempt < 300; attempt++) {
     const result = await pool.query<{ waiting: boolean }>(
       `select exists(select 1 from pg_stat_activity
-       where $1::int = any(pg_blocking_pids(pid))) as waiting`, [blockerPid],
+       where application_name = current_setting('application_name')
+         and $1::int = any(pg_blocking_pids(pid))) as waiting`, [blockerPid],
     )
     if (result.rows[0]?.waiting) return
     await new Promise<void>(done => setTimeout(done, 10))
