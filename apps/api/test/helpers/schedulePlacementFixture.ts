@@ -53,7 +53,6 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
   const workflow = await f.workflows.get(f.writer.principal, f.scope.workspaceId, f.scope.workflowId)
   const graph = structuredClone(f.fixture.version.definition)
   for (const node of graph.nodes) {
-    if (node.kind === 'job') throw new Error('Placement fixture requires Agent nodes.')
     const instance = configured.find((item) => item.instanceId === `instance-${node.agentId}`)!
     node.placement = { schemaVersion: 1, ...selection, projectRoot: policy.canonicalProjectRoot,
       cwdPolicy: 'project-root', relativeCwd: '', instanceId: instance.instanceId, instanceRevision: '1',
