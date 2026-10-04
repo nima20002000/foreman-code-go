@@ -712,7 +712,8 @@ export function buildProductionApp(
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
         workingDirectory: input.workingDirectory, configuration, runId: execution.runId, attempt: execution.attempt,
       }
-      const { manager } = managers.resolve(context)
+      const preparedContext = await remoteWorkflow.prepareContext(context)
+      const { manager } = managers.resolve(preparedContext)
       const detection = new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint)
       if (input.harness === 'claude') {
         const claude = claudeLaunches.get(manager)

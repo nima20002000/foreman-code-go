@@ -1,20 +1,25 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { AgentConfigurationVersion, HarnessExecution } from '@graphql/contracts'
 import type { RunOwnership } from '../runs/ownership.js'
-import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver, type NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
+import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { InteractionDeliveryClaim } from '../interactions/delivery.js'
 import { withOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
 const ports = vi.hoisted(() => ({ factory: vi.fn(), admission: vi.fn(),
+  hostKind: 'device' as 'main' | 'device',
   intent: { runId: 'run', nodeId: 'node', executionId: 'execution', operationId: 'operation', technicalAttempt: 1 } }))
-vi.mock('./persistence.js', () => ({ readDispatchIntent: async () => ports.intent, readAcceptedPlacement: async () => ({ hostRef: { kind: 'device' } }), readNativePlacement: async () => ({ original: true }) }))
+vi.mock('./persistence.js', () => ({ readDispatchIntent: async () => ports.intent, readAcceptedPlacement: async () => ({ hostRef: { kind: ports.hostKind } }), readNativePlacement: async () => ({ original: true }) }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: async () => ports.intent }))
 vi.mock('./executionBinding.js', () => ({ readNativeExecutionBinding: () => ({ workingTree: { canonicalCwd: '/original/source' } }) }))
 vi.mock('./workerCarrier.js', () => ({ remoteNativeManager: ports.factory }))
 vi.mock('../runs/remote/ownerControlAdmission.js', () => ({ admitRemoteOwnerControl: ports.admission }))
 import { createProductionRemoteWorkflow } from './productionRemoteWorkflow.js'
 import type { RemoteNativeManagerOptions } from '../runs/remote/nativeManagerProxy.js'
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  ports.hostKind = 'device'
+})
 async function fixture() {
   // Only common callback wiring is exercised. SQL metadata and admission are explicit port doubles.
   const events: string[] = [], sql = { original: true }
@@ -49,4 +54,33 @@ it('does not dispatch when the original command is already admitted and requires
   await expect(f.callbacks.controlFor({ kind: 'stop', native: { sessionId: 'session', processIdentityDigest: 'a'.repeat(64) } }).then(native)).rejects.toThrow('REMOTE_CONTROL_ALREADY_ADMITTED')
   expect(f.events).toEqual(['begin', 'rollback'])
   expect(native).not.toHaveBeenCalled()
+})
+
+it.each(['main', 'device'] as const)('keeps the %s placement when credential preflight resolves its manager', async hostKind => {
+  ports.hostKind = hostKind
+  const composition = createProductionRemoteWorkflow({
+    pool: {} as pg.Pool,
+    locations: {} as Parameters<typeof createProductionRemoteWorkflow>[0]['locations'],
+    endpoint: () => ({} as ReturnType<Parameters<typeof createProductionRemoteWorkflow>[0]['endpoint']>),
+    producer: () => undefined,
+    execution: async () => ({
+      id: 'execution', runId: 'run', workflowNodeId: 'node', attempt: 1,
+      workingDirectory: '/original/source',
+    } as HarnessExecution),
+  })
+  const context: NativeManagerResolutionContext = {
+    executionId: 'execution', runId: 'run', attempt: 1, agentId: 'agent',
+    harness: 'codex', workingDirectory: '/original/source',
+    configuration: { id: 'configuration' } as AgentConfigurationVersion,
+  }
+  const create = vi.fn(() => ({ harness: 'codex' } as NativeHarnessSessionManager))
+  const managers = new ExecutionScopedNativeSessionManagerResolver(create)
+  const allocated = managers.resolve(await composition.prepareContext(context))
+  allocated.beginStart?.()
+
+  expect(() => managers.resolve(context)).toThrow('cannot change native manager ownership context')
+  const preflight = managers.resolve(await composition.prepareContext(context))
+  expect(preflight.manager).toBe(allocated.manager)
+  expect(preflight.lifecycle).toBe('starting')
+  expect(create).toHaveBeenCalledOnce()
 })
