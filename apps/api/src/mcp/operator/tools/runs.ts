@@ -53,7 +53,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   }, async (input) => invokeOperatorTool(context, 'run_activities_get_v1',
     () => context.services.runs.activities.read(context.principal, input)))
   if (operatorToolAvailable(context, 'run_start')) server.registerTool('run_start', {
-    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. If any Agent has a computer placement, save explicit computer, approved source and root choices for every Agent, including Agents on Main. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
+    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In mixed-computer workflows, Agents without a saved computer choice resolve to the authorized Main source, root and matching qualified harness; all accepted placements are persisted in the Run. Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
     outputSchema: ManualRunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))
@@ -67,7 +67,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
 const RunToolCallSchema = z.object({
   jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.enum([
-    'run_start', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1',
+    'run_start', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1', 'run_node_placement_get',
     'run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1', 'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1',
   ]) }).passthrough(),
 }).passthrough()

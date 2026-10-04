@@ -5,12 +5,16 @@ import { NodePlacementField } from './NodePlacementField'
 import { NodePlacementFacts } from './NodePlacementFacts'
 import { acceptedPlacementFixture as placement, savedPlacementFixture as saved, workerObservationFixture as observation } from './fixtures'
 
-it('explains the all-Agent source and root requirement before choosing a computer', () => {
-  const view = render(<NodePlacementField options={[{ label: 'Laptop', placement: saved }]} onChange={vi.fn()} />)
-  expect(screen.getByText(/including Agents on Main\. Save the graph before starting\./)).toBeInTheDocument()
+it('shows Main as the default without inventing or applying a saved placement', () => {
+  const change = vi.fn()
+  const view = render(<NodePlacementField options={[{ label: 'Laptop', placement: saved }]} onChange={change} />)
+  expect(screen.getByRole('option', { name: 'Main (default)' })).toBeInTheDocument()
+  expect(screen.getByRole('combobox', { name: 'Computer' })).toHaveValue('retained')
+  expect(screen.getByText(/This Agent will use Main when the workflow starts/)).toBeInTheDocument()
+  expect(change).not.toHaveBeenCalled()
   view.rerender(<NodePlacementField value={saved} stage="draft"
     options={[{ label: 'Laptop', placement: saved }]} onChange={vi.fn()} />)
-  expect(screen.getByText(/approved source and root for every Agent/)).toBeInTheDocument()
+  expect(screen.getByText(/Start records every Agent’s authorized source, root and harness in the Run/)).toBeInTheDocument()
 })
 
 it('retains removed placement and never silently selects the main computer', async () => {
@@ -84,4 +88,5 @@ it('shows main-local observation availability without awaiting a nonexistent wor
   expect(screen.queryByText(/Awaiting worker acknowledgment/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Execution observed on/)).not.toBeInTheDocument()
   expect(screen.getByText('Main at acceptance')).toBeInTheDocument()
+  expect(screen.getByText(mainPlacement.source.revisionId, { selector: 'code' })).toBeInTheDocument()
 })

@@ -39,6 +39,7 @@ export function NodePlacementFacts({ runId, nodeId, readback }: NodePlacementFac
       <dt>Accepted execution root</dt><dd>{placement.destination.canonicalProjectRoot}</dd>
       <dt>Accepted working directory</dt><dd>{placement.destination.canonicalCwd}</dd>
       <dt>Accepted location revision</dt><dd>{placement.destination.locationRevision}</dd>
+      <dt>Accepted source snapshot</dt><dd><code>{placement.source.revisionId}</code></dd>
       <dt>Accepted binding</dt><dd><code>{placement.bindingHash}</code></dd>
       {placement.payload.kind === 'agent' ? <>
         <dt>Accepted configuration</dt><dd>{placement.payload.agentConfigurationVersionId}</dd>

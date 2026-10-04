@@ -58,11 +58,9 @@ function producerFixture(placed: boolean) {
   return {producer,input:RunStartV3InputSchema.parse({workspaceId:version.workspaceId,workflowId:version.workflowId,workflowVersionId:version.id,expectedAgentConfigurationVersionIds:version.agentConfigurationVersionIds,commandId:'command-one',executionSemanticsVersion:3,expectedWorkflowRevision:1,expectedLocationRevision:1,input:{}}),principal:{id:'principal',name:'test',audience:'operator' as const,grants:[],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null}}
 }
 it('real producer preserves unplaced local admission without source/resource allocation',async()=>{const f=producerFixture(false);expect(await f.producer.prepare(f.input,f.principal)).toBeUndefined()})
-it('identifies missing source and root choices before placement admission', async () => {
+it('rejects an explicitly placed node without an approved source and root', async () => {
   const f = producerFixture(true)
   await expect(f.producer.prepare(f.input, f.principal)).rejects.toMatchObject({
     code: 'PLACEMENT_ADMISSION_CONFLICT',
-    message: expect.stringContaining('including Agents on Main'),
-    details: { nodeIds: ['node-placement-producer-0'] },
   })
 })

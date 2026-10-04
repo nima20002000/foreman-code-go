@@ -30,6 +30,8 @@ import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader 
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
+import { RunPlacementReadService } from './modules/placement/readService.js'
+import { readRemoteObservations } from './modules/runs/remote/persistence.js'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
@@ -1074,6 +1076,7 @@ export function buildProductionApp(
     interactions: new OperatorInteractionService(interactions),
     // Reads and lifecycle mutations share the same canonical V3 journal.
     runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
+    runPlacements: new RunPlacementReadService(database.pool, readRemoteObservations),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
