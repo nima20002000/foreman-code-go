@@ -40,13 +40,22 @@ export interface ClaudeInteractionAuthority {
   validateResponse(identity: ClaudeCallbackIdentity, answer: ClaudeInteractionAnswer): Promise<void>
 }
 
+interface PermissionRequest {
+  input: unknown
+  promise: Promise<ClaudeToolDecision>
+  identity: ClaudeCallbackIdentity
+  signal: AbortSignal
+  stage: 'pending' | 'response_in_flight' | 'consumed'
+  response?: {
+    promise: Promise<ClaudeInteractionAnswer>
+    resolve(answer: ClaudeInteractionAnswer): void
+    selected?: ClaudeInteractionAnswer
+  }
+}
+
 export class ClaudeInteractionBridge {
   private readonly configuration: ClaudeHarnessConfiguration
-  private readonly requests = new Map<string, {
-    input: unknown; promise: Promise<ClaudeToolDecision>; identity: ClaudeCallbackIdentity; signal: AbortSignal
-    stage: 'pending' | 'response_in_flight' | 'consumed'
-    response?: { promise: Promise<ClaudeInteractionAnswer>; resolve(answer: ClaudeInteractionAnswer): void; selected?: ClaudeInteractionAnswer }
-  }>()
+  private readonly requests = new Map<string, PermissionRequest>()
   private readonly consumed = new Map<string, {
     identity: ClaudeCallbackIdentity
     inputHash: string
@@ -275,7 +284,9 @@ export class ClaudeInteractionBridge {
     const promise = Promise.race([resolving, aborted]).finally(() => {
       if (onAbort) combined.removeEventListener('abort', onAbort)
     })
-    const entry = { input: value, promise, identity: structuredClone(identity), signal: combined, stage: 'pending' as 'pending' | 'response_in_flight' | 'consumed' }
+    const entry: PermissionRequest = {
+      input: value, promise, identity: structuredClone(identity), signal: combined, stage: 'pending',
+    }
     this.requests.set(key, entry)
     if (toolName !== 'AskUserQuestion') this.changed(identity)
     const retire = (decision?: ClaudeToolDecision) => {

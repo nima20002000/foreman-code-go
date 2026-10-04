@@ -140,7 +140,7 @@ it('persists one message admission across later tool rounds and validates each c
         JSON.stringify({ status: 'pending', acceptedControl: control })])
       expect(await repository.claimResponse(conversation.id, requestId, request)).toBe(true)
       await manager.respond(session, request, option)
-      expect((await decision).behavior).toBe('allow')
+      expect(await decision).toMatchObject({ behavior: 'allow' })
       frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: `tool-result-${index}`,
         message: { content: [{ type: 'tool_result', tool_use_id: toolUseID, content: 'file' }] } })
       if (index === 0) assistant('older', [{ type: 'text', text: 'late older response' }])
