@@ -132,6 +132,7 @@
   "apps/api/src/modules/sources/operationPackage.ts",
   "apps/api/src/modules/sources/operationWorker.ts",
   "apps/api/src/modules/sources/privateFilesystem.ts",
+  "apps/api/src/modules/sources/retainedDirectoryUsage.ts",
   "apps/api/src/modules/sources/repository.ts",
   "apps/api/src/modules/sources/rootAttestation.ts",
   "apps/api/src/modules/sources/rsyncTransferLifecycle.ts",
