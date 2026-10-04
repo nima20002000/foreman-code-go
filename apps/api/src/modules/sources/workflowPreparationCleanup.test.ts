@@ -31,6 +31,13 @@ it('requires the original unbound close for a stopped attempt that entered nativ
   await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
 })
 
+it('accepts the persisted no-submission outcome of a stopped preparation', async () => {
+  const f = fixture()
+  f.entry.phase = 'not_submitted'
+  await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
+  expect(readUnboundWorkflowClosure).not.toHaveBeenCalled()
+})
+
 it.each(['running', 'cleanup', 'bound', 'native-id', 'success', 'changed-attempt'] as const)(
   'refuses to release a workflow preparation with %s', async defect => {
     const f = fixture()

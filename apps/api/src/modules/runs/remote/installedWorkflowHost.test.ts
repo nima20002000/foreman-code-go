@@ -196,11 +196,13 @@ describe('lazy installed worker host qualification boundary',()=>{
     await writeFile(file,JSON.stringify({schemaVersion:1,codexBinary:binary,appMcpLauncher:join(f.root,'launcher.mjs'),expectedVersion:'codex-cli 0.132.0',payloadPaths:[]}),{mode:0o600})
     const currentBinding=vi.fn(()=>f.context.binding),readMain=vi.fn().mockRejectedValue(new Error('Actual Main qualification is unavailable'))
     const reserve=vi.spyOn(NativeProcessRegistry.prototype,'reserveLaunch'),create=vi.spyOn(CodexAppServerSessionManager.prototype,'createSession').mockRejectedValue(new Error('Native entry must not occur in this source check'))
+    let retainedJournal: RemoteOperationJournal | undefined
     const options:InstalledWorkflowHostOptions={stateDirectory:f.root,pairing:{formatVersion:1,mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId,
       workerInstallationId:f.context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,endpoint:'wss://unit.invalid/device',mainPublicKeyFingerprint:'a'.repeat(64),credential:'b'.repeat(64),expiresAt:'2099-01-01T00:00:00.000Z'},
       bootId:f.context.binding.bootId,configuration:{path:file,ownerUid:process.getuid!()},currentBinding,captureRequest:()=>({binding:f.context.binding,request:readMain}),
       sources:f.sources,approvedRoots:async()=>f.approvedRoots,codexSuiteRevision:'codex-live-4',signal:new AbortController().signal,
-      initializeNewInstallation: true}
+      journal: async () => retainedJournal ??= await RemoteOperationJournal.open(join(f.root, 'workflow-operations.json'),
+        { initializeNewInstallation: true })}
     const host=await createInstalledWorkflowHost(options)
     expect(host.kind).toBe('configured')
     if(host.kind!=='configured')throw new Error('Expected unit configured code support')
@@ -220,9 +222,15 @@ describe('lazy installed worker host qualification boundary',()=>{
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
+      const { connectionEpoch: _epoch, ...connection } = f.context.binding
+      await retainedJournal!.accept(f.intent, connection, randomUUID())
+      expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
+      expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'confirmed_terminal', entryAttempted: false, terminal: { kind: 'not_started' } },
+      })
       currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
       await expect(handler({method:'status',intent:f.intent,placement:f.placement},f.context)).rejects.toMatchObject({code:'WORKER_WORKFLOW_UNAVAILABLE'})
-    } finally {await host.close()}
+    } finally {await host.close(); await retainedJournal?.close()}
   })
 })
 

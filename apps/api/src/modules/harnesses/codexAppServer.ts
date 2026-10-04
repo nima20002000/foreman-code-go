@@ -1154,7 +1154,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const value = await this.inspectMcpConfiguration(this.inspection.workingDirectory ?? process.cwd(), signal)
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
-        state: value.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
+        state: value.configured.enabled ? 'status_unavailable' : 'disabled',
+        endpointMatches: value.configured.automaticEndpoint === true && value.configured.transport === 'stdio' ? true : null,
         credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable === APP_MCP_TOKEN
           ? APP_MCP_TOKEN : null,
         checkedAt,

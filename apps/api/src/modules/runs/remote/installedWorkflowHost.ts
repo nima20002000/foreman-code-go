@@ -532,10 +532,28 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     if (owner.preparationKind !== 'workflow' || owner.preparationClosed !== true) return false
     // Main has fenced future construction. Join any earlier fact lookup before checking its installed owner.
     await construction
-    if (operations.has(owner.attempt.executionId)) return false
-    const status = await (await journal()).status(owner.identity.operationId)
-    if (status.status !== 'unknown') return false
-    return !registry.snapshot().launches.some(launch => launch.owner === `execution:${owner.attempt.executionId}`)
+    const owned = operations.get(owner.attempt.executionId)
+    const log = await journal()
+    const status = await log.status(owner.identity.operationId)
+    const processOwner = `execution:${owner.attempt.executionId}`
+    const launches = () => registry.snapshot().launches.filter(launch => launch.owner === processOwner)
+    if (status.status === 'unknown') return !owned && launches().length === 0
+    const receipt = status.receipt
+    if (receipt.intent.executionId !== owner.attempt.executionId || receipt.intent.attemptId !== owner.attempt.attemptId
+      || receipt.entryAttempted || receipt.native || owned?.native || owned?.session) return false
+    if (receipt.terminal) return receipt.terminal.kind === 'not_started'
+    if (owned) owned.launchDisabled = true
+    await log.revokeFence(owner.identity.operationId)
+    if (owned?.manager) {
+      if (!owned.manager.dispose) return false
+      await owned.manager.dispose()
+    }
+    if (launches().length && !await registry.closeOwner(processOwner)) return false
+    await log.terminal(owner.identity.operationId, {
+      kind: 'not_started',
+      closureEvidenceDigest: digest({ intent: receipt.intent, preparationClosed: true, launches: launches() }),
+    })
+    return true
   }
   return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,close}
 }

@@ -210,6 +210,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const inspected = await manager.inspectMcpConfiguration(f.directory)
     assert.equal(inspected.configured.automaticEndpoint, true)
     assert.equal(inspected.configured.bearerTokenEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
+    assert.equal((await manager.inspectMcp()).endpointMatches, true)
     const session = await manager.createSession(source)
     assert.equal(session.harness, 'codex')
     assert(session.nativeSessionId)

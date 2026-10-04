@@ -88,7 +88,7 @@ export async function assertWorkflowPreparationClosed(
     [execution.id, execution.runId],
   )).rows[0]
   if (!entry || !isDeepStrictEqual(entry.reservation.execution, repeatExecutionIdentity(execution))
-    || !['reserved', 'prepared', 'entered'].includes(entry.phase)
+    || !['reserved', 'prepared', 'entered', 'not_submitted'].includes(entry.phase)
     || entry.phase === 'entered' && !await readUnboundWorkflowClosure(sql, execution)) {
     throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'The original workflow launch is not closed.', 409)
   }
