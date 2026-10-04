@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { PostgresJobOutputAdmission } from './outputAdmission.js'
 import type { JobOutputRsyncLifecycle } from './rsyncLifecycle.js'
 import { outputTransferContext } from './workerProtocol.js'
+import { throwJobOutputTransferError } from './outputChannel.js'
 
 export interface MainJobOutputRsyncPorts {
   stage(intent:TransferIntent,signal:AbortSignal):Promise<unknown>
@@ -26,7 +27,7 @@ export function createMainJobOutputRsyncExtension(admission:Pick<PostgresJobOutp
       // Expired canonical replay cannot revive the original staging attempt.
       if(Date.parse(intent.expiresAt)>Date.now())await rsync.acknowledge(intent,frame.signal)
       return reply
-    })
+    }).catch(throwJobOutputTransferError)
     if(method!=='job-output-stage'&&method!=='job-output-status')return original.handle!(raw,frame)
     if(frame.bytes!==undefined)throw new DomainError('JOB_OUTPUT_METADATA_INVALID','Job stage/status accepts only original transfer metadata.',400)
     const request=method==='job-output-stage'?JobOutputStageRequestSchema.parse(raw):JobOutputStatusRequestSchema.parse(raw)
@@ -49,6 +50,6 @@ export function createMainJobOutputRsyncExtension(admission:Pick<PostgresJobOutp
         throw error
       })
       frame.signal.throwIfAborted();return {payload:artifact}
-    })
+    }).catch(throwJobOutputTransferError)
   }}
 }

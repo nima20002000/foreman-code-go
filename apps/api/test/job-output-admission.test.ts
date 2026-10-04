@@ -17,6 +17,7 @@ import { ResumableByteTransferService } from '../src/modules/byte-transfer/servi
 import { ResumableByteTransferSender } from '../src/modules/byte-transfer/sender.js'
 import { WorkerJobOutputApplication, WorkerJobOutputReceiver, jobOutputDeviceExtension } from '../src/modules/files/jobs/outputChannel.js'
 import { DomainError } from '../src/modules/errors.js'
+import { JobOutputCollectionError } from '../src/modules/jobs/executorOutputs.js'
 import { CanonicalJobArtifactPort, type JobPublicationLedger } from '../src/modules/files/jobs/port.js'
 import { PostgresJobArtifactScopeAuthorization } from '../src/modules/files/jobs/factory.js'
 import { FileStorageService } from '../src/modules/files/service.js'
@@ -224,7 +225,7 @@ describe('whole worker collector canonical lost-ACK recovery',()=>{
     const f=await collectorFixture()
     try{
       await f.admission.admit(f.input);f.advanceTime()
-      await expect(f.collect(f.job)).rejects.toMatchObject({code:'FILE_EXPIRED'})
+      await expect(f.collect(f.job)).rejects.toBeInstanceOf(JobOutputCollectionError)
       await expect(f.admission.requireAdmission(f.input)).rejects.toMatchObject({code:'FILE_EXPIRED'})
       expect(f.transferred).toEqual([]);expect(f.bytes.objects.size).toBe(0)
     }finally{await f.close()}
@@ -235,7 +236,7 @@ describe('whole worker collector canonical lost-ACK recovery',()=>{
       await expect(f.collect(f.job)).rejects.toThrow('Lost finalization ACK')
       const transfers=f.transferred.length
       f.expire();vi.setSystemTime(f.clock())
-      await expect(f.collect(f.job)).rejects.toMatchObject({code:'FILE_EXPIRED'})
+      await expect(f.collect(f.job)).rejects.toBeInstanceOf(JobOutputCollectionError)
       expect(f.transferred).toHaveLength(transfers);expect(f.published).toHaveLength(1);expect(f.repository.values.size).toBe(1)
     }finally{await f.close()}
   })

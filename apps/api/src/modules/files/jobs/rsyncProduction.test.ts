@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { TransferIntentSchema, TransferContextSchema } from '@graphql/contracts/byte-transfer'
 import type { DeviceExtensionContext, DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { DomainError } from '../../errors.js'
+import { TransferExpiredError } from '../../byte-transfer/service.js'
 import type { PostgresJobOutputAdmission } from './outputAdmission.js'
 import { createMainJobOutputRsyncExtension } from './rsyncProduction.js'
 
@@ -22,6 +23,16 @@ function fixture(){
   return {intent,frame,receipt,original,admission,lifecycle,rsync,order,authorizeTransfer,extension:createMainJobOutputRsyncExtension(admission,lifecycle,original,rsync)}
 }
 describe('original Main Job output rsync carrier composition',()=>{
+  it('reports expired output admission and idle transfer as permanent failures while preserving transport errors', async () => {
+    const f = fixture()
+    const request = { method: 'job-output-stage', transferId: f.intent.transferId }
+    f.authorizeTransfer.mockRejectedValueOnce(new DomainError('FILE_EXPIRED', 'Original output admission expired.', 410))
+    await expect(f.extension.handle!(request, f.frame)).rejects.toMatchObject({ code: 'job-output-expired' })
+    f.rsync.stage.mockRejectedValueOnce(new TransferExpiredError('Transfer expired'))
+    await expect(f.extension.handle!(request, f.frame)).rejects.toMatchObject({ code: 'job-output-expired' })
+    f.rsync.stage.mockRejectedValueOnce(new Error('Connection lost'))
+    await expect(f.extension.handle!(request, f.frame)).rejects.toThrow('Connection lost')
+  })
   it('stages only the admitted intent with actual authenticated frame and bounded receipt',async()=>{
     const f=fixture()
     await expect(f.extension.handle!({method:'job-output-stage',transferId:f.intent.transferId},f.frame)).resolves.toEqual({payload:f.receipt})

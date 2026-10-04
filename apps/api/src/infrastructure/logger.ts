@@ -22,7 +22,7 @@ function levelFrom(env: NodeJS.ProcessEnv): LevelWithSilent {
 const level = levelFrom(process.env)
 /** Keep diagnostic identity and the bounded cause chain; child-process handles can be cyclic. */
 export function serializeError(value: unknown, seen = new Set<unknown>(), depth = 0): Record<string, unknown> {
-  if (depth >= 8 || seen.has(value)) return { message: 'Repeated or truncated error cause.' }
+  if (depth >= 8 || seen.size >= 32 || seen.has(value)) return { message: 'Repeated or truncated error cause.' }
   if (!value || typeof value !== 'object') return { message: String(value) }
   seen.add(value)
   const error = value as { name?: unknown; message?: unknown; stack?: unknown; code?: unknown; cause?: unknown }
@@ -30,6 +30,7 @@ export function serializeError(value: unknown, seen = new Set<unknown>(), depth 
     message: typeof error.message === 'string' ? error.message : 'Unknown error',
     ...(typeof error.stack === 'string' ? { stack: error.stack } : {}),
     ...(typeof error.code === 'string' || typeof error.code === 'number' ? { code: error.code } : {}),
+    ...(value instanceof AggregateError ? { errors: value.errors.slice(0, 8).map(cause => serializeError(cause, seen, depth + 1)) } : {}),
     ...(error.cause !== undefined ? { cause: serializeError(error.cause, seen, depth + 1) } : {}) }
 }
 // Synchronous writes: a crash or process.exit() right after a log call must not lose that line.

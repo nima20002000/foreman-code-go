@@ -2,14 +2,26 @@ import { createHash } from 'node:crypto'
 import type { JobExecution, JobArtifact } from '@graphql/contracts/jobs'
 import type { TransferIntent, ByteTransferPort } from '@graphql/contracts/byte-transfer'
 import type { JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
-import { readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
+import { JobOutputCollectionError, readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
+import { TransferExpiredError } from '../../byte-transfer/service.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 import { WorkerJobOutputApplication, WorkerJobOutputReceiver, type WorkerJobOutputChannel } from '../../files/jobs/outputChannel.js'
 import { ResumableByteTransferSender, type TransferSenderConnection } from '../../byte-transfer/sender.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 
 /** Worker metadata and sealed bytes share its existing selected-main signed carrier. */
 export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, connection: TransferSenderConnection, journal: RemoteOperationJournal,rsync?:WorkerJobOutputRsyncPort) {
-  return createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal,rsync)
+  const collect = createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal,rsync)
+  return async (execution: JobExecution) => {
+    try {
+      await collect(execution)
+    } catch (error) {
+      if (error instanceof TransferExpiredError || error instanceof DeviceApplicationError && error.code === 'job-output-expired') {
+        throw new JobOutputCollectionError('The output transfer expired before publication.', { cause: error })
+      }
+      throw error
+    }
+  }
 }
 
 export interface WorkerJobOutputRsyncPort {

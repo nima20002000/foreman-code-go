@@ -6,6 +6,8 @@ import {
 } from '@graphql/contracts/device-application'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
+import { DeviceApplicationError } from './deviceApplicationError.js'
+export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
 export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
@@ -13,7 +15,6 @@ export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
   handle?(payload: unknown, context: DeviceExtensionContext): Promise<DeviceApplicationResult>
 }
 export interface DeviceApplicationRequestOptions { signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number }
-export class DeviceApplicationError extends Error { constructor(readonly code: string) { super(code) } }
 interface Pending {
   resolve(value: DeviceApplicationResult): void
   reject(error: Error): void

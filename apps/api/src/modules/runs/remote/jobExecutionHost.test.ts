@@ -24,6 +24,7 @@ import { OwnedOCIContainer, type OCIContainerOwnership } from '../../jobs/execut
 import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteJobExecutionHost } from './jobExecutionHost.js'
+import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
 async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false) {
@@ -38,7 +39,8 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
-  const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true }
+  const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true,
+    collectionError: null as Error | null }
   let started = false, released = false
   const waiting: Array<() => void> = []
   const cid='c'.repeat(64),policy=execution.acceptedSpec.policy
@@ -65,10 +67,23 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
       return {version:1,bindingId:'1'.repeat(64),recipient:{workspaceId:current.workspaceId,executionId:current.id,attemptId:wrongInput?'wrong':current.attemptId,operationId:current.operationId,owner:current.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(current),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:JOB_INPUT_DIRECTORY,...inputIdentity},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length}],readonlyMountRequired:true}
     }},
     authorize:async(_intent,_execution,action)=>{if(denyPublication&&action==='publish')throw new Error('cleanup cannot publish');if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(state.loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(state.loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
-    collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++} });hosts.push(host)
+    collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++;if(state.collectionError)throw state.collectionError} });hosts.push(host)
   return {root,journal,execution,intent,state,host,supervisor}
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it('records expired publication as failed without changing native outcome or rerunning it', async () => {
+    const f = await fixture()
+    f.state.collectionError = new JobOutputCollectionError('The output transfer expired before publication.')
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    await f.host.deliver(f.intent, f.execution)
+    const status = await f.journal.jobStatus(f.intent.operationId)
+    expect(status).toMatchObject({ status: 'known', receipt: {
+      publication: 'failed', terminal: { exitCode: 7, processStopped: true },
+    } })
+    expect(f.state.creates).toBe(1)
+    expect(f.state.collected).toBe(1)
+  })
   it('runs one genuine manual job and commits physical exit before publication',async()=>{const f=await fixture();await f.host.deliver(f.intent,f.execution);await f.host.deliver(f.intent,f.execution);await f.host.drain();expect(f.state.creates).toBe(1);expect(f.state.collected).toBe(1);const status=await f.journal.jobStatus(f.intent.operationId);expect(status.status==='known'&&status.receipt.terminal?.exitCode).toBe(7);expect(status.status==='known'&&status.receipt.publication).toBe('complete');expect(f.state.reports[0]).toBe('confirmed_terminal:pending');expect(status.status==='known'&&status.receipt.intent.subject.kind).toBe('manual-job')})
   it('publication denial retains physical terminal and records failed output status',async()=>{const f=await fixture(false,true);await f.host.deliver(f.intent,f.execution);await f.host.drain();const status=await f.journal.jobStatus(f.intent.operationId);expect(status.status==='known'&&status.receipt.phase).toBe('confirmed_terminal');expect(status.status==='known'&&status.receipt.terminal?.exitCode).toBe(7);expect(status.status==='known'&&status.receipt.publication).toBe('failed');expect(f.state.collected).toBe(0);expect(f.state.reports.at(-1)).toBe('confirmed_terminal:failed')})
   it('lost collection ACK remains transport uncertainty without inventing output failure',async()=>{const f=await fixture(false,false,false,true);await f.host.deliver(f.intent,f.execution);await f.host.drain();const status=await f.journal.jobStatus(f.intent.operationId);expect(status.status==='known'&&status.receipt.terminal?.exitCode).toBe(7);expect(status.status==='known'&&status.receipt.publication).toBe('collecting');expect(f.state.collected).toBe(0)})

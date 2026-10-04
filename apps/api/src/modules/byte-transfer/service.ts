@@ -9,6 +9,7 @@ import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, TransferContextSc
   type TransferProgress, type VerifiedTransferReceipt, type ByteTransferPort } from '@graphql/contracts/byte-transfer'
 
 export type TransferOperation = 'start' | 'status' | 'append' | 'finish' | 'cancel' | 'read'
+export class TransferExpiredError extends Error {}
 export interface TransferAuthorization {
   /** Check current device key/revocation/connection epoch AND accepted attempt/root/placement/expiry. */
   authorize(intent: TransferIntent, context: TransferContext, operation: TransferOperation): Promise<void>
@@ -111,7 +112,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     if (op !== 'cancel' && (this.now() >= Date.parse(j.intent.expiresAt)
       || (j.progress.state !== 'verified' && this.now() - Date.parse(j.progress.updatedAt) >= POLICY.maxIdleMs))) {
       if (op !== 'start') { j.progress.state = 'cancelled'; await this.save(j) }
-      throw new Error('Transfer expired')
+      throw new TransferExpiredError('Transfer expired')
     }
     if (j.progress.state === 'cancelled' && op !== 'cancel') throw new Error('Transfer cancelled')
   }

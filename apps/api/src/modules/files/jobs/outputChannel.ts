@@ -3,11 +3,19 @@ import { JobArtifactSchema } from '@graphql/contracts/jobs'
 import { JobOutputDeviceRequestSchema, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
-import type { ResumableByteTransferService } from '../../byte-transfer/service.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { TransferExpiredError, type ResumableByteTransferService } from '../../byte-transfer/service.js'
 import type { CanonicalJobArtifactPort } from './port.js'
 import type { PostgresJobOutputAdmission } from './outputAdmission.js'
 import { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
 import { DomainError } from '../../errors.js'
+
+export function throwJobOutputTransferError(error: unknown): never {
+  if (error instanceof TransferExpiredError || error instanceof DomainError && error.code === 'FILE_EXPIRED') {
+    throw new DeviceApplicationError('job-output-expired')
+  }
+  throw error
+}
 
 /** Main handler only accepts metadata/assertions. Intent IDs/roots/context come from its durable ledger. */
 export function jobOutputDeviceExtension(admission: PostgresJobOutputAdmission, artifacts: CanonicalJobArtifactPort,
@@ -30,7 +38,7 @@ export function jobOutputDeviceExtension(admission: PostgresJobOutputAdmission, 
         payload=await receiver.append(intent.transferId,context,{offset:request.offset,sha256:request.sha256,bytes:channel.bytes})
       }
       channel.signal.throwIfAborted();return {payload}
-    }) }
+    }).catch(throwJobOutputTransferError) }
 }
 export interface WorkerJobOutputChannel {
   request(namespace: 'byte-transfer-v1', payload: unknown, options?: {signal?:AbortSignal;bytes?:Uint8Array}): Promise<{payload:unknown}>
