@@ -45,7 +45,7 @@ export class JobQueuePreparation {
     const order = await JobOwnership.acquire(this.pool, 'job-admission-order', () => {})
     if (!order) return
     const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
-    let recoveries: JobExecution[] = []
+    let recoveries: JobExecution[]
     const barriers: { id: string; hosts: string[]; claims: number }[] = []
     try {
       const pending = await this.repository.pendingQueue(order.connection)
@@ -187,7 +187,7 @@ export class JobQueuePreparation {
   }
 
   private async prepare(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
-    let executionToWake: JobExecution | null = null
+    let executionToWake: JobExecution | null
     try {
       const principal = await owner.connection.transaction(sql => this.principal(sql, original))
       await owner.connection.transaction(sql => requireJobPreparationDeadline(sql, 'manual', original.executionId,

@@ -6,7 +6,6 @@ import type { JobBuildQueueConfiguration, JobQueueTicket } from '@graphql/contra
 import { ResolvedJobDefinitionSpecSchema } from '@graphql/contracts/jobs'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { JobService, jobDigest } from '../src/modules/jobs/service.js'
-import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { createProductionJobs, createReviewedBuildQueueConfiguration,
   readBuildQueueConfiguration } from '../src/modules/jobs/production.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
