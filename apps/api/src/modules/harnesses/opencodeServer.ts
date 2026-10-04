@@ -244,7 +244,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           body: JSON.stringify({
             title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${input.request.executionId}`,
             agent: configuration.nativeAgent,
-            model: { providerID, id: model.join('/'), ...(configuration.variant ? { variant: configuration.variant } : {}) },
+            model: { providerID, id: model.join('/'), variant: configuration.variant },
             permission: nativePolicy(configuration),
           }),
         }, combined))
@@ -426,7 +426,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/prompt_async`, state.directory), {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
-              ...(state.configuration.variant ? { variant: state.configuration.variant } : {}),
+              variant: state.configuration.variant,
               agent: state.configuration.nativeAgent, parts: [
                 { type: 'text', text: turn.files ? `${prompt ?? ''}\n\n${turn.files.inputs.promptSuffix}` : prompt },
                 ...(turn.files?.inputs.imageParts ?? []),

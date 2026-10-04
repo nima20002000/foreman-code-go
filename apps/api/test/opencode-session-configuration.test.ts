@@ -61,3 +61,25 @@ it('does not accept the default sentinel for a pinned named variant', async () =
     await original.dispose()
   }
 })
+
+it('sends the explicit unnamed choice even when the native agent has a named default', async () => {
+  const server = new FixtureServer()
+  server.agents = [{ name: 'custom', variant: 'max',
+    model: { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' } }]
+  const native = manager(server)
+  try {
+    const session = await sessionFor(native, { ...configuration(), nativeAgent: 'custom', variant: '' })
+    server.onPrompt = () => { server.complete('custom-unnamed', 'Done', session.nativeSessionId) }
+    for await (const event of native.startTurn(session, {
+      prompt: 'Use the unnamed variant', clientCorrelationId: 'custom-unnamed',
+    })) void event
+    assert.deepEqual(server.sessionInfos.get(session.nativeSessionId)!.model, {
+      providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: '',
+    })
+    const prompt = server.calls.find(call => call.path.includes('/prompt_async'))!.body!
+    assert.equal(prompt.agent, 'custom')
+    assert.equal(prompt.variant, '')
+  } finally {
+    await native.dispose()
+  }
+})
