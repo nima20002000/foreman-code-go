@@ -27,7 +27,7 @@ import type { FileQuery } from '../src/modules/files/repository.js'
 const text = (value: unknown) => canonicalGraphJson(value, 4 * 1024 * 1024)
 // Explicit SQL-boundary facts only. No host qualification, provider process,
 // native byte production or physical publication is established by this fixture.
-function facts() {
+function facts(handoff = false) {
 
   const principalId = 'sql-owner-'+randomUUID(), nativeSessionId = 'sql-native-'+randomUUID()
   const f = makeCurrentWorkflowFixture('artifact-acceptance-'+randomUUID(), 'single'), node = f.version.definition.nodes[0]!
@@ -39,6 +39,13 @@ function facts() {
     nativeSessionId: nativeSessionId, input: { executionSemanticsVersion: 3, runInput: run.input, occurrence: null, entry: null, predecessors: [] }, createdAt: f.createdAt, finishedAt: f.createdAt,
     result: { outcome: 'succeeded', output: { text: JSON.stringify({ data: null, artifactOutputs: { version: 1,
       outputs: ['z', 'a'].map(outputKey => ({ outputKey, commandId: `original-command-${outputKey}` })) } }) } } }
+  if (handoff) {
+    f.version.definition.handoffs = { contractVersion: 1 }
+    const envelope = JSON.parse((execution.result!.output as { text: string }).text)
+    execution.result = { outcome: 'succeeded', output: { text: JSON.stringify({ ...envelope,
+      routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+    }) } }
+  }
   const placement = freezePlacement({ schemaVersion: 1, mainId, mainInstallationId: mainId, runId: run.id, nodeId: node.id,
     hostRef: { kind: 'device', mainId, deviceId }, registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
     destination: { canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/runtime', directoryIdentityHash: digest,
@@ -101,8 +108,8 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
     await pool?.end()
     if (admin) { try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } }
   })
-  async function seed(bindKeys = ['z', 'a']) {
-    const x = facts(), { run, node, execution, placement, intent, proof, context } = x
+  async function seed(bindKeys = ['z', 'a'], handoff = false) {
+    const x = facts(handoff), { run, node, execution, placement, intent, proof, context } = x
     const client = await pool.connect()
     try {
       // Actual owner lock/backend fence required by dispatch admission triggers.
@@ -200,6 +207,22 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
     }
     return { ...x, check, checkMetadata, visits, repository }
   }
+  it('accepts and rechecks combined handoff artifacts through fresh SQL connections', async () => {
+    const x = await seed(['z', 'a'], true)
+    await x.check()
+    const original = structuredClone(x.execution.result)
+    // Each call opens a fresh transaction/connection after the accepted marker commits.
+    await x.checkMetadata(true)
+    await x.check()
+    expect(await x.visits()).toBe(3)
+    expect(x.execution.result).toEqual(original)
+    for (const record of x.records) expect(await x.repository.read(record.producer, record.outputKey)).toEqual(record)
+  })
+  it('refuses unpublished required artifacts in a combined handoff result before acceptance', async () => {
+    const x = await seed(['z'], true)
+    await expect(x.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_PENDING' })
+    expect(await x.visits()).toBe(0)
+  })
   it('allows original canonical publications before adoption and requires complete immutable maps afterward', async () => {
     const x = await seed([]); await x.checkMetadata(false); expect(await x.visits()).toBe(1)
     await expect(x.checkMetadata(true)).rejects.toMatchObject({ code: 'REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE' })

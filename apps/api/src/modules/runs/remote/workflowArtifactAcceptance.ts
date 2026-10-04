@@ -1,3 +1,4 @@
+import { parseWorkHandoffArtifactResult } from '@graphql/contracts/wave25'
 import { isDeepStrictEqual as same } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -62,8 +63,13 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
     }
     let mappings
     try {
-      mappings = (node.choice ? parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice)
-        : parseWorkflowArtifactResult(execution.result, node.artifactOutputs)).artifactOutputs.outputs
+      if (version.definition.handoffs) {
+        mappings = parseWorkHandoffArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
+      } else if (node.choice) {
+        mappings = parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice).artifactOutputs.outputs
+      } else {
+        mappings = parseWorkflowArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
+      }
     } catch { return conflict() }
     const receiptRow = (await sql.query<{ receipt: unknown }>(
       'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]

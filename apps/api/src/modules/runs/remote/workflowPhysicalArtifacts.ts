@@ -1,3 +1,4 @@
+import { parseWorkHandoffArtifactResult } from '@graphql/contracts/wave25'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -54,10 +55,14 @@ export class PostgresWorkflowPhysicalArtifacts implements WorkflowPhysicalArtifa
       if (run.id !== intent.runId || run.workflowVersionId !== version.id || run.workspaceId !== version.workspaceId
         || run.workflowId !== version.workflowId || !node || node.kind === 'job' || !node.artifactOutputs
         || run.agentConfigurationVersionIds[node.agentId] !== version.agentConfigurationVersionIds[node.agentId]) return unavailable()
-      const declaration = (()=>{
-        try{return (node.choice ? parseWorkflowArtifactResult(output.result, node.artifactOutputs, node.choice)
-          : parseWorkflowArtifactResult(output.result, node.artifactOutputs)).artifactOutputs}
-        catch{return unavailable()}
+      const declaration = (() => {
+        try {
+          if (version.definition.handoffs) {
+            return parseWorkHandoffArtifactResult(output.result, node.artifactOutputs).artifactOutputs
+          }
+          if (node.choice) return parseWorkflowArtifactResult(output.result, node.artifactOutputs, node.choice).artifactOutputs
+          return parseWorkflowArtifactResult(output.result, node.artifactOutputs).artifactOutputs
+        } catch { return unavailable() }
       })()
       if (!same(declaration, output.artifactOutputs)) return unavailable()
       const attempt = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
