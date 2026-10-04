@@ -3,7 +3,9 @@ import { readProductEnvironment } from '@foreman-code/contracts/product-environm
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
-import { createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, type OpenCodeClientFactory } from './opencodeClient.js'
+import {
+  createOpenCodeBoundFetch, OpenCodeResponseTooLargeError, readOpenCodeResponseText, type OpenCodeClientFactory,
+} from './opencodeClient.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, appMcpServerName, chatExcludedAppMcpServerNames, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -1545,19 +1547,31 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const response = await this.clientRequest(withDirectory(`/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}`, directory), { method: 'GET' }, signal, this.generation)
     if (response.status === 404) { await response.body?.cancel().catch(() => undefined); return undefined }
     if (!response.ok) throw await responseError(response, 'OPENCODE_MESSAGE_LOOKUP_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
-    const message = this.sanitize(object(await readJson(response)))
+    const message = this.sanitize(object(await readJson(response, signal)))
     if (object(message.info).id !== messageID || object(message.info).sessionID !== sessionID || !Array.isArray(message.parts)) throw new Error('Native message identity did not match the lookup.')
     return message as OpenCodeMessage
   }
 
   private async messagePage(sessionID: string, directory: string, before: string | undefined, signal: AbortSignal): Promise<MessagePage> {
-    const query = `/session/${encodeURIComponent(sessionID)}/message?limit=${OPENCODE_HISTORY_PAGE_SIZE}${before ? `&before=${encodeURIComponent(before)}` : ''}`
-    const response = await this.clientRequest(withDirectory(query, directory), { method: 'GET' }, signal, this.generation)
-    if (!response.ok) throw await responseError(response, 'OPENCODE_HISTORY_UNAVAILABLE', response.status >= 500 ? 'uncertain' : 'definite')
-    const nextCursor = response.headers.get('x-next-cursor')
-    const value = this.sanitize(await readJson(response))
-    if (!Array.isArray(value) || value.some((item) => !object(item).info || !Array.isArray(object(item).parts))) throw new Error('Invalid native message history.')
-    return { messages: value as OpenCodeMessage[], ...(nextCursor ? { nextCursor } : {}) }
+    let limit = OPENCODE_HISTORY_PAGE_SIZE
+    while (true) {
+      const query = `/session/${encodeURIComponent(sessionID)}/message?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`
+      try {
+        const response = await this.clientRequest(withDirectory(query, directory), { method: 'GET' }, signal, this.generation)
+        if (!response.ok) {
+          throw await responseError(response, 'OPENCODE_HISTORY_UNAVAILABLE', response.status >= 500 ? 'uncertain' : 'definite')
+        }
+        const nextCursor = response.headers.get('x-next-cursor')
+        const value = this.sanitize(await readJson(response, signal))
+        if (!Array.isArray(value) || value.some((item) => !object(item).info || !Array.isArray(object(item).parts))) {
+          throw new Error('Invalid native message history.')
+        }
+        return { messages: value as OpenCodeMessage[], ...(nextCursor ? { nextCursor } : {}) }
+      } catch (error) {
+        if (!(error instanceof OpenCodeResponseTooLargeError) || limit === 1) throw error
+        limit = Math.max(1, Math.floor(limit / 2))
+      }
+    }
   }
 
   private async openEvents(directory: string, signal: AbortSignal, ensureReady = true): Promise<Response> {
@@ -1766,24 +1780,7 @@ async function responseError(response: Response, code: string, certainty: Native
 }
 async function readJson(response: Response, signal?: AbortSignal): Promise<unknown> {
   if (!response.body) throw new Error('OpenCode response body is missing.')
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let bytes = 0
-  let text = ''
-  const abort = () => { void reader.cancel().catch(() => undefined) }
-  signal?.addEventListener('abort', abort, { once: true })
-  try {
-    while (true) {
-      signal?.throwIfAborted()
-      const { done, value } = await reader.read()
-      signal?.throwIfAborted()
-      if (done) break
-      bytes += value.byteLength
-      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new Error('OpenCode response exceeds the bounded native page buffer.')
-      text += decoder.decode(value, { stream: true })
-    }
-    return JSON.parse(text + decoder.decode())
-  } finally { signal?.removeEventListener('abort', abort); await reader.cancel().catch(() => undefined); reader.releaseLock() }
+  return JSON.parse(await readOpenCodeResponseText(response, signal))
 }
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
