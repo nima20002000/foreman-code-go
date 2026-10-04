@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
@@ -45,8 +46,10 @@ const exited = new Promise((resolve) => {
   child.once('error', (error) => resolve({ error }))
 })
 
-async function request(path) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(2000) })
+async function request(path, options = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    ...options, credentials: 'omit', signal: AbortSignal.timeout(2000),
+  })
   return { status: response.status, body: await response.json() }
 }
 
@@ -73,6 +76,33 @@ let postgresStopped = false
 try {
   await waitForReady()
   assert.equal((await request('/health/live')).status, 200)
+  const human = await request('/api/local-human')
+  assert.equal(human.status, 200)
+  assert.equal(human.body.principal.id, 'principal-local-human')
+  const created = await request('/api/management/workspaces', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ commandId: randomUUID(), name: `Local HTTP smoke ${randomUUID()}` }),
+  })
+  assert.equal(created.status, 201, JSON.stringify(created.body))
+  const workspace = created.body.value
+  const workspacePath = `/api/management/workspaces/${encodeURIComponent(workspace.id)}`
+  try {
+    for (const suffix of ['root-location', 'root-policies']) {
+      const response = await request(`${workspacePath}/${suffix}`)
+      assert.equal(response.status, 200, JSON.stringify(response.body))
+      assert.equal(response.body.workspaceId, workspace.id)
+      assert.equal((await request(`${workspacePath}/${suffix}`, {
+        headers: { authorization: 'Bearer invalid' },
+      })).status, 401)
+    }
+    console.log('Unauthenticated local HTTP: root-location=200, root-policies=200; invalid bearer=401')
+  } finally {
+    const archived = await request(workspacePath, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: randomUUID(), expectedRevision: workspace.revision }),
+    })
+    assert.equal(archived.status, 200, JSON.stringify(archived.body))
+  }
   if (restartPostgres) {
     // Explicit opt-in: this operates only on this repository's Compose service.
     await delay(50)

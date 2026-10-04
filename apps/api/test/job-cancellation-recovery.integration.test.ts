@@ -13,6 +13,7 @@ import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-no
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresJobCancellationRecovery } from '../src/modules/jobs/cancellationRecovery.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
@@ -167,6 +168,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       preparation: { choices: forbidden, validate: forbidden, accept: forbidden, adoptFinalBinding: forbidden, revalidateAccepted: forbidden },
       artifacts: { list: forbidden, read: forbidden } })
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      localHuman: new PostgresLocalHumanAccess(pool, access),
       operator: { access, services: { jobs, commands } as unknown as OperatorServices } })
     address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
@@ -182,7 +184,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       expect(result.isError).not.toBe(true)
       proposal = JobCancellationRecoveryReadSchema.parse(result.structuredContent)
       const approved = await app.inject({ method: 'POST', url: `${route()}/approve`,
-        headers: { cookie: `graphql_operator=${writer.token}`, origin: address }, payload: { commandId: randomUUID() } })
+        headers: { origin: 'http://127.0.0.1:5173' }, payload: { commandId: randomUUID() } })
       expect(approved.statusCode).toBe(200)
       const grant = SignedJobCancellationGrantSchema.parse(approved.json()).grant
       const command = { schemaVersion: 1 as const, protocolVersion: 1 as const, commandId: cancelCommandId,

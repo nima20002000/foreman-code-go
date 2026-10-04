@@ -15,7 +15,7 @@ export class AppMcpRoutes {
     // Delegated Operator chat credentials register their own route for the conversation lifetime.
     const result = await this.pool.query<{ token_hash: string; expires_at: Date }>(`select token_hash, expires_at
       from management_principals where audience='operator' and delegated_from is null
-      and revoked_at is null and expires_at>now()
+      and token_hash is not null and revoked_at is null and expires_at>now()
       union all
       select p.token_hash, p.expires_at
       from management_principals p join worker_credential_bindings b on b.principal_id=p.id where p.audience='worker'

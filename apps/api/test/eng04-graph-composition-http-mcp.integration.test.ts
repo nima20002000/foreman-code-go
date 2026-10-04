@@ -47,7 +47,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
       expect(remote.result?.isError).not.toBe(true)
       expect(graphRpcValue(remote.result)).toEqual(read.json())
       expect(read.headers['cache-control']).toBe('private, no-store')
-      expect(read.headers.vary).toBe('Authorization, Cookie')
+      expect(read.headers.vary).toBe('Authorization')
       expect(read.body).not.toContain(privateCanary)
       expect(read.body).not.toContain(db.directory)
       expect(read.body).not.toContain(t.writer.principal.id)
@@ -73,9 +73,9 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
     expect(capabilities.json().semantics3.persistedReads).toBe(false)
   })
 
-  it('denies missing, revoked, wrong-scope and missing-runs:read credentials and audits both transport denials', async () => {
+  it('denies invalid, revoked, wrong-scope and missing-runs:read credentials and audits both transport denials', async () => {
     const t = await fixture()
-    const missing = await t.app.inject({ method: 'GET', url: graphUrl(t, 'snapshot'), headers: graphHeaders() })
+    const missing = await t.app.inject({ method: 'GET', url: graphUrl(t, 'snapshot'), headers: graphHeaders('invalid') })
     expect(missing.statusCode).toBe(401)
     const wrong = await t.credential([{ actions: ['capabilities:read'], scope: {} },
       { actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])

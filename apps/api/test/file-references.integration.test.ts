@@ -162,7 +162,7 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     assert.equal((await app.inject({ method: 'GET', url: `${pinned(sibling, row)}/content`, headers: headers() })).statusCode, 404)
     assert.equal((await app.inject({ method: 'GET', url: `${pinned(workspace, row)}/content`, headers: headers() })).statusCode, 404)
     assert.equal((await app.inject({ method: 'GET', url: `${base(workflow)}/${row.file.fileId}/revisions/missing/content`, headers: headers() })).statusCode, 404)
-    assert.equal((await app.inject({ method: 'GET', url: base(workspace), headers: { host: 'localhost' } })).statusCode, 401)
+    assert.equal((await app.inject({ method: 'GET', url: base(workspace), headers: { host: 'localhost', authorization: 'Bearer invalid' } })).statusCode, 401)
   })
   it('keeps same filenames in all scopes distinct; cursors cannot cross scopes', async () => {
     const scopes = [workspace, workflow, sibling, otherWorkspace]

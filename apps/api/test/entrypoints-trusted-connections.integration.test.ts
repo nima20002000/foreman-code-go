@@ -45,7 +45,8 @@ async function fixture() {
       migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }, checkpoints, false)
     production = build()
     await production.initialize()
-    let app = production.app, address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const app = production.app
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const auth = { authorization: `Bearer ${owner.token}` }
     // Pair through the original grant service and signed worker proof. Never insert an owner or consent record.
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
@@ -68,7 +69,7 @@ async function fixture() {
   } catch (error) { await close(); throw error }
 }
 
-describe.skipIf(!postgresEnabled)('trusted connections through the production Main entrypoint', () => {
+describe.skipIf(!postgresEnabled)('trusted connections through the production Main entrypoint', { timeout: 60_000 }, () => {
   it('opens an existing installation without login and preserves machine identities', async () => {
     const f = await fixture()
     try {

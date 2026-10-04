@@ -144,10 +144,10 @@ export class HarnessMcpSettingsService {
     }
   }
   private async liveUser(client: pg.PoolClient, principal: ManagementPrincipal): Promise<void> {
-    if (principal.audience !== 'operator') throw new DomainError('MCP_HUMAN_REVIEW_REQUIRED', 'A browser management credential is required.', 403)
+    if (principal.audience !== 'operator') throw new DomainError('MCP_HUMAN_REVIEW_REQUIRED', 'A local human must review this change.', 403)
     const active = await client.query<{ grants: ManagementPrincipal['grants']; expires_at: Date }>(
       "select grants,expires_at from management_principals where id=$1 and audience='operator' and delegated_from is null and revoked_at is null and expires_at>now() for share", [principal.id])
-    if (!active.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Sign in again to review this change.', 401)
+    if (!active.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Access is unavailable. Check the local API connection before reviewing this change.', 401)
     requireAuthorization({ ...principal, grants: active.rows[0].grants, expiresAt: active.rows[0].expires_at.toISOString() }, 'harnesses:update')
   }
   private managed(plan: HarnessMcpPlan): { preset: HarnessMcpManagedPreset; endpoint: string } | undefined {

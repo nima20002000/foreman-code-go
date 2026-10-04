@@ -115,10 +115,10 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
       // Re-check against the same route resource; scoped grants never match an empty resource.
-      if (!agentChat) requireAuthorization(current, actionFor(request), resource)
+      if (!agentChat && path !== '/api/runtime/identity') requireAuthorization(current, actionFor(request), resource)
       return current
     }
-    if (!agentChat && !request.url.startsWith('/api/management/')) {
+    if (!agentChat && path !== '/api/runtime/identity' && !request.url.startsWith('/api/management/')) {
       requireAuthorization(principal, actionFor(request), resource)
       if (request.method === 'GET' && /^\/api\/workspaces\/[^/]+\/runs\/[^/]+(?:\?.*)?$/.test(request.url)) {
         requireAuthorization(principal, 'workspace_locations:read', resource)

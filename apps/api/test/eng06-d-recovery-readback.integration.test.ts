@@ -264,8 +264,8 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       const audits = (await f.base.db.pool.query<{ source: string }>('select source from management_audit where principal_id=$1',
         [wrongScope.principal.id])).rows
       expect(audits.map((row) => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
-      expect((await f.transport.app.inject({ method: 'GET', url: `${runPath(f)}/record` })).statusCode).toBe(401)
-      expect((await f.transport.app.inject({ method: 'GET', url: `${runPath(f)}/executions/${executionId}` })).statusCode).toBe(401)
+      expect((await f.transport.app.inject({ method: 'GET', url: `${runPath(f)}/record`, headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
+      expect((await f.transport.app.inject({ method: 'GET', url: `${runPath(f)}/executions/${executionId}`, headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
       expect(f.provider.counts).toEqual(counts)
       expect(await readback(f)).toEqual(expected)
       expect(f.shutdownErrors).toEqual([])

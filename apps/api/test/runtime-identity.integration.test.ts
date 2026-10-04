@@ -8,7 +8,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
-it('persists installation identity, rotates after recreation, and authenticates browser identity without requiring management grants', async () => {
+it('persists local installation identity, rotates after recreation, and preserves bearer revocation without management grants', async () => {
   const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
   const schema = `startup_identity_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
@@ -27,7 +27,10 @@ it('persists installation identity, rotates after recreation, and authenticates 
     const authorized = await app.inject({ method: 'GET', url: '/api/runtime/identity', headers: { authorization: `Bearer ${reader.token}` } })
     expect(authorized.statusCode).toBe(200)
     expect(authorized.json()).toEqual(first)
-    expect((await app.inject({ method: 'GET', url: '/api/runtime/identity' })).statusCode).toBe(401)
+    const local = await app.inject({ method: 'GET', url: '/api/runtime/identity' })
+    expect(local.statusCode).toBe(200)
+    expect(local.json()).toEqual(first)
+    expect((await app.inject({ method: 'GET', url: '/api/runtime/identity', remoteAddress: '192.0.2.1' })).statusCode).toBe(403)
     await access.revoke(reader.principal.id)
     expect((await app.inject({ method: 'GET', url: '/api/runtime/identity', headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(401)
     await app.close(); app = undefined

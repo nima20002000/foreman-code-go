@@ -83,7 +83,7 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     const input = { pluginId: item.pluginId, action: 'install' as const, expectedRevision: before.revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
     expect((await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/plugins/change',
       headers: { authorization: `Bearer ${owner.token}` }, payload: input })).statusCode).toBe(403)
-    await expect(plugins.change(delegated.principal, input)).rejects.toThrow('signed-in owner')
+    await expect(plugins.change(delegated.principal, input)).rejects.toMatchObject({ code: 'CODEX_PLUGIN_BROWSER_REQUIRED', status: 403 })
     expect((await plugins.change(owner.principal, input)).status).toBe('applied')
     expect((await plugins.change(owner.principal, input)).status).toBe('applied')
     expect(changes).toBe(1)

@@ -79,8 +79,7 @@ export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityH
       await retry.mutateAsync(target)
     } catch (error) {
       notify({ title: `Could not confirm the ${nameOf(target)} check`, tone: 'danger', description:
-        ApiError.is(error) && error.status === 401 ? 'Your session expired. Sign in again before retrying.'
-          : ApiError.is(error) && error.status === 403 ? 'Your account cannot retry harness checks. Ask an owner with harness update access.'
+        ApiError.is(error) && [401, 403].includes(error.status) ? 'Access is unavailable. Check the local API connection, then try again.'
           : `${error instanceof Error ? error.message : 'The API is unavailable.'} A check may still be running. Refresh its status before retrying.`,
       })
     } finally { submitting.current.delete(target) }

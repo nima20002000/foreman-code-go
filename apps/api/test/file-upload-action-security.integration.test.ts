@@ -106,7 +106,7 @@ describe.skipIf(!postgresEnabled)('FIL-03 upload IDs are not Operator chat actio
           headers: accepted.headers, payload: {} })).statusCode, 403)
       }
       assert.equal((await app.inject({ method: 'PUT', url: `${accepted.root}/files/uploads/${requestId}`,
-        headers: { host: 'localhost', 'content-type': 'application/octet-stream' }, payload: body })).statusCode, 401)
+        headers: { host: 'localhost', authorization: 'Bearer invalid', 'content-type': 'application/octet-stream' }, payload: body })).statusCode, 401)
     })
   }
 })

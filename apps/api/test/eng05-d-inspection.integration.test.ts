@@ -199,7 +199,7 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
         expect(response.statusCode, `${query}: ${response.body}`).toBe(400)
       }
       for (const name of Object.values(RUN_INSPECTION_TOOLS)) {
-        const response = await f.app.inject({ method: 'GET', url: path({ ...args, executionId: 'private' }, name) })
+        const response = await f.app.inject({ method: 'GET', url: path({ ...args, executionId: 'private' }, name), headers: { authorization: 'Bearer invalid' } })
         expect(response.statusCode).toBe(401)
       }
       const runsOnly = await reader(f, args.runId, [{ actions: ['runs:read'], scope: { runIds: [args.runId] } }])

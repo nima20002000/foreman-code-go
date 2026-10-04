@@ -1,8 +1,11 @@
 import { ManagementActionSchema } from '@graphql/contracts/management'
 
 export const localHumanMigration = { version: 2026100401, sql: `
+  alter table management_principals alter column token_hash drop not null;
+  alter table management_principals add constraint management_principals_credential_required
+    check (token_hash is not null or id = 'principal-local-human');
   insert into management_principals(id,name,audience,token_hash,grants,expires_at)
-    values('principal-local-human','Local human','operator','local-human:no-credential',
+    values('principal-local-human','Local human','operator',null,
       '${JSON.stringify([{ actions: [...ManagementActionSchema.options], scope: {} }])}'::jsonb,
       '9999-12-31T23:59:59Z');
   create table local_human_principal (

@@ -187,7 +187,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     expect(await readback(reader)).toEqual({ schedule: saved })
   }, 60_000)
 
-  it('foreign readers cannot read the schedule or history and anonymous writes cannot mutate', async () => {
+  it('foreign readers cannot read the schedule or history and remote unauthenticated writes cannot mutate', async () => {
     await f.save()
     const outsider = await f.issue(['workflows:read', 'capabilities:read'], `foreign-${randomUUID()}`)
     const client = await connect(outsider.token)
@@ -197,10 +197,10 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
       const result = await client.callTool({ name, arguments: f.scope })
       expect(result.isError).toBe(true); expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
     }
-    const anonymous = await app!.inject({ method: 'PUT', url: root(), payload: {
+    const anonymous = await app!.inject({ method: 'PUT', url: root(), remoteAddress: '192.0.2.1', payload: {
       commandId: randomUUID(), expectedRevision: 1, schedule: futureOnce,
     } })
-    expect(anonymous.statusCode).toBe(401)
+    expect(anonymous.statusCode).toBe(403)
     expect(await sch11DomainState(f)).toEqual(before)
   }, 60_000)
 

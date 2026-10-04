@@ -12,8 +12,8 @@ afterEach(() => vi.restoreAllMocks())
 
 async function approveThroughHttp(f: Harness, started: Started) {
   const { workspaceId, workflowId, runId } = started.scope
-  const denied = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`)
-  expect(denied.status).toBe(403)
+  const agentDenied = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`)
+  expect(agentDenied.status).toBe(403)
   const runOnly = await f.rawHttp('GET', `/api/user/interactions?runId=${encodeURIComponent(runId)}&limit=10`, undefined, '')
   expect(runOnly.status).toBe(200)
   const query = new URLSearchParams({ workspaceId, workflowId, runId, limit: '10' })
@@ -45,7 +45,7 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(tools.tools.map((tool) => tool.name)).not.toContain('interaction_respond')
   const denied = await f.rawHttp('POST', path, input)
   expect(denied.status).toBe(403)
-  expect(denied.body).toMatchObject({ error: { code: 'AUTH_WRONG_AUDIENCE' } })
+  expect(denied.body).toMatchObject({ error: { code: 'MCP_BROWSER_REVIEW_REQUIRED' } })
   expect(f.base.provider.counts.responses).toBe(0)
   // Prove that the original approval is still open BEFORE the first response.
   // These are observations only; no authority, budget or cleanup fence is reset.

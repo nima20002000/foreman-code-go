@@ -17,7 +17,7 @@ export function isRunAccessError(error: unknown) {
 }
 export function runReadErrorLabel(error: unknown, subject: 'run' | 'list' = 'run') {
   if (ApiError.is(error)) {
-    if (error.status === 401) return 'Sign in'
+    if (error.status === 401) return 'Access unavailable'
     if (error.status === 403) return 'No access'
     if (error.status === 404) return subject === 'run' ? 'Run not found' : 'Not found'
   }
