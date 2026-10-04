@@ -15,7 +15,7 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
-import { ReviewManager } from './fixtures/agent1OperatorChat.js'
+import { deferred, ReviewManager } from './fixtures/agent1OperatorChat.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', () => {
@@ -162,6 +162,53 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       expect(manager.turns).toBe(0)
     } finally {
       admission.mockRestore()
+    }
+  })
+
+  it('settles fresh sends when read access is revoked during the accepted configuration lookup', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write'])
+    const conversation = await chat.create(owner.principal)
+    const earlier = { requestId: randomUUID(), content: 'Protected earlier transcript' }
+    await repository.beginTurn(conversation.id, earlier, owner.principal.id)
+    await repository.finish(conversation.id, earlier.requestId, { outcome: 'succeeded' })
+    const admitted = deferred()
+    const resume = deferred()
+    const configuration = repository.configuration.bind(repository)
+    const lookup = vi.spyOn(repository, 'configuration').mockImplementation(async (id) => {
+      const saved = await configuration(id)
+      if ((await repository.active(conversation.id))?.active_request_id === request.requestId) {
+        admitted.resolve()
+        await resume.promise
+      }
+      return saved
+    })
+    const request = { requestId: randomUUID(), content: 'Fresh protected request' }
+    try {
+      const sending = owner.client.callTool({ name: 'operator_chat_send', arguments: {
+        conversationId: conversation.id, request,
+      } })
+      await admitted.promise
+      await database.pool.query('update management_principals set grants=$2::jsonb where id=$1', [
+        owner.principal.id, JSON.stringify([{ actions: ['operator_chat:write'], scope: {} }]),
+      ])
+      resume.resolve()
+      const result = await sending
+      expect(result.isError).toBe(true)
+      expect(result.structuredContent).toBeUndefined()
+      expect(JSON.stringify(result)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify(result)).not.toContain(earlier.content)
+      expect(JSON.stringify(result)).not.toContain(request.content)
+      expect(manager.turns).toBe(0)
+      expect(manager.attachments).toBe(0)
+      expect(await repository.get(conversation.id)).toMatchObject({
+        activeRequestId: null, turnState: 'error',
+        lastResult: { outcome: 'failed', error: { code: 'ACCESS_DENIED' } },
+      })
+      const fresh = new PostgresOperatorConversationRepository(database.pool)
+      expect((await fresh.get(conversation.id))?.lastResult?.error?.code).toBe('ACCESS_DENIED')
+    } finally {
+      resume.resolve()
+      lookup.mockRestore()
     }
   })
 

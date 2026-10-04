@@ -433,6 +433,7 @@ export class OperatorChatService {
         const resident = this.runtimes.get(targetId)
         if (resident && resident.configuration?.id !== accepted.id) await this.release(targetId)
         if (this.closing || controller.signal.aborted) throw new Error('Operator chat stopped before native submission.')
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
       } catch (error) {
         await this.repository.finish(targetId, input.requestId, failure(error), undefined, true)
         throw error
