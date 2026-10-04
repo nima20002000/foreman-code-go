@@ -133,7 +133,7 @@ describe('Claude response ownership through SDK callbacks', () => {
       })
       const first = permission('tool-1')
       f.assistant('A1', [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/work/file' } }], message.uuid)
-      expect((await first).behavior).toBe('allow')
+      expect(await first).toMatchObject({ behavior: 'allow' })
       f.frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: 'tool-result-1',
         message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'file' }] } })
       // A previously owned API message can arrive during the new response without moving its boundary.
@@ -147,7 +147,7 @@ describe('Claude response ownership through SDK callbacks', () => {
         transcript_path: '/profile/transcript', cwd: scope.cwd, tool_use_id: 'tool-2',
         tool_name: 'Read', tool_input: { file_path: '/work/file' } }, 'tool-2', { signal }))
         .toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse' } })
-      expect((await second).behavior).toBe('allow')
+      expect(await second).toMatchObject({ behavior: 'allow' })
       f.assistant('A3', [{ type: 'text', text: 'final answer' }])
       f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'frame-A3',
         subtype: 'success', is_error: false, result: 'result without an input echo' })
@@ -190,7 +190,7 @@ describe('Claude response ownership through SDK callbacks', () => {
       const decision = await f.callbacks.canUseTool!('Read', {}, {
         signal, toolUseID: 'stream-tool', requestId: 'stream-control',
       })
-      expect(decision.behavior).toBe('allow')
+      expect(decision).toMatchObject({ behavior: 'allow' })
       f.assistant('stream-3', [{ type: 'text', text: 'third' }])
       f.result(message.uuid)
       const events = await output

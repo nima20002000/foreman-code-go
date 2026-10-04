@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import { OperatorConfigurationVersionSchema, type NativeHarnessEvent } from '@graphql/contracts'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity } from '../src/modules/harnesses/claudeSdk/interactions.js'
@@ -14,7 +14,10 @@ const scope = { deviceId: 'device', profilePath: '/profile', configRevision: 're
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription',
   configDirectory: '/profile', permissionMode: 'default', sandbox: 'read-only', tools: ['Read'],
   permissionRules: [{ tool: 'Read', effect: 'ask' }], instructions: '', mcpServers: {} }
-export const start = { kind: 'operator', correlationId: 'owner', configuration, workingDirectory: '/work' } as NativeSessionStart
+export const start: NativeSessionStart = { kind: 'operator', correlationId: 'owner',
+  configuration: OperatorConfigurationVersionSchema.parse({ id: 'configuration', operatorId: 'operator', version: 1,
+    harness: configuration, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: '2026-10-04T00:00:00.000Z' }),
+  workingDirectory: '/work' }
 export const saved = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'native-session' }
 
 export function createStreamFixture(options: { receiptCapacity?: number; outputCapacity?: number;

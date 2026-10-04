@@ -150,7 +150,7 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const response = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_respond', arguments: { conversationId: id, request: input } })
         spy.mockRestore()
         expect(response.result?.isError).toBe(true)
-        expect((await permission).behavior).toBe(scenario === 'aborted' ? 'deny' : 'allow')
+        expect((await permission)?.behavior).toBe(scenario === 'aborted' ? 'deny' : 'allow')
         const readReceipt = async () => (await pool.query('select result from management_command_receipts where command_id=$1', [input.commandId])).rows[0].result
         const original = await readReceipt()
         expect(original.status).toBe(scenario === 'aborted' ? 'uncertain' : 'pending')
@@ -176,8 +176,9 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         expect(readback.result?.isError).not.toBe(true)
         const state = graphRpcValue(readback.result) as OperatorConversationState
         expect(state).toMatchObject({ nativeSubmission: { kind: 'message', nativeMessageId: message.uuid } })
-        const summary = state.activitySnapshot?.activities.find(activity => activity.kind === 'interaction'
-          && activity.interaction?.answerRecorded)?.interaction
+        const activity = state.activitySnapshot?.activities.find(activity => activity.kind === 'interaction'
+          && activity.interaction?.answerRecorded)
+        const summary = activity?.kind === 'interaction' ? activity.interaction : undefined
         expect(summary?.providerAcknowledged).toBe(completed)
         if (!completed) expect(summary?.delivery).not.toBe('delivered')
         const replay = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_respond', arguments: { conversationId: id, request: input } })

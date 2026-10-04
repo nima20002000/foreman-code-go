@@ -1172,7 +1172,8 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const app = buildApp({ logger: false,
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-      operator: { access, services: { operatorChat: chat } as OperatorServices } })
+      operator: { access, services: { operatorChat: chat,
+        commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
     const clients: Client[] = []
     const fault = vi.spyOn(repository, 'finish').mockRejectedValue(new Error('Final persistence unavailable'))
     try {
