@@ -18,7 +18,15 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
   let f: Sch11Fixture
   beforeAll(async () => { database = await agent3Database() }, 60_000)
   afterAll(async () => { await database?.close() })
-  beforeEach(async () => { f = await sch11Fixture(database) }, 60_000)
+  beforeEach(async () => {
+    if (f) {
+      const previous = await f.current()
+      if (previous?.enabled) {
+        await f.service.disable(f.writer.principal, 'http', f.command(previous.revision))
+      }
+    }
+    f = await sch11Fixture(database)
+  }, 60_000)
 
   it.each(sch11ClockCases)('$name: preview equals the persisted acceptance and cursor', async ({ schedule, from, expected }) => {
     f.time.now = from
@@ -245,7 +253,10 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
       dispatch: (candidate, signal) => {
         if (candidate.workflowId === f.scope.workflowId) return dispatcher.dispatch(candidate, signal)
         const fixture = others.find((other) => other.scope.workflowId === candidate.workflowId)!
-        return fixture.dispatcher().dispatch(candidate, signal)
+        return fixture.dispatcher(async (principal, input, guard) => {
+          await release.promise
+          await fixture.startUsing()(principal, input, guard)
+        }).dispatch(candidate, signal)
       },
     }, { clock: f.clock, reportError: (error) => { throw error } })
     const work = loop.tick()
