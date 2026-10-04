@@ -54,9 +54,15 @@ export function repeatEffectFactsFromState(scope: RepeatGraphScopeV3, state: Rep
     case 'terminal.accept': {
       const execution = state.executions.find((item) => item.identity.executionId === effect.entityId)
       const resolutions = state.resolutions.filter((item) => item.value.execution?.executionId === effect.entityId)
+      const result = state.results.find((item) => item.execution.executionId === effect.entityId)
+      if (execution?.workActivationId) {
+        if (execution.state !== 'completed' || execution.resultOutcome !== 'succeeded' || resolutions.length
+          || !result || !equal(result.execution, execution.identity)
+          || state.decisions.some((item) => item.exitExecution.executionId === effect.entityId)) return fail()
+        return [{ type: 'repeat.result.accepted', result }]
+      }
       const local = resolutions.find((item) => item.outside === (execution?.identity.occurrence === null))
       if (!execution || execution.state !== 'completed' || !local) return fail()
-      const result = state.results.find((item) => item.execution.executionId === effect.entityId)
       const decision = state.decisions.find((item) => item.exitExecution.executionId === effect.entityId)
       const next = decision && state.occurrences.find((item) => item.input.previous?.decisionId === decision.decisionId)
       const exported = execution.identity.occurrence ? resolutions.find((item) => item.outside) : undefined

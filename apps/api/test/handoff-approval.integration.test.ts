@@ -141,9 +141,18 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
 
 async function runtimeDetails(f: Fixture, runtime: Runtime): Promise<string> {
   const run = await runtime.runs.get(f.f.run.id)
-  const executions = (await f.db.pool.query('select record from harness_executions where run_id=$1',
-    [f.f.run.id])).rows.map((row) => row.record)
-  return JSON.stringify({ run, executions, routingFailures })
+  const executions = (await f.db.pool.query('select record,accepted from harness_executions where run_id=$1',
+    [f.f.run.id])).rows
+  const cleanup = (await f.db.pool.query('select * from run_cleanup_intents where run_id=$1', [f.f.run.id])).rows
+  return JSON.stringify({ run, executions, cleanup, routingFailures })
+}
+
+function traceCleanup(runtime: Runtime): void {
+  const requestCleanup = runtime.runs.requestCleanup.bind(runtime.runs)
+  vi.spyOn(runtime.runs, 'requestCleanup').mockImplementation(async (...args) => {
+    routingFailures.push({ code: 'cleanup-request', message: new Error('Cleanup requested').stack ?? 'Cleanup requested' })
+    await requestCleanup(...args)
+  })
 }
 
 describe.skipIf(!postgresEnabled)('handoff Worker approval through the designated Orchestrator', () => {
@@ -151,6 +160,19 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
     const f = await fixture()
     routingFailures.length = 0
     let runtime: Runtime = f
+    traceCleanup(runtime)
+    const acceptTerminal = RepeatRunRepository.prototype.acceptWorkTerminal
+    vi.spyOn(RepeatRunRepository.prototype, 'acceptWorkTerminal').mockImplementation(async function (
+      this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['acceptWorkTerminal']>
+    ) {
+      try {
+        return await acceptTerminal.apply(this, args)
+      } catch (error) {
+        if (error instanceof Error) routingFailures.push({ message: error.stack ?? error.message,
+          ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}) })
+        throw error
+      }
+    })
     const returnWork = RepeatRunRepository.prototype.returnWork
     vi.spyOn(RepeatRunRepository.prototype, 'returnWork').mockImplementation(async function (
       this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['returnWork']>
@@ -204,6 +226,7 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
         await settledStart
         pause.mockRestore()
         runtime = f.compose(new ApprovalPostgresSaver(f.db.pool, undefined, { schema: f.db.schema }))
+        traceCleanup(runtime)
         vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
         await runtime.engine.resume(f.f.run.id)
         expect(f.counts().sessions, await runtimeDetails(f, runtime)).toBe(2)
