@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { scheduleDispatchLog } from './modules/schedules/dispatchErrors.js'
 
 import {
   ApiErrorResponseSchema,
@@ -102,8 +103,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   })
   // Timed delivery is an API lifecycle, never a browser or HTTP-request timer.
   app.addHook('onReady', async () => {
-    options.operator?.services.runs?.startScheduleDispatcher?.(() => {
-      app.log.error({ code: 'SCHEDULE_DISPATCH_RETRY' }, 'schedule dispatch failed; durable state retained for retry')
+    options.operator?.services.runs?.startScheduleDispatcher?.((error, context) => {
+      app.log.error(scheduleDispatchLog(error, context), 'schedule dispatch failed; durable state retained for retry')
     })
   })
   app.addHook('preClose', async () => { await options.operator?.services.runs?.stopScheduleDispatcher?.() })

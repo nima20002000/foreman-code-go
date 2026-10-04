@@ -1,16 +1,18 @@
 import type { WorkflowSchedule } from '@graphql/contracts/schedules'
 import { DomainError } from '../errors.js'
+import type { ScheduleDispatchContext, ScheduleDispatchErrorReporter } from './dispatchErrors.js'
 
 export interface ScheduleDispatcherPort {
   listDueSchedules(input: { throughUtc: string; limit: number; cursor?: string }): Promise<{
     items: WorkflowSchedule[]; pageInfo: { nextCursor: string | null }
   }>
-  dispatch(schedule: WorkflowSchedule, signal?: AbortSignal): Promise<void>
+  dispatch(schedule: WorkflowSchedule, signal?: AbortSignal,
+    onCandidate?: (candidate: WorkflowSchedule) => void): Promise<void>
 }
 export interface ScheduleDispatcherOptions {
   clock?: () => Date
   isReady?: () => boolean
-  reportError: (error: unknown) => void
+  reportError: ScheduleDispatchErrorReporter
   pollIntervalMs?: number
 }
 
@@ -73,11 +75,17 @@ export class WorkflowScheduleDispatcher {
       if (!schedule) return
       this.pending.delete(schedule.workflowId)
       const controller = new AbortController()
+      let context: ScheduleDispatchContext = {
+        workspaceId: schedule.workspaceId, workflowId: schedule.workflowId, dueAt: schedule.nextOccurrenceAt,
+      }
       const timer = setTimeout(() => controller.abort(new DomainError(
         'SCHEDULE_PREPARATION_TIMEOUT', 'Scheduled Start exceeded its preparation deadline.', 504,
       )), 30_000)
-      const work = Promise.resolve().then(() => this.port.dispatch(schedule, controller.signal))
-        .catch((error: unknown) => { this.options.reportError(error) })
+      const work = Promise.resolve().then(() => this.port.dispatch(schedule, controller.signal, (candidate) => {
+        context = { workspaceId: candidate.workspaceId, workflowId: candidate.workflowId,
+          dueAt: candidate.nextOccurrenceAt }
+      }))
+        .catch((error: unknown) => { this.options.reportError(error, context) })
         .finally(() => {
           clearTimeout(timer)
           this.dispatching.delete(schedule.workflowId)

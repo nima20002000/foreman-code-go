@@ -25,6 +25,7 @@ import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './
 
 import { createScheduleDispatcher } from '../schedules/runtime.js'
 import type { WorkflowScheduleDispatcher } from '../schedules/dispatcher.js'
+import type { ScheduleDispatchErrorReporter } from '../schedules/dispatchErrors.js'
 
 export class RunManagementService {
   readonly subagents: RunSubagentService
@@ -53,7 +54,7 @@ export class RunManagementService {
   recoverSubagentCommands(): Promise<number> { return recoverSubagentCommands(this.pool) }
 
   /** Internal API lifecycle, not a remotely callable Start endpoint. */
-  startScheduleDispatcher(reportError: (error: unknown) => void): void {
+  startScheduleDispatcher(reportError: ScheduleDispatchErrorReporter): void {
     if (!this.currentProduction || this.scheduleDispatcher) return
     this.scheduleDispatcher = createScheduleDispatcher(this.pool, this.locations, this.currentProduction, this.engine, reportError)
     this.scheduleDispatcher.start()

@@ -5,12 +5,13 @@ import { admitRepeatRun } from '../runs/repeatStartAdmission.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { WorkflowScheduleDispatcher } from './dispatcher.js'
 import { PostgresScheduleDispatcher } from './postgresDispatcher.js'
+import type { ScheduleDispatchErrorReporter } from './dispatchErrors.js'
 
 /** API-process composition. Uses exactly the same durable Start as manual
  * HTTP/MCP, and the same concrete canonical publisher and engine entry. */
 export function createScheduleDispatcher(pool: pg.Pool, locations: WorkspaceLocationService,
   production: CurrentRunProductionBinding, engine: LangGraphWorkflowEngine,
-  reportError: (error: unknown) => void, clock: () => Date = () => new Date()) {
+  reportError: ScheduleDispatchErrorReporter, clock: () => Date = () => new Date()) {
   const port = new PostgresScheduleDispatcher(pool, async (principal, input, schedule) => {
     production.assertStartReady()
     const result = await admitRepeatRun(pool, locations, principal, 'schedule', input, {
