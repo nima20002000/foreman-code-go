@@ -127,11 +127,12 @@ class RejectedSessionCreation extends Error {
   }
 }
 function definiteNonCreation(error: unknown, row: AgentConversationRow): boolean {
+  if (error instanceof NativeDeliveryError) {
+    return error.operation === 'session_creation' && error.delivery === 'not_sent'
+  }
   if (error && typeof error === 'object' && ('uncertain' in error && error.uncertain === true
     || 'certainty' in error && error.certainty === 'uncertain')) return false
-  if (row.harness === 'codex') {
-    return error instanceof NativeDeliveryError && error.operation === 'session_creation' && error.delivery === 'not_sent'
-  }
+  if (row.harness === 'codex') return false
   // OpenCode fresh creation has no fallible native operation after POST /session succeeds.
   // Fork also applies/verifies the child's policy; a definite error there can leave a created child.
   return row.record.origin.kind === 'fresh' && definiteRejection(error)

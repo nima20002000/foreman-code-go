@@ -216,7 +216,7 @@ export function integrationEnvironment(environment, slot) {
     TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
 }
 
-function options(argv) {
+export function options(argv) {
   const startAt = readProductEnvironment(process.env, 'INTEGRATION_START_AT') || null
   const failedFrom = readProductEnvironment(process.env, 'INTEGRATION_FAILED_LOG') || null
   if (!argv.length) {

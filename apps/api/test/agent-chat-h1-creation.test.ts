@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { describe, it } from 'vitest'
-import type { AgentConfigurationVersion, ExecutionResult } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type ExecutionResult } from '@foreman-code/contracts'
 import type { SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
@@ -26,16 +26,18 @@ async function eventually(check: () => boolean | Promise<boolean>) {
 }
 
 /** Real service/repository, scripted SQL and a fake native manager. NOT a PostgreSQL/native test. */
-async function fixture() {
+async function fixture(harness: 'codex' | 'opencode' = 'codex') {
   const root = await mkdtemp(join(tmpdir(), 'agent-chat-h1-'))
   const store = new F1Store()
+  store.row.harness = harness
   store.row.native_session_id = null; store.row.provider_version = null
   delete store.row.record.startupDelivered
   store.row.record.workingDirectory = root; store.row.record.runtimeDirectory = root
   const configuration: AgentConfigurationVersion = {
     id: store.row.agent_configuration_version_id, workspaceId: context.workspaceId, agentId: context.agentId, version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'fixture', createdAt: new Date().toISOString(),
-    harness: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+    harness: harness === 'opencode' ? DEFAULT_HARNESS_DEFAULTS.opencode
+      : { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
   }
   const principal: ManagementPrincipal = {
     id: 'caller', name: 'H1 unit caller', audience: 'operator', revokedAt: null,
@@ -100,6 +102,7 @@ async function fixture() {
   const owners = new Map<string, Native>()
   const natives: Native[] = []
   class Native extends F1Native {
+    override readonly harness = harness
     disposed = 0
     override async createSession(input?: NativeSessionStart) {
       assert.ok(input); creationInputs.push(structuredClone(input)); creates++
@@ -149,6 +152,21 @@ async function fixture() {
 }
 
 describe('H1/A3-PF-01 creation rejection and marker retirement (scripted SQL)', () => {
+  it('retires proven unsent OpenCode admission failures and permits explicit retry', async () => {
+    const f = await fixture('opencode')
+    f.creationError = new NativeDeliveryError('session_creation', 'not_sent', new Error('Admission failed.'))
+    try {
+      await f.send('first')
+      await eventually(() => f.store.turns.get('first')?.delivery === 'failed')
+      assert.equal(f.store.row.record.sessionCreation, undefined)
+      assert.equal((await f.read()).availability.canSend, true)
+      await f.send('retry')
+      await eventually(() => f.store.turns.get('retry')?.delivery === 'failed')
+      assert.equal(f.creates, 2)
+      assert.equal(f.store.row.record.sessionCreation, undefined)
+      assert.deepEqual(f.natives.flatMap((native) => native.starts), [])
+    } finally { await f.dispose() }
+  })
   for (const preflight of [false, true]) {
     it(`${preflight ? 'proven model-catalog preflight failure' : 'definite thread/start rejection'} stays retryable, and exact replay never resends`, async () => {
       const f = await fixture()

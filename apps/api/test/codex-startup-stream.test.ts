@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import { createNativeTextStream } from '../src/modules/conversations/nativeTextStream.js'
 import { completedNativeAssistantMessage } from '../src/modules/conversations/operatorText.js'
 import { normalizeCodexNotification } from '../src/modules/harnesses/codexNormalization.js'
+import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { isObject, type JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import {
-  calls, emit, fixture, fixtureQualification, input, state, until, type Fixture,
+  calls, collect, emit, fixture, fixtureQualification, input, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
 
 // Qualification is isolated; startup, admission, normalization and stdio use the real implementation.
@@ -51,6 +52,44 @@ describe.skipIf(process.platform === 'win32')('Codex assistant text across start
     releaseAdmission = undefined
     await manager.shutdown()
     await rm(f.directory, { recursive: true, force: true })
+  })
+
+  it('retains startup text after persistence fails and recovers admission without resending', async () => {
+    const session = await manager.createSession(input(f.directory))
+    let submissions = 0
+    const result = collect(manager.startTurn(session, {
+      prompt: 'wait', clientCorrelationId: 'persistence-retry',
+      onSubmitted: async () => {
+        submissions++
+        if (submissions === 1) throw new Error('The identity write failed.')
+      },
+    }))
+    void result.catch(() => undefined)
+    const nativeTurn = await until(async () => {
+      if (!(await calls(f.directory)).some((entry) => isObject(entry.wire) && entry.wire.method === 'turn/start')) return false
+      return (await state(f.directory, session.nativeSessionId)).turns[0]
+    })
+    const params = { threadId: session.nativeSessionId, turnId: nativeTurn.id }
+    await emit(f.directory, { method: 'item/started', params: {
+      ...params, item: { id: 'answer', type: 'agentMessage', text: '', phase: 'final_answer' },
+    } })
+    await emit(f.directory, { method: 'item/agentMessage/delta', params: {
+      ...params, itemId: 'answer', delta: 'Retained text',
+    } })
+    const request = (await calls(f.directory)).find((entry) =>
+      isObject(entry.wire) && entry.wire.method === 'turn/start')!
+    assert(isObject(request.wire))
+    await emit(f.directory, { id: request.wire.id, result: { turn: nativeTurn } })
+    await assert.rejects(result, (error: unknown) => error instanceof NativeDeliveryError
+      && error.operation === 'turn_submission' && error.delivery === 'unknown')
+    assert.deepEqual(textTimeline((await manager.history(session)).events), [])
+    const history = await manager.reconcile(session, 'persistence-retry')
+    assert.equal(submissions, 2)
+    assert.deepEqual(textTimeline(history.events), ['item.started:answer', 'delta:answer:Retained text'])
+    await manager.reconcile(session, 'persistence-retry')
+    assert.equal(submissions, 2)
+    assert.equal((await calls(f.directory)).filter((entry) =>
+      isObject(entry.wire) && entry.wire.method === 'turn/start').length, 1)
   })
 
   for (const timing of ['before acknowledgement', 'during persistence'] as const) {

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -62,6 +62,15 @@ test('requested integration files select only discovered files once in discovery
   assert.deepEqual(selectExactFiles(files, [files[2], files[0], files[2]]), [files[0], files[2]])
   assert.throws(() => selectExactFiles(files, []), /at least one integration file/)
   assert.throws(() => selectExactFiles(files, ['apps/api/test/missing.integration.test.ts']), /Unknown --files/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/../a.integration.test.ts']), /Unknown --files/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/a.test.ts']), /Unknown --files/)
+})
+
+test('the runner accepts an explicit file list and rejects an empty list', () => {
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  assert.deepEqual(options(['--files', ...files]), { startAt: null, failedFrom: null, files })
+  assert.throws(() => options(['--files']), /Usage/)
+  assert.deepEqual(options([]), { startAt: null, failedFrom: null, files: null })
 })
 
 test('failed-log selection includes only discovered failures once', () => {

@@ -1809,6 +1809,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (starting.acknowledgement) return starting.acknowledgement
     starting.acknowledgedTurnId = turnId
     const acknowledgement = (async () => {
+      let admitted = false
       runtime.activeTurnId = turnId
       runtime.activeCorrelationId = starting.correlationId
       starting.resolveIdentity(turnId)
@@ -1832,22 +1833,26 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         runtime.phase = 'active'
         this.record(runtime, 'turn.started', { threadId: runtime.session.nativeSessionId, turnId, clientCorrelationId: starting.correlationId })
         this.applyTurn(runtime, turn)
+        admitted = true
       } catch (error) {
         runtime.phase = 'uncertain'
+        delete starting.acknowledgement
         await this.finishTurnResources(runtime)
         throw error
       } finally {
         // Keep the gate closed while draining: callbacks arriving during an
         // awaited file operation must not overtake earlier staged callbacks.
         try {
-          while (!runtime.disposed && starting.staged.length > 0) {
+          while (admitted && !runtime.disposed && starting.staged.length > 0) {
             const event = starting.staged.shift()!
             if ('request' in event) await this.handleRequest(runtime, event.request, true)
             else this.handleNotification(runtime, event.method, event.params, true, event.arrivalOrdinal)
           }
         } finally {
-          starting.staged.length = 0
-          if (runtime.starting === starting) runtime.starting = undefined
+          if (admitted) {
+            starting.staged.length = 0
+            if (runtime.starting === starting) runtime.starting = undefined
+          }
         }
       }
       if (starting.cancelRequested && !runtime.terminalResult) await this.interrupt(runtime)

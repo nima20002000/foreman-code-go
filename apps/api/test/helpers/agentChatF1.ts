@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
@@ -274,7 +274,7 @@ export class F1Store {
 }
 
 export class F1Native implements NativeHarnessSessionManager {
-  readonly harness = 'codex' as const
+  readonly harness: AgentHarness = 'codex'
   readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
   readonly starts: string[] = []
   readonly cancels: string[] = []
