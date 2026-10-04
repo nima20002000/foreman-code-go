@@ -73,18 +73,23 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     }, 60_000,
   )
 
-  it('replays an elapsed Once before new-save clock validation without reviving its settings', async () => {
+  it('replays an elapsed Once and preserves its pending cursor while rejecting past recurrence edits', async () => {
     const input = { ...f.command(0), schedule: sch11Once }
     const saved = await f.service.save(f.writer.principal, 'http', input)
-    const before = await sch11DomainState(f)
     f.time.now = '2030-01-07T10:00:00.000Z'
     expect(await f.service.save(f.writer.principal, 'mcp', input)).toEqual({ value: saved.value, replayed: true })
+    const unchanged = await f.service.save(f.writer.principal, 'http', { ...f.command(1), schedule: sch11Once })
+    expect(unchanged).toEqual({ value: { ...saved.value, revision: 2 }, replayed: false })
+    const before = await sch11DomainState(f)
     for (const enabled of [true, false]) {
-      await expect(f.service.save(f.writer.principal, 'http', { ...f.command(1), schedule: { ...sch11Once, enabled } }))
+      await expect(f.service.save(f.writer.principal, 'http', {
+        ...f.command(2), schedule: { ...sch11Once, time: '08:59', enabled },
+      }))
         .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
     }
     expect(await sch11DomainState(f)).toEqual(before)
-    expect(await f.current()).toEqual(saved.value)
+    expect(await f.current()).toEqual(unchanged.value)
+    expect(await f.history()).toEqual([])
     expect(await f.countRuns()).toBe(0)
   }, 60_000)
 

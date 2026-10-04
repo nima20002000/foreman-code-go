@@ -45,6 +45,7 @@ export function selectFiles(files, startAt) {
 }
 
 export function selectExactFiles(files, requested) {
+  if (!requested.length) throw new Error('At least one integration file is required')
   const known = new Set(files)
   for (const file of requested) {
     if (!known.has(file)) throw new Error(`Unknown --files integration file: ${file}`)
@@ -327,6 +328,7 @@ async function main() {
     heartbeat = setInterval(reportProgress, 30_000)
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
+    if (files) console.log('[integration] Selected-file run; results cover only the requested files.')
     const runFile = async (slot, file, phase = 'first') => {
       if (interrupted) return { code: 128 + (interrupted === 'SIGINT' ? 2 : 15) }
       if (active.has(slot.index)) throw new Error(`Slot ${slot.index} still has an owned process group`)
@@ -372,7 +374,10 @@ async function main() {
         else unreported++
       }
       if (code === 0 && !summary) { code = 1; error = new Error('Vitest case summary missing') }
-      if (code === 0 && failForSkippedCases(summary, diagnostic)) { code = 1; error = new Error(`${summary.skipped} skipped cases in a full integration run`) }
+      if (code === 0 && failForSkippedCases(summary, Boolean(startAt || failedFrom))) {
+        code = 1
+        error = new Error(`${summary.skipped} skipped cases in an integration run`)
+      }
       if (code === 0) {
         if (isRetest) retest.passed++
         else passed++
@@ -492,7 +497,7 @@ async function main() {
     } finally {
       await admin.end()
       if (!active.size) rmSync(tempRoot, { recursive: true, force: true })
-      console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped; cases: ${cases.passed} passed, ${cases.failed} failed, ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}${diagnostic ? '; partial run is not full-suite proof' : ''}.`)
+      console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped; cases: ${cases.passed} passed, ${cases.failed} failed, ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)
       if (failedFiles.length) console.error(`[integration] failed files: ${failedFiles.sort().join(', ')}`)
       process.exitCode = fullRunExitCode(failed, interrupted)

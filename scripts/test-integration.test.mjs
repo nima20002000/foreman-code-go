@@ -56,6 +56,14 @@ test('resume includes the selected file so a repaired failure is rerun', () => {
   assert.throws(() => selectFiles(files, 'missing'), /Unknown --start-at/)
 })
 
+test('explicit selection runs only known requested files and rejects an empty list', () => {
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts',
+    'apps/api/test/c.integration.test.ts']
+  assert.deepEqual(selectExactFiles(files, [files[2], files[0], files[2]]), [files[0], files[2]])
+  assert.throws(() => selectExactFiles(files, []), /At least one/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/missing.integration.test.ts']), /Unknown/)
+})
+
 test('failed-log selection includes only discovered failures once', () => {
   const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
   const log = '[integration] FAIL apps/api/test/b.integration.test.ts (slot 2, exit 1); log: /tmp/b\n'

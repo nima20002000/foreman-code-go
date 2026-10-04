@@ -132,6 +132,8 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
       const reader = await connect(f.reader.token)
       const prepared = deferred()
       const release = deferred()
+      const finished = deferred()
+      const accepted = deferred()
       const principals: string[] = []
       const errors: unknown[] = []
       const port = f.dispatcher(async (principal, input, guard) => {
@@ -141,16 +143,20 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
           await release.promise
         }
         await f.startUsing()(principal, input, guard)
+        accepted.resolve()
       })
-      const dispatcher = new WorkflowScheduleDispatcher(port, {
+      const dispatcher = new WorkflowScheduleDispatcher({
+        listDueSchedules: (input) => port.listDueSchedules(input),
+        dispatch: async (...args) => {
+          await port.dispatch(...args)
+          finished.resolve()
+        },
+      }, {
         clock: f.clock, reportError: (error) => { errors.push(error) },
       })
       const work = dispatcher.tick()
       try {
-        await Promise.race([
-          prepared.promise,
-          work.then(() => { throw new Error('Dispatch ended before the preparation barrier.') }),
-        ])
+        await prepared.promise
         const input = {
           ...f.command(saved.revision),
           ...(operation === 'save' ? { schedule: settings } : {}),
@@ -176,9 +182,12 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
 
         release.resolve()
         await work
+        await finished.promise
         // Allow admission to retry immediately or on the next scan. Its outcome
         // must use the new revision and owner for the original due instant.
         await dispatcher.tick()
+        await accepted.promise
+        await dispatcher.stop()
         await dispatcher.tick()
         expect(errors).toEqual([])
         expect(principals[0]).toBe(f.writer.principal.id)
