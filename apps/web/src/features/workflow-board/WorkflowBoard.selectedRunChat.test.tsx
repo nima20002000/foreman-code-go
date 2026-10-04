@@ -5,6 +5,8 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
+import { RunBoardSnapshotGetResultSchema } from '@graphql/contracts/run-snapshots'
+import { RunActivitiesPageSchema, type RunActivityPublic } from '@graphql/contracts/wave25'
 import { server } from '../../mocks/server'
 import { AgentChatPanel } from '../graph/AgentPanels'
 import { installFlowLayout } from '../run-board/testFlowLayout'
@@ -13,8 +15,8 @@ import { useRunsSelectorUi } from '../runs-selector/uiStore'
 import { useConversationDraftStore } from '../conversations/conversationDraftStore'
 import { installChatSource } from '../conversations/agentChat/testSupport'
 import { agentChatContextKey } from '../conversations/agentChat/model'
-import { admitted, clients, context, envelope, execution, historicalState, installSelectedHandlers,
-  scope, selectedRoute, snapshot, snapshotRoute } from '../conversations/agentChat/sch10.testSupport'
+import { activitiesRoute, activityPage, admitted, clients, context, envelope, execution, historicalState,
+  installSelectedHandlers, nodeId, scope, selectedRoute, snapshot, snapshotRoute } from '../conversations/agentChat/sch10.testSupport'
 import { boardDraftContextKey } from './keys'
 import { WorkflowBoard } from './WorkflowBoard'
 import { useWorkflowBoard } from './context'
@@ -91,4 +93,101 @@ it('opens saved Agent chat for a selected past Run and returns to Current chat',
   await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument())
   expect(screen.getByTestId('agent-conversation')).toHaveAttribute('data-chat-key', agentChatContextKey(context()))
   expect(screen.queryByText('To saved Agent')).not.toBeInTheDocument()
+})
+
+async function mountBoard() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  clients.push(client)
+  client.setQueryData(boardDraftContextKey(scope.workspaceId, scope.workflowId), { draft: { baseWorkflowVersionId: 'version-current' } })
+  const root = createRootRoute({ component: Outlet })
+  const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId',
+    validateSearch: RunsSelectorSearchSchema,
+    component: () => <WorkflowBoard {...scope} inspection={{}} selectInspection={() => undefined}
+      selectRun={() => undefined} summaries={[]}><CurrentNavigation /><button type="button">Edit workflow</button></WorkflowBoard> })
+  const router = createRouter({ routeTree: root.addChildren([route]),
+    history: createMemoryHistory({ initialEntries: [`/workspaces/${scope.workspaceId}?workflowId=${scope.workflowId}`] }),
+    defaultPendingMinMs: 0 })
+  await router.load()
+  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  await userEvent.click(await screen.findByRole('button', { name: 'Runs' }))
+  const menu = await screen.findByRole('menu', { name: 'Runs' })
+  await userEvent.click(await within(menu).findByRole('menuitemradio', { name: /run-a/i }))
+  return { client, router }
+}
+
+function runHistory(kind: 'job-only' | 'early-failed' | 'mixed') {
+  const base = activityPage('run-a')
+  const item = (sequence: string, summary: string, facts: Partial<RunActivityPublic> = {}) => ({
+    ...base.items[0]!, id: `activity-history-${sequence}`, sequence, summary,
+    actor: undefined, kind: 'run', refs: {}, ...facts,
+  })
+  const items = [item('1', 'Run admitted')]
+  if (kind === 'early-failed') {
+    items.push(item('2', 'Run failed before execution', { kind: 'error', status: 'failed', severity: 'error' }))
+  } else {
+    items.push(item('2', 'Build job ran', { kind: 'job_work', refs: { jobExecutionId: 'job-execution' },
+      actor: { kind: 'job', nodeId: 'node-job', nodeName: 'Build Job', jobDefinitionId: 'job-build',
+        jobDefinitionRevision: 1, jobDefinitionVersionId: 'job-version-pinned' } }))
+  }
+  if (kind === 'mixed') {
+    items.push(item('3', 'Selected Agent ran', { kind: 'agent_work', actor: base.items[0]!.actor,
+      refs: { executionId: 'execution-run-a' } }))
+    items.push(item('4', 'Other Agent ran', { kind: 'agent_work', refs: { executionId: 'execution-other' },
+      actor: { agentId: 'agent-other', agentName: 'Other saved Agent', nodeId: 'node-other', nodeName: 'Other saved Agent' } }))
+  }
+  return RunActivitiesPageSchema.parse({ ...base, items })
+}
+
+it.each(['job-only', 'early-failed', 'mixed'] as const)('shows Run-wide history for a %s Run chosen in the picker', async (kind) => {
+  const source = installSelectedHandlers()
+  const saved = snapshot('run-a').snapshot
+  if (saved.kind !== 'available') throw new Error('Expected available snapshot')
+  const job = { kind: 'job', id: 'node-job', name: 'Build Job', jobDefinitionId: 'job-build',
+    jobDefinitionRevision: 1, jobDefinitionVersionId: 'job-version-pinned',
+    position: { x: 0, y: 0 }, size: { width: 240, height: 100 } }
+  const nodes = kind === 'job-only' ? [job] : [...saved.nodes, ...(kind === 'mixed' ? [job, {
+    ...saved.nodes[0]!, id: 'node-other', name: 'Other saved Agent', agentId: 'agent-other',
+  }] : [])]
+  const history = runHistory(kind)
+  server.use(http.get(snapshotRoute, () => HttpResponse.json(RunBoardSnapshotGetResultSchema.parse({
+    snapshot: { ...saved, nodes },
+  }))), http.get(activitiesRoute, () => HttpResponse.json(history)))
+  if (kind === 'early-failed') server.use(http.get(selectedRoute, () => HttpResponse.json({
+    kind: 'unavailable', reason: 'execution_missing', target: { ...scope, runId: 'run-a', workflowNodeId: nodeId },
+  })))
+  await mountBoard()
+  const runWide = await screen.findByRole('region', { name: 'Run-wide Activities' })
+  await within(runWide).findByText('Run admitted')
+  for (const event of history.items) expect(within(runWide).getByText(event.summary)).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveTextContent('Read only')
+  expect(screen.queryByRole('button', { name: 'Edit workflow' })).toBeNull()
+  if (kind === 'job-only') {
+    expect(screen.getByText('No agents')).toBeInTheDocument()
+    expect(source.reads).toHaveLength(0)
+  } else if (kind === 'early-failed') {
+    await screen.findByText('Execution unavailable')
+    expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
+  } else {
+    const chat = await screen.findByRole('region', { name: 'Selected Run chat' })
+    await within(chat).findByText('Reply execution-run-a')
+    const executionFeed = within(chat).getByRole('region', { name: 'Activities' })
+    await within(executionFeed).findByText('Selected Agent ran')
+    for (const summary of ['Run admitted', 'Build job ran', 'Other Agent ran']) {
+      expect(within(executionFeed).queryByText(summary)).toBeNull()
+    }
+  }
+  expect(source.current.calls).toHaveLength(0)
+})
+
+it('keeps Run-wide Activities hidden when the selected snapshot is denied', async () => {
+  const source = installSelectedHandlers()
+  const reads = vi.fn(() => HttpResponse.json(runHistory('mixed')))
+  server.use(http.get(snapshotRoute, () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'No access' } }, { status: 403 })),
+    http.get(activitiesRoute, reads))
+  await mountBoard()
+  const runWide = await screen.findByRole('region', { name: 'Run-wide Activities' })
+  await within(runWide).findByText('No access')
+  expect(within(runWide).queryByText('Run admitted')).toBeNull()
+  expect(reads).not.toHaveBeenCalled()
+  expect(source.reads).toHaveLength(0)
 })

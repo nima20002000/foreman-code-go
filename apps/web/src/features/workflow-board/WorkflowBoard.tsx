@@ -11,6 +11,7 @@ import { AgentChatPanel } from '../graph/AgentPanels'
 import { CurrentRunObserver } from './CurrentRunObserver'
 import { WorkflowBoardContext } from './context'
 import { RunActivityPanel } from './RunActivityPanel'
+import { Activities } from './Activities'
 import { isActiveRun, useSelectedRunRecord } from './runFacts'
 import { useInspectionPresentation } from './inspect/presentation'
 import './workflowBoard.css'
@@ -111,8 +112,12 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
       </RunBoardSlot>
       {selectedRun.active && (selectedRun.invalid || selectedRun.identity.runId !== null)
         ? <aside className="board-side-panel board-historical-chat" aria-label="Agent chat">
-          <header><h2>Agent chat</h2></header>
-          <div className="board-historical-chat-content"><AgentChatPanel name="Agent chat" selectedRun={selectedRun} /></div>
+          <header><h2>Selected Run</h2></header>
+          <div className="board-historical-chat-content">
+            <section aria-label="Run-wide Activities"><Activities selection={selectedRun} /></section>
+            <h2>Agent chat</h2>
+            <AgentChatPanel name="Agent chat" selectedRun={selectedRun} />
+          </div>
         </aside> : null}
     </div>
   </WorkflowBoardContext.Provider>
