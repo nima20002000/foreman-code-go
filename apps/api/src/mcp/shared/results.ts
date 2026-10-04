@@ -16,12 +16,13 @@ export function toolResult(value: unknown): CallToolResult {
 export const TEXT_MIRROR_BYTES = 256 * 1024
 
 export function toolFailure(error: unknown, internalMessage = 'The Operator service could not complete the request.'): CallToolResult {
-  // Only this explicitly public, static executable-validation issue is safe
+  // Only these explicitly public, static executable-validation issues are safe
   // to disclose. Other schema failures can contain private stored evidence and
   // retain their existing generic error. Match HTTP's INVALID_REQUEST shape.
   if (error instanceof ZodError) {
     const issues = error.issues.filter((issue) => issue.code === 'custom'
-      && issue.params?.publicCode === 'REPEAT_REVIEW_SCOPE_UNSUPPORTED')
+      && (issue.params?.publicCode === 'REPEAT_REVIEW_SCOPE_UNSUPPORTED'
+        || issue.params?.publicCode === 'REMOTE_REVIEWER_UNSUPPORTED'))
     if (issues.length) error = new DomainError('INVALID_REQUEST', 'The request does not match its shared contract.', 400, {
       issues: issues.map((issue) => ({ path: issue.path, message: issue.message })),
     })

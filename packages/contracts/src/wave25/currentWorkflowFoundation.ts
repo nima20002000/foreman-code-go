@@ -148,6 +148,14 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   }
   const entry = nodes.find((node) => node.id === version.entryNodeId)
   if ((entry?.kind === 'job' || entry?.agentId !== version.approval.designatedOrchestratorAgentId) || role(version.entryNodeId) !== 'orchestrator') fail('the supported initialized reviewer must be the explicit entry Orchestrator')
+  if (entry && entry.kind !== 'job' && entry.placement?.hostRef.kind === 'device') {
+    context.addIssue({
+      code: 'custom',
+      path: ['version', 'definition', 'nodes', nodes.indexOf(entry), 'placement'],
+      params: { publicCode: 'REMOTE_REVIEWER_UNSUPPORTED' },
+      message: 'REMOTE_REVIEWER_UNSUPPORTED: place the designated Orchestrator on Main; remote sessions do not support later approval-review turns.',
+    })
+  }
   for (const edge of approvals) if (edge.source !== version.entryNodeId || edge.target === version.entryNodeId) fail('independent or recursive reviewer startup is unsupported')
   // Match repeatReviewerOccurrence: an outside reviewer is reusable, but an
   // in-block reviewer has no exported execution binding for another scope.
