@@ -36,8 +36,8 @@ it('F3/F6: live reviewer-native approval fails durably, records exact request, c
     && job.error?.code === 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED' && job.cleanup))
 })
 
-it('F3: cold pending native approval binds the recovered provider identity before failing, without prompt replay', async () => {
-  const fixture = await reviewerFixture({ recovering: true })
+it('cold pending native approval on an unbound lane preserves cleanup without prompt replay', async () => {
+  const fixture = await reviewerFixture({ recovering: true, recoveredLane: 'unbound' })
   fixture.setHistory({ correlationId, nativeTurnId: providerId, events: [], pendingInteractions: [permission()] })
   const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
   assert.equal(result?.state, 'failed')
@@ -47,6 +47,22 @@ it('F3: cold pending native approval binds the recovered provider identity befor
   assert.equal(fixture.responses, 0)
   // The recovered lane was never durably bound to this review, so cleanup must not target it.
   assert.deepEqual(fixture.cancellations, [])
+  assert.equal(result.cleanup?.nativeState, 'pending')
+  assert.equal(result.cleanup?.interruptState, 'not_sent')
+  assertNoSecrets(fixture.saved)
+})
+
+it('cold pending native approval on a bound lane cancels its recovered turn without prompt replay', async () => {
+  const fixture = await reviewerFixture({ recovering: true, recoveredLane: 'bound' })
+  fixture.setHistory({ correlationId, nativeTurnId: providerId, events: [], pendingInteractions: [permission()] })
+  const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result.providerTurnOrMessageId, providerId)
+  assert.equal(result.error?.code, 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED')
+  assert.equal(fixture.starts.length, 0)
+  assert.equal(fixture.responses, 0)
+  assert.deepEqual(fixture.cancellations, [{ session, nativeTurnId: providerId }])
+  assert.equal(result.cleanup?.interruptState, 'acknowledged')
   assert.equal(result.cleanup?.nativeState, 'pending')
   assertNoSecrets(fixture.saved)
 })

@@ -64,7 +64,14 @@ export async function until(condition: () => boolean): Promise<void> {
 
 /** Database and native transport are doubles; dispatch, evidence, fences, attach,
  * credential maintenance and redaction execute the production implementations. */
-export async function reviewerFixture(options: { recovering?: boolean; workflow?: boolean; silent?: boolean; events?: number; closedWorkflow?: boolean } = {}) {
+export async function reviewerFixture(options: {
+  recovering?: boolean
+  recoveredLane?: 'bound' | 'unbound'
+  workflow?: boolean
+  silent?: boolean
+  events?: number
+  closedWorkflow?: boolean
+} = {}) {
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'reviewer-1', version: 1,
     productRole: 'orchestrator', prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,
@@ -153,7 +160,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   await coordination.ensureLane({ id: 'review-lane', harness: session.harness, nativeSessionId: session.nativeSessionId,
     ownerAgentId: execution.agentId, observedStatus: options.recovering || options.workflow ? 'busy' : 'idle',
     connectionGeneration: 0, observedAt: now, revision: 0,
-    ...(options.recovering ? { correlationId } : {}),
+    ...(options.recovering && options.recoveredLane !== 'unbound' ? { correlationId } : {}),
     ...(options.workflow ? { correlationId: `execution:${execution.id}`, currentTurnOrMessageId: providerId } : {}),
   })
   const assertJob = async (id: string, token: string) => {
