@@ -36,6 +36,8 @@ export interface OpenCodeExecutionFiles {
   }, signal: AbortSignal): Promise<OpenCodeRegisteredFile>
   /** A bounded, detached, stable snapshot of a registered handle, never a path argument. */
   snapshot(handle: string, signal: AbortSignal): Promise<Uint8Array>
+  /** Replace an owned working copy only if its native bytes still match the edit's base. */
+  replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void>
   remove(handle: string): Promise<void>
 }
 

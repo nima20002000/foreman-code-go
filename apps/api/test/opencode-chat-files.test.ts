@@ -125,9 +125,13 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
         { artifactId, contentBase64: Buffer.from('new').toString('base64') }), hasFileCode('FILE_SESSION_INVALID'))
       assert.deepEqual(calls, [`write:${artifactId}`, `format:${artifactId}`])
       f.backend.hostFiles.get(artifactId)!.bytes = Buffer.from('changed on host')
-      await assert.rejects(() => f.facade.publish(f.backend.token, {
+      const published = await f.facade.publish(f.backend.token, {
         commandId: randomUUID(), artifactId, filename: 'result.md', mediaType: 'text/markdown', scope: fileScope,
-      }), hasFileCode('FILE_ARTIFACT_CONFLICT'))
+      })
+      const revision = published.value.revision
+      const read = await f.facade.read(f.backend.token, { fileId: revision.fileId, revisionId: revision.revisionId })
+      assert.equal(read.status, 'ready')
+      if (read.status === 'ready') assert.equal(Buffer.from(read.contentBase64, 'base64').toString(), 'changed on host')
       f.server.complete(f.correlationId); await drain(iterator)
     } finally { await f.close() }
   })

@@ -89,6 +89,13 @@ export function createChatFileBackend() {
       },
     },
     artifacts: {
+      async readSnapshot(caller: { binding: string }, id: string) {
+        const entry = artifacts.get(id)
+        if (!entry || entry.binding !== caller.binding || entry.state === 'writing') throw denied('FILE_ARTIFACT_NOT_FOUND')
+        const source = values.get(key(entry.source))!.revision
+        return { bytes: Buffer.from(entry.bytes), revision: { ...source, fileId: id, revisionId: entry.writeId,
+          byteSize: entry.bytes.length, sha256: sha256(entry.bytes) } }
+      },
       async get(caller: { binding: string }, id: string) {
         const entry = artifacts.get(id)
         if (!entry || entry.binding !== caller.binding) throw denied('FILE_ARTIFACT_NOT_FOUND')
@@ -172,6 +179,12 @@ export function createChatFileBackend() {
       const entry = hostFiles.get(handle)
       if (!entry) throw denied('FILE_ARTIFACT_NOT_FOUND')
       return Uint8Array.from(entry.bytes)
+    },
+    async replace(handle, bytes, expectedSha256) {
+      const entry = hostFiles.get(handle)
+      if (!entry?.writable) throw denied('FILE_ARTIFACT_NOT_FOUND')
+      if (sha256(entry.bytes) !== expectedSha256) throw denied('FILE_ARTIFACT_CONFLICT')
+      entry.bytes = Uint8Array.from(bytes)
     },
     async remove(handle) {
       audit.push('remove')

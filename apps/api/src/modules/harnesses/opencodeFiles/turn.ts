@@ -21,7 +21,11 @@ export interface PreparedOpenCodeFiles {
   /** Incorporate in the durable request/turn identity. No token is included. */
   identity: string
 }
-interface WorkingCopy { file: DeliveredAttachment; writeId: string | undefined }
+interface WorkingCopy {
+  file: DeliveredAttachment
+  writeId: string | undefined
+  pendingEdit?: { expectedSha256: string }
+}
 
 /** One instance per accepted turn on a dedicated chat server. This helper does not submit prompts.
  * Call submissionAttempted immediately BEFORE prompt_async. Observation loss must not call finish.
@@ -37,7 +41,6 @@ export class OpenCodeFileTurn {
   private serverName: string | undefined
   private result: PreparedOpenCodeFiles | undefined
   private copies = new Map<string, WorkingCopy>()
-  private serverEdited = new Set<string>()
   private handles = new Set<string>()
   private lifecycle: Promise<unknown> = Promise.resolve()
   private submission: 'not_submitted' | 'uncertain' | 'submitted' | 'terminal' = 'not_submitted'
@@ -417,61 +420,82 @@ export class OpenCodeFileTurn {
 
   writeWorkingCopy(token: string, input: AgentFileWriteWorkingCopyInput) {
     return this.exclusive(async () => {
-      await this.authorize(token, true)
-      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      const signal = AbortSignal.timeout(120_000)
       checkFileCondition(this.options.service.writeWorkingCopy, 'FILE_TOOL_DENIED', 'Working-copy writes are unavailable.')
+      const nativeBytes = await this.importWorkingCopy(token, input.artifactId, signal)
+      this.copies.get(input.artifactId)!.pendingEdit = { expectedSha256: sha256(nativeBytes) }
       const result = await this.options.service.writeWorkingCopy(token, input)
-      this.serverEdited.add(input.artifactId)
+      await this.synchronizeWorkingCopy(token, input.artifactId, signal)
       return result
     })
   }
 
   applyFormatEdit(token: string, input: AgentFileApplyFormatEditInput) {
     return this.exclusive(async () => {
-      await this.authorize(token, true)
-      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      const signal = AbortSignal.timeout(120_000)
       checkFileCondition(this.options.service.applyFormatEdit, 'FILE_TOOL_DENIED', 'Format edits are unavailable.')
+      const nativeBytes = await this.importWorkingCopy(token, input.artifactId, signal)
+      this.copies.get(input.artifactId)!.pendingEdit = { expectedSha256: sha256(nativeBytes) }
       const result = await this.options.service.applyFormatEdit(token, input)
-      this.serverEdited.add(input.artifactId)
+      await this.synchronizeWorkingCopy(token, input.artifactId, signal)
       return result
     })
   }
 
-  async workingCopyLocation(token: string, artifactId: string): Promise<string> {
-    await this.authorize(token)
+  workingCopyLocation(token: string, artifactId: string): Promise<string> {
+    return this.exclusive(async () => {
+      await this.authorize(token)
+      const copy = this.copies.get(artifactId)
+      checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'The artifact is not registered for this native turn.')
+      await this.synchronizeWorkingCopy(token, artifactId, AbortSignal.timeout(120_000))
+      return copy.file.registered.path
+    })
+  }
+
+  private async synchronizeWorkingCopy(token: string, artifactId: string, signal: AbortSignal): Promise<void> {
+    const copy = this.copies.get(artifactId)!
+    if (!copy.pendingEdit) return
+    const caller = await this.authorize(token, true)
+    const edited = await this.options.service.artifacts.readSnapshot(caller, artifactId, signal)
+    if (edited.revision.sha256 === copy.pendingEdit.expectedSha256) {
+      delete copy.pendingEdit
+      return
+    }
+    if (sha256(await this.options.host.snapshot(artifactId, signal)) === edited.revision.sha256) {
+      delete copy.pendingEdit
+      return
+    }
+    await this.authorize(token, true)
+    await this.options.host.replace(artifactId, edited.bytes, copy.pendingEdit.expectedSha256, signal)
+    delete copy.pendingEdit
+  }
+
+  private async importWorkingCopy(token: string, artifactId: string, signal: AbortSignal): Promise<Uint8Array> {
+    const caller = await this.authorize(token, true)
     const copy = this.copies.get(artifactId)
-    checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'The artifact is not registered for this native turn.')
-    return copy.file.registered.path
+    checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'Edit or publish a registered working copy.')
+    await this.synchronizeWorkingCopy(token, artifactId, signal)
+    const bytes = await this.options.host.snapshot(artifactId, signal)
+    checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
+      'FILE_ARTIFACT_TOO_LARGE', 'The completed working copy exceeds the file limit.')
+    const artifact = await this.options.service.artifacts.get(caller, artifactId)
+    if (artifact.state === 'writing') checkFileCondition(copy.writeId === artifact.writeId,
+      'FILE_ARTIFACT_BUSY', 'Another trusted runner owns the artifact write lease.')
+    if (artifact.state === 'complete' && artifact.snapshot?.revision.sha256 === sha256(bytes)) return bytes
+    const writeId = artifact.state === 'writing' ? artifact.writeId
+      : await this.options.service.artifacts.beginWrite(token, artifactId)
+    copy.writeId = writeId
+    await this.options.service.artifacts.completeWrite(token, artifactId, writeId, Readable.from([bytes]), signal)
+    copy.writeId = undefined
+    return bytes
   }
 
   publish(token: string, input: AgentFilePublishInput, signal: AbortSignal) {
     return this.exclusive(async () => {
-      const caller = await this.authorize(token, true)
+      await this.authorize(token, true)
       checkFileCondition(isDeepStrictEqual(input.scope, this.accepted!.context.scope),
         'FILE_CONTEXT_DENIED', 'Publish only to the originating temporary conversation.')
-      const copy = this.copies.get(input.artifactId)
-      checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'Publish a registered working copy, not an arbitrary host path.')
-      if (this.serverEdited.has(input.artifactId)) {
-        const hostBytes = await this.options.host.snapshot(input.artifactId, signal)
-        checkFileCondition(sha256(hostBytes) === copy.file.revision.sha256,
-          'FILE_ARTIFACT_CONFLICT', 'The host copy also changed after a file-tool edit.')
-        this.publicationsAdopted = false
-        const result = await this.options.service.publish(token, input)
-        await this.adoptReady()
-        return result
-      }
-      const artifact = await this.options.service.artifacts.get(caller, input.artifactId)
-      if (artifact.state === 'writing') checkFileCondition(copy.writeId === artifact.writeId,
-        'FILE_ARTIFACT_BUSY', 'Another trusted runner owns the artifact write lease.')
-      const writeId = artifact.state === 'writing' ? artifact.writeId
-        : await this.options.service.artifacts.beginWrite(token, input.artifactId)
-      copy.writeId = writeId
-      const bytes = await this.options.host.snapshot(input.artifactId, signal)
-      checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
-        'FILE_ARTIFACT_TOO_LARGE', 'The completed working copy exceeds the file limit.')
-      await this.options.service.artifacts.completeWrite(token, input.artifactId, writeId,
-        Readable.from([bytes]), signal)
-      copy.writeId = undefined
+      await this.importWorkingCopy(token, input.artifactId, signal)
       // FIL-05 reauthorizes source pins, hashes content for commandId conflicts and links the turn.
       this.publicationsAdopted = false
       const result = await this.options.service.publish(token, input)

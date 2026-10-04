@@ -174,6 +174,12 @@ async function fixture(mode: 'read' | 'write' = 'write') {
       return { handle: input.handle, executionHostId: 'execution-b', path: `/execution/b/${input.handle}/${input.revision.filename}` }
     },
     async snapshot(handle) { snapshots++; return Uint8Array.from(files.get(handle)!.bytes) },
+    async replace(handle, bytes, expectedSha256) {
+      const entry = files.get(handle)
+      if (!entry?.writable) throw denied('FILE_ARTIFACT_NOT_FOUND')
+      if (sha256(entry.bytes) !== expectedSha256) throw denied('FILE_ARTIFACT_CONFLICT')
+      entry.bytes = Uint8Array.from(bytes)
+    },
     async remove(handle) { files.delete(handle) },
   }
   const options = { service: backend.service, host, server: native.server, endpoint: 'http://127.0.0.1:9876/mcp/files',
@@ -487,8 +493,13 @@ export function registerOpenCodeFileCases(test: (name: string, body: () => Promi
       const file = await host.materialize({ handle, revision, bytes, writable: true }, signal())
       await writeFile(file.path, '# edited')
       assert.equal(Buffer.from(await host.snapshot(handle, signal())).toString(), '# edited')
+      await host.replace(handle, Buffer.from('# tool edit'), sha256(Buffer.from('# edited')), signal())
+      assert.equal((await readFile(file.path)).toString(), '# tool edit')
+      await assert.rejects(host.replace(handle, Buffer.from('# stale replacement'), sha256(bytes), signal()),
+        withCode('FILE_ARTIFACT_CONFLICT'))
+      assert.equal((await readFile(file.path)).toString(), '# tool edit')
       assert.deepEqual(await host.materialize({ handle, revision, bytes, writable: true }, signal()), file)
-      assert.equal((await readFile(file.path)).toString(), '# edited')
+      assert.equal((await readFile(file.path)).toString(), '# tool edit')
       await host.remove(handle); assert.deepEqual(await readdir(root), [])
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -519,11 +530,16 @@ export function registerOpenCodeFileCases(test: (name: string, body: () => Promi
     try {
       const outside = join(root, 'outside.md'); await writeFile(outside, 'private')
       const a = await make(); await rm(a.file.path); await symlink(outside, a.file.path)
+      await assert.rejects(host.replace(a.handle, Buffer.from('overwrite'), sha256(Buffer.from('x')), signal()))
       await assert.rejects(host.snapshot(a.handle, signal())); await host.remove(a.handle)
       const b = await make(); await rm(b.file.path); await link(outside, b.file.path)
+      await assert.rejects(host.replace(b.handle, Buffer.from('overwrite'), sha256(Buffer.from('x')), signal()),
+        withCode('FILE_ARTIFACT_INVALID'))
       await assert.rejects(host.snapshot(b.handle, signal()), withCode('FILE_ARTIFACT_INVALID')); await host.remove(b.handle)
       assert.equal((await readFile(outside)).toString(), 'private')
       await assert.rejects(host.snapshot('/etc/passwd', signal()), withCode('FILE_ARTIFACT_NOT_FOUND'))
+      await assert.rejects(host.replace('/etc/passwd', Buffer.from('overwrite'), sha256(Buffer.from('x')), signal()),
+        withCode('FILE_ARTIFACT_NOT_FOUND'))
     } finally { await rm(root, { recursive: true, force: true }) }
   })
   test('source checks reject an unverified native PID and empty path inventory', async () => {
