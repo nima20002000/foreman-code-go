@@ -318,7 +318,7 @@ export function buildProductionApp(
         maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
           if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
           context.signal.throwIfAborted()
-          const result = await mainWorkerMcp.handle(payload, context.binding)
+          const result = await mainWorkerMcp.handle(payload, context.binding, context.signal)
           context.signal.throwIfAborted()
           return { payload: result }
         } },

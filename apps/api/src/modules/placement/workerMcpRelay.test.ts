@@ -5,8 +5,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { freezePlacement, deriveDispatch } from './binding.js'
 import Fastify from 'fastify'
-import { MainWorkerMcpRelay, selectedMainMcpForward } from './workerMcpRelay.js'
+import { MainWorkerMcpRelay, selectedMainMcpForward, type SelectedMainMcpForward } from './workerMcpRelay.js'
 import { isAuthorized } from '../access/policy.js'
+import { deferred } from '../../../test/helpers/wave25Agent3.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -39,7 +40,9 @@ function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutpu
   ports.intent.mockResolvedValue(intent); ports.placement.mockResolvedValue(placement)
   ports.host.mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 })
   ports.owner.mockResolvedValue({ principal: { id: 'owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['runs:start'], scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'] } }], expiresAt: principal.expiresAt, revokedAt: null } })
-  const forward = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"ok":true}' }))
+  const forward = vi.fn<SelectedMainMcpForward['request']>(async () => ({
+    statusCode: 200, contentType: 'application/json', body: '{"ok":true}',
+  }))
   const relay = new MainWorkerMcpRelay(mainId, pool, { authenticate: async () => principal }, { request: forward }, nativeOutputs)
   const applicationAccess = { kind: 'scoped-worker-mcp' as const, token: 'original-worker-bearer', executionId: intent.executionId,
     agentId: 'agent', operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash }
@@ -105,7 +108,7 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
     expect(f.forward).not.toHaveBeenCalled()
     expect(f.query.mock.calls.some(([sql]) => sql.includes("he.record->>'state' as execution_state"))).toBe(true)
     expect(await f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: { method: 'tools/list' } }, f.connection)).toMatchObject({ statusCode: 200 })
-    expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined)
+    expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined, undefined)
   })
   it.each(['foreign-workspace', 'foreign-workflow', 'foreign-run', 'split-grants', 'expired', 'revoked'] as const)('denies %s without forwarding', async reason => {
     const f = fixture()
@@ -134,7 +137,61 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
   })
 })
 
+it('passes cancellation of the authenticated worker request to the original Main call', async () => {
+  const f = fixture()
+  const entered = deferred<AbortSignal>()
+  f.forward.mockImplementation(async (_body, _token, _protocol, signal) => new Promise<never>((_resolve, reject) => {
+    if (!signal) throw new Error('Missing original request signal')
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    entered.resolve(signal)
+  }))
+  const controller = new AbortController()
+  const cause = new Error('Worker request cancelled')
+  const pending = f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: { method: 'tools/list' } },
+    f.connection, controller.signal)
+  const rejected = expect(pending).rejects.toBe(cause)
+  expect(await entered.promise).toBe(controller.signal)
+  controller.abort(cause)
+  await rejected
+  expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined, controller.signal)
+})
+
+it('rejects an already cancelled request before forwarding any worker effect', async () => {
+  const f = fixture()
+  const cause = new Error('Worker request cancelled')
+  await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: {} },
+    f.connection, AbortSignal.abort(cause))).rejects.toBe(cause)
+  expect(f.forward).not.toHaveBeenCalled()
+})
+
 describe('selected Main fixed artifact tool routing', () => {
+  it('closes the authenticated Main HTTP request when its worker request is cancelled', async () => {
+    const app = Fastify()
+    const entered = deferred<void>()
+    const disconnected = deferred<void>()
+    app.post('/mcp', (request, reply) => {
+      expect(request.headers.authorization).toBe('Bearer original-worker-bearer')
+      reply.hijack()
+      reply.raw.once('close', () => disconnected.resolve())
+      entered.resolve()
+    })
+    const controller = new AbortController()
+    const cause = new Error('Worker request cancelled')
+    try {
+      await app.listen({ host: '127.0.0.1', port: 0 })
+      const pending = selectedMainMcpForward(app).request({ method: 'tools/list' },
+        'original-worker-bearer', '2025-03-26', controller.signal)
+      const rejected = expect(pending).rejects.toBe(cause)
+      await entered.promise
+      controller.abort(cause)
+      await rejected
+      await disconnected.promise
+    } finally {
+      controller.abort(cause)
+      app.server.closeAllConnections()
+      await app.close()
+    }
+  })
   it.each([
     ['files.admit_transferred_result', '/mcp/artifact-transfers'],
     ['files.read_edge_input', '/mcp/artifact-inputs'],
