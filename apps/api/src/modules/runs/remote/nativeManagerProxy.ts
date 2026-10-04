@@ -115,7 +115,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
         sequence = event.sequence
         // A caller may refresh history between yields. Use its current original
         // receipt; the Worker still verifies this exact event in that history.
-        await this.options.observeOriginalSource?.(this.receipt!, {
+        const currentReceipt = this.receipt!
+        if (!submitted && currentReceipt.native?.turnId) {
+          await input.onSubmitted?.(currentReceipt.native.turnId)
+          submitted = true
+        }
+        await this.options.observeOriginalSource?.(currentReceipt, {
           type: 'event', event: { ...event, executionId: this.intent.executionId },
         })
         yield event
