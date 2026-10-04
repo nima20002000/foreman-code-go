@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -22,6 +24,7 @@ const manifest = JSON.parse(await readFile(new URL('../apps/api/package.json', i
 const [runtime, ...args] = manifest.scripts.start.split(' ')
 assert.equal(runtime, 'node')
 assert.deepEqual(args, ['dist/server.js'], 'Production must run compiled JavaScript without a TS loader')
+const state = await mkdtemp(join(homedir(), '.graphql-production-smoke-'))
 const child = spawn(process.execPath, args, {
   cwd: apiDirectory,
   env: {
@@ -35,6 +38,10 @@ const child = spawn(process.execPath, args, {
     DATABASE_QUERY_TIMEOUT_MS: '1000',
     READINESS_TIMEOUT_MS: '1000',
     LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph_production_smoke',
+    HARNESS_WORKSPACE_ROOT: process.env.HARNESS_WORKSPACE_ROOT ?? join(state, 'runtime'),
+    WORKSPACE_STORAGE_ROOT: process.env.WORKSPACE_STORAGE_ROOT ?? join(state, 'workspaces'),
+    FILE_STORAGE_ROOT: process.env.FILE_STORAGE_ROOT ?? join(state, 'files'),
+    GRAPHQL_APP_MCP_DIRECTORY: process.env.GRAPHQL_APP_MCP_DIRECTORY ?? join(state, 'mcp'),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -133,4 +140,5 @@ try {
   const timer = setTimeout(() => child.kill('SIGKILL'), 5000)
   await exited
   clearTimeout(timer)
+  await rm(state, { recursive: true, force: true })
 }
