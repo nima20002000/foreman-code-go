@@ -16,12 +16,13 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
   const close = vi.fn(() => frames.close())
   const statuses = vi.fn(async () => [{ name: 'graphql', status: 'connected', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [{ name: 'interaction_get' }] }])
   const queries = vi.fn()
+  const interrupt = vi.fn(async () => ({ still_queued: [] }))
   const setServers = vi.fn(async (servers: Readonly<Record<string, unknown>>) => { void servers; return { added: ['graphql'], removed: [], errors: {} } })
   const client: ClaudeSdkClient = {
     sdkVersion: '0.3.284', query: (input) => {
       queries(input)
       messages = input.prompt[Symbol.asyncIterator](); ready()
-      return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), interrupt: async () => undefined, initializationResult: async () => ({ models: [], account: {} }), mcpServerStatus: statuses, setMcpServers: setServers, close }
+      return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), interrupt, initializationResult: async () => ({ models: [], account: {} }), mcpServerStatus: statuses, setMcpServers: setServers, close }
     }, getSessionInfo: async (sessionId) => ({ sessionId }), getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'fork' }),
   }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
@@ -34,7 +35,7 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
     return session
   }
   const manager = createClaudeNativeSessionManager({ runner, scope, sdkOptions: {}, qualification, ...extra, ...(decodeFactory ? { decodeFactory } : {}) })
-  return { frames, close, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
+  return { frames, close, interrupt, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
     await started
     const value = (await messages.next()).value
     if (value) frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
@@ -84,6 +85,45 @@ describe('Claude native session manager admission', () => {
     await second
     expect((await f.manager.reconcile(session, 'request-2')).terminalResult?.output).toBe('again')
     await f.manager.close(session); await f.manager.close(session); await f.manager.dispose?.()
+  })
+  it('interrupts only the exact active message and settles its aborted result as canceled', async () => {
+    const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+    expect((await f.manager.capabilities()).cancellation).toBe(true)
+    expect(await f.manager.cancel(session)).toBe(false)
+    const output = drain(f.manager.startTurn(session, { prompt: 'long task', clientCorrelationId: 'request-stop' }))
+    const message = await f.nextMessage()
+    expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(false) // Not yet natively echoed.
+    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-stop', user_message_uuid: message.uuid })
+    await vi.waitFor(async () => expect((await f.manager.reconcile(session, 'request-stop')).nativeSubmission).toBeDefined())
+    expect(await f.manager.cancel(session, undefined, 'another-message')).toBe(false)
+    expect(f.interrupt).not.toHaveBeenCalled()
+    expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
+    expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
+    expect(f.interrupt).toHaveBeenCalledTimes(1)
+    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-stop', user_message_uuid: message.uuid, subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', errors: [] })
+    expect((await output).at(-1)?.type).toBe('turn.completed')
+    const history = await f.manager.reconcile(session, 'request-stop')
+    expect(history.terminalResult).toEqual({ outcome: 'canceled' })
+    expect(history.terminalTurn?.providerId).toBe(message.uuid)
+    const next = drain(f.manager.startTurn(session, { prompt: 'next', clientCorrelationId: 'request-next' }))
+    const nextMessage = await f.nextMessage()
+    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-next', user_message_uuid: nextMessage.uuid })
+    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-next', user_message_uuid: nextMessage.uuid, subtype: 'success', is_error: false, result: 'ok' })
+    await next
+    expect((await f.manager.reconcile(session, 'request-next')).terminalResult).toEqual({ outcome: 'succeeded', output: 'ok' })
+    await f.manager.dispose?.()
+  })
+  it('keeps a success that raced the interrupt succeeded', async () => {
+    const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+    const output = drain(f.manager.startTurn(session, { prompt: 'quick', clientCorrelationId: 'request-race' }))
+    const message = await f.nextMessage()
+    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-race', user_message_uuid: message.uuid })
+    await vi.waitFor(async () => expect((await f.manager.reconcile(session, 'request-race')).nativeSubmission).toBeDefined())
+    expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
+    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-race', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done first' })
+    await output
+    expect((await f.manager.reconcile(session, 'request-race')).terminalResult).toEqual({ outcome: 'succeeded', output: 'done first' })
+    await f.manager.dispose?.()
   })
   it('does not correlate a queued native wake result with the new message', async () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)

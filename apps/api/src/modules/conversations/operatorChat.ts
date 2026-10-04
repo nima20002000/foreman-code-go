@@ -749,12 +749,17 @@ export class OperatorChatService {
       this.events.publish(id, 'state', { requestId, turnState: 'active', pending: Boolean(pending) })
     }
   }
-  private async interrupt(id: string, row: ConversationRow, runtime: Runtime): Promise<void> {
-    if (!runtime.session || !row.active_native_turn_id || !row.active_request_id) return
-    const acknowledged = await runtime.manager.cancel(runtime.session, AbortSignal.timeout(5_000), row.active_native_turn_id)
+  /** Returns false when no native turn or Claude message receipt is known yet to interrupt. */
+  private async interrupt(id: string, row: ConversationRow, runtime: Runtime, markDispatchAttempt?: () => void): Promise<boolean> {
+    if (!runtime.session || !row.active_request_id) return false
+    const target = row.active_native_turn_id ?? await this.repository.submittedMessageId(id, row.active_request_id)
+    if (!target) return false
+    markDispatchAttempt?.()
+    const acknowledged = await runtime.manager.cancel(runtime.session, AbortSignal.timeout(5_000), target)
     // Neither false nor an interrupt ACK establishes terminal completion.
     if (!acknowledged) await this.repository.uncertain(id, row.active_request_id, 'The provider did not acknowledge cancellation; reconciliation will continue.')
     this.events.publish(id, 'state', { requestId: row.active_request_id, turnState: 'canceling' })
+    return true
   }
 
   async cancel(id: string, requestId: string, principal: ManagementPrincipal, commandId?: string, source: 'http' | 'mcp' = 'http') {
@@ -782,9 +787,7 @@ export class OperatorChatService {
       }
       try {
         const runtime = this.runtimes.get(id)
-        if (runtime && row.active_native_turn_id) {
-          markDispatchAttempt()
-          await this.interrupt(id, row, runtime)
+        if (runtime && await this.interrupt(id, row, runtime, markDispatchAttempt)) {
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
       } catch (error) {
@@ -942,7 +945,7 @@ export class OperatorChatService {
           const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
           const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, signal)
             : await this.observationRuntime(row.id, row, configuration, signal)
-          if (cleanup && row.active_native_turn_id) await this.interrupt(row.id, row, runtime)
+          if (cleanup) await this.interrupt(row.id, row, runtime)
           await this.observe(row.id, requestId, runtime, signal)
         } catch (error) {
           await this.repository.uncertain(row.id, requestId, error instanceof Error ? error.message : 'Native recovery is uncertain.')

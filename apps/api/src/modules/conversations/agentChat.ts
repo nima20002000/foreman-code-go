@@ -720,10 +720,12 @@ export class AgentChatService {
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId: target.requestId, sessionState: 'interrupting', explicit })
       const runtime = this.runtimes.get(id)
-      if (!runtime?.session || runtime.retiring || runtime.session.nativeSessionId !== row.native_session_id
-        || !row.active_native_turn_id) return // Submission or exact-history recovery will retry this durable intent.
+      if (!runtime?.session || runtime.retiring || runtime.session.nativeSessionId !== row.native_session_id) return
+      // Claude submissions have a native message receipt instead of a native turn ID.
+      const nativeId = row.active_native_turn_id ?? (await this.repository.turn(id, target.requestId))?.nativeSubmission?.nativeMessageId
+      if (!nativeId) return // Submission or exact-history recovery will retry this durable intent.
       try {
-        await runtime.manager.cancel(runtime.session, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), row.active_native_turn_id)
+        await runtime.manager.cancel(runtime.session, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), nativeId)
       } catch (error) {
         this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
       }
@@ -1100,7 +1102,7 @@ export class AgentChatService {
       else await this.control(id, () => this.repository.pending(id, requestId, pending))
       // Acceptance can be learned without onSubmitted (lost ACK or restart after Stop's commit).
       // A cancel acknowledgement is not terminal proof and never releases the queue.
-      if (history.nativeTurnId) await this.interruptActive(id, false, { requestId, nativeTurnId: history.nativeTurnId }, controlled)
+      if (history.nativeTurnId || messageIdentity) await this.interruptActive(id, false, { requestId, nativeTurnId: history.nativeTurnId ?? null }, controlled)
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId, delivery: 'accepted' })
     }

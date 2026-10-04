@@ -566,6 +566,14 @@ export class PostgresOperatorConversationRepository {
   }
 
 
+  /** The active request's persisted native message receipt (Claude); it is not a native turn ID. */
+  async submittedMessageId(id: string, requestId: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ native_message_id: string | null }>(`select t.payload->'nativeSubmission'->>'nativeMessageId' as native_message_id
+      from operator_conversations c join operator_conversation_turns t on t.conversation_id=c.id and t.request_id=c.active_request_id
+      where c.id=$1 and c.active_request_id=$2 and t.payload->'nativeSubmission'->>'kind'='message'`, [id, requestId])
+    return result.rows[0]?.native_message_id ?? undefined
+  }
+
   async submitted(id: string, requestId: string, nativeTurnId: string,
     owner: { nativeSessionId: string; principalId: string | null }): Promise<boolean> {
     // ACK evidence and handoff initialization commit in one SQL statement. An

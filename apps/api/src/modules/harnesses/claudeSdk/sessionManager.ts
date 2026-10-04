@@ -66,6 +66,7 @@ interface Turn {
   nativeMessageId?: string
   assistantMessageId?: string
   authority?: ClaudeCallbackAuthority
+  cancelRequested?: boolean
 }
 interface Runtime {
   sdk: ClaudeSdkSession
@@ -91,6 +92,15 @@ interface Runtime {
   initialized: Promise<NativeSessionReference>
   resolveInit(session: NativeSessionReference): void
   rejectInit(error: unknown): void
+}
+
+/** A caller's signal bounds native startup only; it never owns the resident query afterwards. */
+function startupSignal(signal?: AbortSignal): { signal?: AbortSignal; release(): void } {
+  if (!signal) return { release() {} }
+  const controller = new AbortController()
+  const forward = () => controller.abort(signal.reason)
+  if (signal.aborted) forward(); else signal.addEventListener('abort', forward, { once: true })
+  return { signal: controller.signal, release: () => signal.removeEventListener('abort', forward) }
 }
 
 export function createClaudeNativeSessionManager(options: {
@@ -262,18 +272,21 @@ export function createClaudeNativeSessionManager(options: {
       return prepared.opening
     }
     const runtime = makeRuntime(start)
+    const startup = startupSignal(signal)
     const opening = (async () => {
       try {
         runtime.sdk = await options.runner.open({ scope: options.scope,
           options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...start.environment?.variables } },
-          ...(signal ? { signal } : {}), onObservation: (observation) => observed(runtime, observation),
+          ...(startup.signal ? { signal: startup.signal } : {}), onObservation: (observation) => observed(runtime, observation),
           ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}) })
         runtime.pumping = pump(runtime)
         if (!runtime.sdk.initializationResult) throw new HarnessExecutionError('CLAUDE_INIT_INSPECTION_UNAVAILABLE', 'The SDK initialization control result is unavailable.')
         await ownedControl(runtime, () => runtime.sdk.initializationResult!(), signal)
         if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The inspected SDK query closed.')
+        startup.release()
         return runtime
       } catch (error) {
+        startup.release()
         runtime.rejectInit(error)
         runtime.closed = true
         delete runtime.httpCredentialAcknowledgement
@@ -317,10 +330,11 @@ export function createClaudeNativeSessionManager(options: {
       runtime.active = initial.turn
     }
     all.add(runtime)
+    const startup = startupSignal(signal)
     try {
       if (!runtime.sdk) runtime.sdk = await options.runner.open({
         scope: options.scope, options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...start.environment?.variables } },
-        ...(signal ? { signal } : {}),
+        ...(startup.signal ? { signal: startup.signal } : {}),
         ...(resume ? { resume: { ...options.scope, nativeSessionId: resume.nativeSessionId } } : {}),
         onObservation: (observation) => observed(runtime, observation),
         ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}),
@@ -349,8 +363,9 @@ export function createClaudeNativeSessionManager(options: {
       }
       if (initial) await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)
       const timer = setTimeout(() => runtime.rejectInit(new HarnessExecutionError('CLAUDE_INIT_TIMEOUT', 'Claude initialization did not provide an exact native session.')), options.initializationTimeoutMs ?? 10_000)
-      try { return await runtime.initialized } finally { clearTimeout(timer) }
+      try { return await runtime.initialized } finally { clearTimeout(timer); startup.release() }
     } catch (error) {
+      startup.release()
       runtime.rejectInit(error)
       await runtime.sdk?.close()
       await runtime.pumping
@@ -431,6 +446,7 @@ export function createClaudeNativeSessionManager(options: {
         if (matched && !matched.terminal && terminalAdmissible && frame.type === 'result') {
           matched.terminal = successfulResult
             ? { outcome: 'succeeded', output: typeof frame.result === 'string' ? frame.result : '' }
+            : matched.cancelRequested ? { outcome: 'canceled' }
             : { outcome: 'failed', error: { code: 'CLAUDE_NATIVE_RESULT_ERROR', message: Array.isArray(frame.errors) ? frame.errors.join('\n') : 'Claude returned an error result.', retryable: false } }
           record(runtime, 'turn.completed', { nativeSessionId: frame.session_id, nativeMessageId: matched.nativeMessageId, clientCorrelationId: matched.correlationId, result: matched.terminal,
             ...(typeof frame.uuid === 'string' ? { source: { eventId: frame.uuid } } : {}) }, matched)
@@ -569,7 +585,7 @@ export function createClaudeNativeSessionManager(options: {
     async capabilities() {
       const q = options.qualification
       return { provider: harness, providerVersion: q.cliVersion, persistentSessions: q.basicTurns, reconnect: q.resume,
-        sameRequestResponses: Boolean(q.interactions && options.interactionPort), cancellation: false, history: q.history, configurationInspection: true,
+        sameRequestResponses: Boolean(q.interactions && options.interactionPort), cancellation: q.basicTurns, history: q.history, configurationInspection: true,
         mcpDetection: true, supportedInteractionKinds: q.interactions && options.interactionPort ? [...(options.supportedInteractionKinds ?? ['permission'])] : [] }
     },
     async refreshInspectionCredentials(start, servers, signal) {
@@ -706,7 +722,19 @@ export function createClaudeNativeSessionManager(options: {
       return options.interactionPort.respond(session, requestId, option, signal)
     },
     stopAutomaticResponses(session) { options.interactionPort?.stopAutomaticResponses?.(session); options.cancelPendingRequests?.() },
-    async cancel() { return false },
+    /** Interrupts only the exact active turn, identified by its native message receipt. */
+    async cancel(session, signal, nativeMessageId) {
+      signal?.throwIfAborted()
+      const runtime = runtimeFor(session)
+      const turn = runtime.active
+      if (runtime.closed || runtime.failure || !turn?.submitted || turn.terminal || !turn.nativeMessageId
+        || nativeMessageId !== undefined && nativeMessageId !== turn.nativeMessageId) return false
+      if (turn.cancelRequested) return true
+      // Set before the await: the interrupted result can be pumped before interrupt() resolves.
+      turn.cancelRequested = true
+      try { await runtime.sdk.interrupt() } catch (error) { turn.cancelRequested = false; throw error }
+      return true
+    },
     async history(session): Promise<NativeHistory> {
       const runtime = runtimeFor(session)
       return { events: [...runtime.events], pendingInteractions: [...(options.pendingInteractions?.(session) ?? [])], firstRetainedSequence: runtime.events[0]?.sequence ?? runtime.nextSequence, nextSequence: runtime.nextSequence }
