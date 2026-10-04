@@ -419,6 +419,7 @@ export function buildProductionApp(
       catch (error) { app.log.warn({ err: error }, 'Original remote metadata acknowledgment remains pending') }
     })
   const remoteWorkflow = createProductionRemoteWorkflow({ pool: database.pool, locations, endpoint: () => deviceRuntime.endpointForDomains(),
+    preparationTimeoutMs: config.harnesses.timeoutMs,
     workerExecution,
     producer: () => agentPlacement, execution: id => runs.getExecution(id), artifacts: {
       assertPublications: (sql, readout, binding) => {

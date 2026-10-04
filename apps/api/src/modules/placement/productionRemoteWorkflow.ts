@@ -40,6 +40,7 @@ export function createProductionRemoteWorkflow(input: {
   execution(id: string): Promise<HarnessExecution | undefined>
   artifacts?: WorkflowPhysicalArtifactsPort
   workerExecution?: WorkerExecutionPolicy
+  preparationTimeoutMs?: number
 }) {
   const bindings = new Map<string, AcceptedExecutionBinding | null>()
   const channel = createRemoteNativeSourceChannel()
@@ -107,6 +108,7 @@ export function createProductionRemoteWorkflow(input: {
       }
       const verifiedReceipts = new Map<string, { verified: VerifiedRemoteEvidence; assertCurrent(): void }>()
       return remoteNativeManager(context, binding, { carrier,
+        ...(input.preparationTimeoutMs ? { preparationTimeoutMs: input.preparationTimeoutMs } : {}),
         ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
         beforePrepare: (intent, _placement, connection) => {
           const owner = requireOwner()

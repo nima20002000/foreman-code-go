@@ -16,7 +16,7 @@ import type { AcceptedExecutionBinding } from './nativeComposition.js'
  * is not enough to bind native responses to their originating connection. */
 export interface AuthenticatedWorkerChannel {
   identity: DeviceConnectionIdentity
-  request(namespace: string, payload: unknown, options?: { signal?: AbortSignal }): Promise<{ payload: unknown; bytes?: Uint8Array }>
+  request(namespace: string, payload: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ payload: unknown; bytes?: Uint8Array }>
 }
 export interface MainWorkerCarrier { capture(deviceId: string): AuthenticatedWorkerChannel }
 function selected(carrier: MainWorkerCarrier, host: { kind: 'main' | 'device'; mainId: string; deviceId?: string },
@@ -53,6 +53,7 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   controlFor: RemoteNativeManagerOptions['controlFor']
   observeOriginalSource?: NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>
   workerExecution?: WorkerExecutionPolicy
+  preparationTimeoutMs?: number
 }): RemoteNativeSessionManager {
   if (binding.placement.payload.kind !== 'agent' || binding.placement.payload.agentId !== context.agentId
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
@@ -77,7 +78,10 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       }
       const connection = selected(options.carrier, binding.placement.hostRef, binding.placement.registration)
       if (['prepare', 'capabilities', 'inspect-mcp'].includes(method)) await options.beforePrepare(request.intent, request.placement, connection.identity)
-      const result = await connection.request(REMOTE_EXECUTION_EXTENSION, request, signal ? { signal } : {})
+      const preparesNative = ['prepare', 'reattach', 'capabilities', 'inspect-mcp'].includes(method)
+      const requestOptions = { ...(signal ? { signal } : {}),
+        ...(preparesNative && options.preparationTimeoutMs ? { timeoutMs: options.preparationTimeoutMs } : {}) }
+      const result = await connection.request(REMOTE_EXECUTION_EXTENSION, request, requestOptions)
       if (result.bytes !== undefined) throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
       const receipt = receiptFromResponse(result.payload)
       if (receipt) {

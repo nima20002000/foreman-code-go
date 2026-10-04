@@ -352,11 +352,20 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           record->>'connectionGeneration' as generation,record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
           from native_session_lanes where id=$1 for share`, [lifetime.lane.id])).rows[0]
-        if (!lane || (!lane.held&&!(retained&&closure.closed&&lane.token===null)) || lane.owner_agent_id !== execution.data.agentId || lane.harness !== readout.session.harness
-          || lane.native_session_id !== readout.session.nativeSessionId || lane.token !== lifetime.lane.token&&!(retained&&closure.closed&&lane.token===null)
-          || lane.generation !== String(lifetime.lane.connectionGeneration) || lane.correlation !== `execution:${intent.executionId}`
-          || receipt.native?.turnId !== undefined && lane.provider_id !== receipt.native.turnId
-          || lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) return unavailable('writer_lane')
+        if (!lane) return unavailable('writer_lane_missing')
+        const releasedAfterClosure = retained && closure.closed && lane.token === null
+        if (!lane.held && !releasedAfterClosure) return unavailable('writer_lane_expired')
+        if (lane.owner_agent_id !== execution.data.agentId || lane.harness !== readout.session.harness
+          || lane.native_session_id !== readout.session.nativeSessionId) return unavailable('writer_lane_session')
+        if (lane.token !== lifetime.lane.token && !releasedAfterClosure) return unavailable('writer_lane_token')
+        if (lane.generation !== String(lifetime.lane.connectionGeneration)) return unavailable('writer_lane_generation')
+        if (lane.correlation !== `execution:${intent.executionId}`) return unavailable('writer_lane_correlation')
+        if (receipt.native?.turnId !== undefined && lane.provider_id !== receipt.native.turnId) {
+          return unavailable('writer_lane_receipt_turn')
+        }
+        if (lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) {
+          return unavailable('writer_lane_captured_turn')
+        }
       } else if (original.source.type === 'history' || original.source.type === 'event') return unavailable('missing_writer_lane')
       if(published){if(!input.artifacts)return unavailable('artifact_verifier');await input.artifacts.assertPublications(sql,readout,capture.binding)}
       check()
