@@ -60,7 +60,7 @@ execution or native-session deletion code is added.
 
 `RunManagementService.history` owns a single `RunHistoryService` instance used by
 both HTTP and Operator MCP. Inputs and successful outputs are parsed with the
-unchanged `@foreman-code/contracts/run-snapshots` schemas.
+unchanged `@graphql/contracts/run-snapshots` schemas.
 
 | HTTP GET path | Operator MCP tool |
 | --- | --- |

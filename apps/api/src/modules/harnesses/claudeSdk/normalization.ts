@@ -1,5 +1,5 @@
 /** Structured SDK evidence only. These are adapter observations, not admission,
- * response delivery, cancellation, or GraphQL work-completion receipts. */
+ * response delivery, cancellation, or Foreman Code work-completion receipts. */
 export interface ClaudeEventOwner { readonly ownerId: string; readonly attemptId: string; readonly generation: string | number }
 export interface ClaudeEventEvidence {
   owner: ClaudeEventOwner

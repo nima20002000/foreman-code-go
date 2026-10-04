@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from '@foreman-code/contracts/product'
 import { ExecutionLab, OverlayGallery, PatternGallery } from './V2Showcase'
 import { useState, useSyncExternalStore, type ReactNode } from 'react'
 import {
@@ -41,7 +42,7 @@ export function ToolkitShowcase() {
   const { notify } = useToast()
   const selectedNode = nodes.find((node) => node.id === selected) ?? nodes[1]
   function navigation() {
-    return <><a className="d-brand" href="#/studio"><span className="d-brand-icon"><Icon name="workflow" size={21} /></span><strong>GraphQL<span>WORKSPACE</span></strong><Badge>Nocturne</Badge></a>
+    return <><a className="d-brand" href="#/studio"><span className="d-brand-icon"><Icon name="workflow" size={21} /></span><strong>{PRODUCT_NAME}<span>WORKSPACE</span></strong><Badge>Nocturne</Badge></a>
       <button className="d-workspace-switcher" type="button" onClick={() => setCommandOpen(true)}><Avatar name="Personal workspace" size="sm" /><span>Personal workspace<small>Local environment</small></span><Icon name="down" size={13} /></button>
       <button className="d-search-launcher" type="button" onClick={() => setCommandOpen(true)}><Icon name="search" size={15} /><span>Jump to…</span><Kbd>⌘ K</Kbd></button>
       <nav aria-label="Preview navigation" onClick={(event) => { if ((event.target as HTMLElement).closest('a')) setMobileOpen(false) }}><p className="d-nav-label">Workspace</p>

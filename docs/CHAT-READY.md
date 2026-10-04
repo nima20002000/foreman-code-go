@@ -37,7 +37,7 @@ Base: the commit that adds this file on branch `feat/chat-foundation`.
 
 ## Contract (terminal-owned, frozen)
 
-`packages/contracts/src/agentChat.ts` (`@foreman-code/contracts/agent-chat`), fixtures in
+`packages/contracts/src/agentChat.ts` (`@graphql/contracts/agent-chat`), fixtures in
 `agentChatFixtures.ts`, new actions `agent_chat:read|write|cancel|respond` in `management/index.ts`.
 Lane changes to these files must be listed as overlap with preimage/result hashes and a reason.
 
@@ -119,7 +119,7 @@ Errors use the existing `DomainError` JSON shape. `409` codes: `AGENT_CHAT_CONTE
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @graphql/contracts build
 corepack pnpm lint && corepack pnpm test && corepack pnpm build
 corepack pnpm db:up && corepack pnpm test:integration && corepack pnpm test:acceptance && corepack pnpm db:down
 ```

@@ -192,12 +192,12 @@ On a full pinned checkout, register the migration and run:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @foreman-code/contracts build
-corepack pnpm --filter @foreman-code/api typecheck
-corepack pnpm --filter @foreman-code/api lint
-corepack pnpm --filter @foreman-code/api exec vitest run test/file-agent-reference-access.test.ts test/file-agent-reference-policy.test.ts
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api lint
+corepack pnpm --filter @graphql/api exec vitest run test/file-agent-reference-access.test.ts test/file-agent-reference-policy.test.ts
 # With an explicit disposable loopback TEST_DATABASE_URL:
-corepack pnpm --filter @foreman-code/api exec vitest run test/file-agent-reference-provenance.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @graphql/api exec vitest run test/file-agent-reference-provenance.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
 ```
 
 Finally, bind FIL-05's authenticated Agent list/read handlers to this service and

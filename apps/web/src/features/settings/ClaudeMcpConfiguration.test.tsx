@@ -10,12 +10,12 @@ import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
-function setup() {
+function setup(mcpServers = {}) {
   server.use(http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({
     graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3999/mcp' },
   })))
   function Editor() {
-    const [value, setValue] = useState({ ...savedClaudeConfiguration, mcpServers: {} })
+    const [value, setValue] = useState({ ...savedClaudeConfiguration, mcpServers })
     return <><ClaudeMcpConfiguration value={value} onChange={setValue} /><output data-testid="draft">{JSON.stringify(value)}</output></>
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
@@ -24,14 +24,14 @@ function setup() {
 }
 it('adds the server-supplied app endpoint to the draft without changing permissions or claiming connected health', async () => {
   const user = setup()
-  const add = await screen.findByRole('button', { name: 'Add GraphQL MCP' })
+  const add = await screen.findByRole('button', { name: 'Add Foreman Code MCP' })
   await waitFor(() => expect(add).toBeEnabled())
   await user.click(add)
-  expect(await screen.findByRole('button', { name: 'GraphQL added' })).toBeDisabled()
+  expect(await screen.findByRole('button', { name: 'Foreman Code added' })).toBeDisabled()
   expect(JSON.parse(screen.getByTestId('draft').textContent!)).toEqual({ ...savedClaudeConfiguration,
-    mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
+    mcpServers: { 'foreman-code': { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
   expect(screen.queryByText('Connected')).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: 'Remove graphql' }))
+  await user.click(screen.getByRole('button', { name: 'Remove foreman-code' }))
   expect(JSON.parse(screen.getByTestId('draft').textContent!).mcpServers).toEqual({})
 })
 it('rejects secret-bearing endpoints and duplicate names before adding a custom HTTP server', async () => {
@@ -49,4 +49,16 @@ it('rejects secret-bearing endpoints and duplicate names before adding a custom 
   await user.click(screen.getByRole('button', { name: 'Add HTTP MCP server' }))
   expect(screen.getByRole('alert')).toHaveTextContent('already configured')
   expect(JSON.parse(screen.getByTestId('draft').textContent!).mcpServers.docs.url).toBe('https://example.com/mcp')
+})
+it('recognizes the supported old app entry and does not add a second canonical connection', async () => {
+  const user = setup({ graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } })
+  expect(await screen.findByRole('button', { name: 'Foreman Code added' })).toBeDisabled()
+  expect(JSON.parse(screen.getByTestId('draft').textContent!).mcpServers).toEqual({
+    graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' },
+  })
+  await user.type(screen.getByRole('textbox', { name: 'MCP server name' }), 'foreman-code')
+  await user.type(screen.getByRole('textbox', { name: 'MCP endpoint' }), 'http://127.0.0.1:3999/mcp')
+  await user.click(screen.getByRole('button', { name: 'Add HTTP MCP server' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Keep one connection')
+  expect(Object.keys(JSON.parse(screen.getByTestId('draft').textContent!).mcpServers)).toEqual(['graphql'])
 })

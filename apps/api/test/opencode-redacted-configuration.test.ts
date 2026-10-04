@@ -2,36 +2,47 @@ import assert from 'node:assert/strict'
 import { afterEach, it, vi } from 'vitest'
 import { appLauncherPath } from '../src/modules/harnesses/appMcpLauncher.js'
 import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
-import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeTransport.js'
+import type { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeTransport.js'
+import * as openCodeTransport from '../src/modules/harnesses/opencodeTransport.js'
 import * as processCommands from '../src/modules/harnesses/process.js'
+import { redactKnownSecrets } from '../src/modules/harnesses/secrets.js'
 
 afterEach(() => vi.restoreAllMocks())
 
+for (const [serverName, tokenName, requestedVariable] of [
+  ['graphql', 'GRAPHQL_MCP_TOKEN', undefined],
+  ['foreman-code', 'FOREMAN_CODE_MCP_TOKEN', undefined],
+  ['graphql', 'GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'],
+  ['foreman-code', 'FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN'],
+] as const) {
 for (const mode of ['reference', 'static', 'masked', 'changed-command'] as const) {
-  it(`proves a redacted configuration only from the actual unset/nonce resolutions: ${mode}`, async () => {
+  it(`proves an unset/nonce reference: ${serverName}, ${requestedVariable ?? 'default'}, ${mode}`, async () => {
     const recovery = { root: '/unused-native-registry', owner: 'configuration-owner' }
     const entry = (token: string) => ({ type: 'local', command: [process.execPath, appLauncherPath()],
-      enabled: true, environment: { GRAPHQL_MCP_TOKEN: token } })
+      enabled: true, environment: { [tokenName]: token } })
     vi.spyOn(processCommands, 'runCommand').mockImplementation(async (_binary, args) => ({ exitCode: 0,
-      stderr: '', stdout: args[0] === '--version' ? '1.18.31' : JSON.stringify({ mcp: { graphql: entry('***') } }) }))
+      stderr: '', stdout: args[0] === '--version' ? '1.18.31' : JSON.stringify({ mcp: { [serverName]: entry('***') } }) }))
     const owners: unknown[] = []
     let disposed = 0
-    vi.spyOn(ManagedOpenCodeServer.prototype, 'dispose').mockImplementation(async () => { disposed++ })
-    vi.spyOn(ManagedOpenCodeServer.prototype, 'request').mockImplementation(async function (this: ManagedOpenCodeServer, path) {
-      assert.equal(path, '/config')
-      const options = (this as unknown as { options: { processRecovery: unknown;
-        environment?: { variables: { GRAPHQL_MCP_TOKEN: string } } } }).options
+    vi.spyOn(openCodeTransport, 'ManagedOpenCodeServer').mockImplementation(function (options) {
       owners.push(options.processRecovery)
-      const marker = options.environment?.variables.GRAPHQL_MCP_TOKEN
+      const marker = options.environment?.variables[tokenName]
       const resolved = entry(mode === 'static' ? 'literal-token' : mode === 'masked' ? '***' : marker ?? '')
       if (marker && mode === 'changed-command') resolved.command = [process.execPath, '/different/launcher.mjs']
-      return Response.json({ mcp: { graphql: resolved } })
+      return { request: async (path: string) => {
+        assert.equal(path, '/config')
+        return Response.json({ mcp: { [serverName]: resolved } })
+      }, redact: <T>(value: T): T => {
+        return redactKnownSecrets(value, marker ? [marker] : [])
+      }, dispose: async () => { disposed++ } } as ManagedOpenCodeServer
     })
     const proof = await inspectOpenCodeMcpConfiguration({ binary: '/unused-native-binary',
-      workingDirectory: '/owned-workspace', serverName: 'graphql', processRecovery: recovery })
-    assert.equal(proof?.credentialEnvironmentVariable, mode === 'reference' ? 'GRAPHQL_MCP_TOKEN' : undefined)
+      workingDirectory: '/owned-workspace', serverName, processRecovery: recovery,
+      ...(requestedVariable ? { credentialEnvironmentVariable: requestedVariable } : {}) })
+    assert.equal(proof?.credentialEnvironmentVariable, mode === 'reference' ? tokenName : undefined)
     assert.equal(proof?.automaticEndpoint, mode === 'reference' ? true : undefined)
     assert.equal(disposed, mode === 'static' || mode === 'masked' ? 1 : 2)
     assert.ok(owners.every((owner) => owner === recovery))
   })
+}
 }

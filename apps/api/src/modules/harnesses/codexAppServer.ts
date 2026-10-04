@@ -1,5 +1,6 @@
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -24,7 +25,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
-import { inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
@@ -258,13 +259,13 @@ function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames:
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
       // Operator and Worker credentials share GRAPHQL_MCP_TOKEN; the server resolves the role from the token.
-      if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || isDatabaseCredentialVariable(key)) {
+      if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key) || isDatabaseCredentialVariable(key)) {
         throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
       }
       environment[key] = value
     }
   }
-  return environment
+  return appMcpTokenEnvironment(environment)
 }
 function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: string): void {
   if (input.environment && input.environment.agentId !== ownerId(input)) {
@@ -273,7 +274,9 @@ function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: 
   if (input.kind !== 'operator' && input.request.workspaceId !== input.request.configuration.workspaceId) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The accepted configuration belongs to another workspace.')
   }
-  if (requiredVariable && !input.environment?.variables[requiredVariable]) {
+  const token = requiredVariable && isSupportedAppMcpTokenName(requiredVariable)
+    ? readProductEnvironment(input.environment?.variables ?? {}, 'MCP_TOKEN') : input.environment?.variables[requiredVariable ?? '']
+  if (requiredVariable && !token) {
     throw new HarnessExecutionError('CODEX_SCOPED_ENVIRONMENT_REQUIRED', `The enabled App MCP server requires scoped '${requiredVariable}' credentials.`)
   }
 }
@@ -383,7 +386,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   constructor(
     private readonly binary: string,
     private readonly expectedVersion?: string,
-    private readonly appMcpServerName = APP_MCP_SERVER_NAME,
+    private readonly appMcpServerName: string = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
     /** Chat disables only its App MCP entry with a verified process-local override. */
     private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
@@ -1208,11 +1211,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     try {
       const value = await this.inspectMcpConfiguration(this.inspection.workingDirectory ?? process.cwd(), signal)
       return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName,
+        harness: 'codex', serverName: value.serverName,
         state: value.configured.enabled ? 'status_unavailable' : 'disabled',
         endpointMatches: value.configured.automaticEndpoint === true && value.configured.transport === 'stdio' ? true : null,
-        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable === APP_MCP_TOKEN
-          ? APP_MCP_TOKEN : null,
+        credentialEnvironmentVariable: isSupportedAppMcpTokenName(value.configured.bearerTokenEnvironmentVariable ?? undefined)
+          ? value.configured.bearerTokenEnvironmentVariable : null,
         checkedAt,
         detail: 'CLI inspection proves configuration only; inspectNativeMcp reports runtime status.',
       })
@@ -1490,30 +1493,36 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
     providerVersion: string, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies): Promise<CodexMcpConfigurationInspection> {
-    const result = await io.runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
-    if (result.exitCode !== 0) {
-      const listed = await io.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
-      let entries: unknown
-      try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
-      if (listed.exitCode === 0 && Array.isArray(entries)
-        && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
-        && !entries.some((entry: unknown) => isObject(entry) && entry.name === this.appMcpServerName)) {
-        throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The named native MCP entry is absent.')
-      }
-      throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
+    const listed = await io.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
+    let entries: unknown
+    try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
+    const validList = listed.exitCode === 0 && Array.isArray(entries) && entries.length <= 500
+      && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
+    if (!validList) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
+      'Codex could not establish the configured MCP names.')
+    let serverName = this.appMcpServerName
+    if (validList) {
+      const names = Object.fromEntries((entries as { name: string }[]).map((entry) => [entry.name, entry]))
+      serverName = appMcpServerName(names, this.appMcpServerName)
+      if (!Object.hasOwn(names, serverName)) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED',
+        'The named native MCP entry is absent.')
     }
+    const result = await io.runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
+    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
+      'Codex MCP configuration inspection failed; absence was not established.')
     try {
       const parsed = object(JSON.parse(result.stdout))
       const transport = isObject(parsed.transport) ? parsed.transport : {}
       const url = text(transport.url) ?? null
       return {
-        providerVersion, binary, cwd, serverName: this.appMcpServerName, inspectionScope: 'effective_config',
+        providerVersion, binary, cwd, serverName, inspectionScope: 'effective_config',
         configured: {
           enabled: parsed.enabled !== false, required: parsed.required === true,
           transport: transport.type === 'streamable_http' || transport.type === 'stdio'
             ? transport.type : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
-          url, bearerTokenEnvironmentVariable: isAppLauncher('codex', transport) ? APP_MCP_TOKEN : text(transport.bearer_token_env_var) ?? null,
-          automaticEndpoint: this.appMcpServerName === APP_MCP_SERVER_NAME && isAppLauncher('codex', transport),
+          url, bearerTokenEnvironmentVariable: isAppLauncher('codex', transport)
+            ? appLauncherTokenName('codex', transport) ?? null : text(transport.bearer_token_env_var) ?? null,
+          automaticEndpoint: isSupportedAppMcpServerName(serverName) && isAppLauncher('codex', transport),
           enabledTools: stringArray(parsed.enabled_tools) ?? null, disabledTools: stringArray(parsed.disabled_tools) ?? [],
           defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
           tools: isObject(parsed.tools) ? parsed.tools : {},
@@ -1670,7 +1679,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
             ? !Object.hasOwn(servers, name) || !isObject(entry) || entry.enabled !== false
             : Object.hasOwn(servers, name)
         })) {
-          throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'GraphQL workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
+          throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Foreman Code workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
         }
       }
     } catch (error) {

@@ -172,7 +172,7 @@ handoff does not claim real-provider liveness or MCP isolation was requalified.
 1. The pinned FEAT-15 request has no explicit execution selector; its legacy Run
    path chooses the latest business occurrence/attempt. This conflicts with the
    task's assumption that explicit execution selection already exists. The new
-   `@foreman-code/contracts/selected-run-chat` envelope supplies it without modifying
+   `@graphql/contracts/selected-run-chat` envelope supplies it without modifying
    `agentChat.ts`, `runSnapshots.ts` or FEAT-05 frozen shared contracts. Legacy
    unpinned `query` reads retain that policy; snapshot-selected consumers must use
    `selection`, not the legacy form. Existing conversation controls are pinned.

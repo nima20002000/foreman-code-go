@@ -56,7 +56,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
     await user.click(screen.getByRole('button', { name: 'MCP connections' }))
-    await user.click(screen.getByRole('button', { name: 'Add GraphQL MCP' }))
+    await user.click(screen.getByRole('button', { name: 'Add Foreman Code MCP' }))
     await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })

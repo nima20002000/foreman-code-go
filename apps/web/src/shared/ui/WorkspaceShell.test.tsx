@@ -12,6 +12,17 @@ import {
 import { WorkspaceShell } from './WorkspaceShell'
 
 describe('WorkspaceShell', () => {
+  it.each([false, true])('keeps the product name accessible with collapsed navigation: %s', async collapsed => {
+    const previous = useNavigationUiStore.getState().collapsed
+    useNavigationUiStore.getState().setCollapsed(collapsed)
+    try {
+      renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+      expect(await screen.findByRole('img', { name: 'Foreman Code' })).toBeInTheDocument()
+      expect(useNavigationUiStore.getState().collapsed).toBe(collapsed)
+      expect(sessionStorage.getItem('graphql-navigation-collapsed')).toBe(String(collapsed))
+    } finally { useNavigationUiStore.getState().setCollapsed(previous) }
+  })
+
   afterEach(() => {
     sessionStorage.clear()
   })

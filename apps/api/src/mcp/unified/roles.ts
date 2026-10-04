@@ -18,6 +18,6 @@ export function roleList(roles: readonly McpRole[]): string {
 }
 
 export function roleInstructions(role: McpRole): string {
-  return `GraphQL app tools. Your credential has the ${MCP_ROLE_LABELS[role]} role, and you see only the tools enabled for you. `
+  return `Foreman Code MCP tools. Your credential has the ${MCP_ROLE_LABELS[role]} role, and you see only the tools enabled for you. `
     + 'Every call still checks your grants and scope.'
 }

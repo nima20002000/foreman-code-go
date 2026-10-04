@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>GraphQL Companion</title>
+<title>Foreman Code Companion</title>
 <style nonce="{{CSP_NONCE}}">
 :root { color-scheme: dark; --bg: #0f1115; --panel: #171a21; --raised: #1e222b; --line: #2b303b; --text: #eceef3; --muted: #9aa1b0; --accent: #7aa2ff; --ok: #5bd18b; --warn: #e8b64c; --bad: #ff7b7b; }
 * { box-sizing: border-box; }
@@ -50,7 +50,7 @@ footer p { margin: 0; font-size: .8125rem; }
 <body>
 <main>
   <header>
-    <h1>GraphQL Companion</h1>
+    <h1>Foreman Code Companion</h1>
     <span id="state" class="badge" data-tone="warn" role="status">Checking…</span>
   </header>
   <p id="notice" class="msg" role="status" aria-live="polite" hidden></p>
@@ -145,7 +145,7 @@ footer p { margin: 0; font-size: .8125rem; }
     let response;
     try {
       response = await fetch(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-        headers: { 'Content-Type': 'application/json', 'X-GraphQL-Companion-Session': session }, body: JSON.stringify(body) });
+        headers: { 'Content-Type': 'application/json', 'X-Foreman Code-Companion-Session': session }, body: JSON.stringify(body) });
     } catch { throw new Error('The companion is not reachable. Reopen it from the installed launcher.'); }
     let data = null;
     try { data = await response.json(); } catch { /* non-JSON reply */ }

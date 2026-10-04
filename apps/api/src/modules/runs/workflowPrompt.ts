@@ -9,7 +9,7 @@ export function workflowInitialPrompt(node: { initialPrompt?: string | undefined
   // Targets remain private backend authority: no relationship IDs are supplied.
   const outcomes = choice.outcomes.map(({ outcome }) => outcome)
   const contract = [
-    'GraphQL finite-choice output contract (version 1)',
+    'Foreman Code finite-choice output contract (version 1)',
     `Allowed routing.outcome values: ${JSON.stringify(outcomes)}`,
     'On successful completion, return exactly one complete JSON object with exactly two keys: routing and data.',
     'routing must be an object with exactly one key, outcome, whose value is one of the allowed strings above.',
@@ -20,7 +20,7 @@ export function workflowInitialPrompt(node: { initialPrompt?: string | undefined
     'The entire JSON result must be at most 65536 UTF-8 bytes.',
     'Select an outcome only. Do not return edge IDs, successor IDs, or an execution plan; the backend resolves the saved targets.',
     `Envelope example (shape only, not a preferred outcome): ${JSON.stringify({ routing: { outcome: outcomes[0] }, data: repeatExit ? { latestDeliverable: {}, remainingFindings: [] } : null })}`,
-    'End GraphQL finite-choice output contract.',
+    'End Foreman Code finite-choice output contract.',
   ].join('\n')
   return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
 }

@@ -300,7 +300,7 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
       path: value.configuration.advanced
         ? ["configuration", "advanced", "permissionHandling"]
         : ["configuration", "autoApprove"],
-      message: "native auto approval conflicts with GraphQL-routed approval",
+      message: "native auto approval conflicts with Foreman Code-routed approval",
     });
   }
 });
@@ -707,7 +707,7 @@ export const AgentSchema = z
     configurationVersionId: IdSchema.optional(),
     prompt: AgentPromptSchema.optional(),
     assignedSkills: z.array(AssignedSkillSchema).optional(),
-    /** Default GraphQL MCP tools; absent means every tool the product role allows. */
+    /** Default Foreman Code MCP tools; absent means every tool the product role allows. */
     graphqlTools: GraphqlToolDefaultsSchema.optional(),
     ...OptionalTimestampFields,
   })
@@ -904,7 +904,7 @@ export const HarnessExecutionSchema = z
     nativeSessionId: IdSchema.optional(),
     /** User project directory selected on the Run. Optional only for legacy history. */
     workingDirectory: z.string().min(1).optional(),
-    /** GraphQL-owned attempt storage, always separate from workingDirectory. */
+    /** Foreman Code-owned attempt storage, always separate from workingDirectory. */
     runtimeDirectory: z.string().min(1).optional(),
     input: z.json(),
     state: HarnessExecutionStateSchema,

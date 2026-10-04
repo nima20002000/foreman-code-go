@@ -33,6 +33,17 @@ describe('App MCP detection normalization', () => {
     endpoint: 'http://127.0.0.1:3000/mcp',
     credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
   }
+  it.each(['codex', 'opencode'] as const)('accepts old and canonical %s names and token references without changing tool filters', async (harness) => {
+    for (const name of ['graphql', 'foreman-code']) {
+      for (const credentialEnvironmentVariable of ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN']) {
+        const evidence = { ...base, harness, entry: { ...matching, name, credentialEnvironmentVariable,
+          disabledTools: ['interaction_respond'] } }
+        const detection = await service(evidence).preflight({ harness, runnerId: 'runner-a', workingDirectory: '/workspace' })
+        expect(detection.detection).toMatchObject({ serverName: name, state: 'status_unavailable', credentialEnvironmentVariable })
+        expect(intersectNativeToolFilters(['context_get', 'interaction_respond'], detection.nativeFilters)).toEqual(['context_get'])
+      }
+    }
+  })
 
   it('accepts only proven app launchers with the shared credential and preserves disabled state', async () => {
     const launcher = { name: 'graphql', transport: 'stdio' as const, automaticEndpoint: true,

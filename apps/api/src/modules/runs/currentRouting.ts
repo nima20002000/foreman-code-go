@@ -28,7 +28,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
     const saved = WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs)
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(item => item.outcome) : undefined
     const contract = [
-      'GraphQL saved workflow artifact result contract (version 1)',
+      'Foreman Code saved workflow artifact result contract (version 1)',
       `Required saved output keys: ${JSON.stringify(saved.outputKeys)}`,
       `On success return exactly one complete JSON object with ${outcomes ? 'routing, data, and artifactOutputs' : 'data and artifactOutputs'}.`,
       ...(outcomes ? [`routing has exactly outcome, one of ${JSON.stringify(outcomes)}.`] : []),
@@ -37,14 +37,14 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'Admit, transfer, and publish the original bytes before completing. A command ID alone does not prove publication; the backend verifies canonical bytes and durable output mappings.',
       'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
       'data is a JSON value. Preserve the accepted task data requirements. Do not wrap the complete JSON in Markdown or commentary. Maximum 65536 UTF-8 bytes.',
-      'End GraphQL saved workflow artifact result contract.',
+      'End Foreman Code saved workflow artifact result contract.',
     ].join('\n')
     return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
   }
   if (handoff) {
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
     const contract = [
-      'GraphQL work-handoff result contract (version 1)',
+      'Foreman Code work-handoff result contract (version 1)',
       'On successful completion, return exactly one complete JSON object with exactly routing and data.',
       'routing.kind is request, return, or finish.',
       `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
@@ -53,7 +53,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
       'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
       'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
-      'End GraphQL work-handoff result contract.',
+      'End Foreman Code work-handoff result contract.',
     ].join('\n')
     return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
   }
@@ -63,7 +63,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
   // Targets remain private backend authority: no relationship IDs are supplied.
   const outcomes = choice.outcomes.map(({ outcome }) => outcome)
   const contract = [
-    'GraphQL finite-choice output contract (version 1)',
+    'Foreman Code finite-choice output contract (version 1)',
     `Allowed routing.outcome values: ${JSON.stringify(outcomes)}`,
     'On successful completion, return exactly one complete JSON object with exactly two keys: routing and data.',
     'routing must be an object with exactly one key, outcome, whose value is one of the allowed strings above.',
@@ -74,7 +74,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
     'The entire JSON result must be at most 65536 UTF-8 bytes.',
     'Select an outcome only. Do not return edge IDs, successor IDs, or an execution plan; the backend resolves the saved targets.',
     `Envelope example (shape only, not a preferred outcome): ${JSON.stringify({ routing: { outcome: outcomes[0] }, data: repeatExit ? { latestDeliverable: {}, remainingFindings: [] } : null })}`,
-    'End GraphQL finite-choice output contract.',
+    'End Foreman Code finite-choice output contract.',
   ].join('\n')
   return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
 }

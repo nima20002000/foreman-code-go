@@ -32,7 +32,7 @@ const descriptions: Record<FileToolOperation, string> = {
 }
 
 /** v0.157 DynamicToolSpec function form. Register only the accepted allowlist.
- * These are native callbacks into FIL-05, not the workflow GraphQL App MCP server.
+ * These are native callbacks into FIL-05, not the workflow Foreman Code App MCP server.
  * Schema refinements are enforced again on every call, before runner side effects. */
 export function codexFileDynamicTools(turn: Pick<CodexFileTurn, 'allowedTools'>) {
   const allowed = turn.allowedTools()

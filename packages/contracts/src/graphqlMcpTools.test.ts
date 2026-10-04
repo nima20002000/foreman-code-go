@@ -4,7 +4,7 @@ import { AgentSchema } from './index.js'
 import { effectiveGraphqlTools, graphqlRoleTools, graphqlToolRoles, GraphqlToolOverrideSchema, GRAPHQL_OPERATOR_TOOLS } from './graphqlMcpTools.js'
 import { CurrentWorkflowNodeSchema } from './wave25/workflowShape.js'
 
-describe('GraphQL MCP tools per Agent', () => {
+describe('Foreman Code MCP tools per Agent', () => {
   it('starts from every role tool, applies the Agent default, then the node override, never beyond the role', () => {
     expect(graphqlRoleTools('coder')).toEqual(['context_get', 'interaction_list', 'interaction_get'])
     expect(effectiveGraphqlTools('coder')).toEqual(['context_get', 'interaction_list', 'interaction_get'])

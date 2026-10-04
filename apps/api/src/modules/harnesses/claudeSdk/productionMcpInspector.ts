@@ -2,6 +2,7 @@ import type { NativeMcpInspector, NativeMcpStatus } from '../mcpDetection.js'
 import { HarnessExecutionError } from '../errors.js'
 import type { NativeSessionStart } from '../port.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
+import { appMcpServerName } from '../appMcpLauncher.js'
 
 /** Reads control status and acknowledged credential metadata from the same
  * owned query. Saved HTTP settings and token presence alone confer no proof. */
@@ -17,7 +18,8 @@ export function claudeProductionMcpInspector(input: {
     }
     request.signal?.throwIfAborted()
     const snapshot = await input.manager().prepareInspection(await input.start(), request.signal)
-    const server = snapshot.servers.find(entry => entry.name === request.serverName)
+    const name = appMcpServerName(Object.fromEntries(snapshot.servers.map((entry) => [entry.name, entry])), request.serverName)
+    const server = snapshot.servers.find(entry => entry.name === name)
     const status: Record<string, NativeMcpStatus> = { connected: 'connected', failed: 'broken',
       'needs-auth': 'authentication_required', pending: 'status_unavailable', disabled: 'disabled' }
     return { harness: 'claude', providerVersion: input.cliVersion, runnerId: request.runnerId,

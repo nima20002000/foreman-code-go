@@ -34,7 +34,7 @@ describe('H2 A-R01: truthful chat availability without changing the frozen contr
         const state = await chat['state']({ context, configuration }, principal)
         assert.equal(AgentChatStateSchema.safeParse(state).success, true)
         assert.equal(state.availability.canSend, true)
-        assert.match(state.availability.message!, /GraphQL workflow tools are not available in chat/)
+        assert.match(state.availability.message!, /Foreman Code workflow tools are not available in chat/)
         assert.match(state.availability.message!, /other accepted Agent settings are retained/)
         assert.equal(state.availability.reason, undefined)
         assert.equal(state.capabilities.harness, harness)

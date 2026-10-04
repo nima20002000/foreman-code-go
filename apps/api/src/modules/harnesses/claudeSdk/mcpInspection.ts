@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 import type { McpDetection, AgentHarness } from '@foreman-code/contracts'
 import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
+import { appMcpServerName, isSupportedAppMcpTokenName } from '../appMcpLauncher.js'
 
 export interface ClaudeMcpControlServer {
   name: string
@@ -42,20 +43,22 @@ export function decodeClaudeMcpControl(rows: readonly unknown[], generation: str
     } : null
     const toolNames = Array.isArray(row.tools) ? row.tools.slice(0, 512).flatMap((value) => value && typeof value === 'object' && typeof (value as Record<string, unknown>).name === 'string' ? [(value as { name: string }).name] : []) : []
     const environment = config?.env && typeof config.env === 'object' ? config.env as Record<string, unknown> : {}
-    const credentialEnvironmentVariables = Object.keys(environment).filter((key) => key === 'GRAPHQL_MCP_TOKEN')
+    const credentialEnvironmentVariables = Object.keys(environment).filter(isSupportedAppMcpTokenName)
     return { name: row.name, status: row.status as ClaudeMcpControlServer['status'], configuration, toolNames, credentialEnvironmentVariables,
       ...(typeof row.source === 'string' ? { source: row.source } : {}) }
   })
   return { generation, initializationAnswered: true, servers, checkedAt, ...credentials }
 }
 export function claudeMcpDetection(snapshot: ClaudeMcpInspection, expected: { serverName: string; url?: string }): McpDetection {
-  const server = snapshot.servers.find((entry) => entry.name === expected.serverName)
+  const entries = Object.fromEntries(snapshot.servers.map((entry) => [entry.name, entry]))
+  const serverName = appMcpServerName(entries, expected.serverName)
+  const server = snapshot.servers.find((entry) => entry.name === serverName)
   const endpointMatches = expected.url ? server?.configuration?.url === safeUrl(expected.url) : null
-  const environmentMatches = server?.configuration?.type === 'stdio'
-    && server.credentialEnvironmentVariables.includes('GRAPHQL_MCP_TOKEN')
+  const credentialVariable = server?.credentialEnvironmentVariables.find(isSupportedAppMcpTokenName)
+  const environmentMatches = server?.configuration?.type === 'stdio' && credentialVariable !== undefined
   const acknowledgement = snapshot.httpCredentialAcknowledgement
   const headerMatches = Boolean(acknowledgement && acknowledgement.source === 'sdk_set_mcp_servers'
-    && acknowledgement.serverName === expected.serverName && snapshot.generation
+    && acknowledgement.serverName === serverName && snapshot.generation
     && acknowledgement.generation === snapshot.generation && snapshot.currentAuthorizationScope
     && acknowledgement.authorizationScope === snapshot.currentAuthorizationScope
     && expected.url && endpointMatches && server?.configuration?.type === 'http'
@@ -64,10 +67,10 @@ export function claudeMcpDetection(snapshot: ClaudeMcpInspection, expected: { se
     : endpointMatches === false ? 'misconfigured'
       : server.status === 'needs-auth' ? 'authentication_required' : server.status === 'failed' ? 'broken'
         : server.status === 'disabled' ? 'disabled' : server.status === 'pending' ? 'status_unavailable' : 'connected'
-  return { harness: 'claude' as AgentHarness, serverName: expected.serverName, state, endpointMatches,
-    credentialEnvironmentVariable: environmentMatches ? 'GRAPHQL_MCP_TOKEN' : null,
+  return { harness: 'claude' as AgentHarness, serverName, state, endpointMatches,
+    credentialEnvironmentVariable: environmentMatches ? credentialVariable : null,
     credentialArrangement: headerMatches ? { kind: 'scoped_http_header' }
-      : environmentMatches ? { kind: 'environment_variable', environmentVariable: 'GRAPHQL_MCP_TOKEN' } : { kind: 'unknown' },
+      : environmentMatches ? { kind: 'environment_variable', environmentVariable: credentialVariable! } : { kind: 'unknown' },
     checkedAt: snapshot.checkedAt,
     detail: 'Observed SDK MCP control status/configuration on the same owned query; saved settings are not connection evidence.' }
 }

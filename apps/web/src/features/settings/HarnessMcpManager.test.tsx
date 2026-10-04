@@ -10,7 +10,7 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 
-it.each(['codex', 'opencode'] as const)('adds, toggles, and removes GraphQL and Linear MCP in %s', async (harness) => {
+it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Foreman Code and Linear MCP in %s', async (harness) => {
   const installed = new Map<string, boolean>()
   const calls: Array<{ preset: string; installed?: boolean; enabled?: boolean }> = []
   server.use(
@@ -18,14 +18,14 @@ it.each(['codex', 'opencode'] as const)('adds, toggles, and removes GraphQL and 
       servers: [...installed].map(([name, enabled]) => ({ name, transport: 'remote', label: name === 'linear' ? 'mcp.linear.app' : '127.0.0.1:3000',
         endpoint: name === 'linear' ? 'https://mcp.linear.app/mcp/readonly' : 'http://127.0.0.1:3000/mcp',
         enabled, origin: 'user', protected: name !== 'linear', editable: name === 'linear' })),
-      presets: { graphql: installed.has('graphql') ? installed.get('graphql') ? 'installed' : 'disabled' : 'missing',
+      presets: { graphql: installed.has('foreman-code') ? installed.get('foreman-code') ? 'installed' : 'disabled' : 'missing',
         linear: installed.has('linear') ? installed.get('linear') ? 'installed' : 'disabled' : 'missing' },
     })),
     http.get(`/api/management/harnesses/${harness}/mcp/plans`, () => HttpResponse.json({ items: [] })),
     http.post('/api/management/harnesses/mcp/managed', async ({ request }) => {
       const input = await request.json() as { preset: string; installed?: boolean; enabled?: boolean }
       calls.push(input)
-      const name = input.preset === 'graphql' ? 'graphql' : 'linear'
+      const name = input.preset === 'graphql' ? 'foreman-code' : 'linear'
       if (input.enabled !== undefined) installed.set(name, input.enabled)
       else if (input.installed) installed.set(name, true); else installed.delete(name)
       return HttpResponse.json({ id: crypto.randomUUID(), harness, revision, change: { kind: input.enabled !== undefined ? 'enable' : input.installed ? 'add' : 'remove', name,
@@ -35,7 +35,7 @@ it.each(['codex', 'opencode'] as const)('adds, toggles, and removes GraphQL and 
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness={harness} /></QueryClientProvider>)
-  for (const [name, label] of [['graphql', 'GraphQL MCP'], ['linear', 'Linear MCP']] as const) {
+  for (const [name, label] of [['foreman-code', 'Foreman Code MCP'], ['linear', 'Linear MCP']] as const) {
     fireEvent.click(await screen.findByRole('button', { name: `Add ${label}` }))
     const card = await screen.findByRole('button', { name: `View details for ${name}, Enabled` })
     card.focus()
@@ -80,7 +80,7 @@ it('keeps the original command identity when a one-click response is uncertain',
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
-  fireEvent.click(await screen.findByRole('button', { name: 'Add GraphQL MCP' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Add Foreman Code MCP' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Retry original change' }))
   await waitFor(() => expect(inputs).toHaveLength(2))
   expect(inputs[1]?.commandId).toBe(inputs[0]?.commandId)
@@ -112,7 +112,7 @@ it('keeps protected and inherited servers inspectable while explaining why remov
   }
 })
 
-it('upgrades retired graphql-app and graphql-operator entries to the one GraphQL MCP', async () => {
+it('upgrades retired graphql-app and graphql-operator entries to the one Foreman Code MCP', async () => {
   const inputs: Array<{ preset: string; installed?: boolean }> = []
   server.use(
     http.get('/api/management/harnesses/opencode/mcp', () => HttpResponse.json({ harness: 'opencode', revision, checkedAt, scope: 'native-user',
@@ -131,9 +131,9 @@ it('upgrades retired graphql-app and graphql-operator entries to the one GraphQL
   render(<QueryClientProvider client={client}><HarnessMcpManager harness="opencode" /></QueryClientProvider>)
   expect(await screen.findByText('Replaces the separate graphql-app and graphql-operator connections with one connection for every role.')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'View details for graphql-operator, Needs attention' }))
-  expect(screen.getByRole('dialog', { name: 'graphql-operator MCP details' })).toHaveTextContent('This retired connection is replaced by graphql')
+  expect(screen.getByRole('dialog', { name: 'graphql-operator MCP details' })).toHaveTextContent('This retired connection is replaced by foreman-code')
   fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
-  fireEvent.click(screen.getByRole('button', { name: 'Upgrade to GraphQL MCP' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Upgrade to Foreman Code MCP' }))
   await waitFor(() => expect(inputs).toEqual([expect.objectContaining({ preset: 'graphql', installed: true })]))
 })
 

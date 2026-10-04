@@ -1,7 +1,7 @@
-# graphql
+# Foreman Code
 
-`graphql` is a pnpm TypeScript monorepo for an agent workspace. The project
-name is `graphql`; it is not a GraphQL protocol or query-engine implementation.
+Foreman Code is a pnpm TypeScript monorepo for an agent workspace. The project
+name is Foreman Code; it is not a GraphQL protocol or query-engine implementation.
 The browser uses the real local backend; MSW fixtures run only in unit tests.
 The backend persists saved workflow versions and runs, then
 uses LangGraph to coordinate native Codex and OpenCode headless sessions.
@@ -20,8 +20,9 @@ For a persistent desktop installation from a production build, see
 
 The authenticated local Operator Management MCP is documented in
 [`docs/operator-mcp-v1.md`](./docs/operator-mcp-v1.md). Operator chat and
-workflow agents share one role-scoped GraphQL MCP connection; see
+workflow agents share one role-scoped Foreman Code MCP connection; see
 [`docs/graphql-mcp.md`](./docs/graphql-mcp.md).
+The [rename compatibility notes](./docs/rebranding.md) explain supported environment aliases and retained installation identifiers.
 Workspace execution directories, immutable Run snapshots, and the boundary
 between start location and isolation are documented in
 [`docs/adr/workspace-execution-locations.md`](./docs/adr/workspace-execution-locations.md).
@@ -113,11 +114,11 @@ The API applies database migrations during startup.
 `corepack pnpm dev` enables local browser access on the loopback API. Open
 `http://127.0.0.1:5173` without setting up or entering browser credentials.
 The API still reads the chosen Operator's current grants for every request. It
-uses the configured `GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID`, the browser owner, or a
+uses the configured `FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID`, the browser owner, or a
 single active root Operator in that order. An empty local database gets a durable
 `principal-local-development-browser` Operator with app-wide grants. If several
 eligible Operators exist without a browser owner, set
-`GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID` in the private env file to select one. Existing
+`FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID` in the private env file to select one. Existing
 grants are never expanded. The local access stays active while the dev server runs,
 so the Account page does not offer sign-out in this mode.
 To configure password sign-in later on that fresh database, select
@@ -129,7 +130,7 @@ Configure private auth values and owner setup as described in
 [`docs/browser-auth.md`](./docs/browser-auth.md). Local development browser access
 is rejected when the API or database is not loopback or when `NODE_ENV=production`.
 
-For a separate local test installation, set `GRAPHQL_API_ENV_FILE` to an absolute
+For a separate local test installation, set `FOREMAN_CODE_API_ENV_FILE` to an absolute
 path before `corepack pnpm dev`; the API and credential CLI use that file instead
 of `apps/api/.env`.
 

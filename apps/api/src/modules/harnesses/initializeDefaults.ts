@@ -46,7 +46,7 @@ export async function initializeNativeDefaults(input: {
       if (!missingModel(object(raw)[harness])) continue
       const base = harness === 'claude' ? { harness: 'claude' as const, model: 'default', configDirectory: detectedClaudeProfilePath(), authMode: 'subscription' as const,
         permissionMode: 'default' as const, sandbox: 'read-only' as const, tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'AskUserQuestion'], permissionRules: [], instructions: '',
-        mcpServers: { graphql: { type: 'http' as const, url: input.appMcpEndpoint } } } : DEFAULT_HARNESS_DEFAULTS[harness]
+        mcpServers: { 'foreman-code': { type: 'http' as const, url: input.appMcpEndpoint } } } : DEFAULT_HARNESS_DEFAULTS[harness]
       next[harness] = nativeModelDefaults({ ...base, ...object(object(raw)[harness]) } as typeof base, options) as never
     }
     const defaults = HarnessDefaultsSchema.parse(next)

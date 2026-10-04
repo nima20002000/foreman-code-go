@@ -18,7 +18,7 @@ export const AppContextSchema = z.object({
     expiresAt: z.iso.datetime(),
   }).strict(),
   role: z.enum(['orchestrator', 'coder']),
-  /** GraphQL MCP tools enabled for this Agent's configuration and workflow node. */
+  /** Foreman Code MCP tools enabled for this Agent's configuration and workflow node. */
   tools: z.array(GraphqlAgentToolSchema),
   scope: z.object({
     workspaceIds: z.array(IdSchema).optional(),

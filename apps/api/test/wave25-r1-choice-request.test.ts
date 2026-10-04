@@ -68,7 +68,7 @@ async function providerRequest(declaration: WorkflowChoice, selected = 0) {
 describe('BR1-007: immutable finite choices reach the actual request builder', () => {
   it.each([0, 1])('a provider using only its request can return declared outcome %s', async (selected) => {
     const declaration = choice(), observed = await providerRequest(declaration, selected)
-    expect(observed.request.initialPrompt).toContain('GraphQL finite-choice output contract (version 1)')
+    expect(observed.request.initialPrompt).toContain('Foreman Code finite-choice output contract (version 1)')
     expect(parseChoiceResultEnvelope(observed.result, declaration).routing.outcome).toBe(declaration.outcomes[selected]!.outcome)
     expect(observed.rendered).not.toContain('private-edge')
   })
@@ -85,7 +85,7 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
     const handoff = currentInitialPrompt({ initialPrompt: 'Review.', choice: { outcomes: [
       { outcome: 'send_to_d', target: { kind: 'edge', relationshipId: 'bd' } },
     ] } }, false, true)!
-    expect(handoff).toContain('GraphQL work-handoff result contract (version 1)')
+    expect(handoff).toContain('Foreman Code work-handoff result contract (version 1)')
     expect(handoff).toContain('"send_to_d"')
     expect(handoff).toContain('the exact request ID in your received work')
     expect(handoff.startsWith('Review.\n\n')).toBe(true)
@@ -93,7 +93,7 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
   it('preserves the authored task and never mutates the declaration', () => {
     const declaration = choice(), before = structuredClone(declaration)
     expect(currentInitialPrompt({ initialPrompt: 'Check the implementation.', choice: declaration }))
-      .toMatch(/^Check the implementation\.\n\nGraphQL finite-choice/)
+      .toMatch(/^Check the implementation\.\n\nForeman Code finite-choice/)
     expect(declaration).toEqual(before)
   })
   it('keeps the derived instruction bounded at the schema maximum', () => {

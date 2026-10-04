@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from '@foreman-code/contracts/product'
 import { useCallback, useEffect, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
@@ -86,7 +87,7 @@ export function ComingSoonRouteEntry({ section, label }: { section: WorkspaceSec
       slots={{
         main: (
           <div className="coming-soon-page" data-testid="coming-soon">
-            <p className="n-eyebrow">GraphQL</p>
+            <p className="n-eyebrow">{PRODUCT_NAME}</p>
             <EmptyState
               icon="clock"
               title={label}
@@ -114,7 +115,7 @@ export function GlobalComingSoonRouteEntry({
       slots={{
         main: (
           <div className="coming-soon-page" data-testid="coming-soon">
-            <p className="n-eyebrow">GraphQL</p>
+            <p className="n-eyebrow">{PRODUCT_NAME}</p>
             <EmptyState
               icon="clock"
               title={label}
@@ -165,7 +166,7 @@ function SettingsCardBody({ icon, title, description }: {
   )
 }
 
-function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, children }: {
+function SettingsDetailPage({ eyebrow = PRODUCT_NAME, title, description, children }: {
   eyebrow?: string
   title: string
   description: string
@@ -190,7 +191,7 @@ export function GlobalSettingsRouteEntry() {
         main: (
           <div className="settings-page settings-hub">
             <PageHeader
-              eyebrow="GraphQL"
+              eyebrow={PRODUCT_NAME}
               title="Settings"
               description="Configure application preferences and connected capabilities."
             />

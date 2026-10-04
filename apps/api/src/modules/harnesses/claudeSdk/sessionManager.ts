@@ -1,4 +1,8 @@
 import { claudeNativeEvent } from './nativeEvents.js'
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { appMcpServerName } from '../appMcpLauncher.js'
+import { appMcpTokenEnvironment } from '../secrets.js'
 import { createClaudeEventNormalizer } from './normalization.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../../subagents/nativeReadback.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -125,6 +129,9 @@ export function createClaudeNativeSessionManager(options: {
   supportedInteractionKinds?: readonly string[]
   pendingInteractions?: (session: NativeSessionReference) => readonly import('@foreman-code/contracts').PendingNativeInteraction[]
 }): ClaudeNativeSessionManager {
+  const configuredServers = options.sdkOptions.mcpServers && typeof options.sdkOptions.mcpServers === 'object'
+    ? options.sdkOptions.mcpServers as Record<string, unknown> : {}
+  const expectedMcp = options.expectedMcp ?? { serverName: appMcpServerName(configuredServers) }
   // The provider enum addition is integrated by the designated shared-contract writer.
   const harness = 'claude' as AgentHarness
   const resident = new Map<string, Runtime>()
@@ -213,7 +220,7 @@ export function createClaudeNativeSessionManager(options: {
     const headers = config.headers && typeof config.headers === 'object' ? config.headers as Record<string, unknown> : {}
     const authorization = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'authorization')
     if (!authorization.length) return undefined
-    const token = start.environment?.variables.GRAPHQL_MCP_TOKEN
+    const token = readProductEnvironment(start.environment?.variables ?? {}, 'MCP_TOKEN')
     let endpoint: URL | undefined
     let expectedEndpoint: URL | undefined
     try {
@@ -228,7 +235,7 @@ export function createClaudeNativeSessionManager(options: {
     return { endpoint: endpoint.toString() }
   }
   async function deliverCredentials(runtime: Runtime, start: NativeSessionStart, servers: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<ClaudeMcpInspection> {
-    const managedName = options.expectedMcp?.serverName ?? 'graphql'
+    const managedName = expectedMcp.serverName
     const httpCredential = managedHttpCredential(start, servers, managedName)
     delete runtime.httpCredentialAcknowledgement
     delete runtime.credentialServers
@@ -280,7 +287,7 @@ export function createClaudeNativeSessionManager(options: {
     const opening = (async () => {
       try {
         runtime.sdk = await options.runner.open({ scope: options.scope,
-          options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...start.environment?.variables } },
+          options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...appMcpTokenEnvironment(start.environment?.variables ?? {}) } },
           ...(startup.signal ? { signal: startup.signal } : {}), onObservation: (observation) => observed(runtime, observation),
           ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}) })
         runtime.pumping = pump(runtime)
@@ -337,7 +344,7 @@ export function createClaudeNativeSessionManager(options: {
     const startup = startupSignal(signal)
     try {
       if (!runtime.sdk) runtime.sdk = await options.runner.open({
-        scope: options.scope, options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...start.environment?.variables } },
+        scope: options.scope, options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...appMcpTokenEnvironment(start.environment?.variables ?? {}) } },
         ...(startup.signal ? { signal: startup.signal } : {}),
         ...(resume ? { resume: { ...options.scope, nativeSessionId: resume.nativeSessionId } } : {}),
         onObservation: (observation) => observed(runtime, observation),
@@ -349,7 +356,7 @@ export function createClaudeNativeSessionManager(options: {
         await ownedControl(runtime, () => runtime.sdk.initializationResult!(), signal)
         if (credentialServers) {
           const snapshot = await deliverCredentials(runtime, start, credentialServers, signal)
-          const expected = options.expectedMcp ?? { serverName: 'graphql' }
+          const expected = expectedMcp
           const detection = claudeMcpDetection(snapshot, { ...expected,
             ...(snapshot.httpCredentialAcknowledgement ? { url: snapshot.httpCredentialAcknowledgement.endpoint } : {}) })
           if (detection.state !== 'connected' || detection.endpointMatches === false
@@ -609,7 +616,7 @@ export function createClaudeNativeSessionManager(options: {
       delete runtime.credentialServers
       const withoutCredentials = (value: NativeSessionStart): string => {
         const variables = { ...value.environment?.variables }
-        for (const key of options.credentialEnvironmentVariables ?? ['GRAPHQL_MCP_TOKEN']) delete variables[key]
+        for (const key of [...APP_MCP_TOKEN_NAMES, ...(options.credentialEnvironmentVariables ?? [])]) delete variables[key]
         const agentId = value.environment?.agentId ?? (value.kind === 'operator' ? value.configuration.operatorId : value.request.configuration.agentId)
         return JSON.stringify({ ...value, environment: { agentId, variables } })
       }
@@ -621,11 +628,11 @@ export function createClaudeNativeSessionManager(options: {
         const { headers: rawHeaders, env: rawEnv, ...scope } = config
         const headers = rawHeaders && typeof rawHeaders === 'object' ? Object.fromEntries(Object.entries(rawHeaders).filter(([key]) => key.toLowerCase() !== 'authorization')) : {}
         const env = rawEnv && typeof rawEnv === 'object' ? { ...rawEnv as Record<string, unknown> } : {}
-        for (const key of options.credentialEnvironmentVariables ?? ['GRAPHQL_MCP_TOKEN']) delete env[key]
+        for (const key of [...APP_MCP_TOKEN_NAMES, ...(options.credentialEnvironmentVariables ?? [])]) delete env[key]
         return [name, { ...scope, headers, env }]
       }))
       if (topology(configured) !== topology(servers)) throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery changed accepted SDK server names, endpoints, commands or arguments.')
-      const managedName = options.expectedMcp?.serverName ?? 'graphql'
+      const managedName = expectedMcp.serverName
       for (const [name, config] of Object.entries(configured)) if (name !== managedName && JSON.stringify(config) !== JSON.stringify(servers[name])) {
         throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
@@ -650,7 +657,7 @@ export function createClaudeNativeSessionManager(options: {
       const rows = await ownedControl(runtime, () => runtime.sdk.mcpServerStatus!(), signal)
       signal?.throwIfAborted()
       if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed during inspection.')
-      return claudeMcpDetection(decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime)), options.expectedMcp ?? { serverName: 'graphql' })
+      return claudeMcpDetection(decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime)), expectedMcp)
     },
     async createSession() {
       throw new HarnessExecutionError('CLAUDE_INITIAL_TURN_REQUIRED', 'Claude reports a native session only after first input; use the admitted atomic initial-turn lifecycle.')

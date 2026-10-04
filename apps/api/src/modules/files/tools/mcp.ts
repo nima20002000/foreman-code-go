@@ -50,7 +50,7 @@ export async function createFileMcpServer(service: FileMcpService, token: string
   }
   const allowed = (name: FileToolOperation) => enabled.has(name)
   const server = new McpServer({ name: 'graphql-files', version: '1.0.0' }, { instructions:
-    `File-only tools for this authenticated native turn. No workflow GraphQL tools, worker authority, or Operator credentials. `
+    `File-only tools for this authenticated native turn. No workflow Foreman Code tools, worker authority, or Operator credentials. `
     + `Scope/destination fields are assertions, not selectors; use ${JSON.stringify(caller.context.scope)}. `
     + 'Permanent references are read-only. Writes require the accepted harness to permit mutation. Publish only completed runner artifact handles.' })
   const invoke = async <T>(operation: () => Promise<T>, describe?: (value: T) => Promise<string | undefined>) => {

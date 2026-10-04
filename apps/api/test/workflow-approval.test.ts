@@ -26,6 +26,21 @@ function validate(f: ReturnType<typeof fixture>) {
 }
 
 describe('current workflow approval authority', () => {
+  it.each(['graphql', 'foreman-code'])('accepts the %s reviewer prefix with the same deny-default policy', prefix => {
+    const f = fixture()
+    const harness = openCodeReviewer()
+    if (harness.harness !== 'opencode' || !harness.advanced) throw new Error('OpenCode fixture required')
+    harness.advanced.permissionRules = [
+      { permission: '*', pattern: '*', effect: 'deny' },
+      { permission: `${prefix}_interaction_get`, pattern: '*', effect: 'allow' },
+      { permission: `${prefix}_interaction_respond`, pattern: '*', effect: 'allow' },
+    ]
+    f.configurations[0]!.harness = harness
+    expect(() => validate(f)).not.toThrow()
+    harness.advanced.permissionRules[2]!.permission = 'unrelated_interaction_respond'
+    expect(() => validate(f)).toThrow('explicit allow rules')
+  })
+
   it('requires explicit reviewer relationships, not execution edges or transitive membership', () => {
     const f = fixture(), [entry, worker] = f.version.definition.nodes
     const bridge = { ...worker!, id: 'bridge', agentId: 'agent-bridge', name: 'Bridge' }

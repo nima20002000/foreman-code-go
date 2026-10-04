@@ -39,7 +39,7 @@ async function deniedText(role: McpRole, name: string, tools?: string[]): Promis
   return (response!.result.content as Array<{ text: string }>).map((part) => part.text).join('\n')
 }
 
-describe('one GraphQL MCP server scoped by role', () => {
+describe('one Foreman Code MCP server scoped by role', () => {
   it('lists only the tools each role may use and tells the model its role', async () => {
     const [op, orchestrator, coder] = await Promise.all([connect('operator'), connect('orchestrator'), connect('coder')])
     const names = async (client: Client) => (await client.listTools()).tools.map((tool) => tool.name).sort()
@@ -50,6 +50,8 @@ describe('one GraphQL MCP server scoped by role', () => {
     expect(operatorNames).not.toContain('interaction_respond')
     expect(await names(orchestrator)).toEqual(['context_get', 'interaction_get', 'interaction_list', 'interaction_respond'])
     expect(await names(coder)).toEqual(['context_get', 'interaction_get', 'interaction_list'])
+    expect(coder.getServerVersion()).toMatchObject({ name: 'foreman-code', title: 'Foreman Code MCP' })
+    expect(coder.getInstructions()).toContain('Foreman Code')
     expect(coder.getInstructions()).toContain('Coder role')
     expect(op.getInstructions()).toContain('Operator role')
   })
@@ -72,7 +74,7 @@ describe('one GraphQL MCP server scoped by role', () => {
     const coder = await connect('coder', ['context_get'])
     expect((await coder.listTools()).tools.map((tool) => tool.name)).toEqual(['context_get'])
     expect(await deniedText('coder', 'interaction_list', ['context_get']))
-      .toContain('This Agent does not have interaction_list enabled in its GraphQL MCP tools. Enabled: context_get.')
+      .toContain('This Agent does not have interaction_list enabled in its Foreman Code MCP tools. Enabled: context_get.')
     // The role ceiling still wins over an Agent's tool list.
     expect(await deniedText('coder', 'workflow_create', ['context_get'])).toContain('ROLE_NOT_ALLOWED')
     expect(await roleDeniedToolCall(context('coder', ['context_get']), call('context_get'))).toBeUndefined()

@@ -211,7 +211,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     })).value
     const agentInput = { workspaceId, agentId: 'parity-agent', name: 'Coder', productRole: 'coder',
       configuration: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }
-    // An Agent's GraphQL MCP tools stay within its role: Orchestrator-only tools are refused for a Coder.
+    // An Agent's Foreman Code MCP tools stay within its role: Orchestrator-only tools are refused for a Coder.
     const refusedTools = await client.callTool({ name: 'agent_create', arguments: { ...agentInput, commandId: randomUUID(), graphqlTools: ['interaction_respond'] } })
     expect(refusedTools.isError).toBe(true)
     expect(JSON.stringify(refusedTools.content)).toContain('GRAPHQL_TOOL_NOT_ALLOWED_FOR_ROLE')

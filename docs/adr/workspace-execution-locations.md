@@ -8,11 +8,11 @@
 
 An executable workspace owns one runner-side location: `{ runnerId, rootPath }`, with an independent optimistic-concurrency revision. Workflows and Agents inherit it. This release supports only the stable `runner-local` identity and stores the canonical destination of an existing directory.
 
-The local runner validates path syntax, type, traversal/read access, and write access when the pinned harness configuration needs it. Validation uses filesystem APIs and has no creation, permission, hook, dependency-install, shell, or harness side effects. Project and GraphQL runtime roots cannot overlap.
+The local runner validates path syntax, type, traversal/read access, and write access when the pinned harness configuration needs it. Validation uses filesystem APIs and has no creation, permission, hook, dependency-install, shell, or harness side effects. Project and Foreman Code runtime roots cannot overlap.
 
 Run admission atomically pins the current saved workflow version and the accepted location identity/revision with the command receipt. Every node uses that immutable location. Mutable Settings are not reread to choose later-node directories. Availability, detectable directory identity, and the accepting Operator authority are rechecked; failures never trigger a fallback directory.
 
-The harness request separates `workingDirectory` (the user project) from `runtimeDirectory` (GraphQL-owned per-attempt storage below `HARNESS_WORKSPACE_ROOT`). Native sessions and runtime directories remain distinct even when Agents intentionally share project files.
+The harness request separates `workingDirectory` (the user project) from `runtimeDirectory` (Foreman Code-owned per-attempt storage below `HARNESS_WORKSPACE_ROOT`). Native sessions and runtime directories remain distinct even when Agents intentionally share project files.
 
 ## Authorization and interfaces
 

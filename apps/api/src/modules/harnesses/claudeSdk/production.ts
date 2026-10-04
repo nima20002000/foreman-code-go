@@ -4,6 +4,8 @@ import type { AgentFileToolService } from '../../files/tools/service.js'
 import { productionClaudeFileAdmission } from './fileProduction.js'
 import type pg from 'pg'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { appMcpServerName, isSupportedAppMcpServerName } from '../appMcpLauncher.js'
 import { DomainError } from '../../errors.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
@@ -96,7 +98,7 @@ export function productionClaudeManager(input: {
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message, effectSignal) {
-        if (input.appMcpAccess === 'none' && start.environment?.variables.GRAPHQL_MCP_TOKEN) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
+        if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
           'This Claude owner cannot inherit an application MCP credential.', 403)
         callbackAuthority = await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
@@ -104,7 +106,7 @@ export function productionClaudeManager(input: {
       }
       const attach = manager.attachSession.bind(manager)
       manager.attachSession = async (session, start, effectSignal) => {
-        if (input.appMcpAccess === 'none' && start.environment?.variables.GRAPHQL_MCP_TOKEN) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
+        if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
           'This Claude owner cannot inherit an application MCP credential.', 403)
         await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
@@ -129,19 +131,21 @@ export function productionClaudeManager(input: {
         admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })
     }
     const callbacks = createClaudeSdkCallbacks({ manager: () => actual!, bridge: domain.bridge })
+    const serverName = appMcpServerName(compiled.mcpServers)
+    const appServer = compiled.mcpServers[serverName]
     const options = { cwd: compiled.cwd, model: compiled.model, permissionMode: compiled.permissionMode,
       ...(compiled.effort ? { effort: compiled.effort } : {}),
       tools: compiled.tools, allowedTools: compiled.allowedTools, disallowedTools: compiled.disallowedTools,
       strictMcpConfig: compiled.strictMcpConfig, settingSources: compiled.settingSources, systemPrompt: compiled.systemPrompt,
-      mcpServers: { ...(input.appMcpAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers).filter(([name]) => name !== 'graphql')) : compiled.mcpServers),
+      mcpServers: { ...(input.appMcpAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers).filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
         ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }, env: compiled.env, sandbox: compiled.sandbox, includePartialMessages: true, forwardSubagentText: true, ...callbacks }
     return { harness: 'claude', role: input.role, workingDirectory: input.workingDirectory, ownerAgentId: input.ownerAgentId,
       appMcpAccess: input.appMcpAccess, processRecovery: input.recovery, scope, runner, sdkOptions: options,
       qualification: { sdkVersion: accepted.currentBinding.pin.sdkVersion, cliVersion: accepted.currentBinding.pin.cliVersion,
         basicTurns: compiled.qualification.basicTurns, resume: compiled.qualification.resume, fork: compiled.qualification.fork,
         history: compiled.qualification.history, interactions: compiled.qualification.policy.alwaysAppliedToolHook },
-      inspectionStart, expectedMcp: { serverName: 'graphql',
-        ...(compiled.mcpServers.graphql?.type === 'http' ? { url: compiled.mcpServers.graphql.url } : {}) },
+      inspectionStart, expectedMcp: { serverName,
+        ...(appServer?.type === 'http' ? { url: appServer.url } : {}) },
       interactionPort: domain.interactionPort, liveCallbacks: domain.bridge, cancelPendingRequests: () => domain.bridge.close(),
       pendingInteractions: session => domain.bridge.pendingInteractions(session),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,

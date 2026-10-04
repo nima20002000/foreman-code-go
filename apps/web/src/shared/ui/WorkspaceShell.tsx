@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from '@foreman-code/contracts/product'
 import {
   useCallback,
   useEffect,
@@ -235,11 +236,11 @@ export function WorkspaceShell({
         />
 
         <nav className="shell-navigation" id="workspace-primary-navigation">
-          <p className="sidebar-brand" data-testid="sidebar-brand">
+          <p className="sidebar-brand" data-testid="sidebar-brand" role="img" aria-label={PRODUCT_NAME}>
             <span aria-hidden="true" className="sidebar-brand-mark">
-              g
+              F
             </span>
-            <span className="sidebar-brand-name">graphql</span>
+            <span className="sidebar-brand-name">{PRODUCT_NAME}</span>
           </p>
 
           <WorkspaceNavigation

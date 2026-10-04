@@ -56,7 +56,7 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     })
     expect(code).toBe(1)
     expect(output).toContain(`does not accept local browser access from ${browserOrigin}`)
-    expect(output).not.toContain('GraphQL ready:')
+    expect(output).not.toContain('Foreman Code ready:')
     expect(observed).toContain(browserOrigin)
     expect(api.listening).toBe(true)
   } finally {

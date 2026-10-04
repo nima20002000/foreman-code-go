@@ -64,7 +64,7 @@ export function harnessSettingSupport(harness: 'codex' | 'opencode'): HarnessOpt
     {field: 'serviceTier', support: 'conditional', detail: 'Priority requires the native Fast tier.'},
     {field: 'sandbox', support: 'supported', detail: 'read-only, workspace-write, or explicit danger-full-access; no implicit elevation.'},
     {field: 'advanced.approvalPolicy', support: 'supported', detail: 'on-request or never.'},
-    {field: 'advanced.approvalsReviewer', support: 'conditional', detail: 'Native auto_review cannot replace GraphQL-routed workflow approvals.'},
+    {field: 'advanced.approvalsReviewer', support: 'conditional', detail: 'Native auto_review cannot replace Foreman Code-routed workflow approvals.'},
     {field: 'advanced.additionalWritableDirectories', support: 'conditional', detail: 'Only with an explicitly selected workspace-write sandbox.'},
     {field: 'advanced.workspaceWrite', support: 'conditional', detail: 'Only with an explicitly selected workspace-write sandbox.'},
     {field: 'advanced.sessionPersistence', support: 'conditional', detail: 'Resume-dependent workflows require persistent sessions.'},

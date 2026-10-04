@@ -2,12 +2,12 @@
 
 ## Main execution setting
 
-Main defaults `GRAPHQL_LAPTOP_EXECUTION_ENABLED` to `0`. New workflow Agent steps
+Main defaults `FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED` to `0`. New workflow Agent steps
 and Jobs on connected Worker computers, including laptop execution, are disabled.
 Main execution remains available, as do existing history, reconciliation,
 cancellation and cleanup. Pairing a computer does not enable execution.
 
-A person may set `GRAPHQL_LAPTOP_EXECUTION_ENABLED=1` in Main's startup environment
+A person may set `FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED=1` in Main's startup environment
 and restart Main after qualifying the intended Worker. Activation is human-only
 because it permits execution on another computer; neither HTTP nor Operator MCP
 can change the deployment environment. Normal placement, permissions, source and

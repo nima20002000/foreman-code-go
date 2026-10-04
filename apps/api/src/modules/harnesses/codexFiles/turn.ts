@@ -213,7 +213,7 @@ export class CodexFileTurn {
   }
 
   /** The adapter routes only this file-tool allowlist. No shell or path-read,
-   * Operator, worker, or workflow GraphQL entry points are accepted here. */
+   * Operator, worker, or workflow Foreman Code entry points are accepted here. */
   call(request: CodexFileCall): Promise<CodexFileCallResult> {
     if (this.#closing) return Promise.resolve(refused())
     const operation = this.dispatch(request).catch((error: unknown) => { warnCodexFileError(error); return refused() })

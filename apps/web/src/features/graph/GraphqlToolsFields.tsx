@@ -12,7 +12,7 @@ function normalizeToolOverride(override: GraphqlToolOverride | undefined): Graph
   return override && (override.add.length || override.remove.length) ? override : undefined
 }
 
-/** The Agent's default GraphQL MCP tools, and this workflow node's change to them. */
+/** The Agent's default Foreman Code MCP tools, and this workflow node's change to them. */
 export function GraphqlToolsFields({ role, defaults, override, onChange }: {
   /** Workflow Agent roles only; Operator tools are never enabled per Agent. */
   role: 'orchestrator' | 'coder'
@@ -41,7 +41,7 @@ export function GraphqlToolsFields({ role, defaults, override, onChange }: {
   }
   const effective = effectiveGraphqlTools(role, agentDefault, override)
   return <fieldset className="agent-graphql-tools">
-    <legend>GraphQL MCP tools</legend>
+    <legend>Foreman Code MCP tools</legend>
     <p className="settings-help">The Agent default applies in every workflow. This workflow can turn a tool on or off for this node only.</p>
     <div className="agent-graphql-tools-list">
       {tools.map((tool) => {

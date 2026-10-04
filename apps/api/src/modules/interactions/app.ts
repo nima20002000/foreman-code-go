@@ -56,7 +56,7 @@ export interface AppInteractionService {
   context(principal: ManagementPrincipal): Promise<unknown>
   canRead(principal: ManagementPrincipal): Promise<boolean>
   canRespond(principal: ManagementPrincipal): Promise<boolean>
-  /** The bound Agent's product role and the GraphQL MCP tools enabled for its pinned configuration and node. */
+  /** The bound Agent's product role and the Foreman Code MCP tools enabled for its pinned configuration and node. */
   toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
   get(principal: ManagementPrincipal, interactionId: string, contentCursor?: string): Promise<unknown>

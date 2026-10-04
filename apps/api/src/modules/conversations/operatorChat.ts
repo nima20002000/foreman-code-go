@@ -408,7 +408,7 @@ export class OperatorChatService {
     const existing = this.runtimes.get(id)
     if (existing?.session) {
       if (!fileInputs && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
-        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql MCP connection in the selected harness before chatting.', 409)
+        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the Foreman Code MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
     }

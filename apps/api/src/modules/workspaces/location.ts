@@ -114,7 +114,7 @@ export class WorkspaceLocationService {
           if (pathsOverlap(canonicalPath, runtimePath)) {
             throw new DomainError(
               'WORKSPACE_LOCATION_RUNTIME_OVERLAP',
-              'The project directory and GraphQL-managed runtime storage must not contain one another.',
+              'The project directory and Foreman Code-managed runtime storage must not contain one another.',
               422,
             )
           }

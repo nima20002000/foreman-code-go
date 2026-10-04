@@ -6,10 +6,10 @@ import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
 
 const endpoint = 'http://127.0.0.1:3050/mcp'
-function fixture(observedEndpoint = endpoint) {
+function fixture(observedEndpoint = endpoint, serverName = 'graphql') {
   const configuration = { harness: 'claude' as const, model: 'unit-model', effort: 'medium' as const, authMode: 'subscription' as const,
     configDirectory: '/unit/profile', sandbox: 'danger-full-access' as const, permissionMode: 'default' as const,
-    tools: ['Write'], permissionRules: [], instructions: '', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+    tools: ['Write'], permissionRules: [], instructions: '', mcpServers: { [serverName]: { type: 'http' as const, url: endpoint } } }
   const target = { hostRef: { kind: 'main' as const, mainId: '00000000-0000-4000-8000-000000000001' }, applicationInstallationId: '00000000-0000-4000-8000-000000000001', harnessInstallationId: 'unit-installation', installationFingerprint: 'unit-fingerprint' }
   const override = { instanceId: '00000000-0000-4000-8000-000000000002', instanceRevision: '1', revision: 1,
     target, presetId: 'unit', driverId: 'claude', enabled: true, configuration, configurationFingerprint: 'unit-config', qualification: 'qualified' as const }
@@ -21,7 +21,7 @@ function fixture(observedEndpoint = endpoint) {
       pin, observedTools: ['Write'], checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check,
         { state: 'passed' as const, source: 'native_scenario' as const, evidenceId: `synthetic-unit:${check}`, evidenceSha256: 'b'.repeat(64) }])) } } }
   const frames = new ClaudeBoundedQueue<unknown>(2), messages = vi.fn(), close = vi.fn(() => frames.close()), joinClosed = vi.fn(async () => {})
-  const status = vi.fn(async () => [{ name: 'graphql', status: 'needs-auth', config: { type: 'http', url: observedEndpoint } }])
+  const status = vi.fn(async () => [{ name: serverName, status: 'needs-auth', config: { type: 'http', url: observedEndpoint } }])
   const query = vi.fn<ClaudeSdkClient['query']>(input => {
     void (async () => { for await (const message of input.prompt) messages(message) })()
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close, joinClosed, interrupt: async () => {},
@@ -33,12 +33,12 @@ function fixture(observedEndpoint = endpoint) {
     recovery: { root: '/unit/recovery', owner: 'unit-read-inspection' }, signal: AbortSignal.timeout(1000), revalidate, loadClient: async () => sdk } }
 }
 
-it('observes actual MCP HTTP config with zero input, no credential, deny-all tool callbacks and joined closure', async () => {
-  const f = fixture()
+it.each(['graphql', 'foreman-code'])('observes %s HTTP config with zero input, no credential, deny-all callbacks and joined closure', async (serverName) => {
+  const f = fixture(endpoint, serverName)
   expect(await inspectClaudeOperatorConfiguration(f.input)).toMatchObject({ harness: 'claude', status: 'configured', endpoint, routing: 'fixed' })
   expect(f.messages).not.toHaveBeenCalled(); expect(f.status).toHaveBeenCalledOnce()
   expect(f.query.mock.calls[0]![0].options).toMatchObject({ tools: [], settingSources: [], strictMcpConfig: true,
-    mcpServers: { graphql: { type: 'http', url: endpoint } } })
+    mcpServers: { [serverName]: { type: 'http', url: endpoint } } })
   expect(f.close).toHaveBeenCalledOnce(); expect(f.joinClosed).toHaveBeenCalledOnce()
   expect(f.input.revalidate).toHaveBeenCalledTimes(2)
 })

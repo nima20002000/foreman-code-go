@@ -10,7 +10,7 @@ The primary user is an Operator exploring and managing an agent workspace on a d
 
 ## Product Purpose
 
-`graphql` is an agent workspace whose UI can use deterministic discovery mocks or a real local workflow engine. The first real slice persists workflow versions and runs, uses LangGraph for orchestration, and executes Product Agents through native headless harnesses while retaining the established frontend contracts and state ownership.
+Foreman Code is an agent workspace whose UI can use deterministic discovery mocks or a real local workflow engine. The first real slice persists workflow versions and runs, uses LangGraph for orchestration, and executes Product Agents through native headless harnesses while retaining the established frontend contracts and state ownership.
 
 ## Brand Personality
 

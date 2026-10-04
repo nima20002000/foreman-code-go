@@ -21,7 +21,7 @@ describe('native MCP settings reads', () => {
     expect(JSON.stringify(list)).not.toContain('password')
     expect(JSON.stringify(list)).not.toContain('secret')
   })
-  it.each(['codex', 'opencode'] as const)('limits %s one-click GraphQL writes to the managed automatic launcher and credential reference', (harness) => {
+  it.each(['codex', 'opencode'] as const)('limits %s one-click Foreman Code writes to the managed automatic launcher and credential reference', (harness) => {
     const endpoint = 'http://127.0.0.1:3000/mcp'
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {}, userConfig: {}, file: '/tmp/native', version: 'v' }
     const add = managedChange('graphql', true, endpoint)
@@ -31,31 +31,31 @@ describe('native MCP settings reads', () => {
     expect(() => assertManagedChange(snapshot, { kind: 'add', name: 'graphql', connection: { transport: 'remote', url: 'https://other.test/mcp' } },
       'graphql', endpoint)).toThrow('does not match')
     const installed = replacement(snapshot, add, { preset: 'graphql', endpoint })!
-    const current = { ...snapshot, user: { 'graphql': installed }, effective: { 'graphql': installed },
-      credentialReferences: { 'graphql': 'GRAPHQL_MCP_TOKEN' } }
+    const current = { ...snapshot, user: { 'foreman-code': installed }, effective: { 'foreman-code': installed },
+      credentialReferences: { 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } }
     expect(managedStatus(current, 'graphql', endpoint)).toBe('installed')
     expect(() => replacement(current, managedEnableChange('graphql', false))).toThrow('Application MCP connections are managed')
-    expect(managedStatus({ ...current, effective: { 'graphql': { url: 'https://override.test/mcp' } } },
+    expect(managedStatus({ ...current, effective: { 'foreman-code': { url: 'https://override.test/mcp' } } },
       'graphql', endpoint)).toBe('inherited')
-    expect(managedStatus({ ...current, user: { 'graphql': { ...installed,
+    expect(managedStatus({ ...current, user: { 'foreman-code': { ...installed,
       ...(harness === 'codex' ? { http_headers_helper: '/local/helper' } : { timeout: 5000 }), enabled: undefined } } },
     'graphql', endpoint)).toBe('installed')
     expect(replacement(current, managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toBeUndefined()
-    expect(() => replacement({ ...current, user: { 'graphql': { ...installed, url: 'https://other.test/mcp' } } },
+    expect(() => replacement({ ...current, user: { 'foreman-code': { ...installed, url: 'https://other.test/mcp' } } },
       managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
-    const legacy = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp', bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' })
-    expect(replacement({ ...current, user: { 'graphql': legacy }, effective: { 'graphql': legacy } },
+    const legacy = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp', bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN' })
+    expect(replacement({ ...current, user: { 'foreman-code': legacy }, effective: { 'foreman-code': legacy } },
       add, { preset: 'graphql', endpoint })).toEqual(installed)
     expect(managedStatus(current, 'graphql', 'http://127.0.0.1:4567/mcp')).toBe('installed')
     const disabled = { ...installed, enabled: false }
-    const inactive = { ...current, user: { 'graphql': disabled }, effective: { 'graphql': disabled } }
+    const inactive = { ...current, user: { 'foreman-code': disabled }, effective: { 'foreman-code': disabled } }
     expect(managedStatus(inactive, 'graphql', endpoint)).toBe('disabled')
     expect(() => replacement(inactive, add, { preset: 'graphql', endpoint })).toThrow('already has a native configuration')
     expect(replacement(current, managedEnableChange('graphql', false), { preset: 'graphql', endpoint })).toEqual(disabled)
     expect(replacement(inactive, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toEqual(installed)
     expect(replacement(inactive, managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toBeUndefined()
     expect(() => replacement(current, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
-    expect(() => replacement({ ...inactive, effective: { 'graphql': { ...disabled, url: 'https://override.test/mcp' } } },
+    expect(() => replacement({ ...inactive, effective: { 'foreman-code': { ...disabled, url: 'https://override.test/mcp' } } },
       managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
     expect(managedChange('linear', true, endpoint)).toMatchObject({ kind: 'add', connection: { url: LINEAR_MCP_ENDPOINT } })
     expect(managedStatus({ ...snapshot, effective: { linear: harness === 'codex' ? { url: 'https://mcp.linear.app/mcp' }

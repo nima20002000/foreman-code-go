@@ -25,11 +25,11 @@ it('reuses verified installation across chat remounts and rechecks when configur
   await waitFor(() => expect(client.getQueryCache().findAll({ queryKey: ['operator-chat', 'setup'] })[0]?.state.status).toBe('success'))
   expect(checks).toBe(1)
   cleanup(); mount()
-  expect(screen.queryByText('Checking GraphQL MCP installation…')).not.toBeInTheDocument()
+  expect(screen.queryByText('Checking Foreman Code MCP installation…')).not.toBeInTheDocument()
   await waitFor(() => expect(checks).toBe(1))
   configured = false
   await client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] })
-  expect(await screen.findByText('Install GraphQL MCP in Codex first')).toBeVisible()
+  expect(await screen.findByText('Install Foreman Code MCP in Codex first')).toBeVisible()
   expect(checks).toBe(2)
 })
 
@@ -48,14 +48,14 @@ it.each([403, 503])('retains a real setup failure (%s) and recovers only after a
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const mount = () => render(<QueryClientProvider client={client}><Setup revision={4} harness="claude" /></QueryClientProvider>)
   mount()
-  expect(await screen.findByText('GraphQL MCP could not be checked')).toBeVisible()
+  expect(await screen.findByText('Foreman Code MCP could not be checked')).toBeVisible()
   expect(client.getQueryCache().findAll({ queryKey: ['operator-chat', 'setup'] })[0]?.state.data).toBeUndefined()
   available = true
   fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-  await waitFor(() => expect(screen.queryByText('GraphQL MCP could not be checked')).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByText('Foreman Code MCP could not be checked')).not.toBeInTheDocument())
   expect(calls).toBe(2)
   cleanup(); mount()
-  expect(screen.queryByText('Checking GraphQL MCP installation…')).not.toBeInTheDocument()
+  expect(screen.queryByText('Checking Foreman Code MCP installation…')).not.toBeInTheDocument()
   expect(calls).toBe(2)
 })
 

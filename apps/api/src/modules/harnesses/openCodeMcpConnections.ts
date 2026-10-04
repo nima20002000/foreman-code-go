@@ -1,4 +1,5 @@
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, installAppLauncher } from './appMcpLauncher.js'
+import { installAppLauncher } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -17,7 +18,7 @@ import { inspectOpenCodeMcpSources } from './openCodeMcpSources.js'
 /** Only the native user file is edited, byte-preserving outside the selected MCP member. */
 export class OpenCodeMcpConnections implements NativeMcpAdapter {
   constructor(private readonly binary: string, private readonly directory: string, private readonly processRecovery?: NativeProcessRecovery) {}
-  private async inspect(signal: AbortSignal): Promise<{ configDirectory: string; effective: Record<string, unknown> }> {
+  private async inspect(signal: AbortSignal): Promise<{ configDirectory: string; effective: Record<string, unknown>; effectivePermissions: unknown }> {
     const server = new ManagedOpenCodeServer({ binary: this.binary, workingDirectory: this.directory, ownerAgentId: `mcp-inspect-${randomUUID()}`, ...(this.processRecovery ? { processRecovery: this.processRecovery } : {}) })
     try {
       await server.ensure(signal)
@@ -27,7 +28,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
       const paths = record(await pathResponse.json())
       const config = record(await configResponse.json())
       if (typeof paths.config !== 'string') throw new DomainError('MCP_USER_CONFIG_UNAVAILABLE', 'OpenCode did not identify its native user configuration directory.', 503)
-      return { configDirectory: paths.config, effective: record(config.mcp) }
+      return { configDirectory: paths.config, effective: record(config.mcp), effectivePermissions: config.permission }
     } finally { await server.dispose() }
   }
   private async userFile(directory: string): Promise<string> {
@@ -44,16 +45,16 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
   }
   private contents(file: string): Promise<string> { return readNativeUserFile(file, true) }
   async read(signal: AbortSignal): Promise<NativeMcpSnapshot> {
-    const { configDirectory, effective } = await this.inspect(signal)
+    const { configDirectory, effective, effectivePermissions } = await this.inspect(signal)
     const file = await this.userFile(configDirectory)
     const source = await this.contents(file)
     const userConfig = source.trim() ? parseConfigObject(source) : {}
     const user = record(userConfig.mcp)
     const credentialReferences: Record<string, string> = {}
-    for (const [name, credential] of [[APP_MCP_SERVER_NAME, APP_MCP_TOKEN]] as const) {
+    for (const name of APP_MCP_SERVER_NAMES) {
       if (!Object.hasOwn(user, name) || !Object.hasOwn(effective, name)) continue
       const evidence = await inspectOpenCodeMcpConfiguration({ binary: this.binary, workingDirectory: this.directory,
-        serverName: name, credentialEnvironmentVariable: credential, signal })
+        serverName: name, exactServerName: true, signal })
       const entry = record(effective[name])
       if (!evidence || evidence.endpoint !== entry.url
         || (evidence.transport === 'streamable-http') !== (entry.type === 'remote')
@@ -70,8 +71,8 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     if (await this.contents(file) !== source || await this.userFile(configDirectory) !== file) {
       throw new DomainError('REVISION_CONFLICT', 'Native configuration changed while it was inspected.', 409)
     }
-    return { harness: 'opencode', effective, user, userConfig, file, ownership: sources.ownership, credentialReferences,
-      version: fingerprint(source), revision: fingerprint([source, effective, file, credentialReferences, sources.revision]) }
+    return { harness: 'opencode', effective, user, userConfig, file, ownership: sources.ownership, credentialReferences, effectivePermissions,
+      version: fingerprint(source), revision: fingerprint([source, effective, file, credentialReferences, effectivePermissions, sources.revision]) }
   }
   async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
     managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {

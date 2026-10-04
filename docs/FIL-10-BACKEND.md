@@ -188,12 +188,12 @@ Apply the ZIP's full files to the exact base, then run the pinned checkout's che
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @foreman-code/contracts build
-corepack pnpm --filter @foreman-code/api typecheck
-corepack pnpm --filter @foreman-code/api lint
-corepack pnpm --filter @foreman-code/api test test/fil10-message-attachments.test.ts
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api lint
+corepack pnpm --filter @graphql/api test test/fil10-message-attachments.test.ts
 # Supply a disposable loopback TEST_DATABASE_URL with "test" in the database name.
-corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- \
+corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- \
   vitest run test/fil10-message-attachments.integration.test.ts --no-file-parallelism
 ```
 

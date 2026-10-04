@@ -6,7 +6,7 @@
 
 > **Amended 2026-09-27:** the two endpoints were unified into one `graphql` MCP
 > server at `/mcp` with role-scoped tools and one credential variable,
-> `GRAPHQL_MCP_TOKEN`. Audiences, grants and bindings are unchanged; the role is
+> `FOREMAN_CODE_MCP_TOKEN`. Audiences, grants and bindings are unchanged; the role is
 > resolved from the credential. See [`../graphql-mcp.md`](../graphql-mcp.md). The
 > sections below record the original decision.
 
@@ -38,13 +38,13 @@ Accepted policy references may be pinned for reproducibility, but live expiratio
 Application permissions do not replace Codex/OpenCode sandbox, filesystem, network, or native tool controls. Native harness tools remain available only under those independent controls.
 
 Board-agent MCP delivery uses one static, manually installed provider entry and
-a different `GRAPHQL_APP_MCP_TOKEN` value in each owned Agent process. GraphQL
+a different `FOREMAN_CODE_APP_MCP_TOKEN` value in each owned Agent process. Foreman Code
 derives the immutable Agent/workspace/workflow/run subject from the durable
 execution, stores only a SHA-256 token digest, expires the credential after 15
 minutes, and revokes it when the owning process ends. A resumed/new process gets
 a new credential for the same durable subject and does not rewrite config.
 
-Before providing the environment value, GraphQL inspects the effective config
+Before providing the environment value, Foreman Code inspects the effective config
 in the same runner and working directory. The entry must use Streamable HTTP,
 the exact expected `/mcp/tools` URL, and the expected environment reference.
 Missing, mismatched, failed, or unresolvable config receives no token. Detection
@@ -57,7 +57,7 @@ unrelated child process.
 ## Manual provider setup
 
 The user owns this static configuration. Replace the local port only when the
-GraphQL API is intentionally served elsewhere; the path must remain
+Foreman Code API is intentionally served elsewhere; the path must remain
 `/mcp/tools`.
 
 Codex `config.toml`:
@@ -65,7 +65,7 @@ Codex `config.toml`:
 ```toml
 [mcp_servers.graphql-app]
 url = "http://127.0.0.1:3000/mcp/tools"
-bearer_token_env_var = "GRAPHQL_APP_MCP_TOKEN"
+bearer_token_env_var = "FOREMAN_CODE_APP_MCP_TOKEN"
 ```
 
 OpenCode configuration:
@@ -78,14 +78,14 @@ OpenCode configuration:
       "url": "http://127.0.0.1:3000/mcp/tools",
       "oauth": false,
       "headers": {
-        "Authorization": "Bearer {env:GRAPHQL_APP_MCP_TOKEN}"
+        "Authorization": "Bearer {env:FOREMAN_CODE_APP_MCP_TOKEN}"
       }
     }
   }
 }
 ```
 
-Do not put a literal token in either file. GraphQL does not automatically add,
+Do not put a literal token in either file. Foreman Code does not automatically add,
 repair, or migrate these entries.
 
 ## Implemented now versus deferred

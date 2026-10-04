@@ -14,7 +14,7 @@ export const harnessSections: readonly { id: HarnessSettingsSection; label: stri
   { id: 'tools', label: 'Tool permissions', description: 'Choose how this configuration uses MCP tools.' },
   { id: 'connections', label: 'MCP connections', description: 'Manage connections for this harness on the server.' },
   { id: 'plugins', label: 'Plugins', description: 'Discover and manage plugins installed in Codex.' },
-  { id: 'workspace', label: 'App connection', description: 'Check GraphQL MCP in a specific workspace.' },
+  { id: 'workspace', label: 'App connection', description: 'Check Foreman Code MCP in a specific workspace.' },
 ]
 export function sectionForHarnessIssue(path: readonly (string | number)[]): HarnessSettingsSection {
   const field = path.join('.')

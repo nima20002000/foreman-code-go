@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { it } from 'vitest'
 
-import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeServer.js'
+import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
@@ -25,6 +25,62 @@ it('reads the server version during ensure before checking its profile', async (
   const native = manager(server)
   try { assert.equal((await sessionFor(native)).providerVersion, '1.18.31') }
   finally { await native.dispose() }
+})
+
+it.each([
+  ['graphql_context_get', 'allow'], ['graphql_context_get', 'deny'], ['graphql_*', 'deny'],
+] as const)('refuses saved old app %s %s rules after a native rename before creating a session', async (permissionName, effect) => {
+  const server = new FixtureServer()
+  server.config = { mcp: { 'foreman-code': { type: 'remote', enabled: true } } }
+  const harness = configuration()
+  harness.advanced = { ...advanced(), permissionRules: [{ permission: permissionName, pattern: '*', effect }] }
+  const saved = structuredClone(harness)
+  const native = manager(server)
+  try {
+    await assert.rejects(sessionFor(native, harness), errorCode('OPENCODE_MCP_PERMISSION_REVIEW_REQUIRED'))
+    assert.deepEqual(harness, saved)
+    assert.equal(server.calls.filter(call => call.method === 'POST' && call.path.split('?')[0] === '/session').length, 0)
+  } finally { await native.dispose() }
+})
+
+it.each([
+  ['graphql', 'graphql_context_get'],
+  ['foreman-code', 'foreman-code_context_get'],
+  ['foreman-code', undefined],
+  ['foreman-code', 'graphql_files_*'],
+  ['foreman-code', 'graphql-files_*'],
+] as const)('keeps native %s usable with matching or independent file rules: %s', async (serverName, permissionName) => {
+  const server = new FixtureServer()
+  server.config = { mcp: { [serverName]: { type: 'remote', enabled: true } } }
+  server.providers = { ...object(server.providers), connected: ['opencode-go'] }
+  const harness = configuration()
+  harness.advanced = { ...advanced(), permissionRules: permissionName
+    ? [{ permission: permissionName, pattern: '*', effect: 'deny' }] : [],
+    mcp: { serverEnabled: { graphql: true } } }
+  const native = manager(server)
+  try {
+    await native.checkConfiguration(harness, '/workspace/project')
+    const session = await sessionFor(native, harness)
+    assert.deepEqual(server.sessionInfos.get(session.nativeSessionId)?.permission, nativePolicy(harness))
+  } finally { await native.dispose() }
+})
+
+it('retains saved app rules for credential-free chat with every app connection disabled', async () => {
+  const server = new FixtureServer()
+  server.config = { mcp: { 'foreman-code': { type: 'remote', enabled: false }, graphql: { enabled: false } } }
+  server.mcp = { 'foreman-code': { status: 'disabled' }, graphql: { status: 'disabled' } }
+  server.providers = { ...object(server.providers), connected: ['opencode-go'] }
+  const harness = configuration()
+  harness.advanced = { ...advanced(), permissionRules: [{ permission: 'graphql_*', pattern: '*', effect: 'deny' }],
+    mcp: { serverEnabled: { graphql: true, 'foreman-code': false } } }
+  const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
+  try {
+    await native.checkConfiguration(harness, '/workspace/project')
+    const session = await native.createSession({ request: request(harness) })
+    assert.deepEqual(server.sessionInfos.get(session.nativeSessionId)?.permission, nativePolicy(harness))
+    assert.equal(server.environment, undefined)
+    assert.equal(server.calls.some(call => /\/mcp\/[^/]+\/connect(?:\?|$)/.test(call.path)), false)
+  } finally { await native.dispose() }
 })
 
 it('qualifies the pinned live API and submits one prompt after opening its event stream', async () => {

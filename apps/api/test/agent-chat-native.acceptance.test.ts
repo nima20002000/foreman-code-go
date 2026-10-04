@@ -13,7 +13,7 @@ import { readNativeSource } from './helpers/agentChatNativeSource.js'
 
 /**
  * Real installed Codex/OpenCode proof for the FEAT-15 native primitives that a live Run cannot
- * reach without a configured GraphQL MCP: forking a finished session keeps its context in a new
+ * reach without a configured Foreman Code MCP: forking a finished session keeps its context in a new
  * session and leaves the source session's history unchanged. Opt in with RUN_REAL_HARNESS_TESTS=1.
  */
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1'

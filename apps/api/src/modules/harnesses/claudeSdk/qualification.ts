@@ -29,7 +29,7 @@ export function qualifyClaudeCandidate(input: {
   if (input.version.version !== CLAUDE_CLI_CANDIDATE_VERSION) reasons.push('Selected CLI differs from the exact qualification candidate.')
   if (reasons.length) return { status: 'blocked', reasons, capabilities }
   const native = input.native
-  if (!native) return { status: 'unqualified', reasons: ['Version-only evidence does not establish authentication or GraphQL readiness.'], capabilities }
+  if (!native) return { status: 'unqualified', reasons: ['Version-only evidence does not establish authentication or Foreman Code readiness.'], capabilities }
   if (native.revision !== CLAUDE_QUALIFICATION_REVISION || native.sdkVersion !== CLAUDE_SDK_CANDIDATE_VERSION || native.sdkIntegrity !== CLAUDE_SDK_CANDIDATE_INTEGRITY
     || native.executableSha256 !== input.inventory.executableSha256 || native.profilePath !== input.inventory.profilePath || native.configRevision !== input.inventory.configRevision) {
     return { status: 'blocked', reasons: ['Native evidence differs from the selected installation/profile/configuration or SDK integrity.'], capabilities }

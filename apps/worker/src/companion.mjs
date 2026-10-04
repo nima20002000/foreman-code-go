@@ -17,7 +17,7 @@ async function pair() {
 }
 
 if (flag !== '--state' || !isAbsolute(state ?? '')) {
-  console.error('Open the installed GraphQL Companion launcher.'); process.exitCode = 1;
+  console.error('Open the installed Foreman Code Companion launcher.'); process.exitCode = 1;
 } else if (command === '--desktop') {
   try {
     const { createCompanionServer } = await import('./companionServer.mjs');
@@ -34,7 +34,7 @@ if (flag !== '--state' || !isAbsolute(state ?? '')) {
   const child = spawnSync(process.execPath, [cli, command, '--state', state, ...args], { stdio: 'inherit' });
   process.exitCode = child.status ?? 1;
 } else {
-  console.log('GraphQL Companion\n');
+  console.log('Foreman Code Companion\n');
   let unpaired = false;
   try {
     const report = JSON.parse(execFileSync(process.execPath, [cli, 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000, maxBuffer: 32768, stdio: ['ignore', 'pipe', 'ignore'] }));

@@ -1,4 +1,4 @@
-/* NOCTURNE · GraphQL UI toolkit. Components on the design-system tokens (tokens.css), both themes. No remote assets. */
+/* NOCTURNE · Foreman Code UI toolkit. Components on the design-system tokens (tokens.css), both themes. No remote assets. */
 :root {
   --n-canvas: var(--canvas); --n-bg: var(--canvas); --n-sidebar: var(--sidebar); --n-surface: var(--surface); --n-raised: var(--surface-raised);
   --n-hover: var(--surface-hover); --n-border: var(--border); --n-border-strong: var(--border-strong); --n-control-border: var(--border-strong);

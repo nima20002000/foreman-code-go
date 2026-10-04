@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Who is calling the one GraphQL MCP server. Operator credentials manage the app; Worker
+/** Who is calling the one Foreman Code MCP server. Operator credentials manage the app; Worker
  * credentials belong to a workflow Agent whose pinned configuration sets its product role. */
 export type GraphqlMcpRole = "operator" | "orchestrator" | "coder";
 
@@ -8,7 +8,7 @@ export const GRAPHQL_MCP_ROLE_LABELS: Record<GraphqlMcpRole, string> = {
   operator: "Operator", orchestrator: "Orchestrator", coder: "Coder",
 };
 
-/** Agent-facing GraphQL MCP tools. Every other GraphQL MCP tool is Operator-only and can
+/** Agent-facing Foreman Code MCP tools. Every other Foreman Code MCP tool is Operator-only and can
  * never be enabled for an Agent. Grants and scope are still checked per call. */
 export const GRAPHQL_AGENT_TOOLS = {
   context_get: { label: "Read run context", description: "Its own identity, role, scope and enabled tools.", roles: ["orchestrator", "coder"] },
@@ -27,18 +27,18 @@ export const GraphqlAgentToolSchema = z.enum(
 );
 export type GraphqlAgentTool = z.infer<typeof GraphqlAgentToolSchema>;
 
-/** An Agent's default GraphQL MCP tools. Absent means every tool its role allows. */
+/** An Agent's default Foreman Code MCP tools. Absent means every tool its role allows. */
 export const GraphqlToolDefaultsSchema = z.array(GraphqlAgentToolSchema).max(100)
-  .refine((tools) => new Set(tools).size === tools.length, "GraphQL MCP tools must be unique");
+  .refine((tools) => new Set(tools).size === tools.length, "Foreman Code MCP tools must be unique");
 
-/** A workflow node's change to its Agent's default GraphQL MCP tools. */
+/** A workflow node's change to its Agent's default Foreman Code MCP tools. */
 export const GraphqlToolOverrideSchema = z.object({
   add: z.array(GraphqlAgentToolSchema).max(100),
   remove: z.array(GraphqlAgentToolSchema).max(100),
 }).strict().superRefine((value, context) => {
   const removed = new Set(value.remove);
   for (const [index, tool] of value.add.entries()) {
-    if (removed.has(tool)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["add", index], message: "a GraphQL MCP tool cannot be both added and removed" });
+    if (removed.has(tool)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["add", index], message: "a Foreman Code MCP tool cannot be both added and removed" });
   }
 });
 export type GraphqlToolOverride = z.infer<typeof GraphqlToolOverrideSchema>;

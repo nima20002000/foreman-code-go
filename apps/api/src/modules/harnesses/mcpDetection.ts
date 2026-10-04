@@ -8,9 +8,9 @@ import {
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 
-import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
+import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
-import { APP_MCP_SERVER_NAME } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 
 export const MCP_INSPECTION_TIMEOUT_MS = 30_000
 export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_required' | 'broken' | 'status_unavailable'
@@ -104,7 +104,7 @@ export class McpDetectionService {
   constructor(
     private readonly inspector: NativeMcpInspector,
     private readonly expectedEndpoint: string,
-    private readonly serverName = APP_MCP_SERVER_NAME,
+    private readonly serverName: string = APP_MCP_SERVER_NAME,
     private readonly timeoutMs = MCP_INSPECTION_TIMEOUT_MS,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Invalid MCP inspection timeout.')
@@ -139,33 +139,38 @@ export class McpDetectionService {
         throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned evidence for another launch context.', 500)
       }
       const entry = evidence.entry
-      const automatic = entry?.automaticEndpoint === true && entry.transport === 'stdio' && this.serverName === APP_MCP_SERVER_NAME
+      const nameMatches = entry?.name === this.serverName || isSupportedAppMcpServerName(this.serverName)
+        && entry !== undefined && isSupportedAppMcpServerName(entry.name)
+      const automatic = entry?.automaticEndpoint === true && entry.transport === 'stdio' && nameMatches
+        && isSupportedAppMcpServerName(this.serverName)
       const matches = entry ? automatic || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
       const arrangement = entry?.credentialArrangement
-      const environmentMatches = arrangement === undefined
-        ? entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
-        : arrangement.kind === 'environment_variable' && arrangement.environmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+      const credentialVariable = arrangement?.kind === 'environment_variable'
+        ? arrangement.environmentVariable : entry?.credentialEnvironmentVariable
+      const supportedCredential = isSupportedAppMcpTokenName(credentialVariable) ? credentialVariable : undefined
+      const environmentMatches = (arrangement === undefined || arrangement.kind === 'environment_variable')
+        && supportedCredential !== undefined
       const acknowledgement = arrangement?.kind === 'scoped_http_header' ? arrangement.acknowledgement : undefined
       const headerMatches = Boolean(acknowledgement && input.harness === 'claude'
         && entry?.transport === 'streamable-http' && entry.status === 'connected'
-        && acknowledgement.source === 'sdk_set_mcp_servers' && acknowledgement.serverName === this.serverName
+        && acknowledgement.source === 'sdk_set_mcp_servers' && acknowledgement.serverName === entry?.name && nameMatches
         && endpointMatches(acknowledgement.endpoint, this.expectedEndpoint)
         && matches && evidence.generation && acknowledgement.generation === evidence.generation
         && evidence.authorizationScope && acknowledgement.authorizationScope === evidence.authorizationScope)
       const credentialArrangement: McpCredentialArrangement = environmentMatches
-        ? { kind: 'environment_variable', environmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE }
+        ? { kind: 'environment_variable', environmentVariable: supportedCredential! }
         : headerMatches ? { kind: 'scoped_http_header' } : { kind: 'unknown' }
       const credentialMatches = environmentMatches || headerMatches
       let state: McpDetection['state']
       if (!entry) state = 'not_detected'
-      else if (entry.name !== this.serverName || !matches || !credentialMatches || (entry.transport !== 'streamable-http' && !automatic)) state = 'misconfigured'
+      else if (!nameMatches || !matches || !credentialMatches || (entry.transport !== 'streamable-http' && !automatic)) state = 'misconfigured'
       else if (entry.enabled === false || entry.status === 'disabled') state = 'disabled'
       else if (entry.status === 'connected' || entry.status === 'authentication_required' || entry.status === 'broken') state = entry.status
       else state = 'status_unavailable'
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
-          harness: input.harness, serverName: this.serverName, state, endpointMatches: matches,
-          credentialEnvironmentVariable: environmentMatches ? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE : null,
+          harness: input.harness, serverName: entry?.name ?? this.serverName, state, endpointMatches: matches,
+          credentialEnvironmentVariable: environmentMatches ? supportedCredential : null,
           credentialArrangement,
           checkedAt: new Date().toISOString(), detail: details[state],
         }),
@@ -205,8 +210,8 @@ export class McpDetectionService {
     // token. This does NOT accept broken connections or relax config checks.
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
       throw new DomainError('APP_MCP_PREFLIGHT_FAILED', result.detection.state === 'not_detected'
-        ? `GraphQL MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
-        : `GraphQL MCP credential injection refused: ${result.detection.state}.`, 409)
+        ? `Foreman Code MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
+        : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409)
     }
     input.signal?.throwIfAborted()
     return result

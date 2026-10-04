@@ -1,3 +1,4 @@
+import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { registerSubagentTools } from './tools/subagents.js'
 import { operatorToolAvailable } from './availability.js'
 import { registerHarnessRegistryTools } from '../../modules/harnesses/registryManagement.js'
@@ -33,7 +34,7 @@ import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
 import { registerFileRetentionTools } from './tools/fileRetention.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
-  const server = new McpServer({ name: 'graphql', version: '1.0.0' })
+  const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
   registerOperatorTools(server, context)
   return server
 }

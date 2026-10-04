@@ -53,3 +53,15 @@ it('rejects a different execution directory before remote inspection', async () 
     .rejects.toMatchObject({ code: 'MCP_INSPECTION_CONTEXT_MISMATCH' })
   expect(f.manager.inspectMcp).not.toHaveBeenCalled()
 })
+
+it.each([
+  ['graphql', 'GRAPHQL_MCP_TOKEN'],
+  ['foreman-code', 'FOREMAN_CODE_MCP_TOKEN'],
+] as const)('accepts supported remote %s identity and %s credential without changing placement', async (serverName, tokenName) => {
+  const f = fixture()
+  f.detection.serverName = serverName
+  f.detection.credentialEnvironmentVariable = tokenName
+  f.detection.credentialArrangement = { kind: 'environment_variable', environmentVariable: tokenName }
+  expect(await f.service.preflight(f.input)).toMatchObject({ detection: f.detection, runnerId: f.input.runnerId,
+    workingDirectory: f.input.workingDirectory })
+})

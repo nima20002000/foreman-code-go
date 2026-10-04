@@ -76,7 +76,7 @@ function WorkspaceSelector({ harness, returnTo }: { harness?: AgentHarness; retu
 export function McpDetectionSettings(props: Props) {
   const epoch = useHarnessSessionEpoch()
   const returnTo = props.workspaceId ? `/workspaces/${encodeURIComponent(props.workspaceId)}/settings` : '/settings/harnesses'
-  return <section className="mcp-connections" aria-label="Workspace GraphQL MCP">
+  return <section className="mcp-connections" aria-label="Workspace Foreman Code MCP">
     <header className="mcp-heading">
       <div className="mcp-heading-title"><Icon name="workflow" size={20} /><h2>App connections</h2><Badge>MCP</Badge></div>
       <p>{props.workspaceId ? 'Connections to this workspace’s app tools.' : 'Check app connections for a workspace.'}</p>

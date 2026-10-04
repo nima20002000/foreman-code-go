@@ -1,5 +1,5 @@
 [Unit]
-Description=GraphQL selected-main worker
+Description=Foreman Code selected-main worker
 StartLimitIntervalSec=60
 StartLimitBurst=5
 

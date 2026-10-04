@@ -1,3 +1,4 @@
+import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
@@ -33,7 +34,7 @@ async function collectTools(register: (server: McpServer) => unknown): Promise<T
 }
 
 const CATALOG_PRINCIPAL: ManagementPrincipal = {
-  id: 'graphql-mcp-catalog', name: 'GraphQL MCP catalog', audience: 'operator',
+  id: 'graphql-mcp-catalog', name: 'Foreman Code MCP catalog', audience: 'operator',
   grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
   expiresAt: '9999-12-31T00:00:00.000Z', revokedAt: null,
 }
@@ -71,7 +72,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
   await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)
   if (allowed.includes(context.role)) {
     return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('TOOL_NOT_ENABLED',
-      `This Agent does not have ${name} enabled in its GraphQL MCP tools. Enabled: ${context.tools!.join(', ') || 'none'}.`, 403,
+      `This Agent does not have ${name} enabled in its Foreman Code MCP tools. Enabled: ${context.tools!.join(', ') || 'none'}.`, 403,
       { enabledTools: [...context.tools!] })) }
   }
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ROLE_NOT_ALLOWED',
@@ -81,7 +82,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
 
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
-  const server = new McpServer({ name: 'graphql', version: '1.0.0' }, { instructions: roleInstructions(context.role) })
+  const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
   if (context.role === 'operator') {
     if (context.operator) registerOperatorTools(server, { principal: context.principal, services: context.operator })
   } else if (context.interactions) {

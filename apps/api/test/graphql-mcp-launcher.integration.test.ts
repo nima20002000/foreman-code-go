@@ -17,7 +17,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
-it('routes simultaneous instances and changed ports through authenticated MCP, preserving grants and durable writes', async () => {
+it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for simultaneous instances and changed ports through authenticated MCP, preserving grants and durable writes', async (tokenVariable) => {
   const database = createDatabase({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
     maxConnections: 4, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
   cleanup.push(() => database.close())
@@ -59,7 +59,7 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   const connect = async (token: string) => {
     const client = new Client({ name: 'launcher-integration', version: '1' })
     cleanup.push(() => client.close())
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_MCP_TOKEN: token }, stderr: 'pipe' }))
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: tokenVariable === 'both' ? { GRAPHQL_MCP_TOKEN: token, FOREMAN_CODE_MCP_TOKEN: token } : { [tokenVariable]: token }, stderr: 'pipe' }))
     return client
   }
   const ownerClient = await connect(owner.token)
@@ -100,3 +100,19 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   // Other integration fixtures may leave active root credentials in this DB.
   for (const token of [owner.token, reader.token]) expect(remaining).not.toContain(`${createHash('sha256').update(token).digest('hex')}.json`)
 }, 30_000)
+
+it('refuses conflicting launcher token aliases without exposing either credential', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'launcher-conflict-'))
+  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  const launcher = join(directory, 'launcher.mjs')
+  await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
+  const client = new Client({ name: 'launcher-conflict', version: '1' })
+  cleanup.push(() => client.close())
+  const transport = new StdioClientTransport({ command: process.execPath, args: [launcher],
+    env: { GRAPHQL_MCP_TOKEN: 'old-private-token', FOREMAN_CODE_MCP_TOKEN: 'new-private-token' }, stderr: 'pipe' })
+  let failure: unknown
+  try { await client.connect(transport) } catch (error) { failure = error }
+  expect(String(failure)).toContain('FOREMAN_CODE_MCP_TOKEN conflicts with GRAPHQL_MCP_TOKEN')
+  expect(String(failure)).not.toContain('old-private-token')
+  expect(String(failure)).not.toContain('new-private-token')
+})

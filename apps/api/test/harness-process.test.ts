@@ -43,7 +43,7 @@ describe('native harness process boundary', () => {
     })).rejects.toThrow('another Agent')
     await expect(runJsonlProcess({ ...base,
       beforeSpawn: async () => ({ agentId: 'agent-a', variables: { DATABASE_URL: 'secret' } }),
-    })).rejects.toThrow('Only the scoped GraphQL MCP credential')
+    })).rejects.toThrow('Only the scoped Foreman Code MCP credential')
   })
 
   it('preserves structured and malformed process output as ordered events', async () => {

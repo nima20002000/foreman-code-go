@@ -77,7 +77,7 @@ Primary source references:
 
 Claude presets are explicit configuration templates. In Settings → Harnesses →
 Claude, choose the host-local profile directory, model, authentication and sandbox.
-The optional **Include GraphQL MCP** action copies this API's HTTP endpoint into
+The optional **Include Foreman Code MCP** action copies this API's HTTP endpoint into
 the preset. After saving, **MCP connections** can add/remove validated HTTP
 endpoints, and **Tool permissions** can enable exact tool names and approval rules.
 New tools default to app-routed `ask`. Adding a connection grants no tools.
@@ -118,7 +118,7 @@ and startup-prompt checks remain unverified and do not acquire capabilities from
 metadata. The broader four-owner-path, callback race, publication and restart
 qualification below remains separate from this bounded default-chat path.
 An installed and signed-in PATH CLI does not satisfy native proof or substitute
-for the application's exact SDK executable pin. Scoped GraphQL HTTP credentials are
+for the application's exact SDK executable pin. Scoped Foreman Code MCP HTTP credentials are
 delivered only by the existing admitted execution owner, never stored in the
 preset. [Official MCP configuration](https://code.claude.com/docs/en/agent-sdk/mcp)
 describes direct `mcpServers` configuration, HTTP transport and exact tool names.

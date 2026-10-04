@@ -1,8 +1,10 @@
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
 import { createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, type OpenCodeClientFactory } from './opencodeClient.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, appMcpServerName, chatExcludedAppMcpServerNames, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -215,7 +217,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       // Inspect switches without connecting/disconnecting a native MCP server.
       const configured = object(object(await this.json('/config', directory, combined)).mcp)
-      for (const name of Object.keys(value.advanced?.mcp.serverEnabled ?? {})) {
+      for (const savedName of Object.keys(value.advanced?.mcp.serverEnabled ?? {})) {
+        if (this.options.appMcpAccess === 'none'
+          && chatExcludedAppMcpServerNames(this.options.appMcpServerName ?? APP_MCP_SERVER_NAME).includes(savedName)) continue
+        const name = appMcpServerName(configured, savedName)
         if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', 'An accepted MCP server is not configured.')
       }
     })
@@ -237,7 +242,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const response = object(await this.mutate(withDirectory('/session', directory), {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            title: input.kind === 'operator' ? `GraphQL Operator ${input.correlationId}` : `GraphQL ${input.request.executionId}`,
+            title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${input.request.executionId}`,
             agent: configuration.nativeAgent,
             model: { providerID, id: model.join('/'), ...(configuration.variant ? { variant: configuration.variant } : {}) },
             permission: nativePolicy(configuration),
@@ -475,7 +480,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
                   nativeRequestId: request.id, nativeSessionId: request.sessionID, correlationId, reply: 'once',
                 })
               }
-              // This is a native client response, not a durable GraphQL review.
+              // This is a native client response, not a durable Foreman Code review.
               continue
             }
             if (visibleNativeEvent(native, state.configuration.thinking, state.partTypes)) {
@@ -1296,10 +1301,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const selected = environment ?? { agentId: this.options.ownerAgentId, variables: {} }
     if (selected.agentId !== this.options.ownerAgentId) throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
     const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? APP_MCP_TOKEN
-    if (Object.keys(selected.variables).some((key) => key !== credentialEnvironmentVariable)
-      || (credentialEnvironmentVariable in selected.variables && !selected.variables[credentialEnvironmentVariable])) {
+    const keys = Object.keys(selected.variables)
+    const appCredential = isSupportedAppMcpTokenName(credentialEnvironmentVariable)
+    if (keys.length > 1 || keys.some((key) => appCredential ? !isSupportedAppMcpTokenName(key) : key !== credentialEnvironmentVariable)
+      || keys.some((key) => !selected.variables[key])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential can be bound.')
     }
+    if (appCredential) readProductEnvironment(selected.variables, 'MCP_TOKEN')
     Object.values(selected.variables).forEach((value) => this.knownSecrets.add(value))
     const fingerprint = childEnvironmentFingerprint(selected)
     if (this.boundEnvironmentFingerprint === fingerprint) return
@@ -1366,6 +1374,20 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
     await this.assertChatMcpDisabled(directory, signal)
+    const boundNames = (configuration.advanced?.permissionRules ?? []).flatMap((rule) => {
+      if (/^graphql[-_]files(?:[-_]|$)/.test(rule.permission)) return []
+      const name = APP_MCP_SERVER_NAMES.find((candidate) => rule.permission === candidate
+        || rule.permission.startsWith(`${candidate}_`) || rule.permission.startsWith(`${candidate}*`))
+      return name ? [name] : []
+    })
+    if (this.options.appMcpAccess !== 'none' && boundNames.length) {
+      const configured = object(object(await this.json('/config', directory, signal)).mcp)
+      const installedName = appMcpServerName(configured)
+      if (Object.hasOwn(configured, installedName) && boundNames.some((name) => name !== installedName)) {
+        throw new HarnessExecutionError('OPENCODE_MCP_PERMISSION_REVIEW_REQUIRED',
+          'Saved MCP permission rules use another supported app name. Review the Agent or Operator settings before starting with the renamed connection.')
+      }
+    }
     if (this.options.server instanceof ManagedOpenCodeServer && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'Process-level Advanced settings differ from the pinned session configuration.')
     }
@@ -1390,10 +1412,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const controls = configuration.advanced?.mcp.serverEnabled ?? {}
     if (!Object.keys(controls).length) return
     const configured = object(object(await this.json('/config', directory, signal)).mcp)
-    for (const [name, enabled] of Object.entries(controls)) {
+    const appControls = Object.entries(controls).filter(([name]) => isSupportedAppMcpServerName(name))
+    if (this.options.appMcpAccess !== 'none' && appControls.some(([, enabled]) => enabled !== appControls[0]?.[1])) throw new HarnessExecutionError(
+      'OPENCODE_MCP_CONTROL_CONFLICT', 'Supported app MCP names have conflicting enable settings.')
+    for (const [configuredName, enabled] of Object.entries(controls)) {
       // The accepted switch is retained, but cannot reconnect workflow tools in chat.
       if (this.options.appMcpAccess === 'none'
-        && chatExcludedAppMcpServerNames(this.options.appMcpServerName ?? APP_MCP_SERVER_NAME).includes(name)) continue
+        && chatExcludedAppMcpServerNames(this.options.appMcpServerName ?? APP_MCP_SERVER_NAME).includes(configuredName)) continue
+      const name = appMcpServerName(configured, configuredName)
       if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `MCP server '${name}' is not in resolved configuration.`)
       const before = object(object(await this.json('/mcp', directory, signal))[name]).status
       const expected = enabled ? 'connected' : 'disabled'
@@ -1638,11 +1664,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     phase: 'configuration' | 'health' = 'health',
   ): Promise<OpenCodeMcpInspection> {
     const combined = this.signal(signal)
-    const name = this.options.appMcpServerName ?? APP_MCP_SERVER_NAME
+    let name = this.options.appMcpServerName ?? APP_MCP_SERVER_NAME
     if (!this.options.server.inspectMcpConfiguration) {
       throw new HarnessExecutionError('OPENCODE_MCP_AUTH_EVIDENCE_UNAVAILABLE', 'This controller cannot prove the App Authorization environment reference.')
     }
     const proof = await this.options.server.inspectMcpConfiguration(directory, name, combined)
+    if (proof) name = proof.name
     const expected = this.options.expectedAppMcpEndpoint
     if (phase === 'configuration' || !proof) {
       return {
@@ -1666,7 +1693,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         : ['connected', 'disabled', 'failed', 'needs_auth', 'needs_client_registration'].includes(String(status))
           ? status as OpenCodeMcpInspection['nativeStatus'] : 'status_unavailable'
     const endpoint = typeof entry.url === 'string' ? entry.url : null
-    const automaticEndpoint = proof.automaticEndpoint === true && name === APP_MCP_SERVER_NAME && isAppLauncher('opencode', entry)
+    const automaticEndpoint = proof.automaticEndpoint === true && isSupportedAppMcpServerName(name) && isAppLauncher('opencode', entry)
     const matchesProof = (automaticEndpoint || (entry.type === 'remote' && entry.oauth === false
       && entry.url === proof.endpoint)) && (entry.enabled !== false) === (proof.enabled !== false)
     return { cwd: directory, providerVersion: this.providerVersion, serverName: name, nativeStatus, endpoint, automaticEndpoint,
@@ -1685,13 +1712,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     try {
       const native = await this.inspectNativeMcp(first.directory, signal)
       const state: McpDetection['state'] = native.nativeStatus !== 'not_detected'
-        && (native.credentialEnvironmentVariable !== (this.options.credentialEnvironmentVariable ?? APP_MCP_TOKEN) || (native.transport !== 'streamable-http' && !native.automaticEndpoint))
+        && (!isSupportedAppMcpTokenName(native.credentialEnvironmentVariable ?? undefined) || (native.transport !== 'streamable-http' && !native.automaticEndpoint))
         ? 'misconfigured'
         : native.nativeStatus === 'not_detected' ? 'not_detected' : native.endpointMatches === false ? 'misconfigured'
           : native.nativeStatus === 'connected' ? 'connected' : native.nativeStatus === 'disabled' ? 'disabled'
             : ['needs_auth', 'needs_client_registration'].includes(native.nativeStatus) ? 'authentication_required'
               : native.nativeStatus === 'status_unavailable' ? 'status_unavailable' : 'broken'
-      return { ...baseline, state, endpointMatches: native.endpointMatches, credentialEnvironmentVariable: native.credentialEnvironmentVariable }
+      return { ...baseline, serverName: native.serverName, state, endpointMatches: native.endpointMatches, credentialEnvironmentVariable: native.credentialEnvironmentVariable }
     } catch {
       return { ...baseline, state: 'check_failed', detail: 'OpenCode MCP inspection failed; resolved credential values are not included in diagnostics.' }
     }

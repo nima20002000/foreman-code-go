@@ -11,7 +11,9 @@ const command = args[0];
 const stateDirectory = [3, 4, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
 let pairingErrorMessage;
-const help = `Usage:
+const help = `Foreman Code worker
+
+Usage:
   graphql-worker run|doctor|identity-request|initialize-native-runtime --state /absolute/private/state
   graphql-worker pair --state /absolute/private/state --enrollment-stdin
   graphql-worker pair --state /absolute/private/state --enrollment-file /absolute/private/enrollment.json

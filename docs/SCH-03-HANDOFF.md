@@ -13,7 +13,7 @@ results. `MANIFEST.txt` records the available checks and blockers.
 
 No shared contract, `migrations.ts`, legacy trigger implementation, Run snapshot,
 UI, package manifest, dependency lockfile, or remote branch was changed. No new
-dependency is required. The existing `@foreman-code/contracts/schedules` export is used.
+dependency is required. The existing `@graphql/contracts/schedules` export is used.
 
 ## Registration required before boot
 
@@ -210,12 +210,12 @@ From a complete checkout with the pinned toolchain and dependencies:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @foreman-code/contracts build
-corepack pnpm --filter @foreman-code/api exec vitest run test/workflow-schedules.test.ts --maxWorkers=1
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api exec vitest run test/workflow-schedules.test.ts --maxWorkers=1
 # Supply an explicit disposable, loopback, test-named PostgreSQL database:
-TEST_DATABASE_URL="$TEST_DATABASE_URL" corepack pnpm --filter @foreman-code/api exec vitest run test/workflow-schedules.integration.test.ts --no-file-parallelism
-corepack pnpm --filter @foreman-code/api typecheck
-corepack pnpm --filter @foreman-code/api lint
+TEST_DATABASE_URL="$TEST_DATABASE_URL" corepack pnpm --filter @graphql/api exec vitest run test/workflow-schedules.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api lint
 ```
 
 The integration suite is intentionally skipped when TEST_DATABASE_URL is absent;

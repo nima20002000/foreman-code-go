@@ -27,7 +27,7 @@ function toolLabel(native: Record<string, unknown>): string | undefined {
   if (item === 'commandExecution' || part === 'bash') return 'Command action'
   if (item === 'fileChange' || ['write','edit','apply_patch','multiedit'].includes(part ?? '')) return 'File change'
   if (item === 'webSearch' || ['websearch','webfetch','codesearch'].includes(part ?? '')) return 'Web search'
-  if (item === 'mcpToolCall' || part?.startsWith('graphql_') || part?.startsWith('graphql-app_')) return 'MCP tool action'
+  if (item === 'mcpToolCall' || part?.startsWith('foreman-code_') || part?.startsWith('foreman_code_') || part?.startsWith('graphql_') || part?.startsWith('graphql-app_')) return 'MCP tool action'
   if (item === 'collabAgentToolCall' || part === 'task') return 'Subagent action'
   if (part === 'read') return 'File read'
   if (part === 'grep' || part === 'glob' || part === 'list') return 'File search'

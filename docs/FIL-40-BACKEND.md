@@ -60,7 +60,7 @@ read that chat. No ownership backfill or delegated-owner remapping is included.
 
 ## API and MCP
 
-All payloads/readbacks use the unchanged `@foreman-code/contracts/files` schemas.
+All payloads/readbacks use the unchanged `@graphql/contracts/files` schemas.
 Transport paths and MCP registration names are backend additions:
 
 | HTTP | Operator MCP | Input / result |
@@ -172,11 +172,11 @@ tests skip; skipped tests are not evidence of passing behavior.
 Suggested commands in a full checkout with the repository's pinned toolchain:
 
 ```sh
-corepack pnpm --filter @foreman-code/contracts build
-corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.test.ts
-corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.integration.test.ts --no-file-parallelism
-corepack pnpm --filter @foreman-code/api typecheck
-corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.test.ts
+corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api lint
 ```
 
 Supply a disposable loopback `TEST_DATABASE_URL` whose database name contains

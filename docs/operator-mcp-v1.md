@@ -1,6 +1,6 @@
 # Operator MCP v1
 
-Operator MCP is the authenticated local product-management interface delivered by NIM-2579 through NIM-2587. It runs inside the existing API process at `POST /mcp`, the one GraphQL MCP endpoint that also serves workflow agents; an Operator credential selects the Operator role. See [`graphql-mcp.md`](./graphql-mcp.md).
+Operator MCP is the authenticated local product-management interface delivered by NIM-2579 through NIM-2587. It runs inside the existing API process at `POST /mcp`, the one Foreman Code MCP endpoint that also serves workflow agents; an Operator credential selects the Operator role. See [`graphql-mcp.md`](./graphql-mcp.md).
 
 The transport uses MCP protocol `2026-07-28` with the official TypeScript SDK packages `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/fastify`, and the acceptance-test `@modelcontextprotocol/client`, all pinned at `2.0.0`. The packages require Node 20 or newer; this repository requires Node 22. The published packages use Zod 4-compatible standard schemas. Their July 27, 2026 publication date satisfies the repository's strict 48-hour package-age policy.
 
@@ -39,13 +39,13 @@ corepack pnpm dev
 
 Use an environment variable for the token; do not place a literal credential in a checked-in file.
 
-The managed **Add GraphQL MCP** preset in Harness Settings is the normal setup. For a fixed manual entry, Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
+The managed **Add Foreman Code MCP** preset in Harness Settings is the normal setup. For a fixed manual entry, Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
 
 ```sh
-export GRAPHQL_MCP_TOKEN='token-shown-by-the-issue-command'
-codex mcp add graphql \
+export FOREMAN_CODE_MCP_TOKEN='token-shown-by-the-issue-command'
+codex mcp add foreman-code \
   --url http://127.0.0.1:3000/mcp \
-  --bearer-token-env-var GRAPHQL_MCP_TOKEN
+  --bearer-token-env-var FOREMAN_CODE_MCP_TOKEN
 ```
 
 OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualification, create a temporary config and set both `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`; do not use `opencode mcp add`, which writes the installed v1 CLI's global config. Environment substitution keeps the credential out of the file:
@@ -54,13 +54,13 @@ OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualifi
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "graphql": {
+    "foreman-code": {
       "type": "remote",
       "url": "http://127.0.0.1:3000/mcp",
       "enabled": true,
       "oauth": false,
       "headers": {
-        "Authorization": "Bearer {env:GRAPHQL_MCP_TOKEN}"
+        "Authorization": "Bearer {env:FOREMAN_CODE_MCP_TOKEN}"
       }
     }
   }
@@ -92,7 +92,7 @@ Each executable workspace owns `{ runnerId, rootPath }` plus a location revision
 
 New runs require the current location revision. Start atomically stores the exact saved workflow version, canonical runner directory, location revision, directory identity, and accepting authority with the Run. A settings change affects future runs only. Every node in an accepted run—including nodes launched later—uses that snapshot; a missing, replaced, inaccessible, or no-longer-authorized location fails explicitly without falling back to the API directory, home, or temporary storage.
 
-The selected project directory is the harness `workingDirectory`. GraphQL scratch data remains under `HARNESS_WORKSPACE_ROOT` as a distinct `runtimeDirectory` keyed by workspace, run, node, and attempt. Project and runtime roots may not contain one another. Cleanup and cancellation never delete the selected project directory.
+The selected project directory is the harness `workingDirectory`. Foreman Code scratch data remains under `HARNESS_WORKSPACE_ROOT` as a distinct `runtimeDirectory` keyed by workspace, run, node, and attempt. Project and runtime roots may not contain one another. Cleanup and cancellation never delete the selected project directory.
 
 This establishes where native agents start; it is not a filesystem sandbox. Codex/OpenCode native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
 

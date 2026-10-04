@@ -22,7 +22,7 @@ mapping, and native Codex/OpenCode process adapters.
   raw native events, and normalized activity.
 - `src/modules/workspaces/location.ts` validates canonical local-runner paths,
   persists revisioned workspace locations, and rechecks immutable Run snapshots.
-- `src/mcp/unified` mounts the one authenticated, request-scoped GraphQL MCP
+- `src/mcp/unified` mounts the one authenticated, request-scoped Foreman Code MCP
   server at `/mcp`; the credential's role selects the real tools from
   `src/mcp/operator` (management, shared with the browser HTTP boundary) or
   `src/mcp/app` (workflow Agents) and lists the rest as role-limited stubs.
@@ -33,7 +33,7 @@ credentials, command receipts, and management audit. See
 [`../../docs/operator-mcp-v1.md`](../../docs/operator-mcp-v1.md).
 
 Before a real Start, Workspace Settings must contain an existing local-runner
-directory. `HARNESS_WORKSPACE_ROOT` remains GraphQL-owned scratch storage and
+directory. `HARNESS_WORKSPACE_ROOT` remains Foreman Code-owned scratch storage and
 must not overlap a selected project directory. A configured CWD is not a
 filesystem sandbox; native harness policies and stronger isolation remain
 separate work.

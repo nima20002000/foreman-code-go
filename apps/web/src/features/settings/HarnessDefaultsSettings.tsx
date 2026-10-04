@@ -121,7 +121,7 @@ function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; on
     <Select label="Sandbox" value={value.sandbox ?? ''} error={fieldMessage(issues, 'sandbox')}
       options={[{ value: '', label: 'Choose sandbox', disabled: true }, { value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
       onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
-    <Checkbox label="Include GraphQL MCP" checked={Boolean(value.mcpServers?.graphql)} disabled={!setup.data?.graphqlMcp}
+    <Checkbox label="Include Foreman Code MCP" checked={Boolean(value.mcpServers?.graphql)} disabled={!setup.data?.graphqlMcp}
       hint="Uses this app’s endpoint. Tool access is selected separately after saving."
       onChange={event => onChange({ ...value, mcpServers: event.target.checked && setup.data?.graphqlMcp ? { graphql: setup.data.graphqlMcp } : {} })} />
     {setup.isError ? <p role="alert">Could not read the app MCP endpoint. <Button size="sm" onClick={() => void setup.refetch()}>Retry</Button></p> : null}

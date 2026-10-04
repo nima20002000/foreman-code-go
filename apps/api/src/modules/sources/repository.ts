@@ -95,7 +95,7 @@ async function buildPrivateSourceRepository(input: {
   await git(['init', '--bare', '--template=', `--object-format=${manifest.git?.objectFormat ?? 'sha1'}`])
   const expectedTree: Buffer[] = [], message = Buffer.from(`Source snapshot ${manifest.snapshotId}\nManifest ${manifest.manifestDigest}\n`)
   await importSnapshot(gitDirectory, (async function* () {
-    yield Buffer.from(`commit refs/heads/source\ncommitter GraphQL Source <source@graphql.invalid> 0 +0000\ndata ${message.length}\n`)
+    yield Buffer.from(`commit refs/heads/source\ncommitter Foreman Code Source <source@graphql.invalid> 0 +0000\ndata ${message.length}\n`)
     yield message; yield Buffer.from('\n')
     const tree = await openPrivateRoot(workTree)
     try {

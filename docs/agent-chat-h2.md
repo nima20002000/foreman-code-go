@@ -1,12 +1,12 @@
-# H2 — Agent chat without GraphQL App MCP authority
+# H2 — Agent chat without Foreman Code App MCP authority
 
 This A-R01 follow-up supersedes the F3 requirement to manually remove or disable
-the native GraphQL App MCP entry before using Agent chat. The accepted Agent
+the native Foreman Code App MCP entry before using Agent chat. The accepted Agent
 configuration and native configuration files are not rewritten.
 
 ## Native session boundary
 
-Codex chat uses its own app-server process. A configured GraphQL App MCP entry
+Codex chat uses its own app-server process. A configured Foreman Code App MCP entry
 gets a process-local `-c mcp_servers.graphql.enabled=false` override before
 startup, plus the same override on thread start/resume/fork. The launched
 process's `config/read` must confirm the entry is disabled before any thread
@@ -21,9 +21,9 @@ letting OpenCode merge the other native configuration layers normally. Before
 publishing a ready generation, `/config` and `/mcp` must show the entry disabled
 or absent. The manager rechecks this for the addressed directory before session
 setup and MCP control application, including recovery after restart. Its saved
-GraphQL enabled switch is retained in the accepted snapshot but is never used
-to reconnect GraphQL in chat. Other accepted MCP switches are still applied and
-verified. No post-launch GraphQL connect/disconnect or config write substitutes
+Foreman Code enabled switch is retained in the accepted snapshot but is never used
+to reconnect Foreman Code in chat. Other accepted MCP switches are still applied and
+verified. No post-launch Foreman Code connect/disconnect or config write substitutes
 for the launch-time exclusion.
 
 Both paths reject injected App/worker environment credentials. OpenCode also
@@ -34,11 +34,11 @@ opts into the new OpenCode process policy.
 
 ## User-visible facts and failure handling
 
-Unblocked chat state retains `canSend: true` and states that GraphQL workflow
+Unblocked chat state retains `canSend: true` and states that Foreman Code workflow
 tools are not available in chat. Existing blocked-state reasons take precedence.
 No frozen contract schema was changed. A failed isolation check remains an
 honest harness-unavailable refusal, rather than permission to expose workflow
-tools. No harness is categorically refused merely because the accepted GraphQL
+tools. No harness is categorically refused merely because the accepted Foreman Code
 entry is enabled.
 
 This change does not clear previously persisted unavailable/uncertain-session

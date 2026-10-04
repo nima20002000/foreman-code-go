@@ -1,3 +1,4 @@
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import type { HarnessConfiguration, WorkflowApprovalConfiguration } from '@foreman-code/contracts'
 import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -47,8 +48,10 @@ export function validateReviewerBootstrap(
   // These final rules cannot be shadowed by a later wildcard deny.
   const tail = (rules ?? []).slice(-2)
   const allowed = new Set(tail.filter((rule) => rule.pattern === '*' && rule.effect === 'allow').map((rule) => rule.permission))
-  if (tail.length !== 2 || !allowed.has('graphql_interaction_get') || !allowed.has('graphql_interaction_respond')) {
+  const supportedPair = APP_MCP_SERVER_NAMES.some(name => allowed.has(`${name}_interaction_get`)
+    && allowed.has(`${name}_interaction_respond`))
+  if (tail.length !== 2 || !supportedPair) {
     throw new DomainError('APPROVAL_REVIEWER_APP_MCP_REQUIRED',
-      'The OpenCode Orchestrator must end its deny-default policy with explicit allow rules for graphql_interaction_get and graphql_interaction_respond so it can decide through GraphQL MCP without a human.', 409)
+      'The OpenCode Orchestrator must end its deny-default policy with explicit allow rules for interaction_get and interaction_respond under the configured foreman-code or graphql prefix so it can decide through Foreman Code MCP without a human.', 409)
   }
 }

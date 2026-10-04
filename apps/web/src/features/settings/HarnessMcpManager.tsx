@@ -8,13 +8,14 @@ import {
   useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useApplyManagedMcpChange, useHarnessSessionEpoch, useReconcileNativeMcpChange,
 } from '../../shared/api/harnessSettings'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 
 type Harness = 'codex' | 'opencode'
 type Presets = HarnessMcpList['presets']
 /** Retired per-role app entries; installing the graphql preset removes them. */
 const LEGACY_APP_SERVERS = ['graphql-app', 'graphql-operator']
 function needsAttention(name: string, presets: Presets): boolean {
-  return (name === 'graphql' && ['mismatch', 'legacy'].includes(presets?.graphql ?? ''))
+  return (APP_MCP_SERVER_NAMES.some((server) => server === name) && ['mismatch', 'legacy'].includes(presets?.graphql ?? ''))
     || (LEGACY_APP_SERVERS.includes(name) && presets?.graphql !== undefined)
     || (name === 'linear' && presets?.linear === 'mismatch')
 }
@@ -147,7 +148,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   }
   const presets = servers.data?.presets
   const details = servers.data?.servers.find((server) => server.name === detailsName)
-  const detailsPreset = details?.name === 'graphql' && ['installed', 'disabled'].includes(presets?.graphql ?? '') ? 'graphql'
+  const detailsPreset = details && APP_MCP_SERVER_NAMES.some((name) => name === details.name) && ['installed', 'disabled'].includes(presets?.graphql ?? '') ? 'graphql'
     : details?.name === 'linear' && ['installed', 'disabled'].includes(presets?.linear ?? '') ? 'linear' : undefined
   const detailsRemovable = Boolean(details && (detailsPreset || details.editable))
   const outstanding = allPlans.filter((plan) => ['submitting', 'uncertain'].includes(plan.status)
@@ -177,7 +178,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       {(['graphql', 'linear'] as const).map((preset) => {
         const status = presets[preset]
         if (status === 'installed' || status === 'disabled') return null
-        const label = preset === 'graphql' ? 'GraphQL MCP' : 'Linear MCP'
+        const label = preset === 'graphql' ? 'Foreman Code MCP' : 'Linear MCP'
         const actionable = status === 'missing' || status === 'legacy'
           || (status === 'mismatch' && (preset !== 'linear' || !servers.data?.servers.find((server) => server.name === 'linear')?.protected))
         return <div key={preset} className="harness-preset-row"><div><strong>{label}</strong>
@@ -255,6 +256,10 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         <Button disabled={managed.isPending} onClick={() => setDetailsName(undefined)}>Close</Button>
       </>}>
       {details ? <div className="harness-form-stack">
+        {details.name === 'graphql' && detailsPreset === 'graphql' ? <div className="harness-form-stack">
+          <p>This supported connection can keep its native name. Renaming it preserves its policies and removes the old entry.</p>
+          <Button size="sm" disabled={detailsBusy} onClick={() => manage('graphql', { installed: true })}>Rename to Foreman Code MCP</Button>
+        </div> : null}
         <StatusBadge tone={!details.enabled ? 'danger' : details.origin === 'inherited' || needsAttention(details.name, presets) ? 'warning' : 'success'}
           label={!details.enabled ? 'Disabled' : details.origin === 'inherited' ? 'Inherited' : needsAttention(details.name, presets) ? 'Needs attention' : 'Enabled'} />
         <dl className="harness-change-details">
@@ -268,7 +273,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         {details.transport === 'remote' && !details.endpoint ? <p className="harness-muted">Only the host is shown here. Native URLs can contain private credentials; inspect their configuration source for the full address.</p> : null}
         <p className="harness-muted">Enabled means the native configuration permits startup; a live tool call is needed to verify the connection.</p>
         {LEGACY_APP_SERVERS.includes(details.name) ? <p className="harness-muted">
-          This retired connection is replaced by <code>graphql</code>, which serves Operator chat and workflow agents. Use Upgrade to GraphQL MCP to remove it.
+          This retired connection is replaced by <code>foreman-code</code>, which serves Operator chat and workflow agents. Use Upgrade to Foreman Code MCP to remove it.
         </p> : !detailsRemovable ? <p className="harness-muted">{details.protected ? 'This app-managed connection is protected here. Change it in its owning app settings.' : 'This connection comes from another configuration source. Enable, disable, or remove it there.'}</p> : null}
         {details.name === 'linear' && detailsPreset === 'linear' ? <p className="harness-muted">
           Sign in with <code>{harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}</code>. Removing this connection keeps the harness’s saved sign-in.

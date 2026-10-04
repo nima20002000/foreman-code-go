@@ -116,13 +116,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop
             ? finalAccepted && index === 1
-              ? 'You are requester B. On work_request and needs-changes work_return, always output a new routing.kind request with outcome review_c. Never output routing.kind return. Follow the node initial prompt and the GraphQL work-handoff output contract. Do not use tools.'
-              : 'Follow the node initial prompt and the GraphQL work-handoff output contract. Do not use tools.'
+              ? 'You are requester B. On work_request and needs-changes work_return, always output a new routing.kind request with outcome review_c. Never output routing.kind return. Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
+              : 'Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
             : index === 0
             ? scenario.approval
-              ? 'Use exactly one read-only shell command: pwd. Wait for the authorized response. Then follow the GraphQL work-handoff output contract.'
-              : 'Follow the GraphQL work-handoff output contract. Do not use tools.'
-            : 'Summarize only the received work. Follow the GraphQL work-handoff output contract.' },
+              ? 'Use exactly one read-only shell command: pwd. Wait for the authorized response. Then follow the Foreman Code work-handoff output contract.'
+              : 'Follow the Foreman Code work-handoff output contract. Do not use tools.'
+            : 'Summarize only the received work. Follow the Foreman Code work-handoff output contract.' },
         }))
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
         const canonicalPath = await realpath(projectPath), details = await stat(projectPath)

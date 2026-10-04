@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest'
 import { claudeMcpDetection, decodeClaudeMcpControl } from './mcpInspection.js'
 const now = '2026-10-01T00:00:00.000Z'
 describe('actual SDK MCP control evidence', () => {
+  it.each(['graphql', 'foreman-code'])('recognizes %s with both supported token references and binds HTTP receipts to the observed name', (serverName) => {
+    for (const token of ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN']) {
+      const stdio = decodeClaudeMcpControl([{ name: serverName, status: 'connected', config: {
+        type: 'stdio', env: { [token]: 'private-token' },
+      } }], 'generation', now)
+      expect(claudeMcpDetection(stdio, { serverName: 'foreman-code' })).toMatchObject({
+        serverName, state: 'connected', credentialEnvironmentVariable: token,
+      })
+      expect(JSON.stringify(stdio)).not.toContain('private-token')
+    }
+    const endpoint = 'http://127.0.0.1:3000/mcp'
+    const http = decodeClaudeMcpControl([{ name: serverName, status: 'connected', config: { type: 'http', url: endpoint } }],
+      'generation', now, { currentAuthorizationScope: 'scope', httpCredentialAcknowledgement: {
+        source: 'sdk_set_mcp_servers', serverName, endpoint, generation: 'generation', authorizationScope: 'scope',
+      } })
+    expect(claudeMcpDetection(http, { serverName: 'foreman-code', url: endpoint }).credentialArrangement)
+      .toEqual({ kind: 'scoped_http_header' })
+  })
+  it('refuses two app entries instead of selecting a connection implicitly', () => {
+    const snapshot = decodeClaudeMcpControl(['graphql', 'foreman-code'].map(name => ({
+      name, status: 'connected', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp' },
+    })), 'generation', now)
+    expect(() => claudeMcpDetection(snapshot, { serverName: 'foreman-code' })).toThrow('collision')
+  })
   it.each([['pending', 'status_unavailable'], ['failed', 'broken'], ['needs-auth', 'authentication_required'], ['disabled', 'disabled'], ['connected', 'connected']])('maps real status %s without saved-config health', (status, state) => {
     const snapshot = decodeClaudeMcpControl([{ name: 'graphql', status, source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp' } }], 'generation', now)
     expect(claudeMcpDetection(snapshot, { serverName: 'graphql', url: 'http://127.0.0.1:3000/mcp' }).state).toBe(state)

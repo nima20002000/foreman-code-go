@@ -54,7 +54,7 @@ export interface GraphqlMcpServices {
   workerArtifacts?: () => WorkerArtifactMcpExtension | undefined
 }
 
-/** The single, stateless GraphQL MCP endpoint. The bearer credential decides the role. */
+/** The single, stateless Foreman Code MCP endpoint. The bearer credential decides the role. */
 export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpServices): void {
   const cancellations = new McpRequestCancellation()
   // FIL-03 is composed after buildProductionApp. Bind the same service before any MCP request,

@@ -1,5 +1,9 @@
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
+import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { appMcpServerName, isSupportedAppMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './modules/devices/trustedConnectionHumanAuthority.js'
@@ -729,22 +733,23 @@ export function buildProductionApp(
         const claude = claudeLaunches.get(manager)
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
         const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
-          workingDirectory: input.workingDirectory, serverName: 'graphql', phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
+          workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
         const entry = inspected.entry
-        if (!entry || entry.name !== 'graphql' || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
+        if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
           || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted GraphQL HTTP endpoint.', 409)
+          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409)
         }
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()
         const credential = await (input.purpose === 'reviewer' ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
         try {
-          const token = credential.environment.variables.GRAPHQL_MCP_TOKEN
-          const configured = configuration.harness.mcpServers.graphql
+          const token = readProductEnvironment(credential.environment.variables, 'MCP_TOKEN')
+          const serverName = appMcpServerName(configuration.harness.mcpServers)
+          const configured = configuration.harness.mcpServers[serverName]
           if (!token || configured?.type !== 'http' || configured.url !== appMcpEndpoint) throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The accepted Claude settings cannot receive this scoped HTTP credential.', 409)
           const start = { ...await claude.inspectionStart(), environment: credential.environment }
           await claude.manager.refreshInspectionCredentials(start, { ...configuration.harness.mcpServers,
-            graphql: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
+            [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
           const checked = await detection.preflight({ harness: 'claude', runnerId: run.executionLocation.runnerId,
             workingDirectory: input.workingDirectory, ...(input.signal ? { signal: input.signal } : {}) })
           if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
@@ -864,12 +869,15 @@ export function buildProductionApp(
     (manager) => nativeFactories.inspector(manager),
     async (manager, configuration, environment, signal) => {
       const claude = claudeLaunches.get(manager)
-      const configured = configuration.harness.harness === 'claude' ? configuration.harness.mcpServers.graphql : undefined
-      const token = environment.variables.GRAPHQL_MCP_TOKEN
+      const servers: ClaudeHarnessConfiguration['mcpServers'] = configuration.harness.harness === 'claude'
+        ? configuration.harness.mcpServers : {}
+      const serverName = appMcpServerName(servers)
+      const configured = servers[serverName]
+      const token = readProductEnvironment(environment.variables, 'MCP_TOKEN')
       if (!claude || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
       await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
         ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
-        graphql: { ...configured, headers: { Authorization: `Bearer ${token}` } },
+        [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } },
       }, signal)
       const checked = await new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint).preflight({
         harness: 'claude', runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory, signal,
@@ -1142,7 +1150,7 @@ export function buildProductionApp(
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
-      { name: 'GraphQL MCP routes', run: () => appRoutes.close() },
+      { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer
         // closes before raw disposal loses their manager lifetime identities.

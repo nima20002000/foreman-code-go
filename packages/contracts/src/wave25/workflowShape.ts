@@ -85,7 +85,7 @@ export const CurrentAgentWorkflowNodeFields = {
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
   width: z.number().finite().positive().optional(), height: z.number().finite().positive().optional(),
   join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
-  /** Changes the Agent's default GraphQL MCP tools for this node only. */
+  /** Changes the Agent's default Foreman Code MCP tools for this node only. */
   graphqlTools: GraphqlToolOverrideSchema.optional(),
   artifactOutputs: WorkflowArtifactOutputsV1Schema.optional(),
 }

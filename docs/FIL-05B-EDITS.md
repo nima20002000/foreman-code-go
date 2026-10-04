@@ -176,12 +176,12 @@ Run after applying the patch to the pinned checkout:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @foreman-code/contracts build
-corepack pnpm --filter @foreman-code/api typecheck
-corepack pnpm --filter @foreman-code/api lint
-corepack pnpm --filter @foreman-code/api test test/file-tools.test.ts test/file-working-copy-edits.test.ts
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api lint
+corepack pnpm --filter @graphql/api test test/file-tools.test.ts test/file-working-copy-edits.test.ts
 # Set TEST_DATABASE_URL to an explicit loopback database whose name includes test.
-corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-tools-postgres.integration.test.ts test/file-working-copy-edits-postgres.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-tools-postgres.integration.test.ts test/file-working-copy-edits-postgres.integration.test.ts --no-file-parallelism
 ```
 
 Also run the existing FIL-03 storage/format suites and repository-wide checks

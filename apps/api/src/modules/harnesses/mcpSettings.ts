@@ -153,7 +153,7 @@ export class HarnessMcpSettingsService {
   private managed(plan: HarnessMcpPlan): { preset: HarnessMcpManagedPreset; endpoint: string } | undefined {
     if (!plan.managedPreset) return undefined
     if (plan.managedPreset === 'operator' || plan.managedPreset === 'worker') {
-      throw new DomainError('MCP_PRESET_RETIRED', 'This request uses a retired Operator/Worker MCP preset. Reject it, then add GraphQL MCP, which serves every role.', 409)
+      throw new DomainError('MCP_PRESET_RETIRED', 'This request uses a retired Operator/Worker MCP preset. Reject it, then add Foreman Code MCP, which serves every role.', 409)
     }
     if (!this.operatorEndpoint) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Managed MCP presets are unavailable.', 503)
     return { preset: plan.managedPreset, endpoint: this.operatorEndpoint }

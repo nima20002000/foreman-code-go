@@ -52,7 +52,7 @@ export function claudeActivityChange(event: ClaudeDecodedEvent, context: ClaudeA
     item = { ...itemBase, kind: 'text', text: change.text, finality: change.final ? 'authoritative_final' : 'provisional' }
   } else if (change.kind === 'diagnostic') item = { ...itemBase, evidence: 'unknown', kind: 'diagnostic', code: change.code, message: 'Claude provider evidence requires reconciliation.' }
   else if (change.kind === 'result' && native) {
-    // Provider terminal observation is independent of admitted GraphQL request
+    // Provider terminal observation is independent of admitted Foreman Code request
     // settlement, delivery, and descendants. W05 must not flatten those owners.
     return { ...envelope, change: { kind: 'provider-turn.observed', work: {
       ref: { kind: 'native_turn', native }, native, phase: 'terminal', outcome: change.outcome,

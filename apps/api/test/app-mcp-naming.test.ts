@@ -1,0 +1,82 @@
+import { describe, expect, it } from 'vitest'
+import { appLauncherConnection, appMcpServerName, isAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { applyMcpEdits, assertChange, managedChange, managedEnableChange, managedStatus, mcpEdits,
+  nativeConnection, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
+
+describe.each(['codex', 'opencode'] as const)('%s managed MCP naming', (harness) => {
+  const endpoint = 'http://127.0.0.1:3000/mcp'
+  const connection = (token: string) => nativeConnection(harness, {
+    ...appLauncherConnection(), environmentVariables: [token],
+  })
+  const snapshot = (user: Record<string, unknown>): NativeMcpSnapshot => ({
+    harness, revision: 'revision', effective: user, user, userConfig: {}, file: '/tmp/native-config', version: 'version',
+    credentialReferences: { graphql: 'GRAPHQL_MCP_TOKEN', 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' },
+  })
+  const managed = { preset: 'graphql' as const, endpoint }
+  const add = managedChange('graphql', true, endpoint)
+
+  it('installs one canonical connection with the new token reference', () => {
+    expect(add.name).toBe('foreman-code')
+    const installed = applyMcpEdits({}, mcpEdits(snapshot({}), add, managed))
+    expect(installed).toEqual({ 'foreman-code': connection('FOREMAN_CODE_MCP_TOKEN') })
+    expect(managedStatus(snapshot(installed), 'graphql')).toBe('installed')
+  })
+
+  it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])('keeps the supported old name usable with %s', (token) => {
+    const entry = connection(token)
+    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(appMcpServerName({ graphql: entry })).toBe('graphql')
+    expect(managedStatus({ ...snapshot({ graphql: entry }), credentialReferences: { graphql: token } }, 'graphql'))
+      .toBe('installed')
+    const disabled = applyMcpEdits({ graphql: entry }, mcpEdits(snapshot({ graphql: entry }),
+      managedEnableChange('graphql', false), managed))
+    expect(disabled).toEqual({ graphql: { ...entry, enabled: false } })
+  })
+
+  it('renames an owned entry in one reviewed write while retaining native policies and disabled state', () => {
+    const entry = { ...connection('GRAPHQL_MCP_TOKEN'), enabled: false,
+      enabled_tools: ['context_get'], disabled_tools: ['interaction_respond'],
+      default_tools_approval_mode: 'prompt', tools: { context_get: { approval_mode: 'prompt' } },
+      timeout: 5000, custom_setting: { retained: true } }
+    const before = { graphql: entry, docs: { url: 'https://example.com/mcp' } }
+    const after = applyMcpEdits(before, mcpEdits(snapshot(before), add, managed))
+    expect(after).toEqual({ docs: before.docs, 'foreman-code': { ...entry, ...connection('FOREMAN_CODE_MCP_TOKEN'), enabled: false } })
+    expect(managedStatus(snapshot(after), 'graphql')).toBe('disabled')
+  })
+
+  it('rejects name collisions, inherited entries, and custom authentication without editing either entry', () => {
+    const entry = connection('GRAPHQL_MCP_TOKEN')
+    const collision = { graphql: entry, 'foreman-code': { url: 'https://custom.example/mcp' } }
+    expect(() => mcpEdits(snapshot(collision), add, managed)).toThrow('collision')
+    expect(() => appMcpServerName(collision)).toThrow('collision')
+    expect(() => mcpEdits({ ...snapshot({ graphql: entry }), ownership: { graphql: false } }, add, managed))
+      .toThrow('already has')
+    expect(() => mcpEdits(snapshot({ graphql: { ...entry, url: 'https://custom.example/mcp' } }), add, managed))
+      .toThrow('custom')
+    expect(collision.graphql).toEqual(entry)
+    expect(() => assertChange(snapshot({}), { kind: 'add', name: 'custom', connection: {
+      transport: 'remote', url: endpoint, bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN',
+    } })).toThrow('managed by the server')
+  })
+
+  it('leaves customized retired entries untouched and retains disabled policies on supported retired connections', () => {
+    const retired = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3000/mcp/tools',
+      bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' })
+    const policy = { ...retired, enabled: false, disabled_tools: ['interaction_respond'] }
+    const after = applyMcpEdits({ 'graphql-app': policy }, mcpEdits(snapshot({ 'graphql-app': policy }), add, managed))
+    expect(after).toEqual({ 'foreman-code': { ...connection('FOREMAN_CODE_MCP_TOKEN'), enabled: false,
+      disabled_tools: ['interaction_respond'] } })
+    expect(() => mcpEdits(snapshot({ 'graphql-app': { url: 'https://custom.example/mcp' } }), add, managed)).toThrow('custom')
+    expect(() => mcpEdits({ ...snapshot({ 'graphql-app': policy }), ownership: { 'graphql-app': false } }, add, managed))
+      .toThrow('inherited')
+  })
+
+  if (harness === 'opencode') it('requires native review before renaming name-bound global tool policies', () => {
+    const before = snapshot({ graphql: connection('GRAPHQL_MCP_TOKEN') })
+    expect(() => mcpEdits({ ...before, userConfig: { permission: { graphql_context_get: 'deny' } } }, add, managed))
+      .toThrow('native permissions')
+    expect(() => mcpEdits({ ...before, effectivePermissions: { 'graphql_*': 'ask' } }, add, managed))
+      .toThrow('native permissions')
+    expect(managedStatus(before, 'graphql')).toBe('installed')
+  })
+})

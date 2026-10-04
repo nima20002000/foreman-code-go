@@ -102,7 +102,7 @@ not certify the system rsync as approved for transfers or silently replace it.
 
 Consumed root shared DTO commit ee0fcad5 (local prerequisite e86a6f50); core setup,
 probe, consent and readiness shapes now import
-`@foreman-code/contracts/trusted-device-connection`. Do not cherry-pick the borrowed
+`@graphql/contracts/trusted-device-connection`. Do not cherry-pick the borrowed
 shared commit again.
 
 New owned `trustedConnectionHumanAuthority.ts` and its focused test implement the

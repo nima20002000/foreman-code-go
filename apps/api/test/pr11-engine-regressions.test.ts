@@ -73,7 +73,7 @@ async function createFixture(placement?: AcceptedNodePlacement) {
       yield { sequence: 1, type: 'turn.completed', occurredAt: now, payload: {} }
     },
     pending: async () => undefined,
-    respond: async () => { throw new Error('Non-routed native work cannot receive a GraphQL decision') },
+    respond: async () => { throw new Error('Non-routed native work cannot receive a Foreman Code decision') },
     cancel: async () => { cancels += 1; return true },
     history: async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [], ...(terminal ? { terminalResult: terminal } : {}) }),
     reconcile: async (_session: NativeSessionReference, id: string): Promise<NativeHistory> => {

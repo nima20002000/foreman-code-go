@@ -60,7 +60,7 @@ test('repeat limits include the first occurrence and preserve findings at exhaus
     assert.equal(spec.executions, spec.repeat === 'early' ? 2 : 6)
   }
 })
-test('human approval is narrow, GraphQL-routed and never native auto-approval', () => {
+test('human approval is narrow, Foreman Code-routed and never native auto-approval', () => {
   const spec = SCENARIOS.find((item) => item.approval)
   const { graph, agents } = scenarioGraph(spec, workflow)
   const cfg = agents[0].agent.harnessConfiguration

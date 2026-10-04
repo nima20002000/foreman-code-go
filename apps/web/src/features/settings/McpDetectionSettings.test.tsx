@@ -152,7 +152,7 @@ describe('Workspace App MCP hierarchy', () => {
     seedConnections(value, 'status_unavailable')
     mount(value)
     expect((await screen.findAllByText('Setup found'))).toHaveLength(2)
-    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls a GraphQL MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
+    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls a Foreman Code MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
   })
 

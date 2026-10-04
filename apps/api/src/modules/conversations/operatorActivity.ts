@@ -136,7 +136,7 @@ export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarnes
     else if (['websearch', 'webfetch', 'codesearch'].includes(tool)) { kind = 'web_search'; title = tool === 'webfetch' ? 'Read webpage' : 'Search the web' }
     else if (tool === 'task') { kind = 'subagent'; title = string(object(state.input).description) || 'Run subagent' }
     else if (tool === 'bash') title = 'Run command'
-    else if (/^(graphql[-_]operator|graphql[-_]app)[_]/.test(tool)) { kind = 'mcp'; title = tool }
+    else if (/^(foreman[-_]code|graphql|graphql[-_]operator|graphql[-_]app)[_]/.test(tool)) { kind = 'mcp'; title = tool }
     return bounded({ id, requestId, kind, title, status: status(state.status, false), input: pretty(state.input),
       ...(state.output != null || state.error != null ? { output: pretty(state.error ?? state.output) } : {}) })
   }

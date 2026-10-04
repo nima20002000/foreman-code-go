@@ -14,7 +14,7 @@ import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function registerHarnessTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'claude_setup_options_get')) server.registerTool('claude_setup_options_get', {
-    description: 'Read the owning API GraphQL HTTP MCP endpoint for a pinned Claude configuration. Add it as mcpServers.graphql using harness_defaults_update or harness_instance_save. Saving configuration does not qualify execution, grant tools, install packages or change native login files. Scoped credentials are delivered only at authorized execution admission.',
+    description: 'Read the owning API Foreman Code MCP HTTP endpoint for a pinned Claude configuration. Add it as mcpServers["foreman-code"] (existing graphql entries remain supported) using harness_defaults_update or harness_instance_save. Saving configuration does not qualify execution, grant tools, install packages or change native login files. Scoped credentials are delivered only at authorized execution admission.',
     inputSchema: z.object({}).strict(), outputSchema: ClaudeSetupOptionsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'claude_setup_options_get', async () => context.services.harnesses.claudeSetupOptions(context.principal)))

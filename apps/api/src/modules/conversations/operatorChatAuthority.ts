@@ -1,4 +1,6 @@
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, registerAppRoute } from '../harnesses/appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName, registerAppRoute } from '../harnesses/appMcpLauncher.js'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
+import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../access/workerCredentials.js'
 import type pg from 'pg'
 import type { OperatorChatSetup, OperatorConfigurationVersion } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -12,7 +14,7 @@ import type { ChildProcessEnvironment, NativeHarnessSessionManager } from '../ha
 import { DomainError } from '../errors.js'
 import type { OperatorChatAuthority } from './operatorChat.js'
 
-export const OPERATOR_MCP_ENVIRONMENT_VARIABLE = APP_MCP_TOKEN
+export const OPERATOR_MCP_ENVIRONMENT_VARIABLE = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
 
 export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   private readonly credentials = new Map<string, { environment: ChildProcessEnvironment; ownerId: string; removeRoute: () => Promise<void> }>()
@@ -55,9 +57,10 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
     if (configuration?.harness.harness === 'opencode'
-      && configuration.harness.advanced?.mcp.serverEnabled[APP_MCP_SERVER_NAME] === false) {
+      && APP_MCP_SERVER_NAMES.some((name) => configuration.harness.harness === 'opencode'
+        && configuration.harness.advanced?.mcp.serverEnabled[name] === false)) {
       return { ...result, status: 'setup_required',
-        reason: 'The selected Operator settings disable graphql. Enable that connection in Operator advanced settings before sending a new message.' }
+        reason: 'The selected Operator settings disable Foreman Code MCP. Enable that connection in Operator advanced settings before sending a new message.' }
     }
     if (!this.inspectorFor) this.invalidSetup()
     const inspected = await this.inspectorFor(manager).inspect({ harness: manager.harness, runnerId: 'runner-local',
@@ -69,10 +72,10 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const entry = inspected.entry
     if (!entry) return { ...result, status: 'setup_required' }
     const automatic = entry.automaticEndpoint === true && entry.transport === 'stdio'
-    const configured = entry.name === APP_MCP_SERVER_NAME && entry.enabled !== false && entry.status !== 'disabled'
+    const configured = isSupportedAppMcpServerName(entry.name) && entry.enabled !== false && entry.status !== 'disabled'
       && (automatic || entry.endpoint === this.endpoint && entry.transport === 'streamable-http')
       && (manager.harness === 'claude' ? Boolean(this.deliverClaudeCredential)
-        : entry.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE)
+        : isSupportedAppMcpTokenName(entry.credentialEnvironmentVariable))
     return { ...result, status: configured ? 'configured' : 'setup_required', routing: automatic ? 'automatic' : 'fixed' }
   }
 
@@ -133,7 +136,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     }
   }
   private invalidSetup(): never {
-    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql MCP connection in the selected harness before chatting. Add GraphQL MCP in Harness Settings for automatic app routing.', 409)
+    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable Foreman Code MCP in the selected harness before chatting. Add it in Harness Settings for automatic app routing.', 409)
   }
   async release(conversationId: string): Promise<void> {
     const credential = this.credentials.get(conversationId)

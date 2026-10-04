@@ -142,7 +142,7 @@ function nativeErrorCode(error: unknown): string | undefined {
 function nativeUnavailable(error: unknown): { reason: 'native_session_missing' | 'harness_unavailable'; message: string } | undefined {
   const code = nativeErrorCode(error)
   if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE' || code === 'OPENCODE_APP_MCP_UNAVAILABLE') {
-    return { reason: 'harness_unavailable', message: 'Chat could not verify that the scoped GraphQL App MCP server was disabled for its native session. GraphQL workflow tools are not available in chat, and chat never receives App MCP or workflow credentials.' }
+    return { reason: 'harness_unavailable', message: 'Chat could not verify that the scoped Foreman Code App MCP server was disabled for its native session. Foreman Code workflow tools are not available in chat, and chat never receives App MCP or workflow credentials.' }
   }
   if (code && ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID',
     'OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH'].includes(code)) {
@@ -411,7 +411,7 @@ export class AgentChatService {
       capabilities.unavailable = { resume: blocked.message, queueNextTurn: blocked.message,
         interruptAndSend: blocked.message, steer: blocked.message }
     }
-    const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'GraphQL workflow tools are not available in chat. The scoped GraphQL App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
+    const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'Foreman Code workflow tools are not available in chat. The scoped Foreman Code App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
     if (!resolution.row) {
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
         activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0,

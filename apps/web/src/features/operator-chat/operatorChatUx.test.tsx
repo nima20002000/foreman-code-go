@@ -65,7 +65,7 @@ describe('Operator chat UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
     expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible()
-    expect(screen.queryByText('Checking GraphQL MCP installation…')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checking Foreman Code MCP installation…')).not.toBeInTheDocument()
     expect(checks).toBe(1)
   })
 
@@ -106,7 +106,7 @@ describe('Operator chat UX', () => {
     chat()
     expect(await screen.findByText(/The previous conversation is no longer available/)).toBeVisible()
     await waitFor(() => expect(setupTargets).toContain(null))
-    expect(screen.queryByText('GraphQL MCP could not be checked')).not.toBeInTheDocument()
+    expect(screen.queryByText('Foreman Code MCP could not be checked')).not.toBeInTheDocument()
     expect(screen.queryByText('Conversation could not be loaded')).not.toBeInTheDocument()
     expect(api.get).toHaveBeenCalledTimes(1)
     expect(useOperatorChatStore.getState().selectedConversationId).toBeUndefined()
@@ -135,7 +135,7 @@ describe('Operator chat UX', () => {
       http.get('/api/operator/setup', () => HttpResponse.json(configured ? configuredOperatorSetup('opencode') : unconfiguredOperatorSetup('opencode'))),
     )
     chat()
-    expect(await screen.findByText('Install GraphQL MCP in OpenCode first')).toBeVisible()
+    expect(await screen.findByText('Install Foreman Code MCP in OpenCode first')).toBeVisible()
     const input = await screen.findByRole('textbox', { name: 'Message' })
     fireEvent.change(input, { target: { value: 'Hello' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -145,7 +145,7 @@ describe('Operator chat UX', () => {
     configured = true
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
-    expect(screen.queryByText('Install GraphQL MCP in OpenCode first')).not.toBeInTheDocument()
+    expect(screen.queryByText('Install Foreman Code MCP in OpenCode first')).not.toBeInTheDocument()
   })
 
   it('does not enable Send for configured setup without an accepted configuration ID', async () => {

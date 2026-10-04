@@ -16,10 +16,10 @@ function open(role: 'orchestrator' | 'coder', extra: { graphqlTools?: ['context_
   render(<QueryClientProvider client={client}><AgentSettingsForm agent={agent} nodeGraphqlTools={nodeGraphqlTools}
     creationDefaults={DEFAULT_HARNESS_DEFAULTS} onClose={() => undefined} onSave={onSave} /></QueryClientProvider>)
   fireEvent.click(screen.getByRole('button', { name: 'Advanced settings' }))
-  return { onSave, tools: screen.getByRole('group', { name: 'GraphQL MCP tools' }) }
+  return { onSave, tools: screen.getByRole('group', { name: 'Foreman Code MCP tools' }) }
 }
 
-describe('GraphQL MCP tools in Agent settings', () => {
+describe('Foreman Code MCP tools in Agent settings', () => {
   it('lists only the role tools, never Operator tools', () => {
     const coder = open('coder').tools
     expect(within(coder).queryByText('Respond to approvals')).toBeNull()

@@ -17,6 +17,16 @@ const signal = new AbortController().signal
 afterEach(() => vi.restoreAllMocks())
 
 describe('Operator chat installation evidence', () => {
+  it.each(['graphql', 'foreman-code'])('accepts %s for Operator setup with either supported token reference', async (serverName) => {
+    for (const credentialEnvironmentVariable of ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN']) {
+      const manager = { harness: 'codex' } as NativeHarnessSessionManager
+      const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint,
+        () => ({ inspect: async () => ({ harness: 'codex', runnerId: 'runner-local', workingDirectory: '/operator',
+          providerVersion: '0.154.0', inspectedAt: new Date().toISOString(), entry: { name: serverName,
+            enabled: true, transport: 'stdio', automaticEndpoint: true, credentialEnvironmentVariable } }) }))
+      expect(await owner.setup(manager, signal)).toMatchObject({ status: 'configured', routing: 'automatic' })
+    }
+  })
   it('refuses text-mode setup before native inspection when the inspector port is unbound', async () => {
     const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint)
     const manager = new CodexAppServerSessionManager('unused')

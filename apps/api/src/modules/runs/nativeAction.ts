@@ -18,10 +18,11 @@ function mcpAction(server: string | undefined, tool: string | undefined): RunNod
   // graphql-app/graphql-operator are pre-unification names still found in recorded native history.
   const app = server === 'graphql-app' || server === 'graphql_app'
   const operator = server === 'graphql-operator' || server === 'graphql_operator'
-  if (server !== 'graphql' && !app && !operator) return 'using_mcp'
+  const unified = server === 'foreman-code' || server === 'foreman_code' || server === 'graphql'
+  if (!unified && !app && !operator) return 'using_mcp'
   if (tool === 'interaction_respond') return 'responding_approval'
   if (tool === 'workspace_folder_create') return 'creating_folder'
-  return app || (server === 'graphql' && AGENT_ROLE_TOOLS.has(tool ?? '')) ? 'using_app_mcp' : 'using_operator_mcp'
+  return app || (unified && AGENT_ROLE_TOOLS.has(tool ?? '')) ? 'using_app_mcp' : 'using_operator_mcp'
 }
 
 /** Uses protocol fields only. Never inspect state.title, commands, paths, arguments, output or model text. */
@@ -68,6 +69,7 @@ export function nativeAction(type: string, payload: ObjectValue): NativeActionCh
   else if (['websearch', 'webfetch', 'codesearch'].includes(tool ?? '')) kind = 'searching_web'
   else if (tool?.startsWith('graphql-app_') || tool?.startsWith('graphql_app_')) kind = mcpAction('graphql-app', tool.slice('graphql-app_'.length))
   else if (tool?.startsWith('graphql-operator_') || tool?.startsWith('graphql_operator_')) kind = mcpAction('graphql-operator', tool.slice('graphql-operator_'.length))
+  else if (tool?.startsWith('foreman-code_') || tool?.startsWith('foreman_code_')) kind = mcpAction('foreman-code', tool.slice('foreman-code_'.length))
   else if (tool?.startsWith('graphql_')) kind = mcpAction('graphql', tool.slice('graphql_'.length))
   else return undefined
   if (!['pending', 'running', 'completed', 'error'].includes(String(state.status))) return undefined

@@ -38,7 +38,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   canResume?(): boolean
   agent: Agent
   initialPrompt?: string
-  /** This workflow node's change to the Agent's default GraphQL MCP tools. */
+  /** This workflow node's change to the Agent's default Foreman Code MCP tools. */
   nodeGraphqlTools?: GraphqlToolOverride
   creationDefaults?: HarnessDefaults
   onClose(): void
