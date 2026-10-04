@@ -9,6 +9,17 @@ export const JOB_CONTRACT_VERSION = 1 as const
 const Revision = z.number().int().positive()
 const RelativePath = z.string().min(1).max(1024).refine(path =>
   !path.startsWith('/') && !path.split('/').some(part => part === '..' || part === '.' || part === '') && !path.includes('\\') && !path.includes('\0'), 'Expected a bounded relative path.')
+export function validateJobDefinitionPaths(
+  spec: { inputs: { path: string }[]; outputs: { path: string }[] },
+  context: z.RefinementCtx,
+): void {
+  if (new Set(spec.inputs.map(input => input.path)).size !== spec.inputs.length) {
+    context.addIssue({ code: 'custom', path: ['inputs'], message: 'Immutable input paths must be unique.' })
+  }
+  if (new Set(spec.outputs.map(output => output.path)).size !== spec.outputs.length) {
+    context.addIssue({ code: 'custom', path: ['outputs'], message: 'Accepted output paths must be unique.' })
+  }
+}
 export const JobDefinitionSourceSchema = z.object({
   approvedSourceId: z.uuid(), snapshotId: z.uuid(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   manifestDigest: PlacementDigestSchema,
@@ -56,21 +67,13 @@ export const ResolvedJobDefinitionSpecSchema = z.object({
   source: JobDefinitionSourceSchema, target: JobTargetSchema, argv: z.array(z.string().max(8192)).min(1).max(128),
   relativeCwd: RelativePath.optional(), inputs: z.array(JobInputRevisionSchema).max(128),
   policy: JobPolicySchema, outputs: z.array(JobOutputSpecSchema).max(64),
-}).strict().superRefine((spec,context)=>{
-  if(new Set(spec.inputs.map(input=>input.path)).size!==spec.inputs.length) context.addIssue({code:'custom',path:['inputs'],message:'Immutable input paths must be unique.'})
-  if(new Set(spec.outputs.map(output=>output.path)).size!==spec.outputs.length) context.addIssue({code:'custom',path:['outputs'],message:'Accepted output paths must be unique.'})
-})
+}).strict().superRefine(validateJobDefinitionPaths)
 export const AutoJobDefinitionSpecSchema = z.object({
   ...ResolvedJobDefinitionSpecSchema.shape,
   target: z.object({ kind: z.literal('auto') }).strict(),
   policy: JobPolicyRequirementsSchema,
   limits: JobRuntimeLimitsSchema,
-}).strict().superRefine((spec, context) => {
-  if (new Set(spec.inputs.map(input => input.path)).size !== spec.inputs.length)
-    context.addIssue({ code: 'custom', path: ['inputs'], message: 'Immutable input paths must be unique.' })
-  if (new Set(spec.outputs.map(output => output.path)).size !== spec.outputs.length)
-    context.addIssue({ code: 'custom', path: ['outputs'], message: 'Accepted output paths must be unique.' })
-})
+}).strict().superRefine(validateJobDefinitionPaths)
 export const JobDefinitionSpecSchema = z.union([ResolvedJobDefinitionSpecSchema, AutoJobDefinitionSpecSchema])
 export type ResolvedJobDefinitionSpec = z.infer<typeof ResolvedJobDefinitionSpecSchema>
 export type AutoJobDefinitionSpec = z.infer<typeof AutoJobDefinitionSpecSchema>

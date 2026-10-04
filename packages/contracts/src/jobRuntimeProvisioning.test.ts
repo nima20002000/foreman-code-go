@@ -9,6 +9,8 @@ import { CurrentAcceptedJobSpecSchema, AcceptedJobSpecSchema } from './jobs.js'
 import { CurrentRemoteJobDispatchRequestSchema, CurrentRemoteJobDispatchIntentSchema } from './remoteJobExecution.js'
 import { CurrentRemoteExecutionRpcRequestSchema } from './remoteExecutionRpc.js'
 import { deviceResourceLimitsFixture } from './deviceProvisioningFixtures.js'
+import { JobRuntimeMeasurementRecordSchema, JobRuntimeProfileRecordSchema,
+  JobVerificationRuntimeMeasurementSchema } from './jobVerificationRuntime.js'
 
 const id = '11111111-1111-4111-8111-111111111111', digest = 'a'.repeat(64)
 const now = '2026-10-02T18:00:00.000Z', expiry = '2026-10-02T19:00:00.000Z'
@@ -62,6 +64,17 @@ describe('quota-v3 immutable history and current measured admission', () => {
     expect(ProvisionedQualifiedJobRuntimeSchema.safeParse(historicalRuntime).success).toBe(false)
     expect(ProvisionedJobRuntimeFingerprintSchema.safeParse(historicalFingerprint).success).toBe(false)
     expect(ProvisionedJobRuntimeMeasurementSchema.safeParse(historicalMeasurement).success).toBe(false)
+    expect(JobRuntimeMeasurementRecordSchema.parse(historicalMeasurement)).toEqual(historicalMeasurement)
+    expect(JobRuntimeMeasurementRecordSchema.parse(measurement)).toEqual(measurement)
+    expect(JobVerificationRuntimeMeasurementSchema.safeParse(historicalMeasurement).success).toBe(false)
+    const profile = { schemaVersion: 1, id, workspaceId: id, revision: 1, name: 'Historical build', root,
+      policy: { isolationPolicyId: id, isolationPolicyRevision: 1, imageDigest: historicalRuntime.imageDigest,
+        toolchainDigest: digest, environmentScopeRefs: [], network: 'none', queueTimeoutMs: 1000,
+        preparationTimeoutMs: 1000, executionTimeoutMs: 1000, cancellationGraceMs: 100,
+        maxLogChunkBytes: 1024, maxLogBytes: 4096, maxWorkerSpoolBytes: 4096, logOverflow: 'stop',
+        maxOutputBytes: 4096, retentionSeconds: 3600 }, limits, specDigest: digest, status: 'qualified',
+      measurement: historicalMeasurement, createdAt: now, updatedAt: now }
+    expect(JobRuntimeProfileRecordSchema.parse(profile)).toEqual(profile)
   })
   it('retains current quota/policy/device approval and independent image manifest/config identities', () => {
     expect(ProvisionedJobRuntimeMeasurementSchema.parse(measurement)).toEqual(measurement)

@@ -255,6 +255,26 @@
       "types": "./dist/workerNativeOutput.d.ts",
       "import": "./dist/workerNativeOutput.js"
     },
+    "./job-admission": {
+      "types": "./dist/jobAdmission.d.ts",
+      "import": "./dist/jobAdmission.js"
+    },
+    "./job-verification-policy": {
+      "types": "./dist/jobVerificationPolicy.d.ts",
+      "import": "./dist/jobVerificationPolicy.js"
+    },
+    "./job-verification": {
+      "types": "./dist/jobVerification.d.ts",
+      "import": "./dist/jobVerification.js"
+    },
+    "./job-verification-runtime": {
+      "types": "./dist/jobVerificationRuntime.d.ts",
+      "import": "./dist/jobVerificationRuntime.js"
+    },
+    "./job-verification-gate": {
+      "types": "./dist/jobVerificationGate.d.ts",
+      "import": "./dist/jobVerificationGate.js"
+    },
     "./job-cancellation-recovery": {
       "types": "./dist/jobCancellationRecovery.d.ts",
       "import": "./dist/jobCancellationRecovery.js"
