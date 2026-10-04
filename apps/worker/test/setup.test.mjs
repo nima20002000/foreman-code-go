@@ -17,8 +17,12 @@ async function fixture(t) {
   const content = 'console.log(JSON.stringify(process.argv.includes("capture-env") ? { path: process.env.PATH, node: process.execPath, nodeOptions: process.env.NODE_OPTIONS ?? null } : process.argv.slice(2)))';
   await writeFile(join(artifact, 'src/cli.mjs'), content);
   await writeFile(join(artifact, 'src/companion.mjs'), content);
+  await mkdir(join(artifact, 'artifacts'));
+  const bridge = 'console.log("fixture authenticated MCP bridge")';
+  await writeFile(join(artifact, 'artifacts/graphql-mcp.mjs'), bridge);
   const manifest = { format: 1, version: '1.0.0', protocolVersion: 1, identityFormat: 1, commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', target: facts,
-    files: ['cli.mjs', 'companion.mjs'].map((name) => ({ path: `src/${name}`, size: Buffer.byteLength(content), sha256: hash(content) })) };
+    files: [...['cli.mjs', 'companion.mjs'].map((name) => ({ path: `src/${name}`, size: Buffer.byteLength(content), sha256: hash(content) })),
+      { path: 'artifacts/graphql-mcp.mjs', size: Buffer.byteLength(bridge), sha256: hash(bridge) }] };
   const bytes = JSON.stringify(manifest); await writeFile(join(artifact, 'manifest.json'), bytes);
   return { home, artifact, node: process.execPath, facts, approvedManifestSha256: hash(bytes), serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') };
 }
@@ -32,6 +36,10 @@ test('setup installs private repeatable launcher files and retains existing iden
   for (const path of [result.root, result.state, result.launcher]) assert.equal((await stat(path)).mode & 0o777, 0o700);
   for (const path of [result.desktop, result.proposedService]) assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.equal(result.serviceActivation, 'not-requested');
+  assert.equal(result.appMcpLauncher, join(f.home, '.local/share/graphql/mcp/launcher.mjs'));
+  assert.equal(await readFile(result.appMcpLauncher, 'utf8'), await readFile(join(f.artifact, 'artifacts/graphql-mcp.mjs'), 'utf8'));
+  assert.equal((await stat(result.appMcpLauncher)).mode & 0o777, 0o600);
+  assert.equal((await stat(join(f.home, '.local/share/graphql/mcp'))).mode & 0o777, 0o700);
   await assert.rejects(readFile(join(f.home, '.config/systemd/user/graphql-worker.service')), { code: 'ENOENT' });
   const run = spawnSync(result.launcher, ['doctor'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 0, run.stderr);
