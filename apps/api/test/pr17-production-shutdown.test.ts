@@ -11,6 +11,8 @@ import { InteractionService } from '../src/modules/interactions/service.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { buildProductionApp } from '../src/production.js'
+import * as rsyncComposition from '../src/modules/byte-transfer/productionComposition.js'
+import { ProductionDeviceRuntime } from '../src/modules/devices/productionRuntime.js'
 
 function gate() {
   let resolve!: () => void
@@ -43,6 +45,31 @@ afterEach(async () => {
 })
 
 describe('PR17 F7 production shutdown composition', () => {
+  it('keeps device channels open until their rsync writers have stopped', async () => {
+    await production.app.close()
+    vi.mocked(OperatorRuntimeOwner.prototype.close).mockClear()
+    const entered = gate()
+    const stopped = gate()
+    const close = vi.fn(() => { entered.resolve(); return stopped.promise })
+    vi.spyOn(rsyncComposition, 'createInstalledRsyncComposition').mockReturnValue({
+      kind: 'configured', extensions: [], rsyncWriters: { close },
+    } as unknown as ReturnType<typeof rsyncComposition.createInstalledRsyncComposition>)
+    const stopDevice = vi.spyOn(ProductionDeviceRuntime.prototype, 'stop')
+    production = buildProductionApp(config, database, checkpoints, false)
+    const closing = production.shutdown()
+    try {
+      await entered.promise
+      expect(stopDevice).not.toHaveBeenCalled()
+      expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
+      stopped.resolve()
+      await closing
+      expect(stopDevice).toHaveBeenCalled()
+      expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledOnce()
+    } finally {
+      stopped.resolve()
+      await closing
+    }
+  })
   it('does not release ownership when the app closes but a public runtime shutdown is pending', async () => {
     const pending = gate(); const entered = gate()
     vi.mocked(OperatorChatService.prototype.shutdown).mockImplementation(() => { entered.resolve(); return pending.promise })

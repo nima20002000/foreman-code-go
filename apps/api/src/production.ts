@@ -1067,7 +1067,13 @@ export function buildProductionApp(
     stop: [
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
       { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
-      { name: 'device admission and channels', run: async () => { deviceRuntime.stop() } },
+      { name: 'device admission and channels', run: async () => {
+        try {
+          if (rsync.kind === 'configured') await rsync.rsyncWriters.close()
+        } finally {
+          deviceRuntime.stop()
+        }
+      } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
