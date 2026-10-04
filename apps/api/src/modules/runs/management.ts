@@ -8,6 +8,7 @@ import { RunStartV3InputSchema, SavedWorkflowRunSchema, CurrentJournalStopSchema
   type RunStartV3Input } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { RunHistoryService } from './history.js'
+import { decodeRunHistoryCursor, encodeRunHistoryCursor } from './historyCursor.js'
 import { RunInspectionService } from './inspection.js'
 import { RunActivitiesService } from './activities.js'
 import { RunHandoffReadService } from './handoffRead.js'
@@ -79,25 +80,33 @@ export class RunManagementService {
   }
 
   async list(principal: ManagementPrincipal, input: { workspaceId: string; workflowId?: string | undefined; cursor?: string | undefined; limit: number }) {
+    const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
     const page = await authorizedPage({
       principal, action: 'runs:read', cursor: input.cursor, limit: input.limit,
-      read: async (cursor, limit) => (await this.pool.query<{ id: string; workspace_id: string; workflow_id: string; record: unknown }>(
-        `select id,workspace_id,workflow_id,record from runs where workspace_id = $1
-         and ($2::text is null or workflow_id = $2)
-         and ($3::text is null or id > $3)
-         order by id limit $4`, [input.workspaceId, input.workflowId ?? null, cursor ?? null, limit],
-      )).rows.map((row) => {
-        const run = SavedWorkflowRunSchema.parse(row.record)
-        if (run.id !== row.id || run.workspaceId !== row.workspace_id || run.workflowId !== row.workflow_id) {
-          throw new DomainError('RUN_PIN_CONFLICT', 'A Run list record does not match its persisted scope.', 409)
-        }
-        return run
-      }),
-      id: (item) => item.id,
-      resource: (item) => ({ workspaceId: item.workspaceId, workflowId: item.workflowId, runId: item.id }),
+      read: async (value, limit) => {
+        const cursor = decodeRunHistoryCursor(scope, value)
+        const rows = (await this.pool.query<{
+          id: string; workspace_id: string; workflow_id: string; record: unknown; admitted_at: string
+        }>(`select id,workspace_id,workflow_id,record,
+            to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as admitted_at
+          from runs where workspace_id = $1 and ($2::text is null or workflow_id = $2)
+            and ($3::timestamptz is null or
+              (created_at,id collate "C") < ($3::timestamptz,$4::text collate "C"))
+          order by created_at desc,id collate "C" desc limit $5`,
+        [input.workspaceId, input.workflowId ?? null, cursor?.admittedAt ?? null, cursor?.runId ?? null, limit])).rows
+        return rows.map((row) => {
+          const run = SavedWorkflowRunSchema.parse(row.record)
+          if (run.id !== row.id || run.workspaceId !== row.workspace_id || run.workflowId !== row.workflow_id) {
+            throw new DomainError('RUN_PIN_CONFLICT', 'A Run list record does not match its persisted scope.', 409)
+          }
+          return { run, admittedAt: row.admitted_at }
+        })
+      },
+      id: (item) => encodeRunHistoryCursor(scope, { admittedAt: item.admittedAt, runId: item.run.id }),
+      resource: ({ run }) => ({ workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id }),
     })
-    const items = await Promise.all(page.items.map((item) => withCurrentRunRead(this.pool, principal, item.workspaceId, item.id,
-      'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
+    const items = await Promise.all(page.items.map(({ run }) => withCurrentRunRead(this.pool, principal,
+      run.workspaceId, run.id, 'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
     return { ...page, items }
   }
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { DomainError } from '../errors.js'
 
-interface WorkflowScope { workspaceId: string; workflowId: string }
+interface WorkflowScope { workspaceId: string; workflowId?: string | undefined }
 export interface RunHistoryBoundary { admittedAt: string; runId: string }
 const MAX_CURSOR_BYTES = 16_384
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
@@ -9,7 +9,7 @@ function scopeHash(scope: WorkflowScope): string {
   return createHash('sha256').update(JSON.stringify([scope.workspaceId, scope.workflowId])).digest('hex')
 }
 function invalid(): never {
-  throw new DomainError('RUN_HISTORY_CURSOR_INVALID', 'Use a Run history cursor from the same workspace and workflow.', 400)
+  throw new DomainError('RUN_HISTORY_CURSOR_INVALID', 'Use a Run history cursor from the same workspace and workflow filter.', 400)
 }
 function validTimestamp(value: string): boolean {
   if (!TIMESTAMP.test(value) || value.startsWith('0000-')) return false
