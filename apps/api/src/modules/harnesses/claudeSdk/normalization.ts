@@ -27,7 +27,31 @@ export type ClaudeDecodedChange =
   | { kind: 'compaction' }
   | { kind: 'diagnostic'; code: string }
 export interface ClaudeDecodedEvent { evidence: ClaudeEventEvidence; change: ClaudeDecodedChange }
-interface Block { itemId: string; index: number; type: string; toolUseId?: string; name?: string; text: string; canonical: boolean }
+interface Block {
+  itemId: string
+  index: number
+  type: string
+  toolUseId?: string
+  name?: string
+  text: string
+  canonical: boolean
+  truncated: boolean
+  originalBytes: number
+}
+const textLimit = 24000
+function textPrefix(text: string, limit = textLimit): string {
+  const prefix = text.slice(0, limit)
+  if (text.length > limit && /[\uD800-\uDBFF]$/.test(prefix)) return prefix.slice(0, -1)
+  return prefix
+}
+function appendText(block: Block, text: string): string {
+  block.originalBytes += Buffer.byteLength(text)
+  if (block.truncated) return ''
+  const retained = textPrefix(text, textLimit - block.text.length)
+  block.truncated = retained.length < text.length
+  block.text += retained
+  return retained
+}
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const string = (value: unknown): string | undefined => typeof value === 'string' && value.length ? value : undefined
 const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
@@ -146,10 +170,15 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
           const name = string(content.name)
           if (type === 'tool_use') rememberTool(toolUseId, name)
           const block: Block = { itemId: type === 'tool_use' && toolUseId ? `claude:tool:${toolUseId}` : `claude:${stream.messageId}:${index}`,
-            index, type, text: typeof content.text === 'string' ? content.text : '', canonical: false, ...(toolUseId ? { toolUseId } : {}), ...(name ? { name } : {}) }
+            index, type, text: '', canonical: false, truncated: false, originalBytes: 0, ...(toolUseId ? { toolUseId } : {}), ...(name ? { name } : {}) }
           stream.blocks.set(index, block)
           const extra = { messageId: stream.messageId, contentIndex: index, ...(toolUseId ? { toolUseId } : {}) }
-          if (type === 'text') return block.text ? [emit({ kind: 'text', itemId: block.itemId, operation: 'append', text: block.text, final: false }, extra)] : []
+          if (type === 'text') {
+            const text = appendText(block, typeof content.text === 'string' ? content.text : '')
+            return text || block.truncated ? [emit({ kind: 'text', itemId: block.itemId,
+              operation: 'append', text, final: false,
+              truncation: { truncated: block.truncated, originalBytes: block.originalBytes } }, extra)] : []
+          }
           if (type === 'tool_use') return [emit({ kind: 'tool', itemId: block.itemId, ...(string(content.name) ? { name: content.name as string } : {}), status: 'running', provisional: true }, extra)]
           // Raw thinking/signatures are never public reasoning summaries.
           return ['thinking', 'redacted_thinking'].includes(type) ? [] : diagnostic(base, 'CLAUDE_BLOCK_VARIANT')
@@ -161,9 +190,9 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
           const delta = object(event.delta)
           const extra = { messageId: stream.messageId, contentIndex: index, ...(block.toolUseId ? { toolUseId: block.toolUseId } : {}) }
           if (delta.type === 'text_delta' && typeof delta.text === 'string' && block.type === 'text') {
-            if (block.text.length + delta.text.length > 24000) return diagnostic(base, 'CLAUDE_TEXT_LIMIT')
-            block.text += delta.text
-            return [emit({ kind: 'text', itemId: block.itemId, operation: 'append', text: delta.text, final: false }, extra)]
+            const text = appendText(block, delta.text)
+            return [emit({ kind: 'text', itemId: block.itemId, operation: 'append', text, final: false,
+              truncation: { truncated: block.truncated, originalBytes: block.originalBytes } }, extra)]
           }
           if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string' && block.type === 'tool_use') return [emit({ kind: 'tool', itemId: block.itemId, ...(block.name ? { name: block.name } : {}), inputJsonDelta: delta.partial_json.slice(0, 16000), status: 'running', provisional: true }, extra)]
           return ['thinking_delta', 'signature_delta'].includes(String(delta.type)) ? [] : diagnostic(base, 'CLAUDE_DELTA_VARIANT')
@@ -188,10 +217,12 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
           if (block) block.canonical = true
           const itemId = block?.itemId ?? (type === 'tool_use' && toolUseId ? `claude:tool:${toolUseId}` : `claude:${eventId}:${offset}`)
           const extra = { messageId, ...(block ? { contentIndex: block.index } : base.parentToolUseId ? { contentIndex: offset } : {}), ...(toolUseId ? { toolUseId } : {}) }
-          if (type === 'text' && typeof content.text === 'string') return content.text.length > 24000 && !base.parentToolUseId
-            ? diagnostic({ ...base, ...extra }, 'CLAUDE_TEXT_LIMIT')
-            : [emit({ kind: 'text', itemId, operation: 'replace', text: content.text.slice(0, 24000), final: frame.aborted !== true,
-              ...(base.parentToolUseId ? { truncation: { truncated: content.text.length > 24000, originalBytes: Buffer.byteLength(content.text) } } : {}) }, extra)]
+          if (type === 'text' && typeof content.text === 'string') {
+            const text = textPrefix(content.text)
+            return [emit({ kind: 'text', itemId, operation: 'replace', text, final: frame.aborted !== true,
+              truncation: { truncated: text.length < content.text.length,
+                originalBytes: Buffer.byteLength(content.text) } }, extra)]
+          }
           if (type === 'tool_use' && toolUseId) return [emit({ kind: 'tool', itemId, ...(string(content.name) ? { name: content.name as string } : {}), input: content.input, status: 'running', provisional: false }, extra)]
           return ['thinking', 'redacted_thinking'].includes(type) ? [] : diagnostic({ ...base, ...extra }, 'CLAUDE_BLOCK_VARIANT')
         })
@@ -201,7 +232,13 @@ export function createClaudeEventNormalizer(options: { owner: ClaudeEventOwner; 
         return (Array.isArray(message.content) ? message.content : typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : []).flatMap((value, index): ClaudeDecodedEvent[] => {
           const content = object(value)
           const toolUseId = string(content.tool_use_id)
-          if (base.parentToolUseId && eventId && content.type === 'text' && typeof content.text === 'string') return [emit({ kind: 'text', role: 'user', itemId: `claude:${eventId}:${index}`, operation: 'replace', text: content.text.slice(0, 24000), final: true, truncation: { truncated: content.text.length > 24000, originalBytes: Buffer.byteLength(content.text) } }, { messageId: string(message.id) ?? eventId, contentIndex: index })]
+          if (base.parentToolUseId && eventId && content.type === 'text' && typeof content.text === 'string') {
+            const text = textPrefix(content.text)
+            return [emit({ kind: 'text', role: 'user', itemId: `claude:${eventId}:${index}`,
+              operation: 'replace', text, final: true,
+              truncation: { truncated: text.length < content.text.length, originalBytes: Buffer.byteLength(content.text) },
+            }, { messageId: string(message.id) ?? eventId, contentIndex: index })]
+          }
           if (content.type !== 'tool_result' || !toolUseId) return []
           return [emit({ kind: 'tool', itemId: `claude:tool:${toolUseId}`, output: content.content,
             ...(toolNames.get(toolUseId) ? { name: toolNames.get(toolUseId)! } : {}),
