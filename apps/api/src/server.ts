@@ -92,9 +92,9 @@ async function main() {
     stopIfClosing()
     await checkpoints.ping()
     stopIfClosing()
-    await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    await mkdir(config.harnesses.workspaceRoot, { recursive: true, mode: 0o700 })
     const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
-    await mkdir(projectRoot, { recursive: true })
+    await mkdir(projectRoot, { recursive: true, mode: 0o700 })
     if (pathsOverlap(await realpath(projectRoot), await realpath(config.harnesses.workspaceRoot))) {
       throw new Error('Workspace storage and harness runtime storage must be separate directories.')
     }

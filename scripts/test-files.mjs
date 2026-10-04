@@ -21,7 +21,7 @@ for (const file of files) {
 }
 
 for (const [project, selected] of selections) {
-  const result = spawnSync('corepack', ['pnpm', 'exec', 'vitest', 'run', '--maxWorkers=4', ...selected], {
+  const result = spawnSync('corepack', ['pnpm', 'exec', 'vitest', 'run', '--maxWorkers=12', ...selected], {
     cwd: resolve(root, project), stdio: 'inherit',
   })
   if (result.error) throw result.error
