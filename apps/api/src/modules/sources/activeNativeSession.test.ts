@@ -37,7 +37,7 @@ function fixture() {
     leaseExpiresAt: '2099-01-01T00:00:00Z', observedAt: '2026-10-01T00:00:00Z', observedStatus: 'busy' }
   const session = { reference: capture.session, finalized: false }, grant = { rowCount: 1 }
   const query = vi.fn(async (text: string) => {
-    if (text.includes('harness_executions')) return { rows: [{ record: execution, accepted: true }] }
+    if (text.includes('harness_executions')) return { rows: [{ record: execution, accepted: false }] }
     if (text.includes('workflow_native_entries')) return { rows: [entry] }
     if (text.includes('execution_native_sessions')) return { rows: [session] }
     if (text.includes('native_session_lanes')) return { rows: [{ id: lane.id, revision: lane.revision, record: lane }] }
@@ -46,7 +46,7 @@ function fixture() {
   })
   return { execution, capture, record, intent, entry, lane, session, grant, query, sql: { query } as unknown as GraphSqlClient }
 }
-it('qualifies actual entered placement, original session/current writer and nonrevoked exact grant without conflating generations', async () => {
+it('allows a running execution before terminal acceptance using its entered placement, live session and grant', async () => {
   const f = fixture(), proof = await readSourceActiveNativeSession(f.sql, f.record, f.capture)
   expect(proof).toMatchObject({ executionId: f.execution.id, runId: f.execution.runId, technicalAttempt: 4, generation: 6,
     nativeSession: f.capture.session, owner: f.intent.owner, entry: { sourceId: f.entry.source_id, launchDigest: f.entry.transition.launchDigest },

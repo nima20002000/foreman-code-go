@@ -40,10 +40,10 @@ export async function readSourceActiveNativeSession(sql: GraphSqlClient, record:
   capture.signal.throwIfAborted(); await capture.assertCurrent()
   if (record.receipt.binding.accessMode !== 'exclusive-write' || !record.finalDispatchBindingHash
     || capture.execution.id !== record.receipt.executionId) return null
-  const row = (await sql.query<{ record: unknown; accepted: boolean }>('select record,accepted from harness_executions where id=$1 and run_id=$2 for share',
+  const row = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1 and run_id=$2 for share',
     [capture.execution.id, capture.execution.runId])).rows[0]
   const execution = HarnessExecutionSchema.safeParse(row?.record)
-  if (!row?.accepted || !execution.success || execution.data.id !== capture.execution.id || execution.data.runId !== capture.execution.runId
+  if (!execution.success || execution.data.id !== capture.execution.id || execution.data.runId !== capture.execution.runId
     || !isDeepStrictEqual(repeatExecutionIdentity(execution.data), repeatExecutionIdentity(capture.execution))
     || execution.data.nativeSessionId !== capture.session.nativeSessionId) return null
   const original = await readDispatchIntent(sql, execution.data.id)
