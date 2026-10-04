@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -172,7 +173,7 @@ describe.skipIf(!postgresEnabled)('FIL-10b attachment-only admission and legacy 
   })
   afterAll(async () => {
     await app?.close(); await operator?.shutdown(); await agent?.shutdown()
-    if (root) await rm(root, { recursive: true, force: true })
+    if (root) await removeFixtureDirectory(root)
     await database?.close()
   })
   async function upload(id: string, kind: 'operator' | 'agent') {

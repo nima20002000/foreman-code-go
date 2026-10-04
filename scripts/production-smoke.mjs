@@ -11,6 +11,10 @@ import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
+import { ownedTestDatabaseUrl } from './test-resources.mjs'
+
+const databaseUrl = ownedTestDatabaseUrl()
+const testDbScript = fileURLToPath(new URL('./test-db.mjs', import.meta.url))
 const root = fileURLToPath(new URL('../', import.meta.url))
 const apiDirectory = fileURLToPath(new URL('../apps/api/', import.meta.url))
 const run = promisify(execFile)
@@ -35,12 +39,10 @@ const child = spawn(process.execPath, args, {
   cwd: apiDirectory,
   env: {
     ...environment,
-    NODE_OPTIONS: '',
     HOST: '127.0.0.1',
     PORT: String(port),
     FOREMAN_CODE_BROWSER_ORIGIN: origin,
-    DATABASE_URL: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
-      ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+    DATABASE_URL: databaseUrl,
     DATABASE_CONNECTION_TIMEOUT_MS: '250',
     DATABASE_QUERY_TIMEOUT_MS: '1000',
     READINESS_TIMEOUT_MS: '1000',
@@ -132,10 +134,10 @@ try {
     assert.equal(archived.status, 200, JSON.stringify(archived.body))
   }
   if (restartPostgres) {
-    // Explicit opt-in: this operates only on this repository's Compose service.
+    // Restart the dedicated test dependency while retaining this invocation's database.
     await delay(50)
     postgresStopped = true
-    await run('docker', ['compose', 'stop', 'postgres'], { cwd: root, timeout: 30000 })
+    await run(process.execPath, [testDbScript, 'stop'], { cwd: root, timeout: 30000 })
     assert.equal((await request('/health/live')).status, 200)
     const started = Date.now()
     const readiness = await request('/health/ready')
@@ -143,7 +145,7 @@ try {
     assert.deepEqual(readiness.body.checks, { database: 'unavailable', checkpoints: 'unavailable' })
     assert.ok(Date.now() - started < 2000, 'Readiness must have a deadline')
     assert.equal(child.exitCode, null, `API crashed during database restart:\n${output}`)
-    await run('docker', ['compose', 'up', '-d', '--wait', 'postgres'], { cwd: root, timeout: 60000 })
+    await run(process.execPath, [testDbScript, 'up'], { cwd: root, timeout: 60000 })
     postgresStopped = false
     await waitForReady()
   }
@@ -153,7 +155,7 @@ try {
   throw error
 } finally {
   if (postgresStopped) {
-    await run('docker', ['compose', 'up', '-d', '--wait', 'postgres'], { cwd: root, timeout: 60000 })
+    await run(process.execPath, [testDbScript, 'up'], { cwd: root, timeout: 60000 })
       .catch((error) => console.error('Could not restart test PostgreSQL:', error.message))
   }
   child.kill('SIGTERM')

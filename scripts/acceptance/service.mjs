@@ -1,10 +1,11 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdir, realpath } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { assertOwned, publicError } from './safety.mjs'
 import { seed } from './scenarios.mjs'
 import { parity } from './parity.mjs'
+import { assertTestDatabase, ownedTestDatabaseUrl } from '../test-resources.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const state = process.env.ENG07_STATE
@@ -53,10 +54,11 @@ async function main() {
   const config = { ...loadConfig(process.env), workspaceStorageRoot: join(state, 'projects') }
   const db = createDatabase(config.database)
   close = () => db.close()
-  const identity = (await db.pool.query(`select current_database() as database, current_schema() as schema,
-    current_setting('data_directory') as directory, current_setting('listen_addresses') as listen`)).rows[0]
-  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07'
-    || await realpath(identity.directory) !== await realpath(join(state, 'pg')) || identity.listen !== '') throw new Error('Database identity mismatch.')
+  ownedTestDatabaseUrl()
+  await assertTestDatabase(db.pool, { directory: state, token: process.env.GRAPHQL_TEST_OWNER,
+    databaseUrl: process.env.TEST_DATABASE_URL })
+  const identity = (await db.pool.query('select current_database() as database, current_schema() as schema')).rows[0]
+  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07') throw new Error('Database identity mismatch.')
   stage = 'migrations'
   await db.migrate()
   const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)

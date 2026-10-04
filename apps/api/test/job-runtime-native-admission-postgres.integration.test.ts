@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID,createHash } from 'node:crypto'
 import pg from 'pg'
 import { Client,StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -35,7 +36,7 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
   beforeAll(async()=>{
     const parsed=new URL(url!)
     if(!['postgres:','postgresql:'].includes(parsed.protocol)||!['localhost','127.0.0.1','[::1]'].includes(parsed.hostname)||!parsed.pathname.toLowerCase().includes('test'))throw new Error('Explicit owned loopback TEST_DATABASE_URL required')
-    admin=new pg.Pool({connectionString:url});await admin.query(`create schema ${schema}`)
+    admin=new pg.Pool({connectionString:url});await createFixtureSchema(admin, schema)
     pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`})
     await pool.query(`create table workspaces(id text primary key,archived_at timestamptz);
       create table application_installation(singleton boolean primary key,id text);
@@ -60,7 +61,7 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
     registerJobRuntimeProfileRoutes(app,service)
     address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
-  afterAll(async()=>{await Promise.allSettled(clients.map(c=>c.close()));await app?.close();await pool?.end();if(admin){await admin.query(`drop schema ${schema} cascade`);await admin.end()}})
+  afterAll(async()=>{await Promise.allSettled(clients.map(c=>c.close()));await app?.close();await pool?.end();if(admin){await dropFixtureSchema(admin, schema);await admin.end()}})
   it('commits one exact lease, reads it over HTTP/MCP, denies foreign scope and enforces immutable storage',async()=>{
     const sql=await pool.connect()
     const input={candidate:{approvalId:uuid,qualificationId:uuid,operationId:uuid,fingerprint} as JobQualificationCandidate,runCommandId:'actual-command',runPrincipalId:principal.id,

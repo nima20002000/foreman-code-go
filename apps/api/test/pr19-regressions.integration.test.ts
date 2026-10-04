@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, operatorChatSettings,
@@ -75,7 +76,7 @@ class PolicyRetainingManager implements NativeHarnessSessionManager {
   async dispose() {}
 }
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2603'
+const connectionString = process.env.TEST_DATABASE_URL!
 let admin: pg.Pool, pool: pg.Pool, schema: string, owner: ManagementPrincipal
 let access: PostgresAccessService, repository: PostgresOperatorConversationRepository, defaults: PostgresFoundationSettingsRepository
 let chat: OperatorChatService, authority: OperatorChatAuthority, codex: PolicyRetainingManager, openCode: PolicyRetainingManager
@@ -97,7 +98,7 @@ async function setDefaults(harness: HarnessConfiguration) {
 beforeEach(async () => {
   schema = `pr19_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 2000, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
   access = new PostgresAccessService(pool)
@@ -116,7 +117,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks()
   await chat?.shutdown(); await pool?.end()
-  if (schema) await admin?.query(`drop schema if exists "${schema}" cascade`)
+  if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
   await admin?.end()
 })
 

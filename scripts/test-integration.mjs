@@ -1,18 +1,15 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, posix, resolve } from 'node:path'
-import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
+  testAdminPool, testEnvironment } from './test-resources.mjs'
 import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
-const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
-const { Pool } = require('pg')
 
 export function isIntegrationTestPath(file) {
   if (!file.startsWith('apps/api/test/') || !file.endsWith('.integration.test.ts')) return false
@@ -70,13 +67,6 @@ export function failedFilesFromLog(output, files) {
 export function integrationLogPath(base, file) {
   if (!isIntegrationTestPath(file)) throw new Error(`Invalid integration log path: ${file}`)
   return join(base, `${file.slice('apps/api/test/'.length)}.log`)
-}
-
-export function adminDatabaseUrl(testDatabaseUrl) {
-  if (!testDatabaseUrl) return 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
-  const url = new URL(testDatabaseUrl)
-  url.pathname = '/postgres'
-  return url.toString()
 }
 
 /** Failing case names from a Vitest log, so failures can be acted on while the run continues. */
@@ -207,13 +197,9 @@ export function requireLoopbackTestDatabase(url) {
   }
 }
 
+
 export function integrationEnvironment(environment, slot) {
-  requireLoopbackTestDatabase(slot.databaseUrl)
-  return { ...environment, TEST_DATABASE_URL: slot.databaseUrl,
-    JOB_DISPATCH_DATABASE_URL: slot.databaseUrl,
-    NIM2691_POSTGRES: '1', NIM2691_ADMIN_DATABASE_URL: slot.databaseUrl,
-    HRT_F14_ADMIN_DATABASE_URL: slot.databaseUrl,
-    TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
+  return testEnvironment(environment, slot)
 }
 
 export function options(argv) {
@@ -249,20 +235,16 @@ async function main() {
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
   const diagnostic = Boolean(startAt || failedFrom)
-  // TEST_DATABASE_URL only selects the loopback server; every slot still gets
-  // its own disposable database there, so the run stays fully parallel.
-  if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
   const shardCount = Math.min(integrationShardLimit(readProductEnvironment(process.env, 'INTEGRATION_SHARDS')), selected.length)
   const timeouts = integrationTimeouts(process.env)
-  const adminUrl = adminDatabaseUrl(process.env.TEST_DATABASE_URL)
-  const admin = new Pool({ connectionString: adminUrl, max: 1,
-    connectionTimeoutMillis: 10_000, query_timeout: 35_000,
-    options: '-c statement_timeout=30000 -c lock_timeout=10000' })
+  const admin = await testAdminPool()
   const slots = []
   const active = new Map()
   const killTimers = new Map()
-  const tempRoot = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'graphql-integration-'))
-  const failedLogs = join(root, '.logs', 'test-integration', randomUUID())
+  const tempRoot = createTestRoot(undefined, 'graphql-integration-')
+  const retainedDirectory = join(root, '.logs', 'test-integration')
+  mkdirSync(retainedDirectory, { recursive: true })
+  const failedLogs = createTestRoot(retainedDirectory).directory
   let interrupted = null
   const interrupt = (signal) => {
     interrupted ??= signal
@@ -289,12 +271,8 @@ async function main() {
       usableCount: slots.filter((slot) => !slot.unavailable).length }))
   }
   const resetSlotDatabase = async (slot) => {
-    if (slot.name) await admin.query(`drop database "${slot.name}" with (force)`)
-    slot.name = `graphql_test_${randomUUID().replaceAll('-', '')}`
-    await admin.query(`create database "${slot.name}"`)
-    const connection = new URL(adminUrl)
-    connection.pathname = `/${slot.name}`
-    slot.databaseUrl = connection.toString()
+    await dropTestDatabase(admin, slot)
+    Object.assign(slot, await createTestDatabase(admin, slot))
     delete slot.resetError
   }
   const recordUnexecuted = (files, phase = 'first') => {
@@ -317,13 +295,9 @@ async function main() {
   try {
     for (let index = 0; index < shardCount; index++) {
       if (interrupted) throw new Error(`Interrupted during database setup (${interrupted})`)
-      const directory = join(tempRoot, `slot-${index + 1}`)
-      mkdirSync(directory)
-      const name = `graphql_test_${randomUUID().replaceAll('-', '')}`
-      await admin.query(`create database "${name}"`)
-      const connection = new URL(adminUrl)
-      connection.pathname = `/${name}`
-      slots.push({ index: index + 1, directory, name, databaseUrl: connection.toString() })
+      const resource = createTestRoot(tempRoot.directory, `slot-${index + 1}-`)
+      const database = await createTestDatabase(admin, resource)
+      slots.push({ index: index + 1, ...database })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
@@ -458,9 +432,9 @@ async function main() {
       for (const slot of candidates) {
         if (interrupted) break
         try {
-          await resetSlotDatabase(slot)
-          slot.directory = join(tempRoot, `retest-slot-${slot.index}`)
-          mkdirSync(slot.directory)
+          await dropTestDatabase(admin, slot)
+          const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
+          Object.assign(slot, await createTestDatabase(admin, resource))
           retestSlots.push(slot)
         } catch (error) {
           slot.unavailable = true
@@ -497,13 +471,13 @@ async function main() {
     try {
       if (!cleanupError) {
         for (const slot of slots) if (slot.name) {
-          try { await admin.query(`drop database "${slot.name}" with (force)`) }
+          try { await dropTestDatabase(admin, slot) }
           catch (error) { cleanupError ??= error }
         }
       }
     } finally {
       await admin.end()
-      if (!active.size) rmSync(tempRoot, { recursive: true, force: true })
+      if (!active.size && !cleanupError) removeTestRoot(tempRoot)
       console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped; cases: ${cases.passed} passed, ${cases.failed} failed, ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)
       if (failedFiles.length) console.error(`[integration] failed files: ${failedFiles.sort().join(', ')}`)

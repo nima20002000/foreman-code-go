@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import Fastify from 'fastify'
@@ -97,7 +98,7 @@ class PausedNative implements NativeHarnessSessionManager {
 
 export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'codex', selectedRun = false) {
   const database = await agent3Database()
-  const root = await mkdtemp(join(process.cwd(), '.af-publications-'))
+  const root = await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!, 'af-publications-'))
   const project = join(root, 'project'), hostRoot = join(root, 'host')
   await Promise.all([mkdir(project), mkdir(hostRoot)])
   const app = Fastify()
@@ -105,7 +106,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   onTestFinished(async () => {
     for (const native of natives.values()) native.finish()
     try { await agent?.shutdown(); await app.close() }
-    finally { await database.close(); await rm(root, { recursive: true, force: true }) }
+    finally { await database.close(); await removeFixtureDirectory(root) }
   })
   const seed = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
   for (const configuration of seed.configurations) configuration.harness = harness === 'codex'

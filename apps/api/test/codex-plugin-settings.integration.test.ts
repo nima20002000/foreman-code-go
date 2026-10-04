@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -15,17 +16,17 @@ import { normalizeCodexPluginCatalog } from '../src/modules/harnesses/codexPlugi
 import type { CodexPluginAdapter } from '../src/modules/harnesses/codexPlugins.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+const connectionString = process.env.TEST_DATABASE_URL!
 const admin = new pg.Pool({ connectionString })
 const schema = `codex_plugins_${randomUUID().replaceAll('-', '')}`
 const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
 beforeAll(async () => {
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   await applyApplicationMigrations(pool)
 }, 60_000)
 afterAll(async () => {
   await pool.end()
-  try { await admin.query(`drop schema if exists "${schema}" cascade`) } finally { await admin.end() }
+  try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
 }, 60_000)
 const clients: Client[] = []
 afterEach(async () => { for (const client of clients.splice(0)) await client.close() })
@@ -100,6 +101,6 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     expect((await plugins.change(owner.principal, uncertainInput)).status).toBe('uncertain')
     expect(changes).toBe(3)
   } finally {
-    await plugins.shutdown(); await app.close(); await rm(home, { recursive: true, force: true })
+    await plugins.shutdown(); await app.close(); await removeFixtureDirectory(home)
   }
 })

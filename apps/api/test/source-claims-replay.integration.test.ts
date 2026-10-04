@@ -1,5 +1,6 @@
+import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
@@ -21,11 +22,11 @@ import { closeCompletedWorkflowSources } from '../src/modules/sources/workflowCl
 // transaction and retention accounting; it does not qualify native closure proof.
 it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable release replay after %s and keeps retained bytes charged', async failure => {
   const database = `source_claims_test_${randomUUID().replaceAll('-', '')}`
-  const adminUrl = 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+  const adminUrl = process.env.TEST_DATABASE_URL!
   const admin = new pg.Pool({ connectionString: adminUrl })
-  await admin.query(`create database "${database}"`)
+  await createFixtureDatabase(admin, database)
   const url = new URL(adminUrl); url.pathname = `/${database}`
-  const pool = new pg.Pool({ connectionString: url.toString() }), root = await mkdtemp('/tmp/source-claims-db-')
+  const pool = new pg.Pool({ connectionString: url.toString() }), root = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/source-claims-db-`)
   try {
     await pool.query(`create table source_execution_materializations (materialization_id uuid primary key, record jsonb not null,
       state text not null, execution_id text not null, reservation_id uuid not null);
@@ -95,6 +96,6 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     expect((await pool.query('select reserved_bytes from source_storage_reservations')).rows[0].reserved_bytes)
       .toBe(String(reservation.reservedBytes))
   } finally {
-    await pool.end(); await admin.query(`drop database "${database}"`); await admin.end(); await rm(root, { recursive: true, force: true })
+    await pool.end(); await dropFixtureDatabase(admin, database); await admin.end(); await removeFixtureDirectory(root)
   }
 }, 30_000)

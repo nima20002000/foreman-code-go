@@ -1,7 +1,8 @@
 import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -437,7 +438,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
               senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
         }, null, 2))
-      } finally { await rm(outside, { recursive: true, force: true }) }
+      } finally { await removeFixtureDirectory(outside) }
     }, 180_000)
   })
 

@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
-import { mkdtemp, mkdir, readdir, rename, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -30,7 +31,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
   const schema = 'mcp_parity_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
   const parentPath = await mkdtemp(join(tmpdir(), 'mcp-parity-'))
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
@@ -268,7 +269,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
   } finally {
     await Promise.all(clients.map((client) => client.close()))
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(parentPath, { recursive: true, force: true })
+    await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(parentPath)
   }
 }, 30_000)

@@ -1,7 +1,6 @@
 import { mkdtemp } from 'node:fs/promises'
 
-/** Linux root fixtures need protected ancestors; scheduler TMPDIR can be group-writable.
- * A worker-owned 0700 entry under sticky /tmp satisfies the real filesystem guard. */
+/** Fixture roots share the invocation's private, protected ancestor. */
 export function workspaceRootDirectory(): Promise<string> {
-  return mkdtemp('/tmp/w08-workspace-root-')
+  return mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/w08-workspace-root-`)
 }

@@ -1,7 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import Fastify, {type FastifyInstance} from 'fastify'
@@ -52,7 +52,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
   beforeAll(async()=>{
     const url=new URL(databaseUrl!)
     if(!['postgres:','postgresql:'].includes(url.protocol)||!['localhost','127.0.0.1','[::1]'].includes(url.hostname)||!/test/i.test(url.pathname))throw new Error('Explicit owned loopback TEST_DATABASE_URL required.')
-    admin=new pg.Pool({connectionString:databaseUrl});await admin.query(`create schema ${schema}`)
+    admin=new pg.Pool({connectionString:databaseUrl});await createFixtureSchema(admin, schema)
     pool=new pg.Pool({connectionString:databaseUrl,options:`-c search_path=${schema}`})
     await pool.query(`create table workspaces(id text primary key);insert into workspaces values('workspace-fixture');
       create table application_installation(singleton boolean primary key,id text);create table operator_conversations(id text primary key);
@@ -95,7 +95,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     const sourceChecks=async(sql:JobSql)=>{const r=(await sql.query<{availability:string}>('select availability from source_snapshots for share')).rows[0];if(r?.availability!=='retained')throw new DomainError('SOURCE_UNAVAILABLE','Pinned fixture source unavailable.',410)}
     const dispatch=new PostgresJobDispatch(pool,{} as never,{revalidate:sourceChecks,authorizeControl:sourceChecks,observe:async()=>{throw new Error('Receipt mutation is outside this fixture')}})
     const authority=new JobPublicationAuthority(dispatch,{revalidateAccepted:sourceChecks})
-    storage=await mkdtemp(join(process.cwd(),'.job-admission-canonical-'));staging=await mkdtemp(join(process.env.GRAPHQL_HEAVY_BASE_TMPDIR ?? tmpdir(),'job-admission-staging-'))
+    storage=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'.job-admission-canonical-'));staging=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'job-admission-staging-'))
     endpoint=new DeviceEndpoint({mainId,appVersion:'fixture',auth:access,signMainIdentityProof:async request=>signMainIdentityProof(identity,request,'fixture'),reconcile:async()=>{},presence:()=>{},extensions:[]})
     actual=createAdmittedJobOutputs({pool,storageRoot:storage,stagingRoot:staging,endpoint,authority})
     // Build the genuine endpoint with the concrete C/B handler before handshake.
@@ -119,7 +119,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     registerJobOutputMetadataEndpoints(app,{access,endpoint,admission:actual.admission,artifacts:actual.artifacts})
     address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
-  afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await rm(storage,{recursive:true,force:true});if(staging)await rm(staging,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
+  afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await removeFixtureDirectory(storage);if(staging)await removeFixtureDirectory(staging);if(admin){try{await dropFixtureSchema(admin, schema)}finally{await admin.end()}}})
   it('issues persisted original main transfer through HTTP/MCP, denies Operator and publishes actual sender bytes once',async()=>{
     const input={workspaceId:job.workspaceId,executionId:job.id,attemptId:job.attemptId,owner:job.owner,commandId:randomUUID(),path:'dist/report.json',mediaType:'application/json' as const,sha256:hash(body),byteSize:body.length}
     expect((await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${operatorToken}`},payload:input})).statusCode).toBe(403)

@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -49,7 +50,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
   beforeAll(async () => {
     database = await agent3Database()
-    directory = await mkdtemp('/tmp/job-revoked-cancellation-')
+    directory = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/job-revoked-cancellation-`)
     const pool = database.pool
     const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
     await loadOrCreateMainDeviceIdentity(pool, mainId)
@@ -206,7 +207,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   }, 90000)
   afterAll(async () => {
     await client?.close(); await deniedClient?.close(); await app?.close(); await dispatch?.close()
-    await database?.close(); if (directory) await rm(directory, { recursive: true, force: true })
+    await database?.close(); if (directory) await removeFixtureDirectory(directory)
   })
   function route() { return `/api/management/workspaces/${workspaceId}/jobs/executions/${execution.id}/cancellation-recovery/${proposal.id}` }
   async function importClosure(override = apply, caller = client, commandId = randomUUID()) {

@@ -1,24 +1,23 @@
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process'
-import { randomBytes, randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { setTimeout as delay } from 'node:timers/promises'
-import { BASE, HELP, assertOwned, databaseUrl, environment, freePort, options, publicError } from './safety.mjs'
+import { BASE, HELP, assertOwned, environment, freePort, options, publicError } from './safety.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const exec = promisify(execFile)
 const service = join(root, 'scripts/acceptance/service.mjs')
 const abort = new AbortController()
-let state, owner, pg, api, web, input, stage = 'arguments', stopping = false, preserve = false
+let state, owner, resources, admin, removeRoot, dropDatabase, api, web, input, stage = 'arguments', stopping = false, preserve = false
 let end
 const ended = new Promise((resolve) => { end = resolve })
-const safeEnv = environment(process.env)
-const toolEnv = Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY')))
+let safeEnv = {}
+let toolEnv = {}
 const children = []
 function interrupted() { if (abort.signal.aborted) throw new Error('Acceptance interrupted.') }
 function finish(code = 0) {
@@ -118,25 +117,20 @@ async function shutdown() {
       await bounded(record.exited, 5000, 'owned forced exit').catch(() => undefined)
     }
   }
-  try {
-    // SIGINT is PostgreSQL's fast shutdown, scoped to our foreground postmaster.
-    await stop(pg, 'SIGINT', 20_000)
-    if (pg && pg.code !== 0) orderly = false
-  } catch {
-    orderly = false
-    pg.expected = true; pg.child.kill('SIGQUIT')
-    await bounded(pg.exited, 5000, 'owned PostgreSQL exit').catch(() => undefined)
-  }
   if (!state) return
   if (!orderly || preserve || children.some((record) => !record.done)) {
     process.exitCode = 1
     console.error(`ENG07 retained private task state: ${state}`)
     console.error('Native/cleanup settlement is not proven. Do not delete it or kill processes by name. See the walkthrough.')
+    await admin?.end()
     return
   }
   await assertOwned(state, owner)
-  await rm(state, { recursive: true })
-  console.log('ENG07 owned cluster and task files removed. No external database was contacted.')
+  try {
+    if (resources.databaseUrl) await dropDatabase(admin, resources)
+  } finally { await admin.end() }
+  removeRoot(resources)
+  console.log('ENG07 owned test database and task files removed.')
 }
 async function readyHttp(url, accepts, headers = {}) {
   interrupted()
@@ -158,12 +152,19 @@ async function main() {
   const tsx = apiRequire.resolve('tsx')
   createRequire(join(root, 'apps/web/package.json')).resolve('vite')
   apiRequire.resolve('pg'); apiRequire.resolve('@modelcontextprotocol/client')
-  const pgBin = opts.pgBin ?? await command('pg_config', ['--bindir'], { capture: true })
-  if (!pgBin.startsWith('/') || /[\r\n\0]/.test(pgBin)) throw new Error('Invalid PostgreSQL binary directory.')
-  for (const executable of ['postgres', 'initdb', 'psql', 'pg_isready']) {
-    const version = await command(join(pgBin, executable), ['--version'], { capture: true })
-    if (!/\(PostgreSQL\) 17(?:\.|\s|$)/.test(version)) throw new Error('PostgreSQL 17 is required.')
-  }
+  const { createTestRoot, createTestDatabase, testAdminPool, testEnvironment,
+    dropTestDatabase, removeTestRoot } = await import('../test-resources.mjs')
+  dropDatabase = dropTestDatabase
+  removeRoot = removeTestRoot
+  admin = await testAdminPool()
+  resources = createTestRoot('/tmp', 'eng07-')
+  state = resources.directory
+  owner = randomUUID()
+  await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
+  resources = await createTestDatabase(admin, resources)
+  const isolated = testEnvironment(process.env, resources)
+  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS }
+  toolEnv = Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY')))
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {
     stage = 'OpenCode prerequisite (qualified 1.18.31 binary)'
@@ -178,43 +179,18 @@ async function main() {
   await command('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
   interrupted()
   process.umask(0o077)
-  // Canonical /tmp also handles macOS /private/tmp. No caller-selected path.
-  state = await mkdtemp(join(await realpath('/tmp'), 'eng07-'))
-  await chmod(state, 0o700)
-  owner = randomUUID()
-  await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
   await assertOwned(state, owner)
-  for (const name of ['socket', 'projects', 'runtime', 'empty-env', 'tmp']) await mkdir(join(state, name), { mode: 0o700 })
-  const database = `eng07_${randomBytes(8).toString('hex')}`
-  stage = 'isolated initdb'
-  await command(join(pgBin, 'initdb'), ['-D', join(state, 'pg'), '--username=eng07_owner',
-    '--encoding=UTF8', '--no-locale', '--auth-local=trust', '--auth-host=reject'], { cwd: state })
-  stage = 'isolated PostgreSQL startup'
-  pg = ownedChild('PostgreSQL', join(pgBin, 'postgres'), ['-D', join(state, 'pg'), '-k', join(state, 'socket'),
-    '-p', '5432', '-c', 'listen_addresses=', '-c', 'unix_socket_permissions=0700',
-    '-c', 'logging_collector=off', '-c', 'log_statement=none', '-c', 'log_min_error_statement=panic',
-    '-c', 'log_min_messages=panic', '-c', 'log_connections=off', '-c', 'log_disconnections=off'], toolEnv)
-  const connection = ['-h', join(state, 'socket'), '-p', '5432', '-U', 'eng07_owner']
-  let live = false
-  for (let n = 0; n < 120; n++) {
-    interrupted()
-    if (pg.done) throw new Error('Task PostgreSQL exited.')
-    try { await command(join(pgBin, 'pg_isready'), [...connection, '-d', 'postgres'], { timeout: 2000 }); live = true; break }
-    catch { await delay(250) }
-  }
-  if (!live) throw new Error('Task PostgreSQL never became ready.')
-  const sql = (db, statement, capture = false) => command(join(pgBin, 'psql'),
-    ['-X', '-w', ...connection, '-d', db, '-v', 'ON_ERROR_STOP=1', '-At', '-c', statement], { cwd: state, capture })
-  const directory = await sql('postgres', "select current_setting('data_directory')", true)
-  if (await realpath(directory) !== await realpath(join(state, 'pg'))) throw new Error('Task database identity mismatch.')
-  stage = 'task database and schema creation'
-  // Generated identifier only; there is no existing-server/admin URL argument.
-  await sql('postgres', `CREATE DATABASE ${database} OWNER eng07_owner TEMPLATE template0`)
-  await sql(database, 'CREATE SCHEMA eng07 AUTHORIZATION eng07_owner; REVOKE CREATE ON SCHEMA public FROM PUBLIC;')
-  await sql(database, `ALTER DATABASE ${database} SET search_path TO eng07, public`)
+  for (const name of ['projects', 'runtime', 'empty-env', 'tmp']) await mkdir(join(state, name), { mode: 0o700 })
+  const database = resources.name
+  const apiRequirePg = apiRequire('pg')
+  const pool = new apiRequirePg.Pool({ connectionString: resources.databaseUrl, max: 1 })
+  try {
+    await pool.query('CREATE SCHEMA eng07; REVOKE CREATE ON SCHEMA public FROM PUBLIC')
+    await pool.query(`ALTER DATABASE "${database}" SET search_path TO eng07`)
+  } finally { await pool.end() }
   const apiUrl = `http://127.0.0.1:${opts.apiPort}`, webUrl = `http://127.0.0.1:${opts.webPort}`
   const appEnv = { ...safeEnv, NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(opts.apiPort),
-    DATABASE_URL: databaseUrl(state, database), DATABASE_QUERY_TIMEOUT_MS: '60000',
+    DATABASE_URL: resources.databaseUrl, DATABASE_QUERY_TIMEOUT_MS: '60000',
     LANGGRAPH_CHECKPOINT_SCHEMA: 'eng07_checkpoints', HARNESS_WORKSPACE_ROOT: join(state, 'runtime'),
     FOREMAN_CODE_BROWSER_ORIGIN: webUrl,
     ENG07_DATABASE: database,

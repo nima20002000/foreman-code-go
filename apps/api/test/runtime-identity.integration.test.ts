@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { expect, it } from 'vitest'
@@ -9,10 +10,10 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('persists local installation identity, rotates after recreation, and preserves bearer revocation without management grants', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = `startup_identity_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   let pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   let app: ReturnType<typeof buildApp> | undefined
   try {
@@ -35,8 +36,8 @@ it('persists local installation identity, rotates after recreation, and preserve
     expect((await app.inject({ method: 'GET', url: '/api/runtime/identity', headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(401)
     await app.close(); app = undefined
     await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`)
-    await admin.query(`create schema "${schema}"`)
+    await dropFixtureSchema(admin, schema)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     const recreated = await readRuntimeIdentity(pool, process.cwd(), connectionString)
@@ -45,6 +46,6 @@ it('persists local installation identity, rotates after recreation, and preserve
     expect(recreated.databaseId).toBe(first.databaseId)
   } finally {
     await app?.close(); await pool.end()
-    await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end()
+    await dropFixtureSchema(admin, schema); await admin.end()
   }
 }, 30_000)

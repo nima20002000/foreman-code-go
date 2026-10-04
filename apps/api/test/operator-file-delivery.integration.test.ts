@@ -1,7 +1,8 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -120,7 +121,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')
     schema = `af02_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString })
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, max: 4, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
@@ -203,12 +204,12 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     try { await chat?.shutdown() } finally {
       try { await app?.close() } finally {
         await pool?.end()
-        if (schema) await admin?.query(`drop schema if exists "${schema}" cascade`)
+        if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
         await admin?.end()
         await nativeFixture?.close()
-        if (f) await rm(f.directory, { recursive: true, force: true })
-        if (vault) await rm(vault, { recursive: true, force: true })
-        if (runtimeHome) await rm(runtimeHome, { recursive: true, force: true })
+        if (f) await removeFixtureDirectory(f.directory)
+        if (vault) await removeFixtureDirectory(vault)
+        if (runtimeHome) await removeFixtureDirectory(runtimeHome)
         managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
         vi.restoreAllMocks()
       }

@@ -1,6 +1,6 @@
+import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { rm } from 'node:fs/promises'
 import pg from 'pg'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
@@ -20,7 +20,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   try {
     await admin.connect()
     assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
-    await admin.query(`create database "${name}" template template0 encoding 'UTF8'`)
+    await createFixtureDatabase(admin, name, "template template0 encoding 'UTF8'")
     created = true
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
@@ -30,10 +30,10 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   } finally {
     try { if (pool) await pool.end() }
     finally {
-      try { if (created) await admin.query(`drop database "${name}"`) }
+      try { if (created) await dropFixtureDatabase(admin, name) }
       finally {
         await admin.end()
-        if (directory) await rm(directory, { recursive: true, force: true })
+        if (directory) await removeFixtureDirectory(directory)
       }
     }
   }

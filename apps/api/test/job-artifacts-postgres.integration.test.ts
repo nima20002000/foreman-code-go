@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import pg from 'pg'
@@ -37,7 +38,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
   beforeAll(async()=>{
     const url=new URL(databaseUrl!)
     if(!['postgres:','postgresql:'].includes(url.protocol)||!['localhost','127.0.0.1','[::1]'].includes(url.hostname)||!/test/i.test(url.pathname))throw new Error('Explicit owned loopback TEST_DATABASE_URL required.')
-    admin=new pg.Pool({connectionString:databaseUrl});await admin.query(`create schema ${schema}`)
+    admin=new pg.Pool({connectionString:databaseUrl});await createFixtureSchema(admin, schema)
     pool=new pg.Pool({connectionString:databaseUrl,options:`-c search_path=${schema}`})
     await pool.query(`create table operator_conversations(id text primary key);
       create table management_principals(id text primary key,name text,audience text,agent_id text,token_hash text,grants jsonb,expires_at timestamptz,revoked_at timestamptz,delegated_from text);
@@ -59,7 +60,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
       limits: { cpuLimit: 1, memoryBytes: 67108864, diskBytes: 8388608, pidsLimit: 32 } })
       : {...jobSpec(),outputs:execution.acceptedSpec.outputs},createdAt:execution.createdAt,updatedAt:execution.createdAt}
     await pool.query('insert into job_definition_versions values($1,$2,$3,$4::jsonb)',[definition.versionId,definition.workspaceId,definition.id,JSON.stringify(definition)])
-    root=await mkdtemp(join(process.cwd(),'.ci-artifact-db-'))
+    root=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'.ci-artifact-db-'))
     const authority=new JobPublicationAuthority({require:async(sql,job,fence)=>{
       const r=(await sql.query<{epoch:string;revoked:boolean}>('select epoch,revoked from job_fixture_owner where grant_id=$1 for share',[fence.owner.grantId])).rows[0]
       if(!r||r.revoked||r.epoch!==fence.owner.epoch||job.attemptId!==fence.attemptId)throw new DomainError('JOB_OWNER_REVOKED','Owner denied.',403)
@@ -83,7 +84,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
     })
     address = await app.listen({ host: '127.0.0.1', port: 0 })
   })
-  afterAll(async()=>{await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await pool?.end();if(root)await rm(root,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
+  afterAll(async()=>{await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await pool?.end();if(root)await removeFixtureDirectory(root);if(admin){try{await dropFixtureSchema(admin, schema)}finally{await admin.end()}}})
   it('finalizes and adopts one exact standalone artifact, then authenticates HTTP/MCP readback and denial',async()=>{
     const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,
       commandId:'ci-output-command',path:outputPath,mediaType:'application/json' as const,sha256:digest(data),byteSize:data.length}

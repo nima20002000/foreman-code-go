@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
@@ -22,7 +23,7 @@ async function database(perform: (pool: pg.Pool) => Promise<void>) {
     || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   const schema = `pr11_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, max: 8, options: `-c search_path=${schema} -c statement_timeout=10000` })
   try {
     await applyApplicationMigrations(pool)
@@ -30,7 +31,7 @@ async function database(perform: (pool: pg.Pool) => Promise<void>) {
     await perform(pool)
   } finally {
     await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`)
+    await dropFixtureSchema(admin, schema)
     await admin.end()
   }
 }

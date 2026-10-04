@@ -1,0 +1,244 @@
+import { randomUUID } from 'node:crypto'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+
+const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
+const { Pool } = require('pg')
+export const testAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
+const serverMarker = 'graphql-disposable-test-server'
+const rootMarker = '.graphql-test-owner.json'
+const databaseVariables = ['DATABASE_URL', 'TEST_DATABASE_URL', 'SUBAGENT_CORE_ADMIN_DATABASE_URL',
+  'HRT_F03_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL',
+  'NIM2691_ADMIN_DATABASE_URL', 'ENG03_A_TEST_DATABASE_URL', 'WAVE25_TEST_DATABASE_URL']
+
+export function requireTestServerUrl(value) {
+  const url = new URL(value)
+  const expected = new URL(testAdminUrl)
+  if (url.protocol !== expected.protocol || url.hostname !== expected.hostname || url.port !== expected.port
+    || url.username !== expected.username || url.password !== expected.password || url.search || url.hash) {
+    throw new Error('Tests require the dedicated disposable PostgreSQL server on 127.0.0.1:55439')
+  }
+  return url
+}
+
+export function createTestRoot(parent = realpathSync('/tmp'), prefix = 'graphql-test-') {
+  const directory = mkdtempSync(join(parent, prefix))
+  const token = randomUUID()
+  writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token }), { mode: 0o600, flag: 'wx' })
+  return { directory, token }
+}
+
+export function assertTestRoot(directory, token) {
+  if (!directory || !/^[0-9a-f-]{36}$/.test(token || '')) throw new Error('Test root ownership is required')
+  const stat = lstatSync(directory)
+  if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(directory) !== resolve(directory)
+    || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()) {
+    throw new Error('Test root must be a private owned directory without symlinks')
+  }
+  const markerPath = join(directory, rootMarker)
+  const markerStat = lstatSync(markerPath)
+  if (!markerStat.isFile() || markerStat.isSymbolicLink() || (markerStat.mode & 0o077) !== 0
+    || markerStat.uid !== process.getuid()) throw new Error('Test root ownership marker is unsafe')
+  const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+  if (marker.token !== token || marker.directory !== directory) throw new Error('Test root ownership mismatch')
+}
+
+export function removeTestRoot(resource) {
+  assertTestRoot(resource.directory, resource.token)
+  rmSync(resource.directory, { recursive: true, force: true })
+}
+
+export function testEnvironment(environment, resource) {
+  requireTestServerUrl(resource.databaseUrl)
+  assertTestRoot(resource.directory, resource.token)
+  const clean = { ...environment }
+  for (const key of Object.keys(clean)) {
+    if (/^PG/.test(key) || (!key.startsWith('GRAPHQL_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
+      || ['GRAPHQL_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE', 'NODE_OPTIONS'].includes(key)) delete clean[key]
+  }
+  for (const key of new Set([...databaseVariables, ...Object.keys(clean).filter(key => key.endsWith('DATABASE_URL'))])) {
+    clean[key] = resource.databaseUrl
+  }
+  const paths = {
+    HOME: 'home', CODEX_HOME: 'home/.codex', CLAUDE_CONFIG_DIR: 'home/.claude',
+    XDG_CONFIG_HOME: 'home/.config', XDG_DATA_HOME: 'home/.local/share',
+    XDG_CACHE_HOME: 'home/.cache', XDG_STATE_HOME: 'home/.local/state', XDG_RUNTIME_DIR: 'xdg-runtime',
+    OPENCODE_CONFIG_DIR: 'home/.config/opencode', FILE_STORAGE_ROOT: 'app/files',
+    HARNESS_WORKSPACE_ROOT: 'app/workspaces', LOG_DIR: 'logs', ENG03_A_EVIDENCE_DIR: 'evidence',
+  }
+  for (const [key, suffix] of Object.entries(paths)) {
+    clean[key] = join(resource.directory, suffix)
+    mkdirSync(clean[key], { recursive: true, mode: 0o700 })
+  }
+  clean.SKILLS_EVIDENCE_FILE = join(clean.ENG03_A_EVIDENCE_DIR, 'skills.jsonl')
+  clean.A2_QUALIFICATION_REPORT = join(clean.ENG03_A_EVIDENCE_DIR, 'a2-native-qualification.json')
+  const launcher = join(clean.HOME, '.local', 'share', 'graphql', 'mcp', 'launcher.mjs')
+  mkdirSync(dirname(launcher), { recursive: true, mode: 0o700 })
+  copyFileSync(new URL('./graphql-mcp.mjs', import.meta.url), launcher)
+  chmodSync(launcher, 0o600)
+  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENCODE_API_KEY']) {
+    if (environment[`GRAPHQL_TEST_${key}`]) clean[key] = environment[`GRAPHQL_TEST_${key}`]
+  }
+  for (const [variable, destination] of [
+    ['GRAPHQL_TEST_CODEX_AUTH_FILE', join(clean.CODEX_HOME, 'auth.json')],
+    ['GRAPHQL_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
+  ]) {
+    if (!environment[variable]) continue
+    mkdirSync(join(destination, '..'), { recursive: true, mode: 0o700 })
+    copyFileSync(environment[variable], destination)
+    chmodSync(destination, 0o600)
+  }
+  clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
+  clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
+  return { ...clean, GRAPHQL_TEST_ROOT: resource.directory, GRAPHQL_TEST_OWNER: resource.token,
+    NIM2691_POSTGRES: '1', TMPDIR: resource.directory, TMP: resource.directory, TEMP: resource.directory }
+}
+
+export async function testAdminPool() {
+  const pool = new Pool({ connectionString: testAdminUrl, max: 1,
+    connectionTimeoutMillis: 10_000, query_timeout: 35_000,
+    options: '-c statement_timeout=30000 -c lock_timeout=10000' })
+  try {
+    const result = await pool.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname='postgres'")
+    if (result.rows[0]?.marker !== serverMarker) throw new Error('PostgreSQL test server ownership marker is missing; run pnpm db:up')
+    return pool
+  } catch (error) {
+    await pool.end()
+    throw error
+  }
+}
+
+export async function createTestDatabase(admin, resource) {
+  const name = `graphql_test_${randomUUID().replaceAll('-', '')}`
+  await admin.query(`create database "${name}"`)
+  await admin.query(`comment on database "${name}" is 'graphql-test:${resource.token}'`)
+  const url = new URL(testAdminUrl)
+  url.pathname = `/${name}`
+  return { ...resource, name, databaseUrl: url.toString() }
+}
+
+export async function assertTestDatabase(pool, resource) {
+  assertTestRoot(resource.directory, resource.token)
+  const url = requireTestServerUrl(resource.databaseUrl)
+  const name = decodeURIComponent(url.pathname.slice(1))
+  const result = await pool.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname=$1", [name])
+  if (result.rows[0]?.marker !== `graphql-test:${resource.token}`) throw new Error('Disposable database ownership mismatch')
+}
+
+export async function dropTestDatabase(admin, resource) {
+  await assertTestDatabase(admin, resource)
+  const name = decodeURIComponent(requireTestServerUrl(resource.databaseUrl).pathname.slice(1))
+  await admin.query(`drop database ${identifier(name)} with (force)`)
+}
+
+export async function provisionTestResources(environment = process.env) {
+  if (environment.GRAPHQL_TEST_ROOT || environment.GRAPHQL_TEST_OWNER) {
+    const resource = { directory: environment.GRAPHQL_TEST_ROOT, token: environment.GRAPHQL_TEST_OWNER,
+      databaseUrl: environment.TEST_DATABASE_URL }
+    const admin = await testAdminPool()
+    try { await assertTestDatabase(admin, resource) } finally { await admin.end() }
+    return { environment: testEnvironment(environment, resource), close: async () => {} }
+  }
+  const admin = await testAdminPool()
+  const root = createTestRoot()
+  let resource
+  try {
+    resource = await createTestDatabase(admin, root)
+    return { environment: testEnvironment(environment, resource), close: async () => {
+      try { await dropTestDatabase(admin, resource) } finally { await admin.end() }
+      removeTestRoot(root)
+    } }
+  } catch (error) {
+    if (resource) await dropTestDatabase(admin, resource)
+    await admin.end()
+    removeTestRoot(root)
+    throw error
+  }
+}
+
+export function ownedTestDatabaseUrl(variable = 'TEST_DATABASE_URL') {
+  const directory = process.env.GRAPHQL_TEST_ROOT
+  const token = process.env.GRAPHQL_TEST_OWNER
+  assertTestRoot(directory, token)
+  const value = process.env[variable]
+  requireTestServerUrl(value)
+  if (value !== process.env.TEST_DATABASE_URL) throw new Error('Test database selector does not match its owned database')
+  return value
+}
+
+function identifier(value) {
+  if (!/^[a-z][a-z0-9_]*$/.test(value)) throw new Error('Invalid test fixture SQL identifier')
+  return `"${value}"`
+}
+
+async function assertFixtureDatabase(sql) {
+  ownedTestDatabaseUrl()
+  const result = await sql.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname=current_database()")
+  if (result.rows[0]?.marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+    throw new Error('Fixture database ownership mismatch')
+  }
+}
+
+export async function createFixtureDatabase(sql, name, options = '') {
+  await assertFixtureDatabase(sql)
+  if (!['', 'template template0', "template template0 encoding 'UTF8'"].includes(options)) {
+    throw new Error('Invalid test database creation options')
+  }
+  await sql.query(`create database ${identifier(name)} ${options}`)
+  await sql.query(`comment on database ${identifier(name)} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+}
+
+export async function dropFixtureDatabase(sql, name) {
+  await assertFixtureDatabase(sql)
+  const result = await sql.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname=$1", [name])
+  if (result.rows[0]?.marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+    throw new Error('Fixture database cleanup ownership mismatch')
+  }
+  await sql.query(`drop database ${identifier(name)}`)
+}
+
+export async function createFixtureSchema(sql, name) {
+  await assertFixtureDatabase(sql)
+  await sql.query(`create schema ${identifier(name)}`)
+  await sql.query(`comment on schema ${identifier(name)} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+}
+
+export async function dropFixtureSchema(sql, name) {
+  await assertFixtureDatabase(sql)
+  const result = await sql.query("select obj_description(oid, 'pg_namespace') as marker from pg_namespace where nspname=$1", [name])
+  if (!result.rows.length) return
+  if (result.rows[0].marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+    throw new Error('Fixture schema cleanup ownership mismatch')
+  }
+  await sql.query(`drop schema ${identifier(name)} cascade`)
+}
+
+export async function removeFixtureDirectory(directory, options = { force: true }) {
+  const root = process.env.GRAPHQL_TEST_ROOT
+  assertTestRoot(root, process.env.GRAPHQL_TEST_OWNER)
+  const target = resolve(directory)
+  if (!target.startsWith(`${root}/`)) throw new Error('Fixture cleanup must remain inside its owned test root')
+  if (!existsSync(target) && options.force) return
+  // Resolve the parent to reject a directory reached through an escaping symlink.
+  const parent = realpathSync(dirname(target))
+  if (!parent.startsWith(`${root}/`) && parent !== root) {
+    throw new Error('Fixture cleanup parent escapes its owned test root')
+  }
+  rmSync(target, { recursive: true, force: options.force })
+}
+
+export function ownedTestPath(path) {
+  const root = process.env.GRAPHQL_TEST_ROOT
+  assertTestRoot(root, process.env.GRAPHQL_TEST_OWNER)
+  const target = resolve(path)
+  if (target !== root && !target.startsWith(`${root}/`)) throw new Error('Test path must remain inside its owned root')
+  const parent = realpathSync(dirname(target))
+  if (target !== root && parent !== root && !parent.startsWith(`${root}/`)) {
+    throw new Error('Test path parent escapes its owned root')
+  }
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) throw new Error('Test path must not be a symlink')
+  return target
+}

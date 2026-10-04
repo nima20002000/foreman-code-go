@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -13,13 +14,13 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('refreshes and reads back model options through authenticated HTTP and Operator MCP', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = 'model_refresh_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
   const directory = await mkdtemp(join(tmpdir(), 'graphql-model-mcp-'))
   const cache = join(directory, 'catalog.json')
   await writeFile(cache, JSON.stringify(['provider/old-model']))
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const access = new PostgresAccessService(pool)
   const clients: Client[] = []
@@ -103,8 +104,8 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
     await Promise.allSettled(clients.map((client) => client.close()))
     await app.close()
     await pool.end()
-    await admin.query(`drop schema if exists "${schema}" cascade`)
+    await dropFixtureSchema(admin, schema)
     await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

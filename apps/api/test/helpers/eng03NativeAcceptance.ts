@@ -2,12 +2,13 @@ import { publicationSignal } from './publicationSignal.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
+import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -157,7 +158,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const publicationChanges = publicationSignal()
   const scenarioBegan = performance.now()
   const timing = { startedAt: new Date().toISOString(), setupMs: 0, engineMs: 0, totalMs: 0 }
-  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
+  const baseUrl = ownedTestDatabaseUrl('ENG03_A_TEST_DATABASE_URL')
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) {
@@ -168,9 +169,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const root = await mkdtemp(join(tmpdir(), `eng03-a-${scenario.toLowerCase()}-`))
   const projectDirectory = join(root, 'project')
   const runtimeDirectory = join(root, 'runtime')
-  const artifactDirectory = process.env.ENG03_A_EVIDENCE_DIR
-    ?? fileURLToPath(new URL('../../../../.logs/eng03-a-evidence/', import.meta.url))
-  const artifactPath = join(artifactDirectory, `${scenario}-${suffix}.json`)
+  const artifactPath = join(process.env.ENG03_A_EVIDENCE_DIR!, `${scenario}-${suffix}.json`)
   await Promise.all([mkdir(projectDirectory), mkdir(runtimeDirectory), mkdir(join(artifactPath, '..'), { recursive: true })])
   const admin = new pg.Pool({ connectionString: baseUrl, max: 1 })
   let pool: pg.Pool | undefined
@@ -203,9 +202,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)
   try {
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     const url = new URL(baseUrl)
-    url.searchParams.set('options', `-c search_path=${schema},public`)
+    url.searchParams.set('options', `-c search_path=${schema}`)
     const migrationPool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000 })
     try { await applyApplicationMigrations(migrationPool) } finally { await migrationPool.end() }
     pool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000,
@@ -690,7 +689,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       [() => restoreNativeMcp?.()],
       [() => runId ? checkpoints?.saver.deleteThread(runId) : undefined],
       [() => checkpoints?.close(), () => pool?.end()],
-      [() => admin.query(`drop schema if exists ${schema} cascade`)],
+      [() => dropFixtureSchema(admin, schema)],
       [() => admin.end()],
     ]
     for (const phase of phases) {
@@ -710,7 +709,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     }
     const finalized = await Promise.allSettled([
       writeFile(artifactPath, JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2)),
-      rm(root, { recursive: true, force: true }),
+      removeFixtureDirectory(root),
     ])
     for (const result of finalized) if (result.status === 'rejected') cleanupErrors.push(result.reason)
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)

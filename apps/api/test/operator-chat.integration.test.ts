@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
@@ -124,7 +125,7 @@ beforeEach(async () => {
     || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   schema = `chat_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   // A one-slot pool catches accidental post-commit nested checkouts.
   pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 2_000, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
@@ -144,7 +145,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await chat?.shutdown()
   await pool?.end()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
   await admin?.end()
 })
 

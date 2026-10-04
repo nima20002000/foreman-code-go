@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -12,11 +13,11 @@ import { WorkspaceManagementService } from '../src/modules/workspaces/management
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
 it('creates a ready project folder once, preserves defaults and rejects collisions and traversal', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const admin = new pg.Pool({ connectionString })
   const schema = 'workspace_create_' + randomUUID().replaceAll('-', '')
   const parentPath = await mkdtemp(join(tmpdir(), 'workspace-create-'))
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   try {
     await applyApplicationMigrations(pool)
@@ -47,8 +48,8 @@ it('creates a ready project folder once, preserves defaults and rejects collisio
     expect((await pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(2)
   } finally {
     await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`)
+    await dropFixtureSchema(admin, schema)
     await admin.end()
-    await rm(parentPath, { recursive: true, force: true })
+    await removeFixtureDirectory(parentPath)
   }
 }, 30_000)

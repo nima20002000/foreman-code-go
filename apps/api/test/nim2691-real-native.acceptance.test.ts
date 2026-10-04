@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -593,7 +594,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         cancellationObserver.mockRestore()
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
-        await rm(projectPath, { recursive: true, force: true })
+        await removeFixtureDirectory(projectPath)
       }
     })
   }, 600000)

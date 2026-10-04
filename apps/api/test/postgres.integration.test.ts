@@ -1,3 +1,4 @@
+import { dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint'
@@ -10,9 +11,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 
 const connectionString =
-  process.env.TEST_DATABASE_URL ??
-  process.env.DATABASE_URL ??
-  'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  process.env.TEST_DATABASE_URL!
 
 function testSchema() {
   return `langgraph_probe_${randomUUID().replaceAll('-', '')}`
@@ -97,7 +96,7 @@ describe('PostgreSQL infrastructure', () => {
     } finally {
       await app.close()
       await Promise.all([checkpoints.close(), database.close()])
-      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await dropFixtureSchema(admin, schema)
       await admin.end()
     }
   })
@@ -143,7 +142,7 @@ describe('PostgreSQL infrastructure', () => {
       blocker.release()
       await app.close()
       await Promise.all([checkpoints.close(), database.close()])
-      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await dropFixtureSchema(admin, schema)
       await admin.end()
     }
   }, 15000)

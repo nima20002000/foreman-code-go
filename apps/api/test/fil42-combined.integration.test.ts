@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -44,7 +45,7 @@ describe.skipIf(!enabled)('FIL-42 combined reference scope and Run provenance', 
     }
     schema = `fil42_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString: url.toString(), max: 1 })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: url.toString(), max: 5,
       options: `-c search_path=${schema} -c statement_timeout=10000` })
     await pool.query(`create table operator_conversations(id text primary key);
@@ -64,7 +65,7 @@ describe.skipIf(!enabled)('FIL-42 combined reference scope and Run provenance', 
   }, 30_000)
   afterAll(async () => {
     await pool?.end()
-    if (admin) { try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } }
+    if (admin) { try { await dropFixtureSchema(admin, schema) } finally { await admin.end() } }
   })
 
   async function add(scope: PermanentFileScope, body: string) {

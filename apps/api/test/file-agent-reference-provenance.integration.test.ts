@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -30,7 +31,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('FIL-37 PostgreSQL immutable ref
     }
     schema = `fil37_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString: url, max: 1 })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: url, max: 6,
       options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     await pool.query(`create table operator_conversations(id text primary key);
@@ -44,7 +45,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('FIL-37 PostgreSQL immutable ref
   }, 30_000)
   afterAll(async () => {
     await pool?.end()
-    if (admin) { try { if (schema) await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } }
+    if (admin) { try { if (schema) await dropFixtureSchema(admin, schema) } finally { await admin.end() } }
   })
 
   async function file(scope: 'workflow_reference' | 'workspace_reference' = 'workflow_reference', workspaceId = 'W',

@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,14 +27,14 @@ import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFacto
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
 export async function qualifyEng03OpenCode() {
-  const configured = process.env.ENG03_A_TEST_DATABASE_URL
+  const configured = ownedTestDatabaseUrl('ENG03_A_TEST_DATABASE_URL')
   assert.ok(configured)
   const url = new URL(configured)
   assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname.includes('test'))
   const schema = `native_qualification_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString: configured, max: 1 })
-  await admin.query(`create schema ${schema}`)
-  url.searchParams.set('options', `-c search_path=${schema},public`)
+  await createFixtureSchema(admin, schema)
+  url.searchParams.set('options', `-c search_path=${schema}`)
   const pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
   const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
   const processes = new NativeProcessRegistry(join(directory, 'native-process-registry'))
@@ -48,8 +49,8 @@ export async function qualifyEng03OpenCode() {
     const phases = [
       [() => service?.shutdown(), () => factories?.disposeAuxiliaries()],
       [() => pool.end()],
-      [() => admin.query(`drop schema if exists ${schema} cascade`)],
-      [() => admin.end(), () => rm(directory, { recursive: true, force: true })],
+      [() => dropFixtureSchema(admin, schema)],
+      [() => admin.end(), () => removeFixtureDirectory(directory)],
     ]
     for (const phase of phases) {
       const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))

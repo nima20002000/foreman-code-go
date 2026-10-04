@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, type PendingNativeInteraction } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -24,7 +25,7 @@ beforeEach(async () => {
     || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   schema = `agent3_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 2_000, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
   access = new PostgresAccessService(pool)
@@ -41,7 +42,7 @@ beforeEach(async () => {
 }, 30_000)
 afterEach(async () => {
   await chat?.shutdown(); await pool?.end()
-  if (schema) await admin?.query(`drop schema if exists "${schema}" cascade`)
+  if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
   await admin?.end()
 })
 

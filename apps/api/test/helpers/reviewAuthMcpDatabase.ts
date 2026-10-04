@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -14,15 +15,15 @@ import { FoundationSettingsManagementService } from '../../src/modules/settings/
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
 
 export async function reviewAuthMcpDatabase(options: { hostProfiles?: boolean } = {}) {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `auth_mcp_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   const close = async () => {
     await Promise.all(clients.map(client => client.close())); await app?.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
+    await dropFixtureSchema(admin, schema); await admin.end()
   }
   try {
     await applyApplicationMigrations(pool)

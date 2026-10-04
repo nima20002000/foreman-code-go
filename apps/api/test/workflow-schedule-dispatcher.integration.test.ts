@@ -144,7 +144,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
   it('admits once when two dispatchers with independent pools race after preparation', async () => {
     const saved = await save(); now = saved.nextOccurrenceAt!
     const otherPool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 4,
-      options: `-c search_path=${database.schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
+      options: `-c search_path=${database.schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     const ready = deferred(), release = deferred(); let arrivals = 0
     const gated = (start: ScheduledStart): ScheduledStart => async (...args) => {
       arrivals++; if (arrivals === 2) ready.resolve()
