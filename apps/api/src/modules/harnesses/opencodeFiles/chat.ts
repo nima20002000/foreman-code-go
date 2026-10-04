@@ -30,7 +30,8 @@ export interface OpenCodeChatFileBinding {
   adoptPublished(context: FileToolContext): Promise<void>
   /** Dedicated file-only listener, or an exact-token registry entry. Must install
    * the supplied facade without unknown-token fallback. Mounting the listener
-   * grants no authority: no token exists until the native prompt is acknowledged.
+   * grants no file authority: discovery connects before submission; file calls
+   * wait for an acknowledged native prompt and a scoped file-session credential.
    * Return an idempotent unmount function; failures must leave a retryable fence.
    */
   mount(service: FileMcpService): Promise<() => Promise<void>>

@@ -1,9 +1,10 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
   AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@foreman-code/contracts/files'
 import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
+import type { FileToolOperation } from '../../files/tools/types.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
   type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileTurnOptions } from './types.js'
@@ -28,6 +29,9 @@ interface WorkingCopy { file: DeliveredAttachment; writeId: string | undefined }
  */
 export class OpenCodeFileTurn {
   private token: string | undefined
+  private connectionToken: string | undefined
+  private wakeFileCalls: () => void = () => {}
+  private readonly fileCallsReady = new Promise<void>((resolve) => { this.wakeFileCalls = resolve })
   private accepted: AcceptedOpenCodeFileTurn | undefined
   private generation: number | undefined
   private serverName: string | undefined
@@ -120,7 +124,7 @@ export class OpenCodeFileTurn {
     signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn is closed.')
-      // An empty input set still needs post-ACK tools for inherited reference reads.
+      // An empty input set still needs tools for inherited reference reads.
       checkFileCondition(admission.attachments.length <= this.options.maxAttachments,
         'FILE_ATTACHMENT_LIMIT', 'A bounded attachment set is required.')
       checkFileCondition(admission.executionHostId === this.options.host.executionHostId,
@@ -182,36 +186,85 @@ export class OpenCodeFileTurn {
    */
   get needsAcknowledgement(): boolean {
     return this.preparation === 'post_ack' && !this.closed && !this.revoked && !this.toolAdmissionClosed
-      && !this.toolsReady && !this.activationAttempted
+      && !this.token && !this.activationAttempted
       && (this.submission === 'uncertain' || this.submission === 'submitted')
   }
 
-  /** Only the native manager may call this after positive prompt acknowledgement
-   * (or exact persisted user-message evidence). Registration failure never allows
-   * another prompt, another token, or an automatic configuration retry.
+  /** Connect discovery before submitting; this credential cannot access file bytes or mutate artifacts. */
+  connectTools(signal: AbortSignal): Promise<void> {
+    return this.exclusive(() => this.connectReady(signal))
+  }
+
+  private async connectReady(signal: AbortSignal): Promise<void> {
+    checkFileCondition(this.result && this.accepted && !this.closed && !this.toolAdmissionClosed,
+      'FILE_TURN_CLOSED', 'Prepare the accepted file inputs before connecting tools.')
+    if (this.toolsReady) return
+    checkFileCondition(!this.connectionToken, 'FILE_NATIVE_SETUP_UNCERTAIN',
+      'The file connection did not complete; clean up before another submission.')
+    checkFileCondition((this.options.server.generation ?? 0) === this.generation,
+      'FILE_NATIVE_PROCESS_CHANGED', 'File discovery belongs to the accepted native process.')
+    await this.assertChat(signal)
+    this.connectionToken = `gql_file_${randomBytes(32).toString('base64url')}`
+    this.options.rememberCredential?.(this.connectionToken)
+    await this.connect(signal)
+    this.toolsReady = true
+  }
+
+  async discover(token: string | undefined, tool?: FileToolOperation) {
+    this.assertConnectionCredential(token)
+    const caller = await this.options.service.sessions.authorizeAccepted(this.accepted!.context, tool)
+    this.assertConnectionCredential(token)
+    return caller
+  }
+
+  private assertConnectionCredential(token: string | undefined): asserts token is string {
+    checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && this.accepted && token,
+      'FILE_TURN_CLOSED', 'This file connection is unavailable.')
+    checkFileCondition(!this.processClosed && (this.options.server.generation ?? 0) === this.generation,
+      'FILE_NATIVE_PROCESS_CHANGED', 'The connection belongs to a previous native process.')
+    const expected = this.connectionToken ?? this.token
+    checkFileCondition(expected && timingSafeEqual(Buffer.from(sha256(token)), Buffer.from(sha256(expected)))
+      || this.token && timingSafeEqual(Buffer.from(sha256(token)), Buffer.from(sha256(this.token))),
+    'FILE_CONTEXT_DENIED', 'The file connection belongs to another turn.')
+  }
+
+  /** Calls arriving before prompt acknowledgement wait without holding the lifecycle lock. */
+  async fileCredential(connectionToken: string | undefined): Promise<string> {
+    this.assertConnectionCredential(connectionToken)
+    if (!this.token) await this.fileCallsReady
+    this.assertConnectionCredential(connectionToken)
+    this.assertCredential(this.token)
+    return this.token
+  }
+
+  /** Only the native manager may enable file calls after positive acknowledgement
+   * or persisted user-message evidence. The connection credential never becomes
+   * a file-session credential and is not accepted by the shared file endpoint.
    */
   acknowledge(signal: AbortSignal): Promise<void> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && this.result && this.accepted
+        && this.toolsReady
         && (this.submission === 'uncertain' || this.submission === 'submitted'),
       'FILE_SUBMISSION_INVALID', 'There is no live native submission to acknowledge.')
       this.submission = 'submitted'
-      if (this.preparation === 'legacy' || this.toolsReady) return
+      if (this.preparation === 'legacy' || this.token) return
       checkFileCondition(!this.activationAttempted, 'FILE_NATIVE_SETUP_UNCERTAIN',
         'File registration requires explicit recovery; do not reissue the prompt or credential.')
       this.activationAttempted = true
-      signal.throwIfAborted()
-      checkFileCondition((this.options.server.generation ?? 0) === this.generation,
-        'FILE_NATIVE_PROCESS_CHANGED', 'File tools cannot bind to a replacement native process.')
-      await this.assertChat(signal)
-      this.token = await this.options.service.sessions.issueForAcceptedSession(this.accepted.context, this.accepted.expiresAt)
       try {
+        signal.throwIfAborted()
+        checkFileCondition((this.options.server.generation ?? 0) === this.generation,
+          'FILE_NATIVE_PROCESS_CHANGED', 'File tools cannot bind to a replacement native process.')
+        await this.assertChat(signal)
+        this.token = await this.options.service.sessions.issueForAcceptedSession(this.accepted.context, this.accepted.expiresAt)
         this.options.rememberCredential?.(this.token)
         signal.throwIfAborted()
         checkFileCondition(!this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn was stopped during credential issuance.')
-        await this.connect(signal)
-        this.toolsReady = true
+        this.wakeFileCalls()
       } catch (error) {
+        this.toolAdmissionClosed = true
+        this.wakeFileCalls()
         // The prompt is accepted, so keep its input files. Revoke authority even
         // if disconnect failed; a lost observer must never leave usable tools.
         try { await this.revokeReady() }
@@ -230,7 +283,7 @@ export class OpenCodeFileTurn {
     this.connected = true // A lost reply still requires disconnect/revocation.
     await this.json('/mcp', signal, { name: this.serverName, config: {
       type: 'remote', url: this.options.endpoint, enabled: true, oauth: false,
-      headers: { Authorization: `Bearer ${this.token}` },
+      headers: { Authorization: `Bearer ${this.connectionToken ?? this.token}` },
     } })
     const status = object(await this.json('/mcp', signal))
     checkFileCondition(object(status[this.serverName]).status === 'connected',
@@ -238,7 +291,7 @@ export class OpenCodeFileTurn {
     await this.assertChat(signal)
   }
 
-  /** Legacy standalone FIL-09 API. Production uses prepareInputs + acknowledge. */
+  /** Standalone API. Production uses prepareInputs, connectTools and acknowledge. */
   async prepare(admission: AcceptedOpenCodeFileTurn, signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn is closed.')
@@ -429,7 +482,7 @@ export class OpenCodeFileTurn {
 
   /** Must precede submission, not follow its acknowledgement. */
   submissionAttempted(): void {
-    checkFileCondition(this.result && !this.closed && this.submission === 'not_submitted',
+    checkFileCondition(this.result && this.toolsReady && !this.closed && this.submission === 'not_submitted',
       'FILE_SUBMISSION_FENCED', 'An accepted or uncertain native prompt must not be resubmitted.')
     this.submission = 'uncertain'
   }
@@ -445,6 +498,7 @@ export class OpenCodeFileTurn {
     // Close the in-process facade immediately, even when persistent revoke fails.
     // Do not let an invalid definite-rejection request close an accepted turn.
     if (evidence === 'terminal' || this.submission !== 'submitted') this.toolAdmissionClosed = true
+    if (this.toolAdmissionClosed) this.wakeFileCalls()
     return this.exclusive(async () => {
       checkFileCondition(evidence !== 'definite_rejection' || this.submission !== 'submitted',
         'FILE_SUBMISSION_INVALID', 'A positively accepted submission cannot become a definite rejection.')
@@ -477,6 +531,7 @@ export class OpenCodeFileTurn {
    */
   revoke(): Promise<void> {
     this.toolAdmissionClosed = true
+    this.wakeFileCalls()
     return this.exclusive(() => this.revokeReady())
   }
 
@@ -485,6 +540,7 @@ export class OpenCodeFileTurn {
    */
   nativeProcessClosed(signal: AbortSignal): Promise<void> {
     this.toolAdmissionClosed = true
+    this.wakeFileCalls()
     return this.exclusive(async () => {
       this.processClosed = true
       this.releaseAuthorized = true
@@ -524,6 +580,8 @@ export class OpenCodeFileTurn {
     this.copies.clear()
     this.closed = true
     this.token = undefined
+    this.connectionToken = undefined
+    this.wakeFileCalls()
     if (owners.get(this.options.server) === this) owners.delete(this.options.server)
   }
 }

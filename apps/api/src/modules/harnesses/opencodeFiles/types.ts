@@ -42,7 +42,8 @@ export interface OpenCodeExecutionFiles {
 export type OpenCodeFileService = Pick<AgentFileToolService,
   'artifacts' | 'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'>
   & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>>
-  & { sessions: Pick<AgentFileToolService['sessions'], 'issueForAcceptedSession' | 'authenticate' | 'revoke'> }
+  & { sessions: Pick<AgentFileToolService['sessions'],
+    'issueForAcceptedSession' | 'authenticate' | 'authorizeAccepted' | 'revoke'> }
 
 /** A trusted admission-bound range reader. It reauthorizes the owner/scope and
  * pinned revision on every call without minting a native file-tool credential.

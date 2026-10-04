@@ -20,33 +20,42 @@ export function createOpenCodeFileMcpFacade(service: OpenCodeFileService, turn: 
       throw error
     }
   }
-  const owned = (token: string | undefined) => {
-    try { const current: OpenCodeFileTurn = turn(); current.assertCredential(token) }
-    catch { throw new DomainError('FILE_SESSION_INVALID', 'The file credential does not belong to this native turn.', 401) }
+  const credential = async (token: string | undefined) => {
+    try { return await turn().fileCredential(token) }
+    catch (error) {
+      if (!(error instanceof OpenCodeFileError)) throw error
+      throw new DomainError('FILE_SESSION_INVALID', 'The file credential does not belong to this native turn.', 401)
+    }
   }
   return {
-    sessions: { authenticate: async (token, tool) => {
-      owned(token)
-      return service.sessions.authenticate(token, tool)
-    } },
-    list: (token, input) => { owned(token); return service.list(token, input) },
-    read: (token, input) => { owned(token); return service.read(token, input) },
+    sessions: {
+      discover: async (token, tool) => {
+        try { return await turn().discover(token, tool) }
+        catch (error) {
+          if (!(error instanceof OpenCodeFileError)) throw error
+          throw new DomainError('FILE_SESSION_INVALID', 'The file connection does not belong to this native turn.', 401)
+        }
+      },
+      authenticate: async (token, tool) => service.sessions.authenticate(await credential(token), tool),
+    },
+    list: async (token, input) => service.list(await credential(token), input),
+    read: async (token, input) => service.read(await credential(token), input),
     createWorkingCopy: (token, input) => invoke(async () => {
-      owned(token)
-      return turn().createWorkingCopy(token, AgentFileCreateWorkingCopyInputSchema.parse(input), AbortSignal.timeout(120_000))
+      const acceptedToken = await credential(token)
+      return turn().createWorkingCopy(acceptedToken,
+        AgentFileCreateWorkingCopyInputSchema.parse(input), AbortSignal.timeout(120_000))
     }),
     publish: (token, input) => invoke(async () => {
-      owned(token)
-      return turn().publish(token, AgentFilePublishInputSchema.parse(input), AbortSignal.timeout(120_000))
+      const acceptedToken = await credential(token)
+      return turn().publish(acceptedToken, AgentFilePublishInputSchema.parse(input), AbortSignal.timeout(120_000))
     }),
     ...(service.writeWorkingCopy ? { writeWorkingCopy: (token: string, input: unknown) => invoke(async () => {
-      owned(token)
-      return turn().writeWorkingCopy(token, AgentFileWriteWorkingCopyInputSchema.parse(input))
+      return turn().writeWorkingCopy(await credential(token), AgentFileWriteWorkingCopyInputSchema.parse(input))
     }) } : {}),
     ...(service.applyFormatEdit ? { applyFormatEdit: (token: string, input: unknown) => invoke(async () => {
-      owned(token)
-      return turn().applyFormatEdit(token, AgentFileApplyFormatEditInputSchema.parse(input))
+      return turn().applyFormatEdit(await credential(token), AgentFileApplyFormatEditInputSchema.parse(input))
     }) } : {}),
-    workingCopyLocation: (token, artifactId) => invoke(() => turn().workingCopyLocation(token, artifactId)),
+    workingCopyLocation: (token, artifactId) => invoke(async () =>
+      turn().workingCopyLocation(await credential(token), artifactId)),
   }
 }

@@ -412,6 +412,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             turn.promptHash = turnDigest(prompt ?? '', state.instructions, turn.fileIdentity)
           }
         }
+        await turn.files?.bridge.connectTools(signal)
         responseGeneration = this.generation
         response = await this.openEvents(state.directory, signal, false)
         const [providerID, ...model] = state.configuration.model.split('/')

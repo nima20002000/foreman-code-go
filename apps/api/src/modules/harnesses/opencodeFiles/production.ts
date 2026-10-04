@@ -33,6 +33,7 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
       issueForAcceptedSession: (context: typeof admission.context, expiresAt: Date) =>
         service.sessions.issueForAcceptedSession(context, expiresAt, 'opencode'),
       authenticate: service.sessions.authenticate.bind(service.sessions),
+      authorizeAccepted: service.sessions.authorizeAccepted.bind(service.sessions),
       revoke: service.sessions.revoke.bind(service.sessions),
     },
     artifacts: service.artifacts,

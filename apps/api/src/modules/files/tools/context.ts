@@ -52,8 +52,12 @@ export class FileToolSessions {
   }
 
   /** Server-only pre-ack authority; no credential is issued or accepted from a caller. */
-  authorizeAccepted(context: FileToolContext): Promise<AuthorizedFileCaller> {
-    return this.current(ContextSchema.parse(context), 'read')
+  authorizeAccepted(binding: FileToolContext, tool?: FileToolOperation): Promise<AuthorizedFileCaller> {
+    const context = ContextSchema.parse(binding)
+    if (tool && (!context.allowedTools.includes(tool) || (isMutation(tool) && !context.allowMutation))) {
+      throw new DomainError('FILE_TOOL_DENIED', 'This session does not allow that file operation.', 403)
+    }
+    return this.current(context, tool && isMutation(tool) ? 'write' : 'read')
   }
 
   /** Internal issuer only. Call from the already authenticated native-session/turn admission.

@@ -73,6 +73,7 @@ export function createChatFileBackend() {
   const api = {
     sessions: {
       authenticate,
+      async authorizeAccepted(context: FileToolContext, tool?: string) { return authorizeContext(context, tool) },
       async issueForAcceptedSession(context: FileToolContext, expiresAt: Date) {
         authorizeContext(context)
         audit.push('issue')
