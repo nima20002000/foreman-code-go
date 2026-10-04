@@ -12,6 +12,11 @@ export const runActivitiesKey = (scope: RunActivityScope, generation = sessionGe
   ['workbench', 'run-activities', generation, scope.workspaceId, scope.workflowId,
     scope.runId, scope.workflowVersionId, 3] as const
 
+export function isTransientRunActivityError(error: unknown): boolean {
+  return ApiError.is(error) && (error.code === 'NETWORK_ERROR'
+    || error.status === 408 || error.status === 429 || error.status >= 500)
+}
+
 export async function readRunActivities(scope: RunActivityScope, cursor: string | null = null, options?: RequestOptions): Promise<RunActivitiesPage> {
   if ('executionSemanticsVersion' in scope) RepeatGraphScopeV3Schema.parse(scope)
   RunActivitiesPageSchema.shape.scope.omit({ executionSemanticsVersion: true }).parse({

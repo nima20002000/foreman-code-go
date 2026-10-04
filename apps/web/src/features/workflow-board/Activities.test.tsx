@@ -225,3 +225,95 @@ describe('Activities pagination and refresh', () => {
     expect(cachedFeed()).toMatchObject({ nextCursor: 'cursor-6', olderCursor: null, retainedFrom: '2' })
   })
 })
+
+describe('Activities automatic recovery', () => {
+  it('retries one failed poll with backoff and recovers without navigation or browser events', async () => {
+    let polls = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      if (!new URL(request.url).searchParams.has('cursor')) return HttpResponse.json(page())
+      polls++
+      if (polls === 1) return new HttpResponse(null, { status: 503 })
+      return HttpResponse.json(page({ items: [event('6', 'Recovered work', {})], mode: 'newer',
+        highWater: '6', nextCursor: 'cursor-6', olderCursor: null }))
+    }))
+    await mount({ timed: true })
+    await advance(3000)
+    await eventually(() => expect(polls).toBe(1))
+    expect(screen.getByText('Job ran')).toBeVisible()
+    await advance(500)
+    expect(polls).toBe(1)
+    await advance(500)
+    await eventually(() => expect(screen.getByText('Recovered work')).toBeVisible())
+    expect(polls).toBe(2)
+    expect(screen.getByText('Job ran')).toBeVisible()
+    expect(cachedFeed()).toMatchObject({ nextCursor: 'cursor-6', retainedFrom: '1' })
+  })
+
+  it('keeps loaded rows and automatic polling after exhausting a bounded retry cycle', async () => {
+    let polls = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      if (!new URL(request.url).searchParams.has('cursor')) return HttpResponse.json(page())
+      polls++
+      if (polls <= 3) return new HttpResponse(null, { status: 503 })
+      return HttpResponse.json(page({ items: [event('6', 'Service restored', {})], mode: 'newer',
+        highWater: '6', nextCursor: 'cursor-6', olderCursor: null }))
+    }))
+    await mount({ timed: true })
+    await advance(3000)
+    await eventually(() => expect(polls).toBe(1))
+    await advance(1000)
+    await eventually(() => expect(polls).toBe(2))
+    await advance(2000)
+    await eventually(() => expect(screen.getByText('Refresh failed. Retrying automatically.')).toBeVisible())
+    expect(polls).toBe(3)
+    expect(screen.getByText('Job ran')).toBeVisible()
+    await advance(3000)
+    await eventually(() => expect(screen.getByText('Service restored')).toBeVisible())
+    expect(screen.queryByText('Activities are unavailable.')).not.toBeInTheDocument()
+  })
+
+  it.each([401, 403, 404])('hides rows and stops polling after HTTP %s', async (status) => {
+    let polls = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      if (!new URL(request.url).searchParams.has('cursor')) return HttpResponse.json(page())
+      polls++
+      return new HttpResponse(null, { status })
+    }))
+    await mount({ timed: true })
+    await advance(3000)
+    await eventually(() => expect(screen.queryByText('Job ran')).not.toBeInTheDocument())
+    expect(polls).toBe(1)
+    await advance(60_000)
+    expect(polls).toBe(1)
+  })
+
+  it('hides rows and stops retrying a same-user response for another Run', async () => {
+    let polls = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      if (!new URL(request.url).searchParams.has('cursor')) return HttpResponse.json(page())
+      polls++
+      return HttpResponse.json(page({ scope: { ...scope, runId: 'run-b' }, items: [] }))
+    }))
+    await mount({ timed: true })
+    await advance(3000)
+    await eventually(() => expect(screen.getByText('Activities are unavailable.')).toBeVisible())
+    expect(screen.queryByText('Job ran')).not.toBeInTheDocument()
+    await advance(60_000)
+    expect(polls).toBe(1)
+  })
+
+  it('also withdraws loaded rows and automatic reads after an older-page denial', async () => {
+    const requests: Array<string | null> = []
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      requests.push(cursor)
+      return cursor ? new HttpResponse(null, { status: 403 }) : HttpResponse.json(page())
+    }))
+    await mount({ timed: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Load older Activities' }))
+    await eventually(() => expect(screen.getByText('Activities access was withdrawn.')).toBeVisible())
+    expect(screen.queryByText('Job ran')).not.toBeInTheDocument()
+    await advance(60_000)
+    expect(requests).toEqual([null, 'older-1'])
+  })
+})

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import type { RepeatGraphScopeV3, RunActivitiesPage, RunActivityPublic } from '@graphql/contracts/wave25'
 import { server } from '../../mocks/server'
-import { mergeOlderRunActivities, mergeRunActivities, readRunActivities, readRunActivityFeed } from './runActivitiesQuery'
+import { ApiError } from '../../shared/api/client'
+import { isTransientRunActivityError, mergeOlderRunActivities, mergeRunActivities,
+  readRunActivities, readRunActivityFeed } from './runActivitiesQuery'
 
 const scope: RepeatGraphScopeV3 = { workspaceId: 'workspace-a', workflowId: 'workflow-a',
   workflowVersionId: 'version-a', runId: 'run-a', executionSemanticsVersion: 3 }
@@ -12,6 +14,19 @@ const item = (sequence: string): RunActivityPublic => ({ id: `run-a:${sequence}`
   status: 'delivered', severity: 'info', summary: 'Notice delivered', refs: {} })
 
 describe('bounded public Run Activities client', () => {
+  it.each([408, 429, 500, 503])('identifies HTTP %s as transient', (status) => {
+    expect(isTransientRunActivityError(new ApiError({ code: 'HTTP_ERROR', message: 'Try again' }, status))).toBe(true)
+  })
+  it('identifies a transport failure as transient', () => {
+    expect(isTransientRunActivityError(new ApiError({ code: 'NETWORK_ERROR', message: 'Offline' }))).toBe(true)
+  })
+  it.each([401, 403, 404, 409, 410])('does not retry HTTP %s as a transient failure', (status) => {
+    expect(isTransientRunActivityError(new ApiError({ code: 'HTTP_ERROR', message: 'Read rejected' }, status))).toBe(false)
+  })
+  it('does not retry identity, contract, session, or cancellation errors', () => {
+    expect(isTransientRunActivityError(new ApiError({ code: 'INVALID_RESPONSE', message: 'Wrong Run' }, 200))).toBe(false)
+    expect(isTransientRunActivityError(new DOMException('Selection changed', 'AbortError'))).toBe(false)
+  })
   it('coalesces overlap, sorts out-of-order arrivals by full server sequence, and bounds memory', () => {
     const high = '9007199254740994', low = '9007199254740993'
     expect(mergeRunActivities([item(high)], [item(low), item(high)]).map((event) => event.sequence)).toEqual([low, high])

@@ -9,7 +9,7 @@ import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
 import { createChatVisit, type SelectedChatBinding } from '../conversations/agentChat/selectedRunChatModel'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
-import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities,
+import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities, isTransientRunActivityError,
   runActivitiesKey, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'
 
@@ -74,7 +74,9 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     const query = (router.options.stringifySearch ?? defaultStringifySearch)(next)
     void router.navigate({ href: `${router.state.location.pathname}${query}${router.history.location.hash}`, replace: true, resetScroll: false })
   }
-  const older = useMutation({ retry: false,
+  const retry = (count: number, error: unknown) => count < 2 && isTransientRunActivityError(error)
+  const retryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 10_000)
+  const older = useMutation({ retry, retryDelay,
     onMutate: () => cache.cancelQueries({ queryKey: key, exact: true }),
     mutationFn: async (request: OlderActivityRequest) => {
       const current = visit.capture()
@@ -124,9 +126,13 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
       }
       return result
     },
-    retry: false, staleTime: 0, gcTime: address ? 0 : 60_000, refetchOnMount: 'always',
+    retry, retryDelay, staleTime: 0, gcTime: address ? 0 : 60_000, refetchOnMount: 'always',
     refetchOnReconnect: true, refetchOnWindowFocus: true,
-    refetchInterval: (query) => query.state.error ? false : 3000 })
+    refetchInterval: (query) => {
+      if (older.error && !isTransientRunActivityError(older.error)
+        && !(ApiError.is(older.error) && older.error.status === 410)) return false
+      return query.state.error && !isTransientRunActivityError(query.state.error) ? false : 3000
+    } })
   const denied = useProtectedAccessError(feed, older.error)
   const scopedItems = useMemo(() => chat ? feed.data?.items.filter((item) => item.refs.executionId === chat.selection.executionId
     && (!item.actor && !item.subject || item.actor?.nodeId === chat.selection.workflowNodeId || item.subject?.nodeId === chat.selection.workflowNodeId))
@@ -163,12 +169,16 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     olderRequest.current = request
     older.mutate(request)
   }
-  const error = feed.isError ? feed.error : older.error
+  const olderReadRejected = older.error && !isTransientRunActivityError(older.error)
+    && !(ApiError.is(older.error) && older.error.status === 410)
+  const error = olderReadRejected ? older.error : feed.error ?? older.error
   const retentionGap = ApiError.is(error) && error.status === 410
+  const transient = isTransientRunActivityError(error)
   let errorHint: string | undefined
   if (retentionGap) errorHint = 'Refresh to read the retained history. '
+  else if (transient) errorHint = 'Refresh failed. Retrying automatically. '
   else if (!selection) errorHint = 'Loaded Activities are hidden until this Run is read again. '
-  const items = visit.isCurrent() && (!error || retentionGap) && !denied && feed.isFetchedAfterMount
+  const items = visit.isCurrent() && (!error || retentionGap || transient) && !denied && feed.isFetchedAfterMount
     ? scopedItems : undefined
   const agents = [...new Map(items?.flatMap((item) => [item.actor, item.subject]
     .filter((agent) => agent !== undefined && 'agentId' in agent).map((agent) => [agent.agentId, agent] as const)) ?? []).values()]
