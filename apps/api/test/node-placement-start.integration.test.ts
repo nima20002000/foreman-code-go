@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest'
 import {
   CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema, RunStartV3ResultSchema,
   makeCurrentWorkflowFixture,
@@ -130,7 +130,7 @@ async function advanceMainSourceBinding(f: Fixture) {
 }
 
 describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
-  it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async (via, { onTestFailed }) => {
+  it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async via => {
     const f = await fixture()
     let stage = 'save'
     onTestFailed(() => { console.error(`Placement test failed at ${stage}:`, f.base.dispatchErrors) })
