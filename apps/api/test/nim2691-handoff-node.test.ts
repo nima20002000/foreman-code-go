@@ -100,6 +100,48 @@ describe('NIM-2691 workflow activation routing', () => {
     expect(requests).toEqual([second.id])
   })
 
+  it.each(['entry', 'limit_denial'] as const)(
+    'finishes a choice activation cleanly without a downstream outcome after %s', async (cause) => {
+      const fixture = makeCurrentWorkflowFixture(`choice-finish-${cause}`)
+      const edge = fixture.version.definition.edges[0]!
+      const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+        ...fixture.version.definition, handoffs: { contractVersion: 1 },
+        nodes: fixture.version.definition.nodes.map((node, index) => index ? node : { ...node,
+          choice: { outcomes: [{ outcome: 'review', target: { kind: 'edge', relationshipId: edge.id } }] },
+        }),
+      } })
+      const node = version.definition.nodes[0]!
+      if (node.kind === 'job') throw new Error('Agent fixture required')
+      const execution = HarnessExecutionSchema.parse({ id: `finish-${cause}`, runId: fixture.run.id,
+        workflowNodeId: node.id, agentId: node.agentId,
+        agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
+        attempt: 1, input: { work: { kind: cause } }, state: 'completed', createdAt: fixture.createdAt,
+        finishedAt: fixture.createdAt, result: { outcome: 'succeeded', output: {
+          routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+        } },
+      })
+      let accepted = false
+      const store = {
+        admitWorkActivation: async () => ({ execution, reused: true }),
+        acceptWorkTerminal: async () => {
+          const replayed = accepted
+          accepted = true
+          return { kind: 'accepted' as const, execution, replayed }
+        },
+        admitWorkRequest: async () => { throw new Error('A clean finish must not select a route') },
+        returnWork: async () => { throw new Error('A finish must not return work') },
+        recordWorkUnresolved: async () => { throw new Error('A clean finish has no findings') },
+      }
+      const action = () => workHandoffNodeAction({ version, store,
+        driver: { candidate: () => { throw new Error('An accepted execution must not restart') },
+          observe: async () => undefined },
+        limiter: new ExecutionLimiter(1, 10), signal: new AbortController().signal })
+      expect(await action()('activation')).toEqual([])
+      // A new action instance resumes the already accepted result before routing.
+      expect(await action()('activation')).toEqual([])
+    },
+  )
+
   it('preserves findings as unresolved when a requester finishes without choosing a route', async () => {
     const fixture = makeCurrentWorkflowFixture('work-node-needs-direction')
     const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {

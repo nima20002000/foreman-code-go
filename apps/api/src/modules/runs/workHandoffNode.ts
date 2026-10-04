@@ -2,7 +2,7 @@ import { parseWorkHandoffResult, type WorkflowVersionV3 } from '@foreman-code/co
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import type { RepeatExecutionDriver } from './repeatNode.js'
 import { ExecutionLimiter } from './limiter.js'
-import { repeatConflict } from './repeatResolution.js'
+import { selectedWorkHandoffRoutes } from './workHandoffRouting.js'
 
 /** One LangGraph activation task. Every durable decision is idempotent, so a
  * checkpoint replay reconciles the exact native execution and work receipts. */
@@ -36,18 +36,7 @@ export function workHandoffNodeAction(input: {
         if (admitted.kind === 'needs_direction') return []
         if (admitted.destinationReady) selected.push(admitted.request.destinationActivationId)
       } else {
-        const node = input.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
-        if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
-        const routes = result.routing.outcome === undefined && result.data.remainingFindings.length ? []
-          : node.choice ? (() => {
-          const declared = node.choice.outcomes.find((item) => item.outcome === result.routing.outcome)
-          if (!declared) {
-            if (result.routing.outcome === undefined && result.data.remainingFindings.length) return []
-            return repeatConflict('WORK_FINISH_OUTCOME_REQUIRED')
-          }
-          return declared.target.kind === 'edge' ? [declared.target.relationshipId] : []
-        })() : input.version.definition.edges.filter((edge) => edge.kind === 'execution'
-          && edge.source === node.id).map((edge) => edge.id)
+        const routes = selectedWorkHandoffRoutes(input.version.definition, execution.workflowNodeId, result)
         for (const relationshipId of routes) {
           const admitted = await input.store.admitWorkRequest(terminal.execution.id, relationshipId)
           if (admitted.kind === 'limit_reached') {
