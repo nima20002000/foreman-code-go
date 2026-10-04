@@ -93,6 +93,36 @@ describe('SCH-04 process loop', () => {
     await loop.tick(); await loop.stop()
     expect(work.listDueSchedules).not.toHaveBeenCalled()
   })
+  it('limits admission to four independent workflows and starts queued work as slots free', async () => {
+    const entered = deferred()
+    const release = deferred()
+    const finished = deferred()
+    let active = 0
+    let maximum = 0
+    let completed = 0
+    const items = Array.from({ length: 6 }, (_, index) => ({ ...once, workflowId: `workflow-${index}` }))
+    const loop = new WorkflowScheduleDispatcher({
+      listDueSchedules: async () => ({ items, pageInfo: { nextCursor: null } }),
+      dispatch: async (_schedule, signal) => {
+        expect(signal).toBeInstanceOf(AbortSignal)
+        active++
+        maximum = Math.max(maximum, active)
+        if (active === 4) entered.resolve()
+        await release.promise
+        active--
+        if (++completed === 6) finished.resolve()
+      },
+    }, { reportError: vi.fn() })
+    try {
+      await loop.tick()
+      await entered.promise
+      expect(active).toBe(4)
+      release.resolve()
+      await finished.promise
+      expect(maximum).toBe(4)
+      expect(completed).toBe(6)
+    } finally { release.resolve(); await loop.stop() }
+  })
   it('does not let one failed workflow hide another candidate', async () => {
     const other = { ...once, workflowId: 'another-workflow' }
     const reportError = vi.fn(), seen: string[] = []

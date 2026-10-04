@@ -227,7 +227,9 @@ export class WorkspaceLocationService {
     workspaceId: string,
     expectedLocationRevision: number,
     accessMode: WorkspaceLocationAccessMode,
+    signal?: AbortSignal,
   ): Promise<RunExecutionLocation> {
+    signal?.throwIfAborted()
     const result = await client.query<LocationRow>(
       `select execution_location, execution_location_identity, location_revision, archived_at
        from workspaces where id = $1 for update`, [workspaceId],
@@ -244,7 +246,8 @@ export class WorkspaceLocationService {
     }
     const location = ExecutionLocationSchema.parse(row.execution_location)
     const storedIdentity = row.execution_location_identity as LocationIdentity
-    const current = await this.validatePath(workspaceId, location.runnerId, location.rootPath, accessMode)
+    signal?.throwIfAborted()
+    const current = await this.validatePath(workspaceId, location.runnerId, location.rootPath, accessMode, signal)
     if (identityHash(current.identity) !== identityHash(storedIdentity)) {
       throw new DomainError('WORKSPACE_LOCATION_CHANGED', 'The selected directory was replaced after it was saved. Validate and save it again.', 409)
     }

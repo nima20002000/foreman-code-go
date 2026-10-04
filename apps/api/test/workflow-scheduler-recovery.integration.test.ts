@@ -216,8 +216,12 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
 
   it('clean shutdown drains an open real Start transaction and never admits the next queued candidate', async () => {
     const saved = await f.save(); f.time.now = saved.nextOccurrenceAt!
-    const second = await sch11Fixture(database)
-    const otherSaved = await second.save(); second.time.now = f.time.now
+    const others = await Promise.all(Array.from({ length: 4 }, () => sch11Fixture(database)))
+    const otherSaved = await Promise.all(others.map(async (fixture) => {
+      const schedule = await fixture.save()
+      fixture.time.now = f.time.now
+      return schedule
+    }))
     const entered = deferred(), release = deferred()
     const dispatcher = f.dispatcher(async (principal, input, guard) => {
       await f.startUsing()(principal, input, { ...guard, afterAcceptance: async (sql, run) => {
@@ -227,24 +231,28 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     let scans = 0
     const loop = new WorkflowScheduleDispatcher({
       // Candidate isolation only: admission, common Start, locks and writes below are real SQL.
-      listDueSchedules: async () => { scans++; return { items: [saved, otherSaved], pageInfo: { nextCursor: null } } },
-      dispatch: (candidate) => candidate.workflowId === f.scope.workflowId
-        ? dispatcher.dispatch(candidate) : second.dispatcher().dispatch(candidate),
+      listDueSchedules: async () => { scans++; return { items: [saved, ...otherSaved], pageInfo: { nextCursor: null } } },
+      dispatch: (candidate, signal) => {
+        if (candidate.workflowId === f.scope.workflowId) return dispatcher.dispatch(candidate, signal)
+        const fixture = others.find((other) => other.scope.workflowId === candidate.workflowId)!
+        return fixture.dispatcher().dispatch(candidate, signal)
+      },
     }, { clock: f.clock, reportError: (error) => { throw error } })
     const work = loop.tick()
     let stopped = false
     let closing: Promise<void> | undefined
     try {
-      await Promise.race([entered.promise, work.then(() => { throw new Error('Start never reached its transaction barrier') })])
+      await entered.promise
       closing = loop.stop().then(() => { stopped = true })
       expect(stopped).toBe(false)
       expect(await f.countRuns()).toBe(0)
       release.resolve(); await Promise.all([work, closing])
       expect(stopped).toBe(true)
-      expect(await f.countRuns()).toBe(1); expect(await second.countRuns()).toBe(0)
+      expect(await f.countRuns()).toBe(1)
+      expect(await Promise.all(others.map((fixture) => fixture.countRuns()))).toEqual([1, 1, 1, 0])
       await loop.stop(); loop.start(); await loop.tick()
       expect(scans).toBe(1)
-      expect(await second.current()).toEqual(otherSaved)
+      expect(await others[3]!.current()).toEqual(otherSaved[3])
     } finally { release.resolve(); await work.catch(() => undefined); await closing; await loop.stop() }
   }, 60_000)
 })
