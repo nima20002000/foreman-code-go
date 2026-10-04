@@ -1,5 +1,5 @@
 import { readFile, symlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
   testAdminUrl, testEnvironment } from '../../../scripts/test-resources.mjs'
@@ -29,7 +29,7 @@ describe('disposable test resources', () => {
   })
 
   it('rejects fixture cleanup outside the owned root and through escaping symlinks', async () => {
-    const outside = createTestRoot()
+    const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
     const file = join(outside.directory, 'retained.txt')
     const link = join(process.env.GRAPHQL_TEST_ROOT!, 'outside-cleanup-link')
     await writeFile(file, 'retained')

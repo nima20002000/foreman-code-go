@@ -38,6 +38,9 @@ if (mode === 'scripts') {
 } else if (mode === 'integration') {
   await run(process.execPath, ['scripts/test-integration.mjs', '--files', ...files])
 } else {
+  const workerOptions = mode === 'unit'
+    ? ['--maxWorkers=12']
+    : ['--no-file-parallelism', '--maxWorkers=1']
   await run('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run',
-    ...files.map(file => file.slice('apps/api/'.length)), '--no-file-parallelism', '--maxWorkers=1'])
+    ...files.map(file => file.slice('apps/api/'.length)), ...workerOptions])
 }
