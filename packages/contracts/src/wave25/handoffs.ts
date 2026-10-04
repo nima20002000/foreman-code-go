@@ -136,6 +136,7 @@ export type WorkNotice = z.infer<typeof WorkNoticeSchema>
 export const WorkActivationInputSchema = z.object({
   executionSemanticsVersion: z.literal(3), runInput: z.json(),
   occurrence: z.null(), entry: z.null(), predecessors: z.tuple([]),
+  parentRequest: WorkRequestSchema.optional(),
   work: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('entry'), activation: WorkActivationIdentitySchema }).strict(),
     z.object({ kind: z.literal('work_request'), activation: WorkActivationIdentitySchema,
@@ -152,6 +153,10 @@ export const WorkActivationInputSchema = z.object({
   ]),
 }).strict().superRefine((value, context) => {
   const { work } = value
+  if (value.parentRequest && (value.parentRequest.destinationNodeId !== work.activation.workflowNodeId
+    || canonicalGraphJson(value.parentRequest.scope) !== canonicalGraphJson(work.activation.scope))) {
+    context.addIssue({ code: 'custom', path: ['parentRequest'], message: 'WORK_PARENT_REQUEST_CONFLICT' })
+  }
   if (work.activation.cause.kind !== work.kind
     || work.kind === 'work_request' && (work.activation.cause.kind !== 'work_request'
       || work.activation.cause.requestId !== work.request.requestId

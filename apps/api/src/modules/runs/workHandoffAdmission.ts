@@ -27,6 +27,17 @@ export type WorkRequestAdmission = { kind: 'accepted'; request: WorkRequest; rep
   | { kind: 'needs_direction'; unresolvedId: string; replayed: boolean }
 export interface WorkReturnReceipt { value: WorkReturn; replayed: boolean }
 
+async function readParentWorkRequestLocked(context: AdmissionContext, activationId: string): Promise<WorkRequest | undefined> {
+  const row = (await context.sql.query<{ record: unknown }>(
+    `select record from run_work_requests where run_id=$1
+      and request_id=work_parent_request($1,$2) for share`,
+    [context.scope.runId, activationId])).rows[0]
+  if (!row) return undefined
+  const request = WorkRequestSchema.parse(row.record)
+  if (!sameRepeatValue(request.scope, context.scope)) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
+  return request
+}
+
 /** Reconstruct only from the exact saved cause and accepted result receipt. */
 export async function readWorkActivationInputLocked(context: AdmissionContext, activationId: string): Promise<WorkActivationInput> {
   const { sql, scope, version } = context
@@ -41,8 +52,10 @@ export async function readWorkActivationInputLocked(context: AdmissionContext, a
     || activation.workflowNodeId !== row.workflow_node_id || activation.cause.kind !== row.cause_kind) {
     return repeatConflict('WORK_ACTIVATION_PIN_CONFLICT')
   }
+  const parentRequest = activation.cause.kind === 'work_return' || activation.cause.kind === 'limit_denial'
+    ? await readParentWorkRequestLocked(context, activationId) : undefined
   const base = { executionSemanticsVersion: 3, runInput: context.hooks.run.input,
-    occurrence: null, entry: null, predecessors: [] }
+    occurrence: null, entry: null, predecessors: [], ...(parentRequest ? { parentRequest } : {}) }
   if (activation.cause.kind === 'entry') {
     if (activation.workflowNodeId !== version.entryNodeId || row.cause_id !== scope.runId
       || activation.lineageId !== scope.runId) return repeatConflict('WORK_ENTRY_PIN_CONFLICT')
@@ -465,18 +478,14 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
   const activationRow = (await sql.query<{ record: unknown; cause_kind: string; cause_id: string }>(
     'select record,cause_kind,cause_id from run_work_activations where activation_id=$1 and run_id=$2 for share',
     [row.work_activation_id, scope.runId])).rows[0]
-  if (!activationRow || activationRow.cause_kind !== 'work_request') return repeatConflict('WORK_RETURN_REQUEST_MISSING')
+  if (!activationRow) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
   const activation = WorkActivationIdentitySchema.parse(activationRow.record)
   if (!sameRepeatValue(activation.scope, scope) || activation.workflowNodeId !== execution.workflowNodeId) {
     return repeatConflict('WORK_RETURN_SOURCE_PIN_CONFLICT')
   }
-  const requestRow = (await sql.query<{ record: unknown }>(
-    'select record from run_work_requests where request_id=$1 and run_id=$2 for share',
-    [activationRow.cause_id, scope.runId])).rows[0]
-  if (!requestRow) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
-  const request = WorkRequestSchema.parse(requestRow.record)
-  if (!sameRepeatValue(request.scope, scope) || request.destinationActivationId !== activation.activationId
-    || request.destinationNodeId !== execution.workflowNodeId) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
+  const request = await readParentWorkRequestLocked(context, activation.activationId)
+  if (!request) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
+  if (request.destinationNodeId !== execution.workflowNodeId) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
   const result = parseWorkHandoffResult(execution.result)
   const routing = result.routing
   if (routing.kind !== 'return' || routing.requestId !== request.requestId) {

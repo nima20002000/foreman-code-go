@@ -1,3 +1,4 @@
+import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
@@ -821,6 +822,7 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  workParentRequestMigration,
   localHumanMigration,
 ] as const
 
