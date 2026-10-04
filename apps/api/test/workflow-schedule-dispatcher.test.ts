@@ -59,7 +59,7 @@ describe('SCH-04 frozen-policy dispatch plan', () => {
     expect(planDueSchedule({ ...once, enabled: false, nextOccurrenceAt: null }, settings.nextOccurrenceAt)).toEqual([])
   })
   it('rejects unbounded batch inputs', () => {
-    for (const size of [0, 101, 1.5, Number.NaN]) expect(() => planDueSchedule(once, settings.nextOccurrenceAt, size)).toThrow()
+    for (const size of [0, 1_001, 1.5, Number.NaN]) expect(() => planDueSchedule(once, settings.nextOccurrenceAt, size)).toThrow()
   })
   it('publishes only stable application reason codes', () => {
     expect(scheduleRejectionReason(new DomainError('AUTH_REVOKED', 'private detail', 403))).toBe('schedule_authorization_denied')

@@ -12,16 +12,18 @@ import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, type ImmutableWorkflowVersionRow,
 } from '../workflows/immutableRead.js'
 import { readScheduleAuthority } from './authority.js'
-import { decideDueSchedule, planDueSchedule } from './dispatchPlan.js'
+import { decideDueSchedule, planDueSchedule, type DueScheduleStep } from './dispatchPlan.js'
 import { PostgresWorkflowScheduleRepository } from './postgres.js'
 import type { ScheduleStartGuard } from './startGuard.js'
 
 interface PreparedStart {
+  kind: 'start'
   schedule: WorkflowSchedule
   dueAt: string
   principal: ManagementPrincipal
   input: RunStartV3Input
 }
+type SchedulePreparation = PreparedStart | { kind: 'continue'; schedule: WorkflowSchedule }
 export type ScheduledStart = (principal: ManagementPrincipal, input: RunStartV3Input,
   guard: ScheduleStartGuard) => Promise<void>
 const retry = () => new DomainError('SCHEDULE_DISPATCH_RETRY', 'Re-read the schedule before admission.', 409)
@@ -58,10 +60,13 @@ export class PostgresScheduleDispatcher {
     // Re-read once after a disable/version/time race. Persistent failures leave
     // the due cursor intact; the next bounded scan retries from durable state.
     let candidate = observed
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let attempt = 0
+    while (attempt < 2) {
       const prepared = await this.prepare(candidate)
       if (!prepared) return
       candidate = prepared.schedule
+      if (prepared.kind === 'continue') continue
+      attempt++
       try {
         await this.start(prepared.principal, prepared.input, this.guard(prepared))
         return
@@ -113,8 +118,24 @@ export class PostgresScheduleDispatcher {
     return ScheduleOccurrenceSchema.parse({ workspaceId: schedule.workspaceId, workflowId: schedule.workflowId,
       id: scheduleOccurrenceId(schedule.workflowId, dueAt), dueAt, scheduleRevision: schedule.revision, ...outcome })
   }
+  private async recordMissedBatch(client: pg.PoolClient, schedule: WorkflowSchedule,
+    steps: DueScheduleStep[], now: string): Promise<void> {
+    const facts = steps.map((step) => {
+      if (step.decision.status !== 'missed') throw new Error('Recovery requires missed occurrences.')
+      return this.fact(schedule, step.dueAt, step.decision)
+    })
+    // The workflow lock serializes writers; existing immutable outcomes remain intact.
+    await client.query(`insert into workflow_schedule_occurrences
+      (id,workspace_id,workflow_id,due_at,schedule_revision,status,reason,record,recorded_at)
+      select fact->>'id',fact->>'workspaceId',fact->>'workflowId',(fact->>'dueAt')::timestamptz,
+        (fact->>'scheduleRevision')::bigint,fact->>'status',fact->>'reason',fact,$2::timestamptz
+      from jsonb_array_elements($1::jsonb) fact
+      on conflict (workflow_id,due_at) do nothing`, [JSON.stringify(facts), now])
+    await this.repository.advanceCursor(client, schedule, schedule.revision,
+      steps[0]!.dueAt, steps.at(-1)!.nextDueAt)
+  }
   private async prepare(observed: WorkflowSchedule,
-    rejection?: { dueAt: string; reason: string }): Promise<PreparedStart | undefined> {
+    rejection?: { dueAt: string; reason: string }): Promise<SchedulePreparation | undefined> {
     return this.transaction(async (client) => {
       // Principal locks precede workspace locks, matching schedule writes and
       // manual admission. Revisions below fence a concurrently replaced binding.
@@ -138,7 +159,13 @@ export class PostgresScheduleDispatcher {
         return // disable/clear already nulled the cursor, never restore it
       }
       if (current.revision !== observed.revision) return // changed configuration: rescan, never use stale pins
-      for (const step of planDueSchedule(current, now)) {
+      const steps = planDueSchedule(current, now)
+      const missed = steps.filter((step) => step.decision.status === 'missed')
+      if (!rejection && missed.length) {
+        await this.recordMissedBatch(client, current, missed, now)
+        return { kind: 'continue', schedule: { ...current, nextOccurrenceAt: missed.at(-1)!.nextDueAt } }
+      }
+      for (const step of steps) {
         // A delayed Start failure belongs only to the attempted occurrence.
         // A clock/peer cursor advance must not apply it to a newer due instant.
         if (rejection && step.dueAt !== rejection.dueAt) return
@@ -157,7 +184,7 @@ export class PostgresScheduleDispatcher {
             if (!reason) {
               if (!principal) throw new Error('Schedule authority was not resolved.')
               try {
-                return { schedule: { ...current, nextOccurrenceAt: step.dueAt }, dueAt: step.dueAt,
+                return { kind: 'start', schedule: { ...current, nextOccurrenceAt: step.dueAt }, dueAt: step.dueAt,
                   principal, input: await this.latestStartInput(client, current, step.dueAt) }
               } catch (error) {
                 const failure = scheduleRejectionReason(error)
@@ -171,6 +198,10 @@ export class PostgresScheduleDispatcher {
         }
         await this.repository.advanceCursor(client, { workspaceId: current.workspaceId, workflowId: current.workflowId },
           current.revision, step.dueAt, step.nextDueAt)
+      }
+      const nextDueAt = steps.at(-1)?.nextDueAt
+      if (nextDueAt && Date.parse(nextDueAt) <= Date.parse(this.clock().toISOString())) {
+        return { kind: 'continue', schedule: { ...current, nextOccurrenceAt: nextDueAt } }
       }
     })
   }
