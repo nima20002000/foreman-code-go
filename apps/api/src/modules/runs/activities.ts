@@ -71,7 +71,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'type',left(n.record->>'type',48),
     'itemType',left(n.record#>>'{payload,item,type}',48),
     'itemStatus',left(n.record#>>'{payload,item,status}',48),
-    'itemError',n.record#>'{payload,item,error}' is not null,
+    'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false),
     'partTool',left(n.record#>>'{payload,part,tool}',48),
     'partStatus',left(n.record#>>'{payload,part,state,status}',48))) end as native
 from run_activity a

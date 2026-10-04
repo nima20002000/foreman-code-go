@@ -1,5 +1,6 @@
 import type pg from 'pg'
 import { type ActivityItem, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { nativeActivityStatus } from './nativeActivityStatus.js'
 
 export interface NativeActivityFact {
   execution_id: string; sequence: string; item_id: string; item_type: string; status: string | null;
@@ -39,10 +40,10 @@ export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], 
     const context = resolve(row.execution_id)
     const child = row.item_type === 'subagent'
     const kind = child ? 'subagent' : 'tool'
-    const provenTerminal = ['completed', 'failed', 'declined', 'error', 'canceled', 'cancelled', 'interrupted'].includes(row.status ?? '')
-    const status = row.status === 'error' || row.status === 'failed' || row.status === 'declined' ? 'failed'
-      : ['canceled', 'cancelled', 'interrupted'].includes(row.status ?? '') ? 'canceled'
-        : row.status === 'completed' ? 'completed' : context.terminal || row.status === 'unknown' ? 'unknown' : row.status === 'pending' ? 'pending' : 'running'
+    const observed = nativeActivityStatus(row.status)
+    const provenTerminal = observed === 'completed' || observed === 'failed' || observed === 'canceled'
+    const status = provenTerminal ? observed
+      : context.terminal || observed === 'unknown' ? 'unknown' : observed ?? 'running'
     const nativeSession = row.native_session_id ?? (child ? null : context.sessionId)
     const native = nativeSession && context.harness ? { harness: context.harness, sessionId: nativeSession,
       ...(row.native_turn_id ? { turnId: row.native_turn_id } : {}), itemId: row.item_id,

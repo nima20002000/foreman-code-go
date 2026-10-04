@@ -2,6 +2,7 @@ import { GraphIdSchema, RunActivityPublicSchema,
   type RunActivityPublic, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { repeatId } from './repeatResolution.js'
 import { safeNodeName } from './nativeAction.js'
+import { nativeActivityStatus } from './nativeActivityStatus.js'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;
@@ -30,6 +31,18 @@ function toolLabel(native: Record<string, unknown>): string | undefined {
   if (part === 'read') return 'File read'
   if (part === 'grep' || part === 'glob' || part === 'list') return 'File search'
   return undefined
+}
+
+function toolStatus(native: Record<string, unknown>): RunActivityPublic['status'] {
+  const item = nativeActivityStatus(string(native.itemStatus))
+  const part = nativeActivityStatus(string(native.partStatus))
+  if (item === 'canceled' || part === 'canceled') return 'canceled'
+  if (native.itemError === true || item === 'failed' || part === 'failed') return 'failed'
+  if (native.type === 'item.completed' || item === 'completed' || part === 'completed') return 'completed'
+  if (item === 'unknown' || part === 'unknown') return 'unknown'
+  if (item === 'pending' || part === 'pending') return 'pending'
+  if (native.type === 'item.started' || item === 'running' || part === 'running') return 'running'
+  return 'recorded'
 }
 
 /** Deliberate allowlist: no original payload, prompt, file path, command,
@@ -140,19 +153,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     case 'harness_output': {
       const label = toolLabel(native)
       kind = label ? 'tool_action' : 'tool_log'
-      const event = string(native.type)
-      const itemStatus = string(native.itemStatus), partStatus = string(native.partStatus)
-      const failed = native.itemError === true || string(native.partStatus) === 'error'
-        || ['failed','declined','canceled'].includes(itemStatus ?? '')
-      status = failed ? 'failed' : event === 'item.completed'
-        || itemStatus === 'completed' || partStatus === 'completed' ? 'completed'
-        : itemStatus === 'pending' || partStatus === 'pending' ? 'pending'
-          : event === 'item.started' || itemStatus === 'inProgress'
-            || itemStatus === 'running' || partStatus === 'running' ? 'running' : 'recorded'
-      summary = label ? `${label} ${status === 'failed' ? 'failed'
-        : status === 'completed' ? 'completed' : status === 'running' ? 'started'
-          : status === 'pending' ? 'pending' : 'recorded'}`
-        : 'Native activity recorded; details unavailable'
+      status = toolStatus(native)
+      const action = status === 'running' ? 'started' : status
+      summary = label ? `${label} ${action}` : 'Native activity recorded; details unavailable'
       break
     }
     case 'result_recorded': case 'work_result_accepted':
