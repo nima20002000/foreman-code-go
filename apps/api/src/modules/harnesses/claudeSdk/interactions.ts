@@ -45,6 +45,7 @@ interface PermissionRequest {
   promise: Promise<ClaudeToolDecision>
   identity: ClaudeCallbackIdentity
   signal: AbortSignal
+  cancel(): void
   stage: 'pending' | 'response_in_flight' | 'consumed'
   response?: {
     promise: Promise<ClaudeInteractionAnswer>
@@ -73,6 +74,9 @@ export class ClaudeInteractionBridge {
   close(): void {
     this.controller.abort()
     this.mcpManifests = []
+  }
+  cancelPendingRequests(): void {
+    for (const request of this.requests.values()) request.cancel()
   }
   bindMcpTools(manifests: readonly ClaudeMcpToolManifest[]): void {
     if (this.controller.signal.aborted) throw new HarnessExecutionError('CLAUDE_CALLBACK_CLOSED', 'The callback owner is closed.')
@@ -271,7 +275,8 @@ export class ClaudeInteractionBridge {
     if (this.requests.size + this.consumed.size >= 256) {
       return { behavior: 'deny', message: 'The retained permission record limit was reached. Close this owner before admitting more callbacks.' }
     }
-    const combined = AbortSignal.any([signal, this.controller.signal])
+    const cancellation = new AbortController()
+    const combined = AbortSignal.any([signal, this.controller.signal, cancellation.signal])
     let onAbort: (() => void) | undefined
     const aborted = new Promise<ClaudeToolDecision>((finish) => {
       onAbort = () => finish({ behavior: 'deny', message: 'The native callback was aborted.', interrupt: true })
@@ -286,6 +291,7 @@ export class ClaudeInteractionBridge {
     })
     const entry: PermissionRequest = {
       input: value, promise, identity: structuredClone(identity), signal: combined, stage: 'pending',
+      cancel: () => cancellation.abort(new Error('The native Claude query closed.')),
     }
     this.requests.set(key, entry)
     if (toolName !== 'AskUserQuestion') this.changed(identity)

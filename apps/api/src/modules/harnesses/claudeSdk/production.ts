@@ -162,7 +162,8 @@ export function productionClaudeManager(input: {
         history: compiled.qualification.history, interactions: compiled.qualification.policy.alwaysAppliedToolHook },
       inspectionStart, expectedMcp: { serverName: 'graphql',
         ...(compiled.mcpServers.graphql?.type === 'http' ? { url: compiled.mcpServers.graphql.url } : {}) },
-      interactionPort: domain.interactionPort, liveCallbacks: domain.bridge, cancelPendingRequests: () => domain.bridge.close(),
+      interactionPort: domain.interactionPort, liveCallbacks: domain.bridge,
+      cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
       pendingInteractions: session => domain.bridge.pendingInteractions(session),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
         attemptId: callbackAuthority.attemptId, generation: input.recovery.launchId ?? callbackAuthority.attemptId }),
@@ -201,7 +202,11 @@ export function productionClaudeManager(input: {
   }
   const dispose = result.manager.dispose!.bind(result.manager)
   result.manager.dispose = async () => {
-    try { await dispose() } finally { await fileServer?.close(); inspectedStart = undefined }
+    try { await dispose() } finally {
+      policyBridge?.close()
+      await fileServer?.close()
+      inspectedStart = undefined
+    }
   }
   return { ...result, inspectionStart }
 }
