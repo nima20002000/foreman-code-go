@@ -38,7 +38,7 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
   return { frames, close, interrupt, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
     await started
     const value = (await messages.next()).value
-    if (value) frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
+    if (value) void frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
     return value!
   } }
 }
@@ -68,8 +68,8 @@ describe('Claude native session manager admission', () => {
     const output = drain(f.manager.startTurn(session, turn))
     const first = await f.nextMessage()
     expect(submit).not.toHaveBeenCalled()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'assistant-1', user_message_uuid: first.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-1', user_message_uuid: first.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'assistant-1', user_message_uuid: first.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-1', user_message_uuid: first.uuid, subtype: 'success', is_error: false, result: 'done' })
     const events = await output
     expect(submit).toHaveBeenCalledWith({ kind: 'message', nativeSessionId: 'native-session', nativeMessageId: first.uuid, clientCorrelationId: 'request-1' })
     expect(events.map((event) => event.type)).toEqual(['message.submitted', 'turn.completed'])
@@ -80,8 +80,8 @@ describe('Claude native session manager admission', () => {
     expect(f.close).not.toHaveBeenCalled()
     const second = drain(f.manager.startTurn(session, { prompt: 'second', clientCorrelationId: 'request-2' }))
     const secondMessage = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-2', user_message_uuid: secondMessage.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-2', user_message_uuid: secondMessage.uuid, subtype: 'success', is_error: false, result: 'again' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-2', user_message_uuid: secondMessage.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-2', user_message_uuid: secondMessage.uuid, subtype: 'success', is_error: false, result: 'again' })
     await second
     expect((await f.manager.reconcile(session, 'request-2')).terminalResult?.output).toBe('again')
     await f.manager.close(session); await f.manager.close(session); await f.manager.dispose?.()
@@ -93,22 +93,22 @@ describe('Claude native session manager admission', () => {
     const output = drain(f.manager.startTurn(session, { prompt: 'long task', clientCorrelationId: 'request-stop' }))
     const message = await f.nextMessage()
     expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(false) // Not yet natively echoed.
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-stop', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-stop', user_message_uuid: message.uuid })
     await vi.waitFor(async () => expect((await f.manager.reconcile(session, 'request-stop')).nativeSubmission).toBeDefined())
     expect(await f.manager.cancel(session, undefined, 'another-message')).toBe(false)
     expect(f.interrupt).not.toHaveBeenCalled()
     expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
     expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
     expect(f.interrupt).toHaveBeenCalledTimes(1)
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-stop', user_message_uuid: message.uuid, subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', errors: [] })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-stop', user_message_uuid: message.uuid, subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', errors: [] })
     expect((await output).at(-1)?.type).toBe('turn.completed')
     const history = await f.manager.reconcile(session, 'request-stop')
     expect(history.terminalResult).toEqual({ outcome: 'canceled' })
     expect(history.terminalTurn?.providerId).toBe(message.uuid)
     const next = drain(f.manager.startTurn(session, { prompt: 'next', clientCorrelationId: 'request-next' }))
     const nextMessage = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-next', user_message_uuid: nextMessage.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-next', user_message_uuid: nextMessage.uuid, subtype: 'success', is_error: false, result: 'ok' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-next', user_message_uuid: nextMessage.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-next', user_message_uuid: nextMessage.uuid, subtype: 'success', is_error: false, result: 'ok' })
     await next
     expect((await f.manager.reconcile(session, 'request-next')).terminalResult).toEqual({ outcome: 'succeeded', output: 'ok' })
     await f.manager.dispose?.()
@@ -117,10 +117,10 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const output = drain(f.manager.startTurn(session, { prompt: 'quick', clientCorrelationId: 'request-race' }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-race', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply-race', user_message_uuid: message.uuid })
     await vi.waitFor(async () => expect((await f.manager.reconcile(session, 'request-race')).nativeSubmission).toBeDefined())
     expect(await f.manager.cancel(session, undefined, message.uuid)).toBe(true)
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-race', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done first' })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-race', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done first' })
     await output
     expect((await f.manager.reconcile(session, 'request-race')).terminalResult).toEqual({ outcome: 'succeeded', output: 'done first' })
     await f.manager.dispose?.()
@@ -129,11 +129,11 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const output = f.manager.startTurn(session, { prompt: 'new', clientCorrelationId: 'request-new' })[Symbol.asyncIterator]()
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'wake-result', subtype: 'success', is_error: false, result: 'wake' })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'wake-result', subtype: 'success', is_error: false, result: 'wake' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect((await f.manager.reconcile(session, 'request-new')).terminalResult).toBeUndefined()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'new-reply', user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'new-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'new' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'new-reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'new-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'new' })
     expect((await output.next()).value?.type).toBe('message.submitted')
     expect((await output.next()).value?.type).toBe('turn.completed')
     await f.manager.dispose?.()
@@ -142,7 +142,7 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const result = drain(f.manager.startTurn(session, { prompt: 'one', clientCorrelationId: 'request-one' }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'failure-result', user_message_uuid: message.uuid, subtype: 'error_during_execution', is_error: true, errors: ['native refusal'] })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'failure-result', user_message_uuid: message.uuid, subtype: 'error_during_execution', is_error: true, errors: ['native refusal'] })
     f.frames.close(new Error('throw after result'))
     await result
     expect((await f.manager.reconcile(session, 'request-one')).terminalResult?.error?.message).toBe('native refusal')
@@ -158,8 +158,8 @@ describe('Claude native session manager admission', () => {
     abort.abort(new Error('subscriber gone'))
     await expect(read).rejects.toThrow('subscriber gone')
     expect(f.close).not.toHaveBeenCalled()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect((await f.manager.reconcile(session, 'request-one')).terminalResult?.output).toBe('done')
     await f.manager.dispose?.()
@@ -168,8 +168,8 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const result = drain(f.manager.startTurn(session, { prompt: 'one', clientCorrelationId: 'request-one' }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'system', subtype: 'task_started', session_id: session.nativeSessionId, task_id: 'background-native', is_backgrounded: true })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'parent-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'parent' })
+    void f.frames.offer({ type: 'system', subtype: 'task_started', session_id: session.nativeSessionId, task_id: 'background-native', is_backgrounded: true })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'parent-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'parent' })
     await expect(result).rejects.toThrow('background work')
     expect((await f.manager.reconcile(session, 'request-one')).terminalResult).toBeUndefined()
     expect(f.close).toHaveBeenCalled()
@@ -181,7 +181,7 @@ describe('Claude native session manager admission', () => {
     const submit = vi.fn(async () => undefined)
     const subscriber = f.manager.startTurn(session, { prompt: 'new', clientCorrelationId: 'request-new', onMessageSubmitted: submit } as ClaudeMessageTurnInput)[Symbol.asyncIterator]()
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'wake-folded-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'wake' })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'wake-folded-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'wake' })
     expect((await subscriber.next()).value?.type).toBe('message.submitted')
     expect((await subscriber.next()).value?.type).toBe('claude.result.unattributed')
     expect(submit).toHaveBeenCalledTimes(1)
@@ -195,8 +195,8 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const subscriber = f.manager.startTurn(session, { prompt: 'new', clientCorrelationId: 'request-new' })[Symbol.asyncIterator]()
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unknown-result', user_message_uuid: message.uuid, subtype: 'future_variant', is_error: false, result: 'unknown' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unknown-result', user_message_uuid: message.uuid, subtype: 'future_variant', is_error: false, result: 'unknown' })
     expect((await subscriber.next()).value?.type).toBe('message.submitted')
     expect((await subscriber.next()).value?.type).toBe('claude.result.unattributed')
     expect((await f.manager.reconcile(session, 'request-new')).terminalResult).toBeUndefined()
@@ -217,16 +217,16 @@ describe('Claude native session manager admission', () => {
     const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const a = drain(f.manager.startTurn(session, { prompt: 'A', clientCorrelationId: 'request-A' }))
     const messageA = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-A', message: { id: 'api-A' }, user_message_uuid: messageA.uuid, tool_use_id: 'tool-A', text: 'A tool' })
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-A-2', message: { id: 'api-A' }, text: 'A canonical block' })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-A', user_message_uuid: messageA.uuid, subtype: 'success', is_error: false, result: 'A done' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-A', message: { id: 'api-A' }, user_message_uuid: messageA.uuid, tool_use_id: 'tool-A', text: 'A tool' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-A-2', message: { id: 'api-A' }, text: 'A canonical block' })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-A', user_message_uuid: messageA.uuid, subtype: 'success', is_error: false, result: 'A done' })
     await a
     const b = drain(f.manager.startTurn(session, { prompt: 'B', clientCorrelationId: 'request-B' }))
     const messageB = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-B', message: { id: 'api-B' }, user_message_uuid: messageB.uuid, text: 'B' })
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'child-A', parent_tool_use_id: 'tool-A', message: { id: 'child-api-A' }, text: 'late A child' })
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'unowned-child', parent_tool_use_id: 'unknown-tool', message: { id: 'unknown-child' }, text: 'unowned' })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-B', user_message_uuid: messageB.uuid, subtype: 'success', is_error: false, result: 'B done' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'frame-B', message: { id: 'api-B' }, user_message_uuid: messageB.uuid, text: 'B' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'child-A', parent_tool_use_id: 'tool-A', message: { id: 'child-api-A' }, text: 'late A child' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'unowned-child', parent_tool_use_id: 'unknown-tool', message: { id: 'unknown-child' }, text: 'unowned' })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'result-B', user_message_uuid: messageB.uuid, subtype: 'success', is_error: false, result: 'B done' })
     const eventsB = await b
     expect(eventsB.some((event) => event.payload.text === 'late A child' || event.payload.text === 'unowned')).toBe(false)
     const historyA = await f.manager.reconcile(session, 'request-A')
@@ -238,8 +238,8 @@ describe('Claude native session manager admission', () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const result = drain(f.manager.startTurn(session, { prompt: 'one', clientCorrelationId: 'request-one' }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', message: { id: 'api-reply' }, user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'deferred-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'parent', terminal_reason: reason })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', message: { id: 'api-reply' }, user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'deferred-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'parent', terminal_reason: reason })
     await expect(result).rejects.toThrow('background work')
     expect((await f.manager.reconcile(session, 'request-one')).terminalResult).toBeUndefined()
     await f.manager.dispose?.()
@@ -269,7 +269,7 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
     const changed = fixture()
     changed.client.query = () => {
-      changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/work' })
+      void changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/work' })
       return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(), interrupt: async () => undefined }
     }
     const changedResult = drain(changed.manager.startInitialTurn(start, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
@@ -293,7 +293,7 @@ describe('Claude native session manager admission', () => {
     const message = await f.nextMessage()
     const query: import('./callbackAvailability.js').ClaudeResponseAvailabilityQuery = { nativeRequestId: 'native-request-one', nativeRequestType: 'can_use_tool' }
     expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('callback_lost')
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'root-frame', user_message_uuid: message.uuid,
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'root-frame', user_message_uuid: message.uuid,
       message: { id: 'api-one', content: [{ type: 'tool_use', id: 'root-tool-one', name: 'Bash', input: {} }] } })
     await subscriber.next(); await subscriber.next()
     const context = f.manager.nativeCallbackContext(session.nativeSessionId, 'root-tool-one')!
@@ -347,8 +347,8 @@ describe('Claude native session manager admission', () => {
     expect(boundSession).toBeUndefined()
     const input = await f.nextMessage()
     expect(input.uuid).toBe(claudePromptUuid('operator:one'))
-    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid, message: { id: 'api-first', content: [] } })
-    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid, message: { id: 'api-first', content: [] } })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
     await result
     expect(order).toEqual(['session', 'message'])
     expect((await f.manager.reconcile(boundSession!, 'operator:one')).terminalResult?.output).toBe('done')
@@ -363,8 +363,8 @@ describe('Claude native session manager admission', () => {
     const submitted = vi.fn(async () => undefined)
     const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async () => saving, onMessageSubmitted: submitted }))
     const input = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
-    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(submitted).not.toHaveBeenCalled()
     release(); await result
@@ -383,8 +383,8 @@ describe('Claude native session manager admission', () => {
     let observed: import('@graphql/contracts').NativeSessionReference | undefined
     const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async (session) => { observed = session } }))
     const input = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
-    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
     await result
     expect(observed?.nativeSessionId).toBe('native-session'); expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
@@ -412,8 +412,8 @@ describe('Claude native session manager admission', () => {
     expect(f.setServers).toHaveBeenCalledWith(servers); expect(f.queries).toHaveBeenCalledTimes(1)
     const result = drain(f.manager.startInitialTurn(credentialed, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
     const input = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
-    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
     await result
     expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
@@ -542,8 +542,8 @@ describe('Claude native session manager admission', () => {
     if (inputKind === 'later') {
       const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async (value) => { session = value } }))
       const message = await f.nextMessage()
-      f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
-      f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
+      void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
       await result
     }
     if (controlKind === 'refresh-update') f.setServers.mockImplementationOnce(() => { entered.resolve(); return update.promise })
@@ -587,7 +587,7 @@ describe('Claude native session manager admission', () => {
   it('releases a successful control reservation before accepting a fenced reusable correlation', async () => {
     const f = fixture()
     await f.manager.prepareInspection(start)
-    f.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
+    void f.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
     await new Promise<void>((resolve) => setImmediate(resolve))
     const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const entered = deferred<void>(); const status = deferred<Awaited<ReturnType<typeof f.statuses>>>()
@@ -600,8 +600,8 @@ describe('Claude native session manager admission', () => {
     await inspecting
     const result = drain(f.manager.startTurn(session, { prompt: 'later', clientCorrelationId: 'fenced-correlation' }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'later-reply', user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'later-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'later-reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'later-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
     await result
     expect(f.offers).toHaveBeenCalledTimes(1)
     expect(f.close).not.toHaveBeenCalled()
@@ -645,7 +645,7 @@ describe('Claude native session manager admission', () => {
     const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const output = f.manager.startTurn(session, { prompt: 'permission', clientCorrelationId: 'request-A', callbackAuthority: { ownerPrincipalId: 'sender-A', attemptId: 'attempt-A' } } as ClaudeMessageTurnInput)[Symbol.asyncIterator]()
     const input = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'tool-frame', user_message_uuid: input.uuid, message: { id: 'api-A', content: [{ type: 'tool_use', id: 'tool-A', name: 'Read', input: {} }] } })
+    void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'tool-frame', user_message_uuid: input.uuid, message: { id: 'api-A', content: [{ type: 'tool_use', id: 'tool-A', name: 'Read', input: {} }] } })
     await output.next(); await output.next()
     const context = f.manager.nativeCallbackContext(session.nativeSessionId, 'tool-A')!
     expect(f.manager.callbackAuthority(context)).toEqual({ ownerPrincipalId: 'sender-A', attemptId: 'attempt-A' })

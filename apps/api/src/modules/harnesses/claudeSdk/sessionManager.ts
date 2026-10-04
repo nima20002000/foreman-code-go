@@ -911,7 +911,7 @@ export function createClaudeNativeSessionManager(options: {
         if (!runtime.historyScanOffsets.has(correlationId) && runtime.historyScanOffsets.size >= 256) {
           throw new HarnessExecutionError('CLAUDE_RECOVERY_WINDOW_EXHAUSTED', 'The native history recovery window is full.')
         }
-        let accepted = false
+        let accepted: boolean
         for (let offset = runtime.historyScanOffsets.get(correlationId) ?? 0; ; offset += 256) {
           signal?.throwIfAborted()
           const rows = await options.runner.history({ ...options.scope, nativeSessionId: session.nativeSessionId },

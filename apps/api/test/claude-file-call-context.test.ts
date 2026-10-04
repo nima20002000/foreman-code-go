@@ -47,7 +47,7 @@ async function nativeFixture() {
   const firstEvent = output.next()
   await vi.waitFor(() => expect(messages).toBeDefined())
   const message = (await messages!.next()).value!
-  frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: '2.1.284', cwd: '/work' })
+  void frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: '2.1.284', cwd: '/work' })
   const lifetime = new AbortController()
   const resolver = createClaudeFileCallResolver({ manager: () => manager, signal: lifetime.signal })
   const extra = (toolUseId: string, signal = new AbortController().signal) => ({ signal, _meta: { 'claudecode/toolUseId': toolUseId } })
@@ -61,7 +61,7 @@ describe('Claude file resolver with real native owner map', () => {
       const resolution = f.resolver.resolve('files.read', f.extra('root-tool'))
       const resolved = vi.fn()
       void resolution.then(resolved)
-      f.frames.offer({ type: 'assistant', session_id: f.session.nativeSessionId, uuid: 'root-frame',
+      void f.frames.offer({ type: 'assistant', session_id: f.session.nativeSessionId, uuid: 'root-frame',
         user_message_uuid: f.message.uuid, message: { id: 'root-api', content: [{ type: 'tool_use', id: 'root-tool', name: 'Read', input: {} }] } })
       await vi.waitFor(() => expect(f.submitted).toHaveBeenCalledOnce())
       expect(resolved).not.toHaveBeenCalled()
@@ -72,11 +72,11 @@ describe('Claude file resolver with real native owner map', () => {
       expect(identity).toMatchObject({ nativeSessionId: f.session.nativeSessionId, nativeMessageId: f.message.uuid,
         clientCorrelationId: 'accepted-request', ownerPrincipalId: 'accepted-sender', attemptId: 'accepted-attempt', toolUseId: 'root-tool' })
       await f.output.next()
-      f.frames.offer({ type: 'assistant', session_id: f.session.nativeSessionId, uuid: 'child-frame', parent_tool_use_id: 'root-tool',
+      void f.frames.offer({ type: 'assistant', session_id: f.session.nativeSessionId, uuid: 'child-frame', parent_tool_use_id: 'root-tool',
         message: { id: 'child-api', content: [{ type: 'tool_use', id: 'child-tool', name: 'Read', input: {} }] } })
       await f.output.next()
       expect(f.manager.nativeCallbackContext(f.session.nativeSessionId, 'child-tool')).toBeUndefined()
-      f.frames.offer({ type: 'result', session_id: f.session.nativeSessionId, uuid: 'native-result', user_message_uuid: f.message.uuid,
+      void f.frames.offer({ type: 'result', session_id: f.session.nativeSessionId, uuid: 'native-result', user_message_uuid: f.message.uuid,
         subtype: 'success', is_error: false, result: 'done' })
       await f.output.next()
       expect(f.manager.nativeCallbackContext(f.session.nativeSessionId, 'root-tool')).toBeUndefined()

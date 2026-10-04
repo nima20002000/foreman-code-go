@@ -11,7 +11,6 @@ import { createClaudeSdkRunner } from './runner.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
 import {
   claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput,
-  type ClaudeNativeSessionManager,
 } from './sessionManager.js'
 
 const scope = { deviceId: 'device', profilePath: '/profile', configRevision: 'revision', cwd: '/work' }
@@ -39,7 +38,6 @@ async function drain(events: AsyncIterable<NativeHarnessEvent>) {
 function fixture(sdkOptions: Record<string, unknown> = {}) {
   const frames = new ClaudeBoundedQueue<unknown>(32)
   const receipts = new Map<string, string>()
-  let manager: ClaudeNativeSessionManager
   const validate = vi.fn(async (identity: ClaudeCallbackIdentity) => {
     expect(identity.ownerPrincipalId).toBe('sender')
     expect(identity.attemptId).toBe(identity.clientCorrelationId)
@@ -59,7 +57,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   const query = vi.fn<ClaudeSdkClient['query']>(input => {
     messages = input.prompt[Symbol.asyncIterator]()
     ready()
-    frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
+    void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
       claude_code_version: qualification.cliVersion, cwd: scope.cwd })
     return {
       [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
@@ -82,7 +80,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     }
     return session
   }
-  manager = createClaudeNativeSessionManager({
+  const manager = createClaudeNativeSessionManager({
     runner, scope, sdkOptions: { ...sdkOptions, ...callbacks }, qualification,
     cancelPendingRequests: () => bridge.close(),
     decodeFactory() {
@@ -121,8 +119,8 @@ describe('Claude response ownership through SDK callbacks', () => {
       const session = await f.manager.attachSession(saved, start)
       const old = drain(f.manager.startTurn(session, f.input('older')))
       const oldMessage = await f.nextMessage()
-      f.assistant('older-reply', [{ type: 'text', text: 'older' }], oldMessage.uuid)
-      f.result(oldMessage.uuid)
+      void f.assistant('older-reply', [{ type: 'text', text: 'older' }], oldMessage.uuid)
+      void f.result(oldMessage.uuid)
       await old
 
       const output = drain(f.manager.startTurn(session, f.input('request')))
@@ -132,28 +130,28 @@ describe('Claude response ownership through SDK callbacks', () => {
         signal, toolUseID, requestId: `control-${toolUseID}`,
       })
       const first = permission('tool-1')
-      f.assistant('A1', [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/work/file' } }], message.uuid)
+      void f.assistant('A1', [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/work/file' } }], message.uuid)
       expect(await first).toMatchObject({ behavior: 'allow' })
-      f.frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: 'tool-result-1',
+      void f.frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: 'tool-result-1',
         message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'file' }] } })
       // A previously owned API message can arrive during the new response without moving its boundary.
-      f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'late-older',
+      void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'late-older',
         message: { id: 'older-reply', content: [{ type: 'text', text: 'late older' }] } })
-      f.assistant('new-older-id', [{ type: 'text', text: 'late echoed older' }], oldMessage.uuid)
+      void f.assistant('new-older-id', [{ type: 'text', text: 'late echoed older' }], oldMessage.uuid)
       const second = permission('tool-2')
-      f.assistant('A2', [{ type: 'tool_use', id: 'tool-2', name: 'Read', input: { file_path: '/work/file' } }])
+      void f.assistant('A2', [{ type: 'tool_use', id: 'tool-2', name: 'Read', input: { file_path: '/work/file' } }])
       const hook = f.callbacks.hooks!.PreToolUse![0]!.hooks[0]!
       expect(await hook({ hook_event_name: 'PreToolUse', session_id: session.nativeSessionId,
         transcript_path: '/profile/transcript', cwd: scope.cwd, tool_use_id: 'tool-2',
         tool_name: 'Read', tool_input: { file_path: '/work/file' } }, 'tool-2', { signal }))
         .toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse' } })
       expect(await second).toMatchObject({ behavior: 'allow' })
-      f.assistant('A3', [{ type: 'text', text: 'final answer' }])
-      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'frame-A3',
+      void f.assistant('A3', [{ type: 'text', text: 'final answer' }])
+      void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'frame-A3',
         subtype: 'success', is_error: false, result: 'result without an input echo' })
       await tick()
       expect((await f.manager.reconcile(session, 'request')).terminalResult).toBeUndefined()
-      f.result(message.uuid)
+      void f.result(message.uuid)
       const events = await output
       expect(events.filter(event => event.type === 'claude.tool').map(event => event.payload.toolUseId))
         .toEqual(['tool-1', 'tool-1', 'tool-2'])
@@ -164,7 +162,7 @@ describe('Claude response ownership through SDK callbacks', () => {
 
       const next = f.manager.startTurn(session, f.input('next'))[Symbol.asyncIterator]()
       await f.nextMessage()
-      f.assistant('foreign', [{ type: 'tool_use', id: 'foreign-tool', name: 'Read', input: {} }], 'foreign-input')
+      void f.assistant('foreign', [{ type: 'tool_use', id: 'foreign-tool', name: 'Read', input: {} }], 'foreign-input')
       await tick()
       expect(f.manager.nativeCallbackContext(session.nativeSessionId, 'foreign-tool')).toBeUndefined()
       await next.return?.()
@@ -181,18 +179,18 @@ describe('Claude response ownership through SDK callbacks', () => {
         type: 'stream_event', session_id: session.nativeSessionId, uuid: id, event,
         ...(promptUuid ? { user_message_uuid: promptUuid } : {}),
       })
-      stream('start-1', { type: 'message_start', message: { id: 'stream-1' } })
-      stream('text-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'first' } }, message.uuid)
-      stream('start-2', { type: 'message_start', message: { id: 'stream-2' } })
-      stream('tool-start', { type: 'content_block_start', index: 0,
+      void stream('start-1', { type: 'message_start', message: { id: 'stream-1' } })
+      void stream('text-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'first' } }, message.uuid)
+      void stream('start-2', { type: 'message_start', message: { id: 'stream-2' } })
+      void stream('tool-start', { type: 'content_block_start', index: 0,
         content_block: { type: 'tool_use', id: 'stream-tool', name: 'Read' } })
       const signal = new AbortController().signal
       const decision = await f.callbacks.canUseTool!('Read', {}, {
         signal, toolUseID: 'stream-tool', requestId: 'stream-control',
       })
       expect(decision).toMatchObject({ behavior: 'allow' })
-      f.assistant('stream-3', [{ type: 'text', text: 'third' }])
-      f.result(message.uuid)
+      void f.assistant('stream-3', [{ type: 'text', text: 'third' }])
+      void f.result(message.uuid)
       const events = await output
       expect(events.filter(event => event.type === 'claude.text').map(event => event.payload.text)).toEqual(['first', 'third'])
       expect(events.every(event => event.payload.clientCorrelationId === 'streamed')).toBe(true)
@@ -209,8 +207,8 @@ describe('Claude local command results', () => {
       const message = await f.nextMessage()
       expect(message.message.content).toBe('/cost means pricing')
       expect(f.query.mock.calls[0]?.[0].options.verbatimPrompts).toBe(true)
-      f.assistant('literal-reply', [{ type: 'text', text: 'Pricing explanation' }], message.uuid)
-      f.result(message.uuid)
+      void f.assistant('literal-reply', [{ type: 'text', text: 'Pricing explanation' }], message.uuid)
+      void f.result(message.uuid)
       expect((await output).some(event => event.payload.text === 'Pricing explanation')).toBe(true)
       expect((await f.manager.reconcile(session, 'literal-slash')).terminalResult?.outcome).toBe('succeeded')
     } finally { await f.manager.dispose?.() }
@@ -222,18 +220,18 @@ describe('Claude local command results', () => {
       const session = await f.manager.attachSession(saved, start)
       const output = drain(f.manager.startTurn(session, f.input('command', '/cost')))
       const message = await f.nextMessage()
-      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unrelated-wake',
+      void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unrelated-wake',
         subtype: 'success', is_error: false, local_command: 'cost', result: 'wake' })
       await tick()
       expect((await f.manager.reconcile(session, 'command')).terminalResult).toBeUndefined()
-      f.result(message.uuid, { local_command: 'cost', subtype, is_error: subtype !== 'success', errors: ['command error'] })
+      void f.result(message.uuid, { local_command: 'cost', subtype, is_error: subtype !== 'success', errors: ['command error'] })
       await output
       expect((await f.manager.reconcile(session, 'command')).terminalResult?.outcome)
         .toBe(subtype === 'success' ? 'succeeded' : 'failed')
       const next = drain(f.manager.startTurn(session, f.input('after-command')))
       const nextMessage = await f.nextMessage()
-      f.assistant('after-command', [{ type: 'text', text: 'answer' }], nextMessage.uuid)
-      f.result(nextMessage.uuid)
+      void f.assistant('after-command', [{ type: 'text', text: 'answer' }], nextMessage.uuid)
+      void f.result(nextMessage.uuid)
       await next
       expect(f.offers).toHaveBeenCalledTimes(2)
     } finally { await f.manager.dispose?.() }
@@ -250,7 +248,7 @@ describe('Claude local command results', () => {
       const session = await f.manager.attachSession(saved, start)
       const observer = f.manager.startTurn(session, f.input('literal', prompt))[Symbol.asyncIterator]()
       const message = await f.nextMessage()
-      f.result(message.uuid, { local_command: command })
+      void f.result(message.uuid, { local_command: command })
       await tick()
       expect((await f.manager.reconcile(session, 'literal')).terminalResult).toBeUndefined()
       expect(() => f.manager.startTurn(session, f.input('blocked'))).toThrow('still active or uncertain')
@@ -271,8 +269,8 @@ describe('Claude resident attach and history reconciliation', () => {
         .rejects.toThrow('another accepted configuration')
       const output = drain(f.manager.startTurn(session, f.input('completed')))
       const message = await f.nextMessage()
-      f.assistant('reply', [{ type: 'text', text: 'done' }], message.uuid)
-      f.result(message.uuid)
+      void f.assistant('reply', [{ type: 'text', text: 'done' }], message.uuid)
+      void f.result(message.uuid)
       await output
       f.frames.close(new Error('native query failed'))
       await vi.waitFor(() => expect(f.close).toHaveBeenCalled())
@@ -335,7 +333,7 @@ describe('Claude resident attach and history reconciliation', () => {
     try {
       const session = await f.manager.attachSession(saved, start)
       for (let index = 0; index < 300; index += 1) {
-        f.frames.offer({ type: 'system', subtype: 'compact_boundary',
+        void f.frames.offer({ type: 'system', subtype: 'compact_boundary',
           session_id: session.nativeSessionId, uuid: `compact-${index}` })
         await tick()
       }
@@ -379,7 +377,7 @@ describe('Claude initial observer lease', () => {
       expect(() => duplicate[Symbol.asyncIterator]()).toThrow('already has an observer')
       expect(() => initial[Symbol.asyncIterator]()).toThrow('already has an observer')
       duplicateAbort.abort()
-      f.assistant('first', [{ type: 'text', text: 'first text' }], message.uuid)
+      void f.assistant('first', [{ type: 'text', text: 'first text' }], message.uuid)
       const events: NativeHarnessEvent[] = []
       while (!events.some(event => event.payload.text === 'first text')) {
         events.push((await first.next()).value!)
@@ -388,8 +386,8 @@ describe('Claude initial observer lease', () => {
       await first.return?.()
       expect((await pending).done).toBe(true)
       const replacement = drain(f.manager.startInitialTurn(start, input))
-      f.assistant('later', [{ type: 'text', text: 'later text' }])
-      f.result(message.uuid)
+      void f.assistant('later', [{ type: 'text', text: 'later text' }])
+      void f.result(message.uuid)
       const later = await replacement
       expect(later.some(event => event.payload.text === 'later text')).toBe(true)
       expect(later.at(-1)?.type).toBe('turn.completed')

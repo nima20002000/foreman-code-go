@@ -23,7 +23,7 @@ async function fixture(models: unknown[], emitReceipt = false) {
     query(input) {
       void (async () => { for await (const prompt of input.prompt) {
         offered(prompt)
-        if (emitReceipt) frames.offer({ type: 'result', subtype: 'success', is_error: false, session_id: 'synthetic-unit-session',
+        if (emitReceipt) void frames.offer({ type: 'result', subtype: 'success', is_error: false, session_id: 'synthetic-unit-session',
           user_message_uuid: prompt.uuid, uuid: 'synthetic-result', result: 'Unrelated output' })
         frames.close()
       } })()

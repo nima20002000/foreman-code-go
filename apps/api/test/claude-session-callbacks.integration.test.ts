@@ -101,8 +101,8 @@ it('persists one message admission across later tool rounds and validates each c
 
     const oldId = randomUUID()
     const old = await begin(oldId)
-    assistant('older', [{ type: 'text', text: 'older response' }], old.message.uuid)
-    result(old.message.uuid)
+    void assistant('older', [{ type: 'text', text: 'older response' }], old.message.uuid)
+    void result(old.message.uuid)
     await old.output
     expect(await repository.finish(conversation.id, oldId, { outcome: 'succeeded', output: 'done' })).toBe(true)
 
@@ -115,7 +115,7 @@ it('persists one message admission across later tool rounds and validates each c
       const decision = callbacks.canUseTool!('Read', { file_path: `${db.directory}/file` }, {
         signal, toolUseID, requestId: request,
       })
-      assistant(messageId, [{ type: 'tool_use', id: toolUseID, name: 'Read', input: {} }],
+      void assistant(messageId, [{ type: 'tool_use', id: toolUseID, name: 'Read', input: {} }],
         index === 0 ? current.message.uuid : undefined)
       await vi.waitFor(async () => {
         expect((await repository.get(conversation.id))?.pendingInteraction?.turn.nativeRequestId).toBe(request)
@@ -141,12 +141,12 @@ it('persists one message admission across later tool rounds and validates each c
       expect(await repository.claimResponse(conversation.id, requestId, request)).toBe(true)
       await manager.respond(session, request, option)
       expect(await decision).toMatchObject({ behavior: 'allow' })
-      frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: `tool-result-${index}`,
+      void frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: `tool-result-${index}`,
         message: { content: [{ type: 'tool_result', tool_use_id: toolUseID, content: 'file' }] } })
-      if (index === 0) assistant('older', [{ type: 'text', text: 'late older response' }])
+      if (index === 0) void assistant('older', [{ type: 'text', text: 'late older response' }])
     }
-    assistant('A3', [{ type: 'text', text: 'final response' }])
-    result(current.message.uuid)
+    void assistant('A3', [{ type: 'text', text: 'final response' }])
+    void result(current.message.uuid)
     const output = await current.output
     expect(output.some(event => event.payload.text === 'late older response')).toBe(false)
     expect(output.find(event => event.payload.text === 'final response')?.payload.clientCorrelationId)

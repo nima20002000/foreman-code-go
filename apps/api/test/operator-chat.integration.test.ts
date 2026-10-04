@@ -934,10 +934,10 @@ function interruptibleClaude() {
       let initialized = false
       void (async () => {
         for await (const message of input.prompt) {
-          if (!initialized) frames.offer({ type: 'system', subtype: 'init', session_id: 'claude-session', claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+          if (!initialized) void frames.offer({ type: 'system', subtype: 'init', session_id: 'claude-session', claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
           initialized = true
           active = message.uuid
-          frames.offer({ type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'claude-session', parent_tool_use_id: null, user_message_uuid: message.uuid,
+          void frames.offer({ type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'claude-session', parent_tool_use_id: null, user_message_uuid: message.uuid,
             message: { id: `msg:${message.uuid}`, content: [{ type: 'text', text: 'working' }] } })
         }
       })().catch(error => frames.close(error))
@@ -945,7 +945,7 @@ function interruptibleClaude() {
         initializationResult: async () => ({}), mcpServerStatus: async () => [], setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
         interrupt: async () => {
           interrupts.push(active!)
-          frames.offer({ type: 'result', uuid: `result:${active}`, session_id: 'claude-session', user_message_uuid: active,
+          void frames.offer({ type: 'result', uuid: `result:${active}`, session_id: 'claude-session', user_message_uuid: active,
             subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', errors: [] })
           return { still_queued: [] }
         } }
@@ -977,20 +977,20 @@ function settlingClaude() {
     query(input) {
       const output = new ClaudeBoundedQueue<unknown>(64)
       frames = output
-      if (input.options.resume) output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
+      if (input.options.resume) void output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
         claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
       void (async () => {
         for await (const message of input.prompt) {
           prompts.push(message.message.content)
           promptUuid = message.uuid
           persistedMessages.push({ type: 'user', uuid: message.uuid, session_id: 'settling-session', parent_tool_use_id: null })
-          output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
+          void output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
             claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
           const reply = { type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'settling-session',
             parent_tool_use_id: null, user_message_uuid: message.uuid,
             message: { id: `answer:${message.uuid}`, content: [{ type: 'text', text: 'Text alone is not completion.' }] } }
           persistedMessages.push(reply)
-          output.offer(reply)
+          void output.offer(reply)
         }
       })().catch(error => output.close(error))
       return { [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: () => output.close(),
@@ -1041,7 +1041,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       const finish = repository.finish.bind(repository)
       const fault = vi.spyOn(repository, method).mockRejectedValue(new Error(`Failed ${method}`))
       try {
-        claude.result()
+        void claude.result()
         await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
         const terminal = await repository.terminal(conversation.id, 'terminal-request')
         expect(terminal?.closureState).toBe({ journalTerminal: undefined, closurePending: 'observed',
@@ -1070,7 +1070,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
     const conversation = await startSettlingClaude(claude)
     claude.failClosure(true)
     try {
-      claude.result()
+      void claude.result()
       await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
       expect((await repository.terminal(conversation.id, 'terminal-request'))?.closureState).toBe('pending')
       expect((await chat.get(conversation.id, owner)).lastResult).toBeUndefined()
@@ -1092,7 +1092,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       if (method === 'nativeClosure') claude.failClosure(true)
       const previous = chat
       try {
-        claude.result()
+        void claude.result()
         await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
         fault?.mockRestore()
         chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
@@ -1113,7 +1113,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
     const fault = vi.spyOn(repository, 'journalTerminal').mockRejectedValue(new Error('Server stopped before journal'))
     const previous = chat
     try {
-      claude.result()
+      void claude.result()
       await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
       fault.mockRestore()
       chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
@@ -1131,7 +1131,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
     const fault = vi.spyOn(repository, 'closureProven').mockRejectedValue(new Error('Closure write unavailable'))
     const previous = chat
     try {
-      claude.result()
+      void claude.result()
       await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
       expect(claude.closed()).toBe(1)
       fault.mockRestore()
@@ -1158,7 +1158,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
     await expect(repository.finish(conversation.id, 'terminal-request', { outcome: 'succeeded', output: 'Guess' }))
       .rejects.toMatchObject({ code: 'OPERATOR_CLOSURE_PENDING' })
     expect((await chat.get(conversation.id, owner)).activeRequestId).toBe('terminal-request')
-    claude.result()
+    void claude.result()
     await waitFor(async () => !(await chat.get(conversation.id, owner)).activeRequestId)
   })
 
@@ -1196,7 +1196,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       expect(claude.prompts).toHaveLength(0)
       expect((await allowed.callTool(send)).isError).not.toBe(true)
       await waitFor(async () => Boolean(await repository.submittedMessageId(conversationId, input.requestId)))
-      claude.result()
+      void claude.result()
       await waitFor(async () => (await repository.active(conversationId))?.turn_state === 'uncertain')
       const get = () => allowed.callTool({ name: 'operator_chat_get', arguments: { conversationId } })
       expect((await get()).structuredContent).toMatchObject({ activeRequestId: input.requestId, turnState: 'uncertain' })
