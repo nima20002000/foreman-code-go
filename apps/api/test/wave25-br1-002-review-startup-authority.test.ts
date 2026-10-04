@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { candidateFor } from './helpers/wave25Agent3.js'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'

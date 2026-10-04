@@ -1,10 +1,10 @@
 import pg from 'pg'
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import { generateKeyPairSync,randomUUID } from 'node:crypto'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
-import { workerIdentityRequestCode } from '@graphql/contracts/device-setup-node'
-import { decodeWorkerEnrollmentCode } from '@graphql/contracts/device-setup'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
+import { workerIdentityRequestCode } from '@foreman-code/contracts/device-setup-node'
+import { decodeWorkerEnrollmentCode } from '@foreman-code/contracts/device-setup'
 import { PostgresDeviceAccessService } from '../src/modules/devices/access.js'
 afterEach(()=>vi.restoreAllMocks())
 function fixture(){

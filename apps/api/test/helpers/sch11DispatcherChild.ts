@@ -3,7 +3,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative, sep } from 'node:path'
 import pg from 'pg'
-import { WorkflowScheduleSchema, type WorkflowSchedule } from '@graphql/contracts/schedules'
+import { WorkflowScheduleSchema, type WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'

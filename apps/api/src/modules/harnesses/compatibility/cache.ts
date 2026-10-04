@@ -4,7 +4,7 @@ import { lstat, mkdir, open, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
-import { HarnessCompatibilityReasonSchema, type CompatibilityHarness } from '@graphql/contracts'
+import { HarnessCompatibilityReasonSchema, type CompatibilityHarness } from '@foreman-code/contracts'
 
 export const CompatibilityCacheEntrySchema = z.object({
   format: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/),

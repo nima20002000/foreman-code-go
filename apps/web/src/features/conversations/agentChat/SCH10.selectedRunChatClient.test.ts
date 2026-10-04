@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
+import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { server } from '../../../mocks/server'
 import { selectedRunChatApi, selectedRunChatPath } from './selectedRunChatClient'
 import { resolvedSelectedChatKey } from './selectedRunChatModel'

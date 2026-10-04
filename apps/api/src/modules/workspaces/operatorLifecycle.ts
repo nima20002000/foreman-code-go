@@ -1,4 +1,4 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

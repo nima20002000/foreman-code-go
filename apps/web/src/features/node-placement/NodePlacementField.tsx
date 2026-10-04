@@ -1,5 +1,5 @@
-import type { SavedNodePlacement } from '@graphql/contracts/node-placement'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import type { SavedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { Select } from '../../shared/ui/nocturne'
 
 /** Presentation only. The caller supplies authorized, revision-pinned choices;

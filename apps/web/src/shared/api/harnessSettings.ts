@@ -12,14 +12,14 @@ import {
   CodexPluginListResultSchema, CodexPluginDetailResultSchema, CodexPluginChangeInputSchema, CodexPluginChangeResultSchema,
   type CodexPluginListInput, type CodexPluginChangeInput, type CodexPluginChangeResult, type CodexPluginReconcileInput,
   CodexPluginOperationsResultSchema, CodexPluginReconcileInputSchema,
-} from '@graphql/contracts/management'
-import type { HarnessConfiguration } from '@graphql/contracts'
+} from '@foreman-code/contracts/management'
+import type { HarnessConfiguration } from '@foreman-code/contracts'
 import { apiClient } from './client'
 import { reservePluginOperation, restorePluginOperation, pluginOperationFailed, pluginOperationSucceeded, terminalPluginResult, type PluginOperation } from './codexPluginOperation'
 import { sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError } from './sessionBoundary'
 import { managedMcpFailed, managedMcpSucceeded, reserveManagedMcpOperation, terminalMcpPlan, type ManagedMcpOperation } from './managedMcpOperation'
-import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
-import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
+import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function useClaudeSetupOptions(enabled = true) {
   useHarnessSessionEpoch()

@@ -1,6 +1,6 @@
 import {
   TELEMETRY_LIMITS, type ResourceCollector, type TelemetryIdentity, type TrustedTelemetryContext,
-} from '@graphql/contracts/resource-telemetry'
+} from '@foreman-code/contracts/resource-telemetry'
 import { newCollectorGeneration } from './collector/lifecycle.js'
 import { createLinuxResourceCollector } from './collector/ports.js'
 import { passiveRegistryOwnershipReader, type PassiveNativeRegistry, type TrustedNativeScopes } from './collector/registryAdapter.js'

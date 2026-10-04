@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, delay, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AssignedSkill } from '@graphql/contracts'
+import type { AssignedSkill } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { editSkillElsewhere, seedSkill } from '../../shared/mocks/skillsHandlers'
 import { SkillsLibrary, type SkillLibrarySearch } from './SkillsLibrary'

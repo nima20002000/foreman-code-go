@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { ReviewCleanupSchema, type ReviewJob } from '@graphql/contracts'
+import { ReviewCleanupSchema, type ReviewJob } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { describe, it } from 'vitest'
 

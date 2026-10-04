@@ -8,7 +8,7 @@ import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js
 import { graphFixture, graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
-import { RunActivitiesPageSchema } from '@graphql/contracts/wave25'
+import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 
 it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['running', 'completed'])('pages public history independently of 1000 %s native items over HTTP/MCP', async (status) => {

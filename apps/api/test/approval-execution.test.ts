@@ -4,7 +4,7 @@ import type {
   AgentConfigurationVersion, AgentHarness, ApprovalResponseOption, DurableInteraction,
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { afterEach, it } from 'vitest'
 import type pg from 'pg'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'

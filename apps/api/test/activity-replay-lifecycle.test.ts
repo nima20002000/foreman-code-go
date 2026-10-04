@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { mkdtemp, rm } from 'node:fs/promises'

@@ -1,5 +1,5 @@
 import type { ReviewNativeCapture } from './reviewNativeCapture.js'
-import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { interactionConnection } from './connection.js'

@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { JobRepository } from '../../jobs/repository.js'
-import { RemoteJobOperationReceiptSchema, type RemoteJobDispatchIntent, type RemoteJobDispatchPort, type RemoteJobOperationStatus, type RemoteJobOwnerControl } from '@graphql/contracts/remote-job-execution'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import { RemoteJobOperationReceiptSchema, type RemoteJobDispatchIntent, type RemoteJobDispatchPort, type RemoteJobOperationStatus, type RemoteJobOwnerControl } from '@foreman-code/contracts/remote-job-execution'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import type { RemoteJobExecutionHost } from './jobExecutionHost.js'
 export interface JobApplicationChannel {
   request(deviceId: string, namespace: 'execution-v1', payload: unknown): Promise<{ payload: unknown }>

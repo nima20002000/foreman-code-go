@@ -1,4 +1,4 @@
-import type { TelemetrySelector } from '@graphql/contracts/resource-telemetry'
+import type { TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
 import type { AccountingHandle } from './linuxCgroup.js'
 import type { ProcessIdentity } from './processSet.js'
 

@@ -1,5 +1,5 @@
-import type { HarnessNativeEvent } from '@graphql/contracts'
-import type { NativeGraphObservation, NativeGraphProjectionKey } from '@graphql/contracts/wave25'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import type { NativeGraphObservation, NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { openCodeReviewTerminalOutcome } from './opencodeReviewTerminal.js'
 import { nativeGraphSource } from '../run-graph/nativeIngestion.js'

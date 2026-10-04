@@ -10,7 +10,7 @@ import { RunHandoffReadService } from '../src/modules/runs/handoffRead.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  RunActivitiesPageSchema, RunHandoffsReadSchema } from '@graphql/contracts/wave25'
+  RunActivitiesPageSchema, RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
 import { changeRunState, graphFixture, graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'

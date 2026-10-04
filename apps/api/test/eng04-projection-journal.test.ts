@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { RepeatGraphStateV3Schema, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { RepeatGraphStateV3Schema, type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { openRunGraphPublication, type RunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../src/modules/run-graph/repeatReceipts.js'
 import { readRepeatGraphCurrent, readRepeatGraphPage } from '../src/modules/run-graph/repeatReader.js'

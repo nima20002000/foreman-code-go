@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { Readable } from 'node:stream'
 import { ArtifactEdgeBindingSchema, ArtifactEdgeReadSchema, type ArtifactAttempt, type ArtifactAuthority,
-  type ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
-import { fileStateAt, parseAgentFileReadResult } from '@graphql/contracts/files'
+  type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
+import { fileStateAt, parseAgentFileReadResult } from '@foreman-code/contracts/files'
 import type { FileQuery, FileRepository } from '../repository.js'
 import type { FileByteStorage } from '../storage.js'
 import { fileScopeIdentity } from '../requests.js'

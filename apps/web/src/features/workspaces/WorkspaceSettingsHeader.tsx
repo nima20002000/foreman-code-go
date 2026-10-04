@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
-import type { WorkspaceUpdateInput } from '@graphql/contracts/management'
+import type { WorkspaceUpdateInput } from '@foreman-code/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys, useUpdateManagedWorkspaceMutation } from '../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'

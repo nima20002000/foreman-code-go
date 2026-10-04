@@ -6,10 +6,10 @@ import { toolFailure } from '../../shared/results.js'
 import {
   RunEventsListInputSchema, RunGetInputSchema, RunListInputSchema, RunStopInputSchema,
   RunEventsPageSchema, RunStopResultSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema, SavedRunDetailsSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
-  RunHandoffsReadSchema } from '@graphql/contracts/wave25'
+  RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'

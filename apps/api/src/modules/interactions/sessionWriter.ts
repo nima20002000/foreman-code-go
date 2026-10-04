@@ -5,7 +5,7 @@ import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { componentLogger } from '../../infrastructure/logger.js'
 
-import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput, NativeInitialTurnInput } from '../harnesses/port.js'

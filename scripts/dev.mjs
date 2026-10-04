@@ -98,7 +98,7 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is missing from apps/api/.env.')
   const database = new URL(process.env.DATABASE_URL)
   const apiUrl = `http://127.0.0.1:${port}`
-  await run('Contracts build', ['--filter', '@graphql/contracts', 'build'])
+  await run('Contracts build', ['--filter', '@foreman-code/contracts', 'build'])
   const { resolveLocalBrowserOrigin } = await import('../packages/contracts/dist/browserOrigin.js')
   const { createRuntimeIdentity } = await import('../packages/contracts/dist/runtimeIdentityNode.js')
   const browser = resolveLocalBrowserOrigin(process.env)
@@ -140,7 +140,7 @@ async function main() {
     }
     console.log(`Using the GraphQL API already running at ${apiUrl}.`)
   } else {
-    api = start('API', ['--filter', '@graphql/api', 'dev'], {
+    api = start('API', ['--filter', '@foreman-code/api', 'dev'], {
       // Keep API logs on disk by default (.logs/api.*.log) unless the caller chose a destination.
       env: { ...process.env, ...(!process.env.LOG_DIR && !process.env.LOG_FILE ? { LOG_DIR: join(root, '.logs') } : {}),
         GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl },
@@ -157,7 +157,7 @@ async function main() {
     }
     console.log(`Using the GraphQL web server already running at ${webUrl}.`)
   } else {
-    web = start('Web', ['--filter', '@graphql/web', 'dev'], {
+    web = start('Web', ['--filter', '@foreman-code/web', 'dev'], {
       env: { ...process.env, VITE_API_URL: apiUrl },
     })
   }
@@ -168,7 +168,7 @@ async function main() {
     return
   }
   // dev:api and dev:web already own a contracts watcher when one is reused.
-  if (api && web) start('Contracts watcher', ['--filter', '@graphql/contracts', 'dev'])
+  if (api && web) start('Contracts watcher', ['--filter', '@foreman-code/contracts', 'dev'])
   console.log(`GraphQL ready: ${webUrl} (API ${apiUrl}).`)
   console.log('Server ready for browsing. Harness execution eligibility is separate; check Operator chat for rollout and saved-default qualification status.')
   console.log('Local development browser access is active; open the app without signing in.')

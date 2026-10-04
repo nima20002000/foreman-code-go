@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { ArtifactEdgeBindingSchema, type ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
+import { ArtifactEdgeBindingSchema, type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
 import type { ArtifactEdgeRepository } from './edges.js'

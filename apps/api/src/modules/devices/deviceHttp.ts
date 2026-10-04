@@ -1,6 +1,6 @@
-import { DevicePairingRequestSchema, MainEnrollmentProofRequestSchema, type DevicePairingRequest, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@graphql/contracts/device-identity'
+import { DevicePairingRequestSchema, MainEnrollmentProofRequestSchema, type DevicePairingRequest, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@foreman-code/contracts/device-identity'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@graphql/contracts/device-connection'
+import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@foreman-code/contracts/device-connection'
 
 /** Separate device-only HTTP listener: never delegates to browser, MCP or full API. */
 export function deviceHttpHandler(options: {

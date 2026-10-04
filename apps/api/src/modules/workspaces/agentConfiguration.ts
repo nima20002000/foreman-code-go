@@ -7,10 +7,10 @@ import {
   type Agent,
   type AgentConfigurationVersion,
   graphqlToolsOutsideRole,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
-import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
-import type { HarnessConfiguration } from '@graphql/contracts'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
+import type { HarnessConfiguration } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 import { resolveAssignedSkills } from '../skills/catalog.js'

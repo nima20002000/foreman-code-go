@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { ExecutionAuthorityRequestSchema } from '@graphql/contracts/execution-authority'
+import { ExecutionAuthorityRequestSchema } from '@foreman-code/contracts/execution-authority'
 import { workerExecutionAuthorizer } from './executionAuthorityClient.js'
 import { freezePlacement, deriveDispatch, readPlacement } from './binding.js'
-import { SavedNodePlacementSchema } from '@graphql/contracts/node-placement'
+import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 const mainId='11111111-1111-4111-8111-111111111111', digest='a'.repeat(64)
 const pin=freezePlacement({ schemaVersion:1,mainId,mainInstallationId:mainId,runId:'run',nodeId:'node',hostRef:{kind:'main',mainId},registration:null,
   destination:{canonicalProjectRoot:'/copies/root',canonicalCwd:'/copies/root',managedRuntimeRoot:'/native',directoryIdentityHash:digest,
@@ -35,7 +35,7 @@ describe('actual Agent admission contracts and private upstream authorizer',()=>
 })
 
 import type pg from 'pg'
-import { makeCurrentWorkflowFixture, canonicalGraphJson, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, canonicalGraphJson, RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
 import { createHash } from 'node:crypto'
 import { AgentPlacementProducer } from './agentProducer.js'
 import type { SourceAdmissionPort } from '../sources/admissionPorts.js'

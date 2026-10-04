@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { readAcceptedPlacement, readDispatchIntent } from '../placement/persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'

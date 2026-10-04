@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 
-import type { DurableInteraction, NativeSessionReference } from '@graphql/contracts'
+import type { DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
 import { it } from 'vitest'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeResponseIdentity } from '../src/modules/harnesses/port.js'

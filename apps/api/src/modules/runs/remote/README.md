@@ -38,10 +38,10 @@ Focused verification commands (no integration or device mutation):
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api exec eslint src/modules/runs/remote/*.ts src/infrastructure/remoteExecutionMigration.ts --max-warnings 0
-corepack pnpm --filter @graphql/api exec vitest run src/modules/runs/remote/operationJournal.test.ts src/modules/runs/remote/resultBridge.test.ts src/modules/runs/remote/executionHost.test.ts src/modules/runs/remote/persistence.test.ts --maxWorkers=1
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api exec eslint src/modules/runs/remote/*.ts src/infrastructure/remoteExecutionMigration.ts --max-warnings 0
+corepack pnpm --filter @foreman-code/api exec vitest run src/modules/runs/remote/operationJournal.test.ts src/modules/runs/remote/resultBridge.test.ts src/modules/runs/remote/executionHost.test.ts src/modules/runs/remote/persistence.test.ts --maxWorkers=1
 ```
 
 ## Genuine job subjects and output sequencing

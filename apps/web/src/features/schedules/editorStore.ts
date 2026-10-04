@@ -3,7 +3,7 @@ import { ZodError } from 'zod'
 import {
   nextOccurrences, parseScheduleSaveInput, scheduleLocalTimeToUtc, scheduleUtcToLocalTime, ScheduleTimeZoneSchema,
   type ScheduleConfiguration, type ScheduleGetInput, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import type { NewScheduleCommand } from './queries'
 
 export type ScheduleMode = ScheduleConfiguration['mode']

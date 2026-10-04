@@ -1,11 +1,11 @@
 import { HttpResponse } from 'msw'
-import { RunEventsPageSchema } from '@graphql/contracts/management'
+import { RunEventsPageSchema } from '@foreman-code/contracts/management'
 import {
   CurrentRunVersionSnapshotSchema, RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema,
   RunExecutionDetailSchema, RunExecutionsListInputSchema, RunExecutionsPageSchema, RunVersionDetailSchema,
   sameWorkflowValue, type CurrentRunDetails, type RepeatGraphScopeV3, type RunExecutionBinding,
   type RunExecutionDetail, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 /** Test-owned accepted facts, never inferred from native terminal reports or from
  * a node's attempt number. Ordinary fixture executions omit occurrence. */

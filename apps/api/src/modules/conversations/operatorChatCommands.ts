@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { OperatorConversationStateSchema, type OperatorConversationState } from '@graphql/contracts'
+import { OperatorConversationStateSchema, type OperatorConversationState } from '@foreman-code/contracts'
 import { NativeConversationControlCommands } from './nativeControlCommands.js'
 
 /** Shared autocommit reservation/settlement; no native effect occurs inside a database transaction. */

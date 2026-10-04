@@ -1,7 +1,7 @@
 import {
   BrowserSignInRequestSchema, BrowserSignInResponseSchema,
   OwnerSetupResponseSchema, OwnerSetupStatusSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { requireLocalRequest } from '../access/http.js'
 import { DomainError } from '../errors.js'

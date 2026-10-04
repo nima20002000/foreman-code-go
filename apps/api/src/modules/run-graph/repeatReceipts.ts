@@ -1,7 +1,7 @@
 import {
   GraphDigestSchema, GraphEvidenceSchema, GraphIdSchema, GraphSequenceSchema,
   RepeatMetadataScopeV1Schema, type GraphEvidence,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphSqlClient, type GraphTransactionSql } from './connection.js'

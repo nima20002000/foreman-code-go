@@ -1,5 +1,5 @@
 import type { AgentForm } from './agentForm'
-import type { GraphDraftOperationV3, GraphEditIntentV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { GraphDraftOperationV3, GraphEditIntentV3, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { hasAgentEdits, referencedAgentEdits, type DraftAgentEdits } from './agentEdits'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
 

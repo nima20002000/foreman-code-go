@@ -1,11 +1,11 @@
 import { z } from 'zod'
-import { ApiErrorResponseSchema } from '@graphql/contracts'
+import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import {
   FilePageSchema, FileWithRevisionSchema, MessageAttachmentRefSchema,
   PermanentFileScopeSchema, WorkflowReferenceFileScopeSchema,
   type FilePage, type FileWithRevision, type MessageAttachmentRef,
   type PermanentFileScope, type WorkflowReferenceFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
 import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import {

@@ -175,7 +175,7 @@ async function main() {
   const head = await command('git', ['rev-parse', 'HEAD'], { capture: true })
   if (head !== BASE) console.log('ENG07 checkout differs from the documented base; record its commit separately before accepting results.')
   stage = 'contracts build (run corepack pnpm install beforehand)'
-  await command('corepack', ['pnpm', '--filter', '@graphql/contracts', 'build'])
+  await command('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
   interrupted()
   process.umask(0o077)
   // Canonical /tmp also handles macOS /private/tmp. No caller-selected path.

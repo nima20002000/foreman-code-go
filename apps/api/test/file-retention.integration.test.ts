@@ -11,8 +11,8 @@ import {
   DEFAULT_FILE_RETENTION_SECONDS, MAX_FILE_BYTES, FileWithRevisionSchema,
   FileRetentionGetResultSchema, FileRetentionSaveResultSchema, FileRetentionPreviewResultSchema,
   TemporaryFileSchema, temporaryFileExpiresAt, type FileState,
-} from '@graphql/contracts/files'
-import type { ManagementGrant } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
 
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileRetentionMigration } from '../src/infrastructure/fileRetentionMigration.js'

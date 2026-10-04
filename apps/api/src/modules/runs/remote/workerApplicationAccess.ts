@@ -1,6 +1,6 @@
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteApplicationAccessSchema, type RemoteApplicationAccess } from '@graphql/contracts/remote-execution'
-import { WORKER_MCP_EXTENSION, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema } from '@graphql/contracts/worker-mcp-relay'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
+import { RemoteApplicationAccessSchema, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
+import { WORKER_MCP_EXTENSION, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import type { ChildProcessEnvironment } from '../../harnesses/port.js'
 import type { DeviceConnectionSupervisor } from '../../devices/connectionSupervisor.js'
 

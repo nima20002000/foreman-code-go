@@ -1,4 +1,4 @@
-import { ManagedWorkspaceSchema, type ManagedWorkspace } from '@graphql/contracts/management'
+import { ManagedWorkspaceSchema, type ManagedWorkspace } from '@foreman-code/contracts/management'
 
 const LegacyWorkspaceResultSchema = ManagedWorkspaceSchema.omit({
   executionLocation: true,

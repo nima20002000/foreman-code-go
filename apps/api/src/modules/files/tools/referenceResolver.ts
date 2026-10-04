@@ -1,4 +1,4 @@
-import { FileRowSchema } from '@graphql/contracts/files'
+import { FileRowSchema } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileRepository } from '../repository.js'
 import type { FileByteStorage } from '../storage.js'

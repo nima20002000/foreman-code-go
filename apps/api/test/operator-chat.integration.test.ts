@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
+import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import {
   applyOperatorChatSettings, operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
   type ExecutionResult, type NativeSessionReference, type OperatorConversationState,
-} from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 

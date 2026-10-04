@@ -7,7 +7,7 @@ import { http, HttpResponse } from 'msw'
 import {
   ScheduleDisableInputSchema, ScheduleSaveInputSchema, WorkflowScheduleSchema,
   type ScheduleDisableInput, type ScheduleGetResult, type ScheduleSaveInput, type ScheduleSaveResult, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { server } from '../../mocks/server'
 import { mockDeviceTimezone } from '../../test/deviceTimezone'
 import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'

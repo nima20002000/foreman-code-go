@@ -1,5 +1,5 @@
-import { HARNESS_PROFILE_CHECK_NAMESPACE, HostHarnessProfileCheckRequestSchema, HostHarnessProfileEvidenceSchema } from '@graphql/contracts/harness-registry'
-import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@graphql/contracts/device-identity'
+import { HARNESS_PROFILE_CHECK_NAMESPACE, HostHarnessProfileCheckRequestSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
+import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { harnessConnectionGeneration } from '../hostConnectionGeneration.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { HostHarnessProfileQualifier } from './profileChecks.js'

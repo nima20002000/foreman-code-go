@@ -1,7 +1,7 @@
 import type pg from 'pg'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION, JobRuntimeQualificationRpcRequestSchema, JobRuntimeQualificationRpcResponseSchema,
-  type JobRuntimeProfile, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+  type JobRuntimeProfile, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'

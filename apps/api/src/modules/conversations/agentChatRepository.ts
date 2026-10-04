@@ -1,15 +1,15 @@
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { messageAttachmentIdentity } from '@graphql/contracts/files'
+import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type PendingNativeInteraction } from '@graphql/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type PendingNativeInteraction } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
+} from '@foreman-code/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'

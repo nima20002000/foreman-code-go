@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { inspectionExecutionRowSummary } from '../src/modules/runs/inspection.js'
 import { repeatDigest, repeatSlotId, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'

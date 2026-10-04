@@ -1,7 +1,7 @@
 import {
   FILE_EXTENSIONS_BY_MEDIA_TYPE, FILE_MEDIA_TYPES, FileNameSchema, MAX_FILE_BYTES,
   TemporaryFileScopeSchema, type FileMediaType, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 export const ATTACHMENT_ACCEPT = [
   ...FILE_MEDIA_TYPES,

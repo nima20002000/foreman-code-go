@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import { CLAUDE_QUALIFICATION_CHECKS } from '@graphql/contracts/claude-qualification'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { CLAUDE_QUALIFICATION_CHECKS } from '@foreman-code/contracts/claude-qualification'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { compileClaudeConfiguration, type ClaudePolicyQualification } from '../src/modules/harnesses/claudeSdk/configuration.js'
 
 function fixture(sandbox: ClaudeHarnessConfiguration['sandbox']) {

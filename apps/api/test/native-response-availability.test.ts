@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { PendingNativeInteractionSchema } from '@graphql/contracts'
+import { PendingNativeInteractionSchema } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { inspectNativeResponse, pendingResponseQuery, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../src/modules/harnesses/responseAvailability.js'
 const session = { harness: 'codex' as const, providerVersion: 'pinned', nativeSessionId: 'session' }

@@ -3,8 +3,8 @@ import {
   HarnessExecutionSchema,
   type DurableInteraction,
   type DirectApprovalConnection,
-} from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 
 import { DomainError } from '../errors.js'

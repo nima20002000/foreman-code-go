@@ -47,7 +47,7 @@ describe('SQL-free worker Job input/output leaves', () => {
       exports: Record<string, string | { import: string }>
     }
     const aliases = Object.fromEntries(Object.entries(manifest.exports).map(([key, value]) => [
-      key === '.' ? '@graphql/contracts' : `@graphql/contracts/${key.slice(2)}`,
+      key === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${key.slice(2)}`,
       `./packages/contracts/${(typeof value === 'string' ? value : value.import).replace('./dist/', './src/').replace(/\.js$/, '.ts')}`,
     ]))
     const bundle = await build({ absWorkingDir: root,

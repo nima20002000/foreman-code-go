@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentConfigurationVersion } from '@graphql/contracts'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { AgentConfigurationVersion } from '@foreman-code/contracts'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../interactions/runtimePorts.js'
 import type { RunOwnership } from '../runs/ownership.js'

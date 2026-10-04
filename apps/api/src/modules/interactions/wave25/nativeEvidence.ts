@@ -1,9 +1,9 @@
 import { assertReviewOriginalProofLocked } from '../reviewNativeProof.js'
-import { DurableInteractionSchema, ReviewJobSchema } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema } from '@foreman-code/contracts'
 import {
   parseNativeGraphObservation, assertNativeGraphProjectionAuthority, sameGraphScope,
   canonicalGraphJson, type NativeGraphObservation,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { graphSourceDigest } from '../../run-graph/publication.js'

@@ -1,4 +1,4 @@
-import { WorkflowDefaultsSchema, type WorkflowDefaults } from '@graphql/contracts'
+import { WorkflowDefaultsSchema, type WorkflowDefaults } from '@foreman-code/contracts'
 
 import { useUpdateWorkflowDefaultsMutation, useWorkflowDefaultsQuery } from '../../shared/api/query'
 import { Alert, Button, LoadingState, Select } from '../../shared/ui/nocturne'

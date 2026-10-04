@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
-import { AgentChatContextSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema, type AgentChatState } from '@graphql/contracts/agent-chat'
-import { WorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
+import { AgentChatContextSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
+import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 
 import { canonical } from '../src/modules/harnesses/codexProtocol.js'
 import { readNativeSource } from './helpers/agentChatNativeSource.js'

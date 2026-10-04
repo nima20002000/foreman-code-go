@@ -1,6 +1,6 @@
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { buildWorkHandoffGraph } from '../src/modules/runs/workHandoffGraph.js'
 import { readWorkflowCheckpoint } from '../src/modules/runs/repeatGraph.js'
 

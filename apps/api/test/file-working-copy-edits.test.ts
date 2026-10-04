@@ -11,7 +11,7 @@ import {
   AgentFileWorkingCopyEditResultSchema, AgentFileWriteWorkingCopyInputSchema,
   FileWorkingCopyBytesSchema, MAX_FILE_READ_BYTES, MAX_FILE_WRITE_BYTES,
   type FileMediaType, type MessageAttachmentRef,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { DomainError } from '../src/modules/errors.js'
 import { extractZip } from '../src/modules/files/archives/index.js'
 import { docx, pdfFixture, zip } from '../src/modules/files/formats/__tests__/fixtures.js'

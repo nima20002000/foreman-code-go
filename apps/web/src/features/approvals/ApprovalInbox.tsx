@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react'
-import type { Agent, DurableInteraction } from '@graphql/contracts'
+import type { Agent, DurableInteraction } from '@foreman-code/contracts'
 import { useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { sessionSignal } from '../../shared/api/sessionBoundary'
 import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'

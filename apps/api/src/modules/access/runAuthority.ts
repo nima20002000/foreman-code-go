@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'

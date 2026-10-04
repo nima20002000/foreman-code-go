@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { RemoteJobDispatchIntentSchema, type RemoteJobOwnerControl } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobDispatchIntentSchema, type RemoteJobOwnerControl } from '@foreman-code/contracts/remote-job-execution'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 

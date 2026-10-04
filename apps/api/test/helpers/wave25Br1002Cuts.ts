@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { GraphFact } from '@graphql/contracts/wave25'
+import type { GraphFact } from '@foreman-code/contracts/wave25'
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { WorkflowNativeCaptureInput } from '../../src/modules/interactions/workflowNativeCapture.js'
 import { deferred } from './wave25Agent3.js'

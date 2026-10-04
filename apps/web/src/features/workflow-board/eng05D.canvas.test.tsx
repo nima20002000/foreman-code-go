@@ -3,7 +3,7 @@ import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Edge, Node, ReactFlowProps } from '@xyflow/react'
-import { CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema, WorkflowVersionV3Schema, repeatGraphTopologyV3 } from '@graphql/contracts/wave25'
+import { CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema, WorkflowVersionV3Schema, repeatGraphTopologyV3 } from '@foreman-code/contracts/wave25'
 import { currentRunKey } from './currentRunQuery'
 import { inspectionBoardFixture } from './inspect/inspectionFixtures'
 import {

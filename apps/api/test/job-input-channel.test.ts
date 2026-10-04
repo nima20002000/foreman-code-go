@@ -7,8 +7,8 @@ import { AuthenticatedJobInputSource, type JobInputWorkerChannel } from '../src/
 import { makeManifest, manifestBytes } from '../src/modules/files/jobInputs/manifest.js'
 import { jobExecution } from './helpers/jobFixture.js'
 import { outputTransferContext } from '../src/modules/files/jobs/outputAdmission.js'
-import { JobInputAdmissionSchema } from '@graphql/contracts/job-inputs'
-import { DeviceSessionBindingSchema } from '@graphql/contracts/device-connection'
+import { JobInputAdmissionSchema } from '@foreman-code/contracts/job-inputs'
+import { DeviceSessionBindingSchema } from '@foreman-code/contracts/device-connection'
 it('uses genuine verified staging and reauthorizes retained bytes over the authenticated carrier',async()=>{
  const root=await mkdtemp(join(homedir(),'.job-input-transfer-test-')),execution=jobExecution()
  const binding=DeviceSessionBindingSchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),keyRevision:1,authorizationRevision:1,bootId:randomUUID(),connectionGeneration:1,connectionEpoch:randomUUID()})

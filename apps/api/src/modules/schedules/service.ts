@@ -1,12 +1,12 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   nextOccurrences, parseScheduleSaveInput, scheduleConfigurationToUtc, ScheduleDisableInputSchema, ScheduleDisableResultSchema,
   ScheduleGetInputSchema, ScheduleGetResultSchema, ScheduleSaveInputSchema, ScheduleSaveResultSchema,
   WorkflowScheduleSchema, type ScheduleConfiguration, type ScheduleGetInput, type ScheduleGetResult,
   type ScheduleSaveResult, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'

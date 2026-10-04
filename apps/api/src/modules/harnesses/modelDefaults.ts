@@ -1,5 +1,5 @@
-import { AgentEffortSchema, ClaudeEffortSchema, type HarnessConfiguration } from '@graphql/contracts'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import { AgentEffortSchema, ClaudeEffortSchema, type HarnessConfiguration } from '@foreman-code/contracts'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 
 /** Recency comes from provider release metadata; preference comes from its

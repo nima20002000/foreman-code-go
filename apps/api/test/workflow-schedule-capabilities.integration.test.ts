@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { ScheduleGetResultSchema } from '@graphql/contracts/schedules'
+import { ScheduleGetResultSchema } from '@foreman-code/contracts/schedules'
 import { buildApp } from '../src/app.js'
 import type { ApiConfig } from '../src/config.js'
 import { createCheckpointStore, type CheckpointStore } from '../src/infrastructure/checkpoints.js'

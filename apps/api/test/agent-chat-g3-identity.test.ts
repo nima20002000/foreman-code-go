@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'vitest'
-import { SendAgentChatMessageResponseSchema, type AgentChatTurn, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { SendAgentChatMessageResponseSchema, type AgentChatTurn, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 
 import { agentChatInputHash, agentChatKey } from '../src/modules/conversations/agentChatRepository.js'
 import { context, fixture } from './helpers/agentChatF1.js'

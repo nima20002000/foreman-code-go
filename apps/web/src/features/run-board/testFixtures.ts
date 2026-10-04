@@ -1,4 +1,4 @@
-import { RunBoardSnapshotSchema, type RunBoardSnapshotGetResult } from '@graphql/contracts/run-snapshots'
+import { RunBoardSnapshotSchema, type RunBoardSnapshotGetResult } from '@foreman-code/contracts/run-snapshots'
 import type { RunsSelectorScope } from '../runs-selector/types'
 import type { AvailableRunBoardSnapshot } from './model'
 

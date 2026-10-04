@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { RunInputSchema, type RunInput } from '@graphql/contracts'
-import { type ManagementPrincipal } from '@graphql/contracts/management'
+import { RunInputSchema, type RunInput } from '@foreman-code/contracts'
+import { type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'

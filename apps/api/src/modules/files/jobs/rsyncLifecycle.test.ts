@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import { JobOutputRsyncLifecycle } from './rsyncLifecycle.js'
-import type { JobOutputAdmission } from '@graphql/contracts/job-output-transfer'
+import type { JobOutputAdmission } from '@foreman-code/contracts/job-output-transfer'
 import type { JobPublicationLedger } from './port.js'
 function fixture() {
   const fileId=randomUUID(),revisionId=randomUUID(),sha256='1'.repeat(64),owner={grantId:randomUUID(),epoch:'1'},commandId=randomUUID()

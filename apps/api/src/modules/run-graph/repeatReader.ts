@@ -8,7 +8,7 @@ import {
   graphJsonBytes, canonicalGraphJson, sameCanonicalGraphScope,
   type RepeatGraphScopeV3, type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3,
   type RepeatGraphBatchV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 import {

@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { RuntimeIdentitySchema } from '@graphql/contracts'
-import { createRuntimeIdentity } from '@graphql/contracts/runtime-identity-node'
+import { RuntimeIdentitySchema } from '@foreman-code/contracts'
+import { createRuntimeIdentity } from '@foreman-code/contracts/runtime-identity-node'
 
 export const installationIdentityMigration = { version: 264403, sql: `
   create table application_installation (

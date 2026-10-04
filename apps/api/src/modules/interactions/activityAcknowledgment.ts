@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 
 /** Projection only: inspect the existing immutable worker ack and original native proof, never grant response authority. */
 export async function readActivityAcknowledgment(query: Pick<pg.PoolClient, 'query'>, interaction: DurableInteraction): Promise<{

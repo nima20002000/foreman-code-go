@@ -1,6 +1,6 @@
 import { DurableInteractionSchema, HarnessExecutionSchema, type DurableInteraction, type HarnessNativeEvent,
-  type NativeSessionReference } from '@graphql/contracts'
-import { RunGraphScopeSchema, WorkflowRunV3Schema, type NativeGraphProjectionKey } from '@graphql/contracts/wave25'
+  type NativeSessionReference } from '@foreman-code/contracts'
+import { RunGraphScopeSchema, WorkflowRunV3Schema, type NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from './ownership.js'
 import { currentRunGraphPublication } from '../run-graph/publication.js'
 import { appendNativeGraphEvent } from '../run-graph/nativeIngestion.js'

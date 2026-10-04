@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { PermanentFileScope } from '@graphql/contracts/files'
+import type { PermanentFileScope } from '@foreman-code/contracts/files'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import {
   type ReferenceDownload, type ReferenceRemoval, type ReferenceUpload,

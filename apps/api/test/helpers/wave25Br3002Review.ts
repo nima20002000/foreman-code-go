@@ -1,6 +1,6 @@
 import { readCurrentExecutions } from './wave25Agent3.js'
 import { vi } from 'vitest'
-import type { NativeGraphObservation } from '@graphql/contracts/wave25'
+import type { NativeGraphObservation } from '@foreman-code/contracts/wave25'
 import { nativeMessageId, object, type OpenCodeMessage } from '../../src/modules/harnesses/opencodeProtocol.js'
 import { OPENCODE_RECONCILIATION_EVENT } from '../../src/modules/harnesses/opencodeReconciliation.js'
 import type { FixtureServer } from '../opencode-fixtures.js'

@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { assertWave25WorkerBinding } from '../../interactions/wave25/credentialAuthority.js'

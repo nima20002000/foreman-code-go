@@ -12,11 +12,11 @@ import {
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
   WorkspaceLocationSetInputSchema, WorkspaceLocationSetResultSchema,
   WorkspaceLocationValidateInputSchema, WorkspaceLocationValidationSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
-import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@foreman-code/contracts/management'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'workspace_storage_folders_list')) server.registerTool('workspace_storage_folders_list', {

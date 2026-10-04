@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures, type AgentChatStreamEvent } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, type AgentChatStreamEvent } from '@foreman-code/contracts/agent-chat'
 import { subscribeAgentChat } from './agentChatStream'
 import { AgentChatTestSource, installChatSource } from '../../features/conversations/agentChat/testSupport'
 

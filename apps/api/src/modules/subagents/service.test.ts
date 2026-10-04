@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { describe, expect, it, vi } from 'vitest'
 import { RunSubagentService } from './service.js'
 

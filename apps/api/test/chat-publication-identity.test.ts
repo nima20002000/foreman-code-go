@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { MessageSchema } from '@graphql/contracts'
+import { MessageSchema } from '@foreman-code/contracts'
 import { conversationPublicationItems } from '../src/modules/conversations/activityItems.js'
 it('dispatches finalized publication receipts with the original provider identity', () => {
   const message = MessageSchema.parse({ id: 'message', conversationId: 'conversation', role: 'user', content: 'Request', createdAt: '2026-10-01T00:00:00.000Z', requestId: 'request', sequence: '4' })

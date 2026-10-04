@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   FilePageSchema, FileRetentionSaveInputSchema, FileWithRevisionSchema, applyFileRetention, fileStateAt,
   type FileWithRevision, type TemporaryFileScope,
-} from '@graphql/contracts/files'
-import { SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@graphql/contracts'
+} from '@foreman-code/contracts/files'
+import { SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { sendOperatorMessage } from '../../shared/api/client'
 import { useRetentionSaveMutation } from '../retention-settings/retentionQueries'

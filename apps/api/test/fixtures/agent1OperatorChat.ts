@@ -1,10 +1,10 @@
 import type {
   Conversation, ExecutionResult, NativeSessionReference, OperatorConfigurationVersion,
   OperatorConversationState, PendingNativeInteraction, SendOperatorMessageRequest,
-} from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { ConversationRow, PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 
 export function deferred<T = void>() {

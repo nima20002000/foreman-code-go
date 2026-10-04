@@ -154,12 +154,12 @@ with PostgreSQL policies. Root/HRT-03 own that integration gate and catalog/disc
 Commands from this worktree (pinned runtime):
 
 ```
-corepack pnpm --filter @graphql/contracts exec tsc -p tsconfig.build.json
-corepack pnpm --filter @graphql/contracts exec vitest run src/resourceTelemetry.test.ts --maxWorkers=1
-corepack pnpm --filter @graphql/contracts exec eslint src/resourceTelemetry.ts src/resourceTelemetry.test.ts src/resourceTelemetryFixtures.ts --max-warnings 0
-corepack pnpm --filter @graphql/api exec vitest run src/modules/resource-telemetry/ingestion/service.test.ts src/modules/resource-telemetry/readback/adapters.test.ts --maxWorkers=1
-corepack pnpm --filter @graphql/api exec tsc --noEmit
-corepack pnpm --filter @graphql/api exec eslint src/modules/resource-telemetry src/routes/resourceTelemetry.ts src/mcp/operator/resourceTelemetry.ts --max-warnings 0
+corepack pnpm --filter @foreman-code/contracts exec tsc -p tsconfig.build.json
+corepack pnpm --filter @foreman-code/contracts exec vitest run src/resourceTelemetry.test.ts --maxWorkers=1
+corepack pnpm --filter @foreman-code/contracts exec eslint src/resourceTelemetry.ts src/resourceTelemetry.test.ts src/resourceTelemetryFixtures.ts --max-warnings 0
+corepack pnpm --filter @foreman-code/api exec vitest run src/modules/resource-telemetry/ingestion/service.test.ts src/modules/resource-telemetry/readback/adapters.test.ts --maxWorkers=1
+corepack pnpm --filter @foreman-code/api exec tsc --noEmit
+corepack pnpm --filter @foreman-code/api exec eslint src/modules/resource-telemetry src/routes/resourceTelemetry.ts src/mcp/operator/resourceTelemetry.ts --max-warnings 0
 ```
 
 Initial tests used temporary aliases to built contract dist while the root-owned exports were

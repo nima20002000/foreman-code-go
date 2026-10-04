@@ -7,7 +7,7 @@ import {
   SourceListInputSchema, SourceListResultSchema, SourceRootBindInputSchema, SourceRootBindResultSchema,
   SourceRootGetInputSchema, SourceRootRecordSchema, SourceRootListInputSchema, SourceRootListResultSchema,
   SourcePreparationGetInputSchema, SourcePreparationSchema, SourcePreparationReconcileInputSchema, SourcePreparationReconcileResultSchema,
-} from '@graphql/contracts/source-admission'
+} from '@foreman-code/contracts/source-admission'
 import type { PostgresSourceService } from './service.js'
 
 export function registerSourceTools(server: McpServer, context: OperatorRequestContext & { services: { sources?: PostgresSourceService } }): void {

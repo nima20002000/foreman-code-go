@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { ScheduleDisableInputSchema, ScheduleSaveInputSchema } from '@graphql/contracts/schedules'
+import { ScheduleDisableInputSchema, ScheduleSaveInputSchema } from '@foreman-code/contracts/schedules'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { WorkflowScheduleService } from '../modules/schedules/service.js'
 import { ScheduleOccurrenceListInputSchema } from '../modules/schedules/transportSchemas.js'

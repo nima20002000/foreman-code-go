@@ -1,4 +1,4 @@
-import type { GraphEditReadResultV3 } from '@graphql/contracts/wave25'
+import type { GraphEditReadResultV3 } from '@foreman-code/contracts/wave25'
 import { Alert } from '../../../shared/ui/nocturne'
 
 /** Progress of a save that waits for affected Runs to stop. Recovery stays on the board, never in a second Run page. */

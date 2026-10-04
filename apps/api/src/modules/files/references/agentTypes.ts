@@ -1,5 +1,5 @@
-import type { AgentFileReadInput, AgentFileReadResult, FileRevision, PermanentFileScope } from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { AgentFileReadInput, AgentFileReadResult, FileRevision, PermanentFileScope } from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FileQuery } from '../repository.js'
 
 /** Selected by a trusted backend adapter, never by list/read tool arguments. */

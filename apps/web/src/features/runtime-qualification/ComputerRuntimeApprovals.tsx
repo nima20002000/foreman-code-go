@@ -1,6 +1,6 @@
 import { useRef } from 'react'
-import type { DeviceRegistration } from '@graphql/contracts/device-identity'
-import type { JobRuntimeApproval } from '@graphql/contracts/job-runtime'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
+import type { JobRuntimeApproval } from '@foreman-code/contracts/job-runtime'
 import { useWorkspacePages } from '../../shared/api/query'
 import { useApproveJobRuntime, useJobRuntimeProfiles } from '../../shared/api/jobRuntimeProfiles'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'

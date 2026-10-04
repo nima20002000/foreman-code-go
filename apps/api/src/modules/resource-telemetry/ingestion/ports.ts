@@ -1,6 +1,6 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { DeviceExtensionDescriptor } from '@graphql/contracts/device-application'
-import type { TelemetrySelector, TelemetryOwner, TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { DeviceExtensionDescriptor } from '@foreman-code/contracts/device-application'
+import type { TelemetrySelector, TelemetryOwner, TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 export interface TelemetryClock { monotonicMs(): number; unixMs(): number }
 /** Implemented by existing W07/session and HRT local runtime owners. */
 export interface TelemetrySessionAuthority {

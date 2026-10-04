@@ -12,8 +12,8 @@ import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionAppro
 import { PostgresTrustedConnectionSetup } from '../src/modules/devices/trustedConnectionSetup.js'
 import { registerTrustedConnectionRoutes } from '../src/modules/devices/trustedConnectionManagement.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import type { ManagementGrant } from '@graphql/contracts/management'
-import { TrustedConnectionApprovalReadSchema } from '@graphql/contracts/trusted-device-connection'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
+import { TrustedConnectionApprovalReadSchema } from '@foreman-code/contracts/trusted-device-connection'
 
 const url = process.env.TEST_DATABASE_URL
 const grants: ManagementGrant[] = [{ actions: ['settings:read', 'settings:update'], scope: {} }]

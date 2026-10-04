@@ -1,4 +1,4 @@
-import type { FileMediaType, FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { FileMediaType, FileWithRevision, MessageAttachmentRef } from '@foreman-code/contracts/files'
 
 export const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
 

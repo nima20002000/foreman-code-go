@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'

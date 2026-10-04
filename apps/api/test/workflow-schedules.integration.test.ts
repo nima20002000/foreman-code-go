@@ -5,9 +5,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   ScheduleGetResultSchema, ScheduleSaveResultSchema, ScheduleOccurrenceSchema, scheduleOccurrenceId,
   type ScheduleConfiguration, type ScheduleGetInput, type ScheduleOccurrence,
-} from '@graphql/contracts/schedules'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import type { ManagementGrant } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/schedules'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { workflowScheduleMigration } from '../src/infrastructure/workflowScheduleMigration.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'

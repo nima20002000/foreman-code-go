@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, canonicalGraphJson, parseChoiceResultEnvelope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { normalizeRepeatTerminal, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { bindRepeatNodeInput, repeatExecutionIdentity } from '../src/modules/runs/repeatResolution.js'

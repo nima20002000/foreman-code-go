@@ -1,5 +1,5 @@
-import { ReviewJobSchema, RunStopCauseSchema, type ReviewJob } from '@graphql/contracts'
-import { WorkflowRunV3Schema, type GraphEffect } from '@graphql/contracts/wave25'
+import { ReviewJobSchema, RunStopCauseSchema, type ReviewJob } from '@foreman-code/contracts'
+import { WorkflowRunV3Schema, type GraphEffect } from '@foreman-code/contracts/wave25'
 import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
 import { publicReviewStopError } from '../reviewPolicy.js'
 import { fail, type ApprovalContext } from './context.js'

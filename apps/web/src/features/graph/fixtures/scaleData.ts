@@ -1,5 +1,5 @@
-import { type Agent, type RunNodeLiveActivity } from '@graphql/contracts'
-import { CurrentRunDetailsSchema, type CurrentRunDetails as GetRunResponse, type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
+import { type Agent, type RunNodeLiveActivity } from '@foreman-code/contracts'
+import { CurrentRunDetailsSchema, type CurrentRunDetails as GetRunResponse, type WorkflowDefinitionV3 as WorkflowDefinition } from '@foreman-code/contracts/wave25'
 
 /** Synthetic renderer data only. This module never admits or starts a native Run. */
 export function makeScaleGraph(count = 300): { workflow: WorkflowDefinition; agents: Agent[] } {

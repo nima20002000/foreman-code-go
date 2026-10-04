@@ -3,7 +3,7 @@ import {
   repeatGraphStateFacts, repeatGraphResolutionKey,
   type RepeatGraphFactV3, type RepeatGraphScopeV3, type RepeatGraphStateV3, type RepeatGraphBatchV3,
   sameCanonicalGraphScope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { RepeatEffect } from '../runs/repeatPostgres.js'
 import { repeatId, repeatSlotId } from '../runs/repeatResolution.js'
 import type { GraphTransactionSql } from './connection.js'

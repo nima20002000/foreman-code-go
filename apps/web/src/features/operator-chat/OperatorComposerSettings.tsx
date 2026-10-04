@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { AgentHarnessSchema, AgentEffortSchema, ClaudeEffortSchema, operatorChatSettings, type OperatorChatSettings } from '@graphql/contracts'
+import { AgentHarnessSchema, AgentEffortSchema, ClaudeEffortSchema, operatorChatSettings, type OperatorChatSettings } from '@foreman-code/contracts'
 import type { ReactNode } from 'react'
 import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'

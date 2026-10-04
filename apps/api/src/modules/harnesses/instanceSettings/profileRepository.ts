@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { DomainError } from '../../errors.js'
-import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 
 export class HostHarnessProfileEvidenceRepository {
   constructor(private readonly pool: pg.Pool) {}

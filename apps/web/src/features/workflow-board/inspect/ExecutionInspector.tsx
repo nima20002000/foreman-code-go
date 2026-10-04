@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   readRunInspectionKey, runInspectionKey, type RepeatGraphScopeV3, type RunExecutionDetail,
   type RunExecutionSummary, type WorkflowVersionV3, type WorkspaceBoardExecutionSelection,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { Alert, Button, Select } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
 import { JobRunResult } from '../../jobs/JobRunResult'

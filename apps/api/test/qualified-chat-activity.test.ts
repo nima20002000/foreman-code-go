@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
-import { activitySnapshotFixtures } from '@graphql/contracts'
+import { activitySnapshotFixtures } from '@foreman-code/contracts'
 import { qualifyChatActivity } from '../src/modules/conversations/qualifiedActivity.js'
-import type { NativeInteractionResponseAvailability } from '@graphql/contracts/interaction-activity'
+import type { NativeInteractionResponseAvailability } from '@foreman-code/contracts/interaction-activity'
 import { chatInteractionSummary } from '../src/modules/conversations/activityItems.js'
 it('preserves a Claude pending message generation and rejects availability from its successor', () => {
   const base = structuredClone(activitySnapshotFixtures.activeBeforeNewerQueued)

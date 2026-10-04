@@ -1,5 +1,5 @@
-import { RunBoardSnapshotGetInputSchema } from '@graphql/contracts/run-snapshots'
-import { WorkspaceBoardSearchSchema, resolveWorkflowBoardLocation } from '@graphql/contracts/wave25'
+import { RunBoardSnapshotGetInputSchema } from '@foreman-code/contracts/run-snapshots'
+import { WorkspaceBoardSearchSchema, resolveWorkflowBoardLocation } from '@foreman-code/contracts/wave25'
 import type { RunsSelectorScope } from './types'
 import type { RunSelection } from './selectionGeneration'
 

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { CodexHarnessConfiguration, NativeSessionReference } from '@graphql/contracts'
+import type { CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { WorkerNativeOutputCommandSchema, WorkerNativeOutputReplySchema, WORKER_NATIVE_OUTPUT_TOOL_NAMES,
-  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@graphql/contracts/worker-native-output'
+  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@foreman-code/contracts/worker-native-output'
 import { HarnessExecutionError } from './errors.js'
 import type { RequestId } from './codexStdioTransport.js'
 import { harnessProfile } from './qualification/profiles.js'

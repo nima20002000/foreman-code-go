@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { bindRepeatNodeInput, repeatExecutionIdentity, repeatDigest } from '../src/modules/runs/repeatResolution.js'
 import { normalizeRepeatTerminal, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 

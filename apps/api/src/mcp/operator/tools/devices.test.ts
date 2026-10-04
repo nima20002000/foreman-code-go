@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable, operatorToolRequirements } from '../availability.js'
 import { unavailableDeviceOperatorToolCall } from './devices.js'

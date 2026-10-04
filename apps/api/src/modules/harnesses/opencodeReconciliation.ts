@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 
 /** Adapter-owned observation, NOT an OpenCode wire event or a Codex turn event.
  * Raw message/part history keeps its content-addressed source identities. */

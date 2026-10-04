@@ -1,4 +1,4 @@
-import { WorkflowExecutionPolicySchema } from '@graphql/contracts'
+import { WorkflowExecutionPolicySchema } from '@foreman-code/contracts'
 import { z } from 'zod'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

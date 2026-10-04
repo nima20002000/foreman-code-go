@@ -1,6 +1,6 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { DeviceRegistrationSchema, type CanonicalMachineReference, type DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { DeviceRegistrationSchema, type CanonicalMachineReference, type DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DeviceAccessError } from './access.js'

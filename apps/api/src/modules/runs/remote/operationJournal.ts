@@ -4,17 +4,17 @@ import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
-import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@graphql/contracts/jobs'
-import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
+import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@foreman-code/contracts/jobs'
+import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
-  type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
+  type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
 
 import { RemoteJobOperationReceiptSchema, RemoteJobDispatchIntentSchema, RemoteJobOwnerControlSchema, RemoteJobNativeIdentitySchema, RemoteJobTerminalEvidenceSchema,
-  type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@graphql/contracts/remote-job-execution'
+  type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@foreman-code/contracts/remote-job-execution'
 
-import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRuntimeQualificationResultSchema, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRuntimeQualificationResultSchema, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
 import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'

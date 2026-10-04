@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
 import { AgentFileReadResultSchema, FILE_EXTENSIONS_BY_MEDIA_TYPE, FILE_MEDIA_TYPES,
-  FileWithRevisionSchema, type FileMediaType, type FileWithRevision } from '@graphql/contracts/files'
+  FileWithRevisionSchema, type FileMediaType, type FileWithRevision } from '@foreman-code/contracts/files'
 import { readPinnedInput, sha256 } from '../src/modules/harnesses/opencodeFiles/attachments.js'
 import type { OpenCodeAcceptedFileReader } from '../src/modules/harnesses/opencodeFiles/types.js'
 

@@ -1,4 +1,4 @@
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 
 export const TEXT_STREAM_LIMITS = { bytes: 64 * 1024, items: 1024, latencyMs: 50 } as const
 const canonical = (value: unknown): unknown => value && typeof value === 'object' && !Array.isArray(value)

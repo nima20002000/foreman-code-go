@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { MAX_AGENT_INSTRUCTIONS_BYTES, type AgentConfigurationVersion, type AssignedSkill, type ResolvedSkill } from '@graphql/contracts'
+import { MAX_AGENT_INSTRUCTIONS_BYTES, type AgentConfigurationVersion, type AssignedSkill, type ResolvedSkill } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 
 /** Board Agent and application-level Operator configurations share one composition rule. */

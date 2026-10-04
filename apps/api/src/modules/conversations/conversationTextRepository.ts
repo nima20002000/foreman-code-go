@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { MessageSchema, type ActivityScope } from '@graphql/contracts'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import { MessageSchema, type ActivityScope } from '@foreman-code/contracts'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
 
 export type TextMutationResult = { status: 'committed' | 'ignored' | 'reconciliation_required'; revision: string; messageRevision?: string }

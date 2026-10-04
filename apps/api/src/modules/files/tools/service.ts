@@ -5,7 +5,7 @@ import {
   AgentFilePublishInputSchema, AgentFilePublishResultSchema, FileWithRevisionSchema, FileRevisionSchema,
   MAX_FILE_BYTES, fileStateAt, parseAgentFileReadResult,
   type FileScope, type FileWithRevision, type MessageAttachmentRef,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import { fileScopeIdentity } from '../requests.js'
 import type { TemporaryFileService } from '../service.js'

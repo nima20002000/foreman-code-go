@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 
-import { AgentGetInputSchema, AgentListInputSchema, ManagedAgentDetailSchema, ManagedAgentPageSchema } from '@graphql/contracts/management'
+import { AgentGetInputSchema, AgentListInputSchema, ManagedAgentDetailSchema, ManagedAgentPageSchema } from '@foreman-code/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'

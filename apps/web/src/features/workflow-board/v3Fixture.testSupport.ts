@@ -1,4 +1,4 @@
-import { WorkflowVersionV3Schema, WorkflowRunV3Schema, RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema, RepeatGraphCurrentV3Schema, RepeatGraphScopeV3Schema, RepeatGraphStateV3Schema, repeatGraphTopologyV3, type RepeatGraphStateV3 } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, WorkflowRunV3Schema, RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema, RepeatGraphCurrentV3Schema, RepeatGraphScopeV3Schema, RepeatGraphStateV3Schema, repeatGraphTopologyV3, type RepeatGraphStateV3 } from '@foreman-code/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../../shared/mocks/currentWorkflow'
 
 export const emptyBoardRepeatState = () => RepeatGraphStateV3Schema.parse({

@@ -5,8 +5,8 @@ import {
   AgentSchema,
   WorkspaceSchema,
   type AgentConfigurationVersion,
-} from '@graphql/contracts'
-import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 
 function contentHash(value: unknown): string {

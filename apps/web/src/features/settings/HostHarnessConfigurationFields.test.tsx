@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { it, expect, vi } from 'vitest'
 import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor } from './harnessEditor'

@@ -1,5 +1,5 @@
-import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
-import { withAdvancedDefaults } from '@graphql/contracts'
+import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
+import { withAdvancedDefaults } from '@foreman-code/contracts'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'

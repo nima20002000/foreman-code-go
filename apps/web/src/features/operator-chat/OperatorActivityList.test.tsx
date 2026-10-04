@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import type { OperatorActivity } from '@graphql/contracts'
+import type { OperatorActivity } from '@foreman-code/contracts'
 import { OperatorActivityList } from './OperatorActivityList'
 import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 

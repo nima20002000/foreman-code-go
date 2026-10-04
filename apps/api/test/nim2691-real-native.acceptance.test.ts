@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  ListInteractionsResponseSchema, WorkspaceSchema } from '@graphql/contracts'
-import { ManagementActionSchema, RunEventsPageSchema } from '@graphql/contracts/management'
+  ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
+import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
-  makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+  makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'

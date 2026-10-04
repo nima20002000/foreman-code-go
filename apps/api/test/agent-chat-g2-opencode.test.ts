@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { MessageSchema } from '@graphql/contracts'
+import { MessageSchema } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 import { agentChatCorrelation } from '../src/modules/conversations/agentChatRepository.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'

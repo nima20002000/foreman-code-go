@@ -59,10 +59,10 @@ policy removes them. No worker database or native recovery journal is involved.
 Focused commands (from root; verbose output should go outside Git):
 
 ```
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/contracts exec vitest run src/byteTransfer.test.ts
-corepack pnpm --filter @graphql/api exec vitest run src/modules/byte-transfer/service.test.ts
-corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/contracts exec vitest run src/byteTransfer.test.ts
+corepack pnpm --filter @foreman-code/api exec vitest run src/modules/byte-transfer/service.test.ts
+corepack pnpm --filter @foreman-code/api typecheck
 ```
 
 Fault hook supports `data-sync`, `journal-sync`, `directory-sync`; rejecting a hook

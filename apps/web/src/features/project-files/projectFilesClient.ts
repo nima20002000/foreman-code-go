@@ -1,10 +1,10 @@
 import { z } from 'zod'
-import { ApiErrorResponseSchema } from '@graphql/contracts'
+import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import {
   FilePageSchema, FileRowSchema, FileWithRevisionSchema,
   WorkspaceProjectFilesListInputSchema, WorkspaceProjectFilesListSchema, WorkspaceReferenceFileScopeSchema,
   type FilePage, type FileRow, type FileWithRevision,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
 import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'

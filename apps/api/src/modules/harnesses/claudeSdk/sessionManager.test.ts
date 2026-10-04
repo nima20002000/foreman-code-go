@@ -339,7 +339,7 @@ describe('Claude native session manager admission', () => {
 
   it('offers exactly one initial input before observed SID, then persists SID before its native input receipt', async () => {
     const f = fixture(); const order: string[] = []
-    let boundSession: import('@graphql/contracts').NativeSessionReference | undefined
+    let boundSession: import('@foreman-code/contracts').NativeSessionReference | undefined
     const result = drain(f.manager.startInitialTurn(start, { prompt: 'first accepted prompt', clientCorrelationId: 'operator:one',
       onSessionObserved: async (session) => { order.push('session'); boundSession = session },
       onMessageSubmitted: async (receipt) => { expect(boundSession?.nativeSessionId).toBe(receipt.nativeSessionId); order.push('message') },
@@ -380,7 +380,7 @@ describe('Claude native session manager admission', () => {
     expect(JSON.stringify(inspection)).not.toContain('secret-token')
     expect((await f.manager.inspectMcp()).state).toBe('connected')
     expect(f.queries).toHaveBeenCalledTimes(1)
-    let observed: import('@graphql/contracts').NativeSessionReference | undefined
+    let observed: import('@foreman-code/contracts').NativeSessionReference | undefined
     const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async (session) => { observed = session } }))
     const input = await f.nextMessage()
     f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
@@ -538,7 +538,7 @@ describe('Claude native session manager admission', () => {
     const query = f.client.query
     f.client.query = (input) => ({ ...query(input), joinClosed: () => joined.promise })
     await f.manager.prepareInspection(start)
-    let session: import('@graphql/contracts').NativeSessionReference | undefined
+    let session: import('@foreman-code/contracts').NativeSessionReference | undefined
     if (inputKind === 'later') {
       const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async (value) => { session = value } }))
       const message = await f.nextMessage()
@@ -637,7 +637,7 @@ describe('Claude native session manager admission', () => {
   })
 
   it('wakes the owned iterator from exact actual callback notification and returns complete pending state', async () => {
-    let pending: import('@graphql/contracts').PendingNativeInteraction[] = []
+    let pending: import('@foreman-code/contracts').PendingNativeInteraction[] = []
     const f = fixture(() => (raw) => {
       const frame = raw as { type: string; session_id?: string; message?: { id: string; content: { id: string }[] } }
       return frame.type === 'assistant' ? [{ type: 'claude.tool', payload: { nativeSessionId: frame.session_id, messageId: frame.message?.id, toolUseId: frame.message?.content[0]?.id } }] : []
@@ -650,7 +650,7 @@ describe('Claude native session manager admission', () => {
     const context = f.manager.nativeCallbackContext(session.nativeSessionId, 'tool-A')!
     expect(f.manager.callbackAuthority(context)).toEqual({ ownerPrincipalId: 'sender-A', attemptId: 'attempt-A' })
     expect(f.manager.callbackAuthority({ ...context, nativeMessageId: 'foreign-input' })).toBeUndefined()
-    pending = [{ session, turn: { nativeMessageId: input.uuid, nativeRequestId: 'rpc-A' }, nativeRequestType: 'can_use_tool', request: {}, responseOptions: [{ id: 'allow', label: 'Allow', semantic: 'approve_once' }] }] as unknown as import('@graphql/contracts').PendingNativeInteraction[]
+    pending = [{ session, turn: { nativeMessageId: input.uuid, nativeRequestId: 'rpc-A' }, nativeRequestType: 'can_use_tool', request: {}, responseOptions: [{ id: 'allow', label: 'Allow', semantic: 'approve_once' }] }] as unknown as import('@foreman-code/contracts').PendingNativeInteraction[]
     const wake = output.next()
     f.manager.notifyPendingChanged({ ...context, nativeRequestId: 'rpc-A', nativeRequestType: 'can_use_tool' })
     expect((await wake).value?.type).toBe('interaction.pending')

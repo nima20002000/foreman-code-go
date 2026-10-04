@@ -3,7 +3,7 @@ import { z } from 'zod'
 import {
   ScheduleGetInputSchema, ScheduleInstantSchema, ScheduleOccurrenceSchema, WorkflowScheduleSchema,
   type ScheduleGetInput, type ScheduleOccurrence, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'

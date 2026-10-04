@@ -109,7 +109,7 @@ it('does not send positions against a different saved semantic revision', async 
 it('reloads stored geometry and current labels with immutable configuration pins', async () => {
   const { ApiClient } = await import('../../../shared/api/client')
   const { createNextDraftApi } = await import('./transport')
-  const { makeCurrentWorkflowFixture } = await import('@graphql/contracts/wave25')
+  const { makeCurrentWorkflowFixture } = await import('@foreman-code/contracts/wave25')
   const f = makeCurrentWorkflowFixture('layout-read', 'sequential')
   const stored = { ...f.version.definition, name: 'Current saved label',
     nodes: f.version.definition.nodes.map((node) => ({ ...node, name: 'Current node name',

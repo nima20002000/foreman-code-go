@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nextOccurrences, ScheduleConfigurationSchema, WorkflowScheduleSchema } from '@graphql/contracts/schedules'
+import { nextOccurrences, ScheduleConfigurationSchema, WorkflowScheduleSchema } from '@foreman-code/contracts/schedules'
 import { planDueSchedule } from '../src/modules/schedules/dispatchPlan.js'
 
 describe('elapsed seconds scheduler', () => {

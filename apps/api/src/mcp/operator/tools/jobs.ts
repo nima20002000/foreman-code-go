@@ -1,12 +1,12 @@
 import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema,
-  JobCancellationRecoveryReadSchema } from '@graphql/contracts/job-cancellation-recovery'
-import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
+  JobCancellationRecoveryReadSchema } from '@foreman-code/contracts/job-cancellation-recovery'
+import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
-  JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema } from '@graphql/contracts/job-admission'
+  JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobValidationSchema } from '@graphql/contracts/jobs'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import type { JobService } from '../../../modules/jobs/service.js'

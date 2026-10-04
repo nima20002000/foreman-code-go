@@ -1,4 +1,4 @@
-import type { CodexPluginChangeInput, CodexPluginChangeResult, CodexPluginOperation } from '@graphql/contracts/management'
+import type { CodexPluginChangeInput, CodexPluginChangeResult, CodexPluginOperation } from '@foreman-code/contracts/management'
 
 export type PluginOperation = {
   commandId: string

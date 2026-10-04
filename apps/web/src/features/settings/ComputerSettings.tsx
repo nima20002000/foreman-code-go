@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import type { CanonicalMachineReference, DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { CanonicalMachineReference, DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { registeredComputerOptions } from '../../shared/api/computerOptions'
 import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
 import { useHostHarnessRegistryQuery, useRegisteredComputersQuery, useSelectedMainQuery } from '../../shared/api/computerSettings'

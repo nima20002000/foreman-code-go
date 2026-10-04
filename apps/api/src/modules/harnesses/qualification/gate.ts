@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
-import type { CompatibilityHarness } from '@graphql/contracts'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../errors.js'
 import { baselineProfile, normalizeHarnessVersion } from './profiles.js'
 import type { HarnessQualificationRegistry } from './registry.js'

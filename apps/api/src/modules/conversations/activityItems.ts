@@ -1,6 +1,6 @@
 import type { ConversationPublicationReceipt } from './messagePublications.js'
 import { ActivityItemSchema, InteractionSummarySchema, type ActivityItem, type ActivitySourceRevision, type InteractionSummary,
-  type Message, type PendingNativeInteraction, type WorkRef } from '@graphql/contracts'
+  type Message, type PendingNativeInteraction, type WorkRef } from '@foreman-code/contracts'
 
 export function conversationTextItems(conversationId: string, messages: readonly Message[],
   binding: { harness: string; sessionId: string | null; turnIdFor(requestId: string): string | undefined }): ActivityItem[] {

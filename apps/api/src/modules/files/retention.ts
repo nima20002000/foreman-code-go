@@ -4,8 +4,8 @@ import {
   FileRetentionSaveInputSchema, FileRetentionSaveResultSchema,
   FileRetentionPreviewInputSchema, FileRetentionPreviewResultSchema,
   type FileRetentionGetResult, type FileRetentionSaveResult, type FileRetentionPreviewResult,
-} from '@graphql/contracts/files'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'

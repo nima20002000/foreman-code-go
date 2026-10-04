@@ -8,7 +8,7 @@ import {
   AgentFilePublishInputSchema, AgentFilePublishResultSchema, MAX_FILE_WRITE_BYTES,
   AgentFileWriteWorkingCopyInputSchema, AgentFileWriteWorkingCopyResultSchema,
   AgentFileApplyFormatEditInputSchema, AgentFileApplyFormatEditResultSchema,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { requireLocalRequest } from '../../access/http.js'
 import { DomainError } from '../../errors.js'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'

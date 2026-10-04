@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
-import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@graphql/contracts/harness-registry'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { DomainError } from '../../errors.js'
 
 export const harnessHostKey = (host: CanonicalMachineReference): string => host.kind === 'main' ? `main:${host.mainId}` : `device:${host.mainId}:${host.deviceId}`

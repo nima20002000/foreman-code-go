@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ApprovalResponseOption } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ApprovalResponseOption } from '@foreman-code/contracts'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { newerOperatorSummaries, operatorNeedsAttention, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { operatorDecision, operatorState } from './pr17-test-fixtures'

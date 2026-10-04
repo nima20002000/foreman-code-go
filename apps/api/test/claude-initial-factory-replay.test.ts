@@ -1,14 +1,14 @@
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 import { describe, expect, it, vi } from 'vitest'
-import { OperatorConfigurationVersionSchema } from '@graphql/contracts'
+import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { primeInitialNativeStream } from '../src/modules/harnesses/claudeSdk/initialStream.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import { claudePromptUuid } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { ClaudeLiveCallbackReader } from '../src/modules/harnesses/claudeSdk/callbackAvailability.js'
 
 /** Synthetic contract replay, never native availability evidence. Actual provider

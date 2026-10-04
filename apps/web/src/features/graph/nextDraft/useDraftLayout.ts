@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { useMutation } from '@tanstack/react-query'
 import { z } from 'zod'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema, CURRENT_WORKFLOW_ROUTES,
-  sameWorkflowValue, workflowNodeNames } from '@graphql/contracts/wave25'
+  sameWorkflowValue, workflowNodeNames } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'

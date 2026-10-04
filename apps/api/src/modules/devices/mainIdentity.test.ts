@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { publicKeyFingerprint, verifyMainIdentityProof } from '@graphql/contracts/device-identity-node'
+import { publicKeyFingerprint, verifyMainIdentityProof } from '@foreman-code/contracts/device-identity-node'
 import { signMainIdentityProof } from './mainIdentity.js'
 
 describe('selected main application proof', () => {

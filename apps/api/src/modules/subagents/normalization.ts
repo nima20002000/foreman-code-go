@@ -1,6 +1,6 @@
-import type { HarnessNativeEvent } from '@graphql/contracts'
-import type { RunSubagent, RunSubagentTool } from '@graphql/contracts/subagents'
-import { SUBAGENT_LIMITS, SubagentTruncationSchema } from '@graphql/contracts/subagents'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import type { RunSubagent, RunSubagentTool } from '@foreman-code/contracts/subagents'
+import { SUBAGENT_LIMITS, SubagentTruncationSchema } from '@foreman-code/contracts/subagents'
 import type { SubagentChange, SubagentProjectionContext } from './types.js'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}

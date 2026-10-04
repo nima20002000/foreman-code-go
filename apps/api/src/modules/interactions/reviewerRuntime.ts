@@ -1,6 +1,6 @@
 import type { SessionWriteLease } from './sessionWriter.js'
 import type { ReviewNativeCapture, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
-import type { NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@graphql/contracts'
+import type { NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@foreman-code/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativePersistenceRedactor } from './nativePersistence.js'

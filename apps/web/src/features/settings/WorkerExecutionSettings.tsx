@@ -1,4 +1,4 @@
-import { WORKER_EXECUTION_STARTUP_VARIABLE } from '@graphql/contracts/management'
+import { WORKER_EXECUTION_STARTUP_VARIABLE } from '@foreman-code/contracts/management'
 import { useWorkerExecutionSettings } from '../../shared/api/workerExecution'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 

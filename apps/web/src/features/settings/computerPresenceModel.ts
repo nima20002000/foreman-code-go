@@ -1,5 +1,5 @@
-import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
-import type { HarnessHostInventoryMetadata } from '@graphql/contracts/harness-registry'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import type { HarnessHostInventoryMetadata } from '@foreman-code/contracts/harness-registry'
 
 function sameComputer(left: CanonicalMachineReference, right: CanonicalMachineReference) {
   return left.mainId === right.mainId && left.kind === right.kind

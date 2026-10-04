@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
-import { JobInputStageRequestSchema, JobInputDeliveryAckRequestSchema, JobInputDeliveryStatusRequestSchema } from '@graphql/contracts/job-inputs'
-import { VerifiedTransferReceiptSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { JobInputStageRequestSchema, JobInputDeliveryAckRequestSchema, JobInputDeliveryStatusRequestSchema } from '@foreman-code/contracts/job-inputs'
+import { VerifiedTransferReceiptSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import type { DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import type { ImmutableTransferSource } from '../../byte-transfer/sender.js'
 import { DomainError } from '../../errors.js'

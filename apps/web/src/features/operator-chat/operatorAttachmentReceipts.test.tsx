@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema,
   type OperatorConversationState, type SendOperatorMessageRequest,
-} from '@graphql/contracts'
-import { FileWithRevisionSchema, type FileWithRevision, type TemporaryFileScope } from '@graphql/contracts/files'
+} from '@foreman-code/contracts'
+import { FileWithRevisionSchema, type FileWithRevision, type TemporaryFileScope } from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
 import { sendOperatorMessage } from '../../shared/api/client'
 import { protectedKey } from '../../shared/api/protectedChatStorage'

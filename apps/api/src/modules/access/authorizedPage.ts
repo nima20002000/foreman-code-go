@@ -1,4 +1,4 @@
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from './policy.js'
 import { DomainError } from '../errors.js'
 

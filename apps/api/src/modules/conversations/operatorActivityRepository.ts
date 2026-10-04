@@ -1,4 +1,4 @@
-import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@graphql/contracts'
+import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'

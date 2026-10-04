@@ -1,5 +1,5 @@
-import { HARNESS_DISCOVERY_NAMESPACE, HarnessDiscoveryRequestSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback } from '@graphql/contracts/harness-registry'
-import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@graphql/contracts/device-identity'
+import { HARNESS_DISCOVERY_NAMESPACE, HarnessDiscoveryRequestSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback } from '@foreman-code/contracts/harness-registry'
+import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
 

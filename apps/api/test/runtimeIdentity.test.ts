@@ -1,7 +1,7 @@
 import { buildApp } from '../src/app.js'
 import { describe, expect, it, vi } from 'vitest'
 import { readRuntimeIdentity, installationIdentityMigration } from '../src/infrastructure/runtimeIdentity.js'
-import { createRuntimeIdentity } from '@graphql/contracts/runtime-identity-node'
+import { createRuntimeIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import type pg from 'pg'
 
 const first = 'd95abeb8-598a-49a4-8c3c-c6e3533053e8'

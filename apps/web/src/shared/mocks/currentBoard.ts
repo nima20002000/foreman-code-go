@@ -1,9 +1,9 @@
 import { nativeNode } from './nativeFixtureTypes'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
-import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
-import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
-import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@graphql/contracts/management'
+import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@foreman-code/contracts'
+import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
+import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@foreman-code/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema,
@@ -13,7 +13,7 @@ import {
   preserveWorkflowGeometry,
   type WorkflowDefinitionV3, type WorkflowVersionV3, type GraphDraftV3,
   type GraphEditReadResultV3, type CurrentRunDetails, type RepeatGraphCurrentV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 const copy = <T,>(value: T): T => structuredClone(value)
 const hash = `sha256:${'b'.repeat(64)}`

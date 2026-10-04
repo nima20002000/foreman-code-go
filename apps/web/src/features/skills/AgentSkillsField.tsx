@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import type { AssignedSkill } from '@graphql/contracts'
-import type { SkillSummary } from '@graphql/contracts/management'
+import type { AssignedSkill } from '@foreman-code/contracts'
+import type { SkillSummary } from '@foreman-code/contracts/management'
 import { Alert, Badge, Button, Checkbox, EmptyState, Icon, IconButton, LoadingState, SearchField } from '../../shared/ui/nocturne'
 import { SkillTextPreview } from './SkillEditor'
 import { useSkillQuery, useSkillCatalog } from './skillsApi'

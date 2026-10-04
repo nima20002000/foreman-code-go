@@ -1,4 +1,4 @@
-import type { AgentHarness } from '@graphql/contracts'
+import type { AgentHarness } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager } from './port.js'

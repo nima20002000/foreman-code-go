@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { OperatorConfigurationVersion } from '@graphql/contracts'
+import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { configuration as openCodeConfiguration, FixtureServer } from './opencode-fixtures.js'
 

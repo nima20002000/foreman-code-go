@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { RepeatGraphCurrentV3Schema } from '@graphql/contracts/wave25'
+import { RepeatGraphCurrentV3Schema } from '@foreman-code/contracts/wave25'
 import { server } from '../../mocks/server'
 import { boardV3Fixture, emptyBoardRepeatState } from '../workflow-board/v3Fixture.testSupport'
 import { assertRepeatCurrentProgress, createRepeatGraphClient, repeatCurrentPath } from './canonicalClient'

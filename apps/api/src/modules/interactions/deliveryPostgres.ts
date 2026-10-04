@@ -1,4 +1,4 @@
-import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { interactionConnection } from './connection.js'

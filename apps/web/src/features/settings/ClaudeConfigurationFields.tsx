@@ -1,5 +1,5 @@
-import { ClaudeEffortSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import { ClaudeEffortSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { Alert, Combobox, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import './harnessModelFields.css'

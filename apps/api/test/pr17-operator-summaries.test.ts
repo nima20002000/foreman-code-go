@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'

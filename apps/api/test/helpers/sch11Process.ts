@@ -1,6 +1,6 @@
 import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import type { WorkflowSchedule } from '@graphql/contracts/schedules'
+import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import type { Sch11ChildInput, Sch11ChildMessage } from './sch11DispatcherChild.js'
 import type { Sch11Fixture } from './sch11Fixture.js'
 

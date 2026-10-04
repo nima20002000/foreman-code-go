@@ -1,4 +1,4 @@
-import type { OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 import type { FileMcpService } from '../../files/tools/mcp.js'
 import type { FileToolContext } from '../../files/tools/types.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'

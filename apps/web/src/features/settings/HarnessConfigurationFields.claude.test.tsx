@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { HarnessSettingsSection } from '@graphql/contracts/management'
+import type { HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { createHarnessEditor } from './harnessEditor'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'

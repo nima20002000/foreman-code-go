@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
@@ -114,8 +114,8 @@ it('notifies the actual owned observer after map insertion with distinct control
 })
 
 it('workflow response uses original-source readback plus active delivery lease after the old drive owner is released', async () => {
-  const { AgentConfigurationVersionSchema, HarnessExecutionSchema, DurableInteractionSchema } = await import('@graphql/contracts')
-  const { WorkflowRunV3Schema, WorkflowVersionV3Schema } = await import('@graphql/contracts/wave25')
+  const { AgentConfigurationVersionSchema, HarnessExecutionSchema, DurableInteractionSchema } = await import('@foreman-code/contracts')
+  const { WorkflowRunV3Schema, WorkflowVersionV3Schema } = await import('@foreman-code/contracts/wave25')
   const createdAt = '2026-10-01T00:00:00.000Z'
   const approval = { handler: 'user' as const }
   const cfg = AgentConfigurationVersionSchema.parse({ id: 'cfg', workspaceId: 'ws', agentId: 'agent', version: 1, productRole: 'coder', harness: configuration, prompt: {}, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt })

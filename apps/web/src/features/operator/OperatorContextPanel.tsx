@@ -5,7 +5,7 @@ import type {
   GetConversationResponse,
   Message,
   WorkspaceDetailsResponse,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import {
   queryKeys,

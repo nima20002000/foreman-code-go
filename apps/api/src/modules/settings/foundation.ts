@@ -9,9 +9,9 @@ import {
   withAdvancedDefaults,
   type AgentDefaults,
   type WorkflowDefaults,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
-import { WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, type WorkspaceDefaults } from '@graphql/contracts/management'
+import { WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, type WorkspaceDefaults } from '@foreman-code/contracts/management'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 

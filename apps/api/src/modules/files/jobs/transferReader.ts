@@ -1,5 +1,5 @@
-import type { TransferContext } from '@graphql/contracts/byte-transfer'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import type { VerifiedArtifactReader } from '../distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { JobOutputPublicationInput, TrustedJobOutputReader } from './port.js'

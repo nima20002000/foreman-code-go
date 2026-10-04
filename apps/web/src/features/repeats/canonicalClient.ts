@@ -1,7 +1,7 @@
 import {
   CANONICAL_RUN_GRAPH_ROUTES, RepeatGraphCurrentV3Schema, RepeatGraphReadRequestV3Schema,
   canonicalGraphJson, sameCanonicalGraphScope, type RepeatGraphCurrentV3, type RepeatGraphScopeV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../shared/api/client'
 
 /** v3 is not negotiated through, or coerced into, the legacy graph reader. */

@@ -1,5 +1,5 @@
-import type { RunBoardNodeSnapshot } from '@graphql/contracts/run-snapshots'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 
 export const isTerminalSubagent = (status: RunSubagent['status']) => ['completed', 'failed', 'canceled'].includes(status)
 export type SubagentLayoutNode = Pick<RunBoardNodeSnapshot, 'id' | 'kind' | 'position' | 'size'>

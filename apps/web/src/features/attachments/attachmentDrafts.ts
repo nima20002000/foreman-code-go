@@ -3,7 +3,7 @@ import { createStore } from 'zustand/vanilla'
 import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
   type File as FileMetadata, type FileMediaType, type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { sessionControllerSignal } from '../../shared/api/sessionController'
 import { attachmentDraftKey, inspectAttachment, type SelectionIssue } from './attachmentFiles'

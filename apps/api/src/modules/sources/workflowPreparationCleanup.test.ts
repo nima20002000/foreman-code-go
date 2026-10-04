@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { assertWorkflowPreparationClosed, type loadWorkflowPreparation } from './workflowPreparationCleanup.js'

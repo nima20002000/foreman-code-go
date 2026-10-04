@@ -1,5 +1,5 @@
-import type { HarnessConfiguration } from '@graphql/contracts'
-import type { HarnessSettingsSection, SettingsAgentRole } from '@graphql/contracts/management'
+import type { HarnessConfiguration } from '@foreman-code/contracts'
+import type { HarnessSettingsSection, SettingsAgentRole } from '@foreman-code/contracts/management'
 
 export const agentRoleOrder: readonly SettingsAgentRole[] = ['operator', 'orchestrator', 'coder']
 export const rolePresentation: Record<SettingsAgentRole, { title: string; description: string; scope: string }> = {

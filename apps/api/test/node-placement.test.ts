@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcceptedNodePlacementSchema, DispatchIntentSchema, NodePlacementReadbackSchema } from '@graphql/contracts/node-placement'
+import { AcceptedNodePlacementSchema, DispatchIntentSchema, NodePlacementReadbackSchema } from '@foreman-code/contracts/node-placement'
 import { directoryIdentityHash, deriveDispatch, freezePlacement, readPlacement } from '../src/modules/placement/binding.js'
 import { preparePlacement, type PlacementValidationPort } from '../src/modules/placement/admission.js'
 

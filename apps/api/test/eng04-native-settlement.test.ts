@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import { HarnessExecutionSchema, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@foreman-code/contracts'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { decisionDigest } from '../src/modules/interactions/wave25/publication.js'

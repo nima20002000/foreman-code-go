@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { RunBoardSnapshotGetResult } from '@graphql/contracts/run-snapshots'
+import type { RunBoardSnapshotGetResult } from '@foreman-code/contracts/run-snapshots'
 import { server } from '../../mocks/server'
 import { RunsSelector } from './RunsSelector'
 import { RunsSelectorSearchSchema } from './search'

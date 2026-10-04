@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_IN_FLIGHT,
   parseExtensionDescriptors, type DeviceApplicationResult, type DeviceExtensionDescriptor, type DeviceNegotiatedExtension,
-} from '@graphql/contracts/device-application'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+} from '@foreman-code/contracts/device-application'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 import { DeviceApplicationError } from './deviceApplicationError.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
@@ -271,6 +271,6 @@ export class DeviceApplicationChannel {
     this.assemblies.clear(); this.options.socket.close()
   }
 }
-function classify(code: unknown): import('@graphql/contracts/device-connection').DeviceFailureCode {
-  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@graphql/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
+function classify(code: unknown): import('@foreman-code/contracts/device-connection').DeviceFailureCode {
+  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
 }

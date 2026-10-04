@@ -4,8 +4,8 @@ import {
   AgentChatStateResponseSchema, CancelQueuedAgentChatTurnRequestSchema, InterruptAgentChatRequestSchema,
   RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema, SendAgentChatMessageResponseSchema,
   type AgentChatContext, type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
-import { OperatorActivityCursorSchema } from '@graphql/contracts'
+} from '@foreman-code/contracts/agent-chat'
+import { OperatorActivityCursorSchema } from '@foreman-code/contracts'
 import { apiClient, ApiError, type RequestOptions } from './client'
 
 const path = encodeURIComponent

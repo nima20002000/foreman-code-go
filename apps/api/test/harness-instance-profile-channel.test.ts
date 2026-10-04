@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { createHostHarnessProfileCheckExtension } from '../src/modules/harnesses/instanceSettings/profileChannel.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 

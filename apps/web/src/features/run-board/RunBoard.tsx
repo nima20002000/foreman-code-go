@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { RunBoardNodeSnapshot } from '@graphql/contracts/run-snapshots'
+import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
 import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'

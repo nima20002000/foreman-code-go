@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { DurableInteraction, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
+import type { DurableInteraction, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
 import { matchingDeliveryEvidence, type NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 

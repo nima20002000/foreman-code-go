@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { RepeatGraphScopeV3Schema, type RepeatGraphCurrentV3, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { RepeatGraphScopeV3Schema, type RepeatGraphCurrentV3, type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { assertRepeatCurrentProgress, repeatGraphClient, type RepeatGraphClient } from '../repeats/canonicalClient'

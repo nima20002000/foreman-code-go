@@ -1,4 +1,4 @@
-import type { NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@graphql/contracts'
+import type { NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { harnessProfile } from '../harnesses/qualification/profiles.js'

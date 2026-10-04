@@ -1,4 +1,4 @@
-import type { ResourceCollector, TelemetryIdentity } from '@graphql/contracts/resource-telemetry'
+import type { ResourceCollector, TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
 import { boundedReader } from './io.js'
 import { qualifyHostConstants, type HostConstants } from './linuxProcfs.js'
 import { createResourceCollector, type CollectorClock } from './lifecycle.js'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { toolFailure } from '../src/mcp/shared/results.js'
-import { ExecutableWorkflowV3Schema, WorkflowDefinitionV3Schema } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, WorkflowDefinitionV3Schema } from '@foreman-code/contracts/wave25'
 import { reviewerScopeFixture, supportedReviewerScopes, unsupportedReviewerScopes } from './helpers/eng07ReviewAdmission.testSupport.js'
 
 const code = 'REPEAT_REVIEW_SCOPE_UNSUPPORTED'

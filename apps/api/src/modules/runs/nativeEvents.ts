@@ -1,4 +1,4 @@
-import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
+import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

@@ -1,5 +1,5 @@
-import { isAutoJobSpec, type JobDefinitionSpec, type AcceptedJobSpec } from '@graphql/contracts/jobs'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import { isAutoJobSpec, type JobDefinitionSpec, type AcceptedJobSpec } from '@foreman-code/contracts/jobs'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { CodeBlock } from '../../shared/ui/nocturne'
 import { queueLabel } from './model'
 

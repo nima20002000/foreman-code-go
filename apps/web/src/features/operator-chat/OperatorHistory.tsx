@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { Message } from '@graphql/contracts'
+import type { Message } from '@foreman-code/contracts'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { getOperatorConversationHistory } from '../../shared/api/operatorChatHistory'

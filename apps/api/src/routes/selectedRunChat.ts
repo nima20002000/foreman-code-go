@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
-import { AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema } from '@graphql/contracts/agent-chat'
+import { AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import {
   ReadSelectedRunChatResponseSchema, SelectedRunChatSelectionSchema, SelectedRunChatTargetSchema,
   SendSelectedRunChatRequestSchema, InterruptSelectedRunChatRequestSchema,
-} from '@graphql/contracts/selected-run-chat'
+} from '@foreman-code/contracts/selected-run-chat'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { AgentChatService } from '../modules/conversations/agentChat.js'
 

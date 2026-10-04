@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { isDeepStrictEqual as same } from 'node:util'
-import { JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission } from '@graphql/contracts/job-runtime'
+import { JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'

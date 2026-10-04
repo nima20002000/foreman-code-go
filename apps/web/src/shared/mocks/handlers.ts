@@ -3,9 +3,9 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@graphql/contracts'
+import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@foreman-code/contracts'
 import type { z } from 'zod'
-import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
   HarnessConfigurationCheckInputSchema,
@@ -14,7 +14,7 @@ import {
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
   type ManagedWorkspace,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 import {
   getMockFixture,

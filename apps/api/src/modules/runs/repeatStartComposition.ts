@@ -1,5 +1,5 @@
-import type { HarnessExecution } from '@graphql/contracts'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import type { HarnessExecution } from '@foreman-code/contracts'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
 import type { RepeatNativeLaunchStore } from '../interactions/repeatObservation.js'
@@ -28,7 +28,7 @@ export interface RepeatEngineStartContext {
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
-  jobs?: (owner: RunOwnership, version: import('@graphql/contracts/wave25').WorkflowVersionV3) => {
+  jobs?: (owner: RunOwnership, version: import('@foreman-code/contracts/wave25').WorkflowVersionV3) => {
     store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
   lifecycle: RepeatRuntimeLifecycle
   /** Must capture REAL current coordinator/manager/lease/command evidence on

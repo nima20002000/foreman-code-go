@@ -1,6 +1,6 @@
-import type { Agent } from '@graphql/contracts'
-import { StagedAgentSchema } from '@graphql/contracts/management'
-import type { GraphDraftOperationV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { Agent } from '@foreman-code/contracts'
+import { StagedAgentSchema } from '@foreman-code/contracts/management'
+import type { GraphDraftOperationV3, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { draftAgents, sameValue, type DraftNode, type NextDraftContext } from './model'
 import type { NextDraftEdit } from './state'
 

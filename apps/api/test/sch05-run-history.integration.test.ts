@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, CurrentWorkflowSaveResultSchema, CURRENT_WORKFLOW_TOOLS,
   makeCurrentWorkflowFixture, RunStartV3ResultSchema,
-} from '@graphql/contracts/wave25'
-import { RunBoardSnapshotGetResultSchema, RunDropdownPageSchema } from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/wave25'
+import { RunBoardSnapshotGetResultSchema, RunDropdownPageSchema } from '@foreman-code/contracts/run-snapshots'
 import { RUN_HISTORY_TOOLS, type RunHistoryToolName } from '../src/mcp/operator/tools/runHistory.js'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'

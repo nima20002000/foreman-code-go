@@ -3,14 +3,14 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { describe, expect, it, vi } from 'vitest'
 import { inspectInstalledCodex, readInstalledCodexQualification, retainInstalledCodexInventory } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
-import type { HarnessQualification } from '@graphql/contracts/harness-qualification'
+import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 
 async function fixture(version = '0.132.0') {
   const root = await mkdtemp(join(tmpdir(), 'installed-codex-inspection-'))

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
-import type { AgentFilePublishResult, FileWithRevision, TemporaryFileScope } from '@graphql/contracts/files'
+import type { AgentFilePublishResult, FileWithRevision, TemporaryFileScope } from '@foreman-code/contracts/files'
 import type { CodexFileServices, CodexFileHostLease } from '../../src/modules/harnesses/codexFiles/port.js'
 import { fixture } from './codex-test-helpers.js'
 

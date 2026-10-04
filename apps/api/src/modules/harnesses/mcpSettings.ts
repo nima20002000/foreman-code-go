@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessMcpReconcileInputSchema,
   type HarnessMcpManagedInput, type HarnessMcpManagedPreset, type HarnessMcpPlan, type HarnessMcpPlanInput,
-  type HarnessMcpReconcileInput, type ManagementPrincipal } from '@graphql/contracts/management'
+  type HarnessMcpReconcileInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

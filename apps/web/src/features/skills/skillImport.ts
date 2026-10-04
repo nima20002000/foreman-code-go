@@ -1,4 +1,4 @@
-import { MAX_SKILL_INSTRUCTIONS_CHARS } from '@graphql/contracts'
+import { MAX_SKILL_INSTRUCTIONS_CHARS } from '@foreman-code/contracts'
 
 export type SkillImport = { name: string; text: string } | { error: string }
 

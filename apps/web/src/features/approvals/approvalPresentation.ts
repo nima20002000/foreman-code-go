@@ -1,4 +1,4 @@
-import type { DurableInteraction, ApprovalInboxView } from '@graphql/contracts'
+import type { DurableInteraction, ApprovalInboxView } from '@foreman-code/contracts'
 
 export function approvalStatuses(view: ApprovalInboxView): DurableInteraction['status'][] {
   if (view === 'delivery') return ['decided', 'delivery_pending', 'delivery_failed']

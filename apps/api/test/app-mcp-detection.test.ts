@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ScopedMcpDetectionSchema } from '@graphql/contracts'
+import { ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 
 import {
   McpDetectionService,

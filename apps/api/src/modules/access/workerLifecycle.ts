@@ -1,7 +1,7 @@
 import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

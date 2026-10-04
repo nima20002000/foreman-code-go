@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { expect } from 'vitest'
-import { reduceRepeatGraphPageV3, type RepeatGraphScopeV3, type RepeatGraphSnapshotV3 } from '@graphql/contracts/wave25'
+import { reduceRepeatGraphPageV3, type RepeatGraphScopeV3, type RepeatGraphSnapshotV3 } from '@foreman-code/contracts/wave25'
 import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
 
 /** Actual read service plus the COMPLETE frozen reference consumer. No fact

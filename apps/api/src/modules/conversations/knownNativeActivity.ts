@@ -1,4 +1,4 @@
-import type { ActivityNativeIdentity, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { ActivityNativeIdentity, NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import { operatorActivity, type OperatorActivityChange } from './operatorActivity.js'
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 

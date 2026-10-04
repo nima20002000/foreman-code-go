@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { toolFailure, toolResult } from '../../mcp/shared/results.js'

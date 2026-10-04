@@ -1,9 +1,9 @@
-import type { ExecutionResult } from '@graphql/contracts'
-import { WorkflowArtifactOutputsV1Schema, type WorkflowArtifactOutputsV1 } from '@graphql/contracts/workflow-artifact-result'
+import type { ExecutionResult } from '@foreman-code/contracts'
+import { WorkflowArtifactOutputsV1Schema, type WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
 import {
   AcceptedCurrentNodeResultSchema, WorkflowChoiceSchema, parseChoiceResultEnvelope,
   type WorkflowChoice, type ChoiceResultEnvelope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 /** Parsing-only native text view; the complete original result remains the
  * accepted/digested evidence. No prefix salvage, Markdown or mixed carriers. */

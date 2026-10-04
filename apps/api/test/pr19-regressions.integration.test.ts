@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, operatorChatSettings,
-  type HarnessConfiguration, type NativeSessionReference, type SendOperatorMessageRequest } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+  type HarnessConfiguration, type NativeSessionReference, type SendOperatorMessageRequest } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'

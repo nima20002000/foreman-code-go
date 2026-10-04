@@ -1,4 +1,4 @@
-import { RunPlacementGetInputSchema, RunPlacementGetResultSchema, NodePlacementChoicesInputSchema, NodePlacementChoicesResultSchema, type NodePlacementChoicesInput } from '@graphql/contracts/placement-readback'
+import { RunPlacementGetInputSchema, RunPlacementGetResultSchema, NodePlacementChoicesInputSchema, NodePlacementChoicesResultSchema, type NodePlacementChoicesInput } from '@foreman-code/contracts/placement-readback'
 import type { z } from 'zod'
 import { ApiError, apiClient, type RequestOptions } from '../../shared/api/client'
 

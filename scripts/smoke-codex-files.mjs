@@ -4,7 +4,7 @@
  * HTTP/PostgreSQL or the production adapter. Does not change native configuration.
  * Run: node scripts/smoke-codex-files.mjs [--codex /absolute/codex] [--model model-id]
  *       [--type png|pdf|docx|md|zip|all] [--output /new/result] [--timeout-ms 180000]
- * Build @graphql/contracts first so the API format/ZIP helpers can load. The
+ * Build @foreman-code/contracts first so the API format/ZIP helpers can load. The
  * output path must not exist. No npm install or credential issuance occurs.
  */
 import { spawn, execFile } from 'node:child_process'

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { DEFAULT_AGENT_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS } from '@foreman-code/contracts'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 

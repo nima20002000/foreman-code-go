@@ -1,4 +1,4 @@
-import { RETIRED_EXECUTION_TOOLS } from '@graphql/contracts/wave25'
+import { RETIRED_EXECUTION_TOOLS } from '@foreman-code/contracts/wave25'
 import { z } from 'zod'
 import { DomainError } from '../../modules/errors.js'
 import { toolFailure } from '../shared/results.js'

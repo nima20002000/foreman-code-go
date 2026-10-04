@@ -1,4 +1,4 @@
-import type { WorkspaceBatchArchiveInput, WorkspaceStorageFolder } from '@graphql/contracts/management'
+import type { WorkspaceBatchArchiveInput, WorkspaceStorageFolder } from '@foreman-code/contracts/management'
 
 /** Interaction snapshots, not another copy of the live workspace/folder catalog. */
 export type WorkspaceSelectionTarget =

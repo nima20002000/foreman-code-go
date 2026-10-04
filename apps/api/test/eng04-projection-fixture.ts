@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
-import { GraphRunStateSchema, type RepeatGraphScopeV3, type RepeatGraphFactV3, type RepeatGraphEffectV3, type PublicGraphProjection } from '@graphql/contracts/wave25'
+import { GraphRunStateSchema, type RepeatGraphScopeV3, type RepeatGraphFactV3, type RepeatGraphEffectV3, type PublicGraphProjection } from '@foreman-code/contracts/wave25'
 import { graphSourceDigest, openRunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 import { ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'

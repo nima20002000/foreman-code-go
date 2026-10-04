@@ -1,5 +1,5 @@
 import { AgentFileApplyFormatEditInputSchema, AgentFileCreateWorkingCopyInputSchema,
-  AgentFilePublishInputSchema, AgentFileWriteWorkingCopyInputSchema } from '@graphql/contracts/files'
+  AgentFilePublishInputSchema, AgentFileWriteWorkingCopyInputSchema } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileMcpService } from '../../files/tools/mcp.js'
 import { OpenCodeFileError, type OpenCodeFileService } from './types.js'

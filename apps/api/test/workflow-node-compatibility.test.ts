@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 import {
   WorkflowVersionV3Schema, makeCurrentWorkflowFixture, validateRepeatDecisionV1,
   type GraphExecutionIdentity, type RepeatDecisionV1, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { publicNodeState } from '../src/modules/run-graph/publicLifecycle.js'
 import type { CurrentNativeActivity } from '../src/modules/run-graph/nativeActivitySelection.js'
 import {

@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
-import type { WorkflowSchedule } from '@graphql/contracts/schedules'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { intersectGrants } from '../access/operatorDelegation.js'

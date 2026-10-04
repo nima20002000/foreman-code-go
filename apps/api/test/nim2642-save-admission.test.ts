@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { RunOutcomeSchema } from '@graphql/contracts'
+import { RunOutcomeSchema } from '@foreman-code/contracts'
 import { assertMeaningfulSaveAdmitted, readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { PUBLIC_PENDING_INTERACTION_SQL, PUBLIC_UNSETTLED_REVIEW_SQL } from '../src/modules/run-graph/publicObligations.js'

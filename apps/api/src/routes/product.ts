@@ -13,10 +13,10 @@ import {
   GetInteractionResponseSchema,
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
-} from '@graphql/contracts'
-import { SavedWorkspaceDetailsSchema, SavedWorkflowResponseSchema, SavedRunDetailsSchema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { SavedWorkspaceDetailsSchema, SavedWorkflowResponseSchema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import type { OperatorServices } from '../mcp/operator/types.js'
-import { InteractionListInputSchema } from '@graphql/contracts/management'
+import { InteractionListInputSchema } from '@foreman-code/contracts/management'
 import type { FastifyInstance } from 'fastify'
 
 import { requirePrincipal } from '../modules/access/http.js'

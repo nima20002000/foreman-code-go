@@ -6,7 +6,7 @@ import { apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { LoadMore } from '../../shared/ui/LoadMore'
-import type { WorkflowBatchArchiveInput } from '@graphql/contracts/management'
+import type { WorkflowBatchArchiveInput } from '@foreman-code/contracts/management'
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 
 import {

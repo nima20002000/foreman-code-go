@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { activityCommandSourcesMigration } from '../src/infrastructure/activityCommandSourcesMigration.js'
 import { activitySourcesMigration } from '../src/infrastructure/activitySourcesMigration.js'
 import { appendConversationTextOperation } from '../src/modules/conversations/conversationTextRepository.js'

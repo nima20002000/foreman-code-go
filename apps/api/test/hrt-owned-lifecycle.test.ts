@@ -1,6 +1,6 @@
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentConfigurationVersion } from '@graphql/contracts'
+import type { AgentConfigurationVersion } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 

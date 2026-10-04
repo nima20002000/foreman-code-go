@@ -6,7 +6,7 @@ import {
   CanonicalRunGraphReadRequestSchema, CanonicalRunGraphEventsRequestSchema,
   CanonicalRunGraphHttpSnapshotQuerySchema, CanonicalRunGraphHttpEventsQuerySchema,
   type RepeatGraphSnapshotV3, type RepeatGraphBatchV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { graphSourceDigest, repeatGraphBatchReceipt } from '../src/modules/run-graph/publication.js'
 
 /** Pure actual shared-schema/reducer tests. Not PG, HTTP authentication, native

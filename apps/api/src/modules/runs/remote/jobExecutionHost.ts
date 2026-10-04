@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
 import { componentLogger } from '../../../infrastructure/logger.js'
 import { isDeepStrictEqual } from 'node:util'
-import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { RemoteJobExecutionRpcRequestSchema, type RemoteJobDispatchIntent, type RemoteJobConnectionIdentity,
-  type RemoteJobOwnerControl, type RemoteJobOperationReceipt, type RemoteJobTerminalEvidence } from '@graphql/contracts/remote-job-execution'
+  type RemoteJobOwnerControl, type RemoteJobOperationReceipt, type RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 import { executeJob, jobSupervisorIdentity, type JobExecutorPorts, type JobExecutorResult } from '../../jobs/executor.js'
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'

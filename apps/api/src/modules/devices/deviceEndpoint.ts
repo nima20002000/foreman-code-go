@@ -1,8 +1,8 @@
-import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@graphql/contracts/device-application'
+import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, deviceNegotiationHash, extensionDescriptors, type DeviceApplicationRequestOptions, type DeviceExtensionRegistration } from './deviceApplicationChannel.js'
-import type { DevicePrincipal, MainIdentityProofRequest, MainSignedIdentityProof } from '@graphql/contracts/device-identity'
+import type { DevicePrincipal, MainIdentityProofRequest, MainSignedIdentityProof } from '@foreman-code/contracts/device-identity'
 import { randomUUID } from 'node:crypto'
-import { DEVICE_PROTOCOL_VERSION, DeviceSessionBindingSchema, type DevicePresence, type DeviceSessionBinding, type DeviceWelcome } from '@graphql/contracts/device-connection'
+import { DEVICE_PROTOCOL_VERSION, DeviceSessionBindingSchema, type DevicePresence, type DeviceSessionBinding, type DeviceWelcome } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 
 export type AuthenticatedDevice = DevicePrincipal
@@ -11,7 +11,7 @@ export interface DeviceAuthenticator {
   authenticateDevice(token: string, scope: 'connect'): Promise<AuthenticatedDevice>
   revalidateDevice(principal: AuthenticatedDevice, scope: 'heartbeat'): Promise<void>
 }
-export type { DevicePresence } from '@graphql/contracts/device-connection'
+export type { DevicePresence } from '@foreman-code/contracts/device-connection'
 
 const authorizationFailure = (error: unknown) => {
   const code = (error as { code?: string })?.code

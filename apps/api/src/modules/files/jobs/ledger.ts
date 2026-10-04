@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { JobExecutionFileScopeSchema } from '@graphql/contracts/job-artifacts'
+import { JobExecutionFileScopeSchema } from '@foreman-code/contracts/job-artifacts'
 import { DomainError } from '../../errors.js'
 import type { JobSql } from '../../jobs/repository.js'
 import { PostgresFileRepository } from '../postgres.js'

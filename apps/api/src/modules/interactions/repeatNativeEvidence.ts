@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { HarnessExecution, NativeSessionReference } from '@graphql/contracts'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { DomainError } from '../errors.js'
 

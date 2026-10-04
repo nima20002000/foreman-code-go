@@ -1,10 +1,10 @@
 import { AgentFormSchema } from './agentForm'
 import { LocalWorkflowFormSchema } from './localGraph'
 import { z } from 'zod'
-import { AgentSchema } from '@graphql/contracts'
-import { ManagedAgentSchema } from '@graphql/contracts/management'
+import { AgentSchema } from '@foreman-code/contracts'
+import { ManagedAgentSchema } from '@foreman-code/contracts/management'
 import { GraphDraftV3Schema, GraphEditStageInputV3Schema, WorkflowDefinitionV3Schema, sameAuthoredWorkflow, sameWorkflowValue,
-  type GraphEditIntentV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
+  type GraphEditIntentV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'

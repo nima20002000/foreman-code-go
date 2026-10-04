@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'

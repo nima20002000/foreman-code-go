@@ -1,4 +1,4 @@
-import { HarnessQualificationSchema, type HarnessConfiguration, type HarnessQualification } from '@graphql/contracts'
+import { HarnessQualificationSchema, type HarnessConfiguration, type HarnessQualification } from '@foreman-code/contracts'
 
 /** A projection of the qualified native transport, not an alternate execution runtime. */
 export function nativeQualification(configuration: HarnessConfiguration, version: string): HarnessQualification {

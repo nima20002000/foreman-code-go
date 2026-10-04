@@ -1,4 +1,4 @@
-import { RunNodeLiveActivitySchema } from '@graphql/contracts'
+import { RunNodeLiveActivitySchema } from '@foreman-code/contracts'
 
 /** Renderer meaning only; not a lifecycle, transport, or replay protocol. */
 export type GraphNodePresentation = {

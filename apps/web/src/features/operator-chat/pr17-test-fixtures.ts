@@ -1,4 +1,4 @@
-import { OperatorConversationStateSchema, type OperatorConversationState, CODEX_APPROVAL_OPTIONS_FIXTURE } from '@graphql/contracts'
+import { OperatorConversationStateSchema, type OperatorConversationState, CODEX_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
 
 export function operatorState(overrides: Partial<OperatorConversationState> = {}): OperatorConversationState {
   return OperatorConversationStateSchema.parse({

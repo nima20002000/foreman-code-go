@@ -49,7 +49,7 @@ if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.pl
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
 const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'],
   alias: Object.fromEntries(Object.entries(JSON.parse(snapshotSource('packages/contracts/package.json')).exports).map(([key, value]) => [
-    key === '.' ? '@graphql/contracts' : `@graphql/contracts/${key.slice(2)}`,
+    key === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${key.slice(2)}`,
     `./packages/contracts/${(typeof value === 'string' ? value : value.import).replace('./dist/', './src/').replace(/\.js$/, '.ts')}`,
   ])),
   plugins: [{ name: 'committed-source-snapshot', setup(builder) {

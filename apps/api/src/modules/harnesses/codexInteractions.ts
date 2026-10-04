@@ -3,7 +3,7 @@ import {
   ApprovalResponseOptionSchema, CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   PendingNativeInteractionSchema, type ApprovalResponseOption, type CodexHarnessConfiguration,
   type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { canonical } from './codexProtocol.js'
 import { isObject, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 

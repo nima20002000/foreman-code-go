@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
-import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@foreman-code/contracts'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import { describe, it } from 'vitest'
 

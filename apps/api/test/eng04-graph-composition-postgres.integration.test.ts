@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
   canonicalGraphJson, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3, RUN_GRAPH_LIMITS,
   type RepeatGraphFactV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {
   graphFixture, graphPosition, ownedGraph, changeRunState, privateCanary,

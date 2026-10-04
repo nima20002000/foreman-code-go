@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
-import type { OperatorConversationState } from '@graphql/contracts'
+import type { OperatorConversationState } from '@foreman-code/contracts'
 import { operatorChatBootstrapFrame, OPERATOR_BOOTSTRAP_FRAME_BYTES } from '../src/modules/conversations/operatorChatBootstrap.js'
 import { createSseWriter } from '../src/routes/sseWriter.js'
 

@@ -6,7 +6,7 @@ import {
   type HarnessConfiguration,
   type HarnessDefaults,
   type AgentProductRole,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 export const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
   'low', 'medium', 'high', 'xhigh', 'max',

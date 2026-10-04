@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { TemporaryFileScopeSchema } from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { TemporaryFileScopeSchema } from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { DomainError } from '../../errors.js'
 import type { FileAccess, FileConversation, FileConversationAuthorization } from '../authorization.js'

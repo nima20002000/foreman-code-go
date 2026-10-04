@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { RunStartV3Input } from '@graphql/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { RunManagementService } from '../src/modules/runs/management.js'
 
 // This is a negative service-boundary guard, not an old-version fixture or a

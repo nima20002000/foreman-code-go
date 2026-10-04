@@ -1,5 +1,5 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
-import type { ActivityTextIdentity, ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
+import type { ActivityTextIdentity, ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
 import { createTextCoalescer, TEXT_STREAM_LIMITS } from './textCoalescer.js'
 

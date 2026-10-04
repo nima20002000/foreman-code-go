@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { expect, it } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { registerOperatorHttpSecurity, requirePrincipal } from '../src/modules/access/http.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'

@@ -192,11 +192,11 @@ Run on a full pinned checkout with the repository toolchain and a disposable
 loopback `TEST_DATABASE_URL` accepted by the existing helper:
 
 ```sh
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
-corepack pnpm --filter @graphql/api exec vitest run test/file-reference-bytes.test.ts test/file-reference-policy.test.ts
-corepack pnpm --filter @graphql/api exec vitest run test/files.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @foreman-code/api exec vitest run test/file-reference-bytes.test.ts test/file-reference-policy.test.ts
+corepack pnpm --filter @foreman-code/api exec vitest run test/files.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
 ```
 
 The integration fixture applies 273601 and 273636 explicitly in its isolated

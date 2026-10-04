@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent, OperatorActivity } from '@graphql/contracts'
+import type { NativeHarnessEvent, OperatorActivity } from '@foreman-code/contracts'
 import { claudeToolTitle } from './activity.js'
 
 /** Minimal bridge to the existing chat activity repository. Arguments, output

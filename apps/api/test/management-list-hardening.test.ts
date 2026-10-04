@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import { authorizedPage } from '../src/modules/access/authorizedPage.js'
 
 const principal = ManagementPrincipalSchema.parse({

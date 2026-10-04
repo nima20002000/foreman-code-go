@@ -1,4 +1,4 @@
-import type { JobArtifact, JobExecution, PreparedJobSpec } from '@graphql/contracts/jobs'
+import type { JobArtifact, JobExecution, PreparedJobSpec } from '@foreman-code/contracts/jobs'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RepeatNodeRef, RepeatResolution } from '../runs/repeatResolution.js'
 import type { WorkflowJobPreparation } from './workflowPreparation.js'

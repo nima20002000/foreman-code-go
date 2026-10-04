@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
-import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { checkFileCondition, type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileService,
   type OpenCodeRegisteredFile } from './types.js'
 

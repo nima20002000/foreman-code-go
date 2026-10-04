@@ -1,8 +1,8 @@
 import {
   ExecutionResultSchema, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecutionRequest, type NativeHarnessEvent, type NativeSessionReference,
-} from '@graphql/contracts'
-import { RunAcceptedInputValueSchema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { RunAcceptedInputValueSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
 
 export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park' | 'durable_reply_gap' | 'durable_failure_gap'

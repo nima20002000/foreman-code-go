@@ -1,9 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION, JobRuntimeQualificationRpcRequestSchema, JobRuntimeQualificationRpcResponseSchema,
-  type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+  type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { inspectInstalledJobRuntime, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import { runInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'

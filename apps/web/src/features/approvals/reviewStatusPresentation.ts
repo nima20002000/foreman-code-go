@@ -1,4 +1,4 @@
-import type { DurableInteraction, ReviewStatus } from '@graphql/contracts'
+import type { DurableInteraction, ReviewStatus } from '@foreman-code/contracts'
 
 /** Presentation only. A due clock is never evidence that a retry actually started. */
 export function reviewStatusPresentation(review: ReviewStatus, interaction: Pick<DurableInteraction, 'status' | 'deliveryState'>, now: number) {

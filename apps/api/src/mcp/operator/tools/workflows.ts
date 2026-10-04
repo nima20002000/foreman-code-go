@@ -1,14 +1,14 @@
-import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
+import { CurrentWorkflowCreateInputSchema } from '@foreman-code/contracts/wave25'
 import { registerCurrentWorkflowTools } from './currentWorkflow.js'
 import { SavedManagedWorkflowCommandResultSchema as ManagedWorkflowCommandResultSchema,
-  SavedManagedWorkflowPageSchema as ManagedWorkflowPageSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema } from '@graphql/contracts/wave25'
+  SavedManagedWorkflowPageSchema as ManagedWorkflowPageSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
   WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema,
   WorkflowArchiveInputSchema, WorkflowGetInputSchema,
   WorkflowListInputSchema, WorkflowUpdateInputSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'

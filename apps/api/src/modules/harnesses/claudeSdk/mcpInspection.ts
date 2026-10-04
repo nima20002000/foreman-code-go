@@ -1,5 +1,5 @@
 import { basename } from 'node:path'
-import type { McpDetection, AgentHarness } from '@graphql/contracts'
+import type { McpDetection, AgentHarness } from '@foreman-code/contracts'
 import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
 
 export interface ClaudeMcpControlServer {

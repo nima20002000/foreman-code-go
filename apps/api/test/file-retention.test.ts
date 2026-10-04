@@ -5,8 +5,8 @@ import { describe, it } from 'vitest'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, FileWithRevisionSchema, TemporaryFileSchema,
   applyFileRetention, type TemporaryFileScope,
-} from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { toolRoles } from '../src/mcp/unified/roles.js'
 import { fileRetentionGrantsAllow } from '../src/modules/files/retention.js'

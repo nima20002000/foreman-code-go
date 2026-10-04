@@ -1,7 +1,7 @@
 import {
   GraphNodeStateSchema, PublicGraphProjectionSchema, InputBindingSchema, RUN_GRAPH_LIMITS,
   repeatGraphTopologyV3, type PublicGraphProjection, type RunGraphScope, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { readRepeatGraphPinsLocked } from './repeatProjectionRows.js'
 import { readCurrentGraphExchanges } from '../interactions/wave25/currentExchanges.js'

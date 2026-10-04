@@ -1,4 +1,4 @@
-import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 
 /** Static guidance shown before a request code exists. It never installs, logs in or changes a network. */
 export function DeviceSetupGuide() {

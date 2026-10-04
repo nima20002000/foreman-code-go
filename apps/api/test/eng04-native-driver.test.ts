@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 import { DomainError } from '../src/modules/errors.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE } from '../src/modules/interactions/repeatNativeEvidence.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'

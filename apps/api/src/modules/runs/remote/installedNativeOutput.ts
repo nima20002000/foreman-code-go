@@ -1,10 +1,10 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { CodexNativeOutputs, CodexNativeOutputQualificationInput, CodexNativeOutputTurnPin,
   CodexNativeOutputCallback } from '../../harnesses/codexNativeOutput.js'
-import type { TemporaryFileScope } from '@graphql/contracts/files'
-import { TemporaryFileScopeSchema } from '@graphql/contracts/files'
-import type { WorkerNativeOutputCommand } from '@graphql/contracts/worker-native-output'
-import type { ByteTransferPort } from '@graphql/contracts/byte-transfer'
+import type { TemporaryFileScope } from '@foreman-code/contracts/files'
+import { TemporaryFileScopeSchema } from '@foreman-code/contracts/files'
+import type { WorkerNativeOutputCommand } from '@foreman-code/contracts/worker-native-output'
+import type { ByteTransferPort } from '@foreman-code/contracts/byte-transfer'
 import type { TransferSenderConnection } from '../../byte-transfer/sender.js'
 import { WorkerNativeOutputRegistry } from './workerNativeOutputRegistry.js'
 import { WorkerNativeArtifactSender, type WorkerNativeArtifactBinding,

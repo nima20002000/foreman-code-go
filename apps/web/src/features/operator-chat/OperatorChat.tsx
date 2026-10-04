@@ -1,8 +1,8 @@
-import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@graphql/contracts'
+import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
-import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
+import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@foreman-code/contracts'
+import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
 
 import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'

@@ -44,7 +44,7 @@ it('pins actual main installation payloads and invalidates selections after pass
 
 
 it('consumes the explicit passive Claude SDK declaration without default profiles or OpenCode launcher fallback', async () => {
-  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
   const launcher: typeof discoverLauncher = vi.fn<typeof discoverLauncher>(async (requested, environment) => ({ requested,
     resolvedLauncher: `/recorded/${requested}`, fingerprint: 'generic', status: 'installed', interpreter: null,

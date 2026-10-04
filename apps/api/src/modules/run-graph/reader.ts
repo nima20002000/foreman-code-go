@@ -5,7 +5,7 @@ import {
   RunGraphResetSchema, canonicalGraphJson, graphJsonBytes, sameGraphScope,
   type RunGraphScope, type RunGraphPage, type RunGraphReset, type RunGraphSnapshot,
   type RunGraphBatch, type RunGraphCurrentState, type RunGraphTopology,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 

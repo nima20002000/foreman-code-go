@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
-import type { HarnessMcpConnection } from '@graphql/contracts/management'
+import type { HarnessMcpConnection } from '@foreman-code/contracts/management'
 
 /** One native entry serves every role; the credential decides Operator, Orchestrator or Coder. */
 export const APP_MCP_SERVER_NAME = 'graphql'

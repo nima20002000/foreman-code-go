@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import type { Message, OperatorActivity } from '@graphql/contracts'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import type { Message, OperatorActivity } from '@foreman-code/contracts'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { OperatorMessages } from './OperatorMessages'
 import { projectOperatorActivity, projectOperatorText } from './operatorTextProjection'
 

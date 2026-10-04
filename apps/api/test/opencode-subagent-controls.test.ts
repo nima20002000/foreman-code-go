@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { subagentCapabilities, type RunSubagent, type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import { subagentCapabilities, type RunSubagent, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { FixtureServer, manager, sessionFor } from './opencode-fixtures.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 

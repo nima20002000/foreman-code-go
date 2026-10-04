@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { AgentDefaultsSchema, operatorHarnessDefaults, type AgentDefaults } from '@graphql/contracts'
-import type { HarnessSettingsSection, SettingsAgentRole } from '@graphql/contracts/management'
+import { AgentDefaultsSchema, operatorHarnessDefaults, type AgentDefaults } from '@foreman-code/contracts'
+import type { HarnessSettingsSection, SettingsAgentRole } from '@foreman-code/contracts/management'
 import { Button, Checkbox, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { useAgentDefaultsQuery, useUpdateAgentDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'

@@ -1,5 +1,5 @@
-import type { ActivityChangeEnvelopeV1, ActivityOwner } from '@graphql/contracts'
-import type { ActivityItem, ActivityNativeIdentity, ActivitySource, WorkRef } from '@graphql/contracts/activity'
+import type { ActivityChangeEnvelopeV1, ActivityOwner } from '@foreman-code/contracts'
+import type { ActivityItem, ActivityNativeIdentity, ActivitySource, WorkRef } from '@foreman-code/contracts/activity'
 import type { ClaudeDecodedEvent, ClaudeEventOwner } from './normalization.js'
 
 export interface ClaudeActivityContext {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@graphql/contracts'
+import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { harnessProfile } from '../harnesses/qualification/profiles.js'

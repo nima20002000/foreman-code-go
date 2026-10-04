@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures } from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { AgentChatCommands } from '../src/modules/conversations/agentChatCommands.js'
 import { DomainError } from '../src/modules/errors.js'

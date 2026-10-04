@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
 import { it } from 'vitest'
-import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
+import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 
 import { codexChatFileDeclarations } from '../src/modules/harnesses/codexFiles/declarations.js'
 import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'

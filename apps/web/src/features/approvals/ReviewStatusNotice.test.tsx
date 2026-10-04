@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type ReviewStatus } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type ReviewStatus } from '@foreman-code/contracts'
 import { ReviewStatusNotice } from './ReviewStatusNotice'
 
 afterEach(() => { cleanup(); vi.useRealTimers() })

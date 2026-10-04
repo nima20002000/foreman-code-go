@@ -1,7 +1,7 @@
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { posix } from 'node:path'
 import { z } from 'zod'
-import { PlacementDigestSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@graphql/contracts/node-placement'
+import { PlacementDigestSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 
 export const RuntimeLeafAttestationSchema = z.object({
   executionId: z.string().min(1), attemptId: z.string().min(1), operationId: z.string().min(1), bindingHash: PlacementDigestSchema,

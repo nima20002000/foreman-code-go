@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import {
   makeCurrentWorkflowFixture, WorkflowVersionV3Schema, WorkflowRunV3Schema, canonicalGraphJson,
-} from '@graphql/contracts/wave25'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 /** SQL-shaped tests only. No live DB, credentials or native session. */
 export function sharedFixture() {

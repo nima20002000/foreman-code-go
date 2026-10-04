@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import type { ReviewJob } from '@graphql/contracts'
+import type { ReviewJob } from '@foreman-code/contracts'
 import { assertSameRepeatExecution, assertSameReviewJob, reviewPhysicallySettled } from '../src/modules/interactions/repeatObservation.js'
 import { repeatReviewerOccurrence } from '../src/modules/interactions/repeatReviewer.js'
 import { native2Fixture } from './eng04-native2-fixtures.js'

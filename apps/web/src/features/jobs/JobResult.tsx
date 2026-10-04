@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { JobWorkflowExecutionReference } from '@graphql/contracts/job-workflow'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { Alert, Badge, Button, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
 import { useJobArtifacts, useJobExecution, jobKeys } from './query'

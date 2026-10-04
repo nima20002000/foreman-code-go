@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
+import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { CurrentManagedWorkflowSchema, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowVersionDetailSchema,
   CURRENT_WORKFLOW_ROUTES, RunStartV3InputSchema, sameExecutableWorkflow, sameWorkflowValue,
-  type GraphDraftV3, type RunStartV3Input } from '@graphql/contracts/wave25'
+  type GraphDraftV3, type RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../shared/api/client'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 const part = encodeURIComponent

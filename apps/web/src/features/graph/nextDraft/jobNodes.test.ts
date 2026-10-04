@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest'
-import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
+import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
 import { currentWorkflowFixture } from '../../../shared/mocks/currentWorkflow'
 import { definition } from '../../jobs/fixtures'
 import { attachAgent,attachJob,draftOperations } from './model'

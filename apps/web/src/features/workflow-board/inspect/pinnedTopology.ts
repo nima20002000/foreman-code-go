@@ -1,4 +1,4 @@
-import type { RepeatGraphCurrentV3, WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphCurrentV3, WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 type ExecutionFact = RepeatGraphCurrentV3['state']['executions'][number]
 type ResolutionFact = RepeatGraphCurrentV3['state']['resolutions'][number]

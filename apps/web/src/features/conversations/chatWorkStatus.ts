@@ -1,4 +1,4 @@
-import type { ActivitySnapshotV1 } from '@graphql/contracts'
+import type { ActivitySnapshotV1 } from '@foreman-code/contracts'
 
 /** Parent availability and independent unfinished work are separate facts. */
 export function chatBackgroundWork(snapshot: ActivitySnapshotV1 | undefined) {

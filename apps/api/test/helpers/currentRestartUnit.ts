@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { DurableInteractionSchema, HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { DurableInteractionSchema, HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { ExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'

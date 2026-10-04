@@ -1,5 +1,5 @@
-import { RemoteJobOperationReceiptSchema,type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import { RemoteJobOperationReceiptSchema,type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { graphSourceDigest } from '../run-graph/publication.js'
 import { assertRunGraphPublication,openRunGraphPublication,type RunGraphPublication } from '../run-graph/publication.js'
 import { readPublicNodeProjection,publicNodeProjectionFacts } from '../run-graph/publicProjection.js'

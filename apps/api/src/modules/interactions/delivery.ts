@@ -1,4 +1,4 @@
-import type { DurableInteraction, NativeSessionReference } from '@graphql/contracts'
+import type { DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */

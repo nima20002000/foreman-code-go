@@ -2,7 +2,7 @@ import {
   CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
   type HarnessExecutionRequest, type NativeHarnessCapabilities, type NativeHarnessEvent, type NativeSessionReference,
   type PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../src/modules/harnesses/port.js'
 import type { NativeResponseDeliveryEvidence } from '../../src/modules/interactions/delivery.js'
 import { unavailableNativeResponse, type NativeResponseAvailabilityQuery, type NativeResponseAvailability } from '../../src/modules/harnesses/responseAvailability.js'

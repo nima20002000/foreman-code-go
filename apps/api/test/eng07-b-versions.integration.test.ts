@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CurrentWorkflowReadResultSchema, CURRENT_WORKFLOW_TOOLS, RepeatGraphSnapshotV3Schema,
   RunStartV3InputSchema, type WorkflowDefinitionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { scenarioFixture, type Scenario } from './helpers/eng07BScenarios.js'
 import { scenarioHarness, type Harness, type Saved, type Started } from './helpers/eng07BHarness.js'

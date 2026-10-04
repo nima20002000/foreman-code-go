@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-q
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor, type HarnessEditor } from './harnessEditor'
 

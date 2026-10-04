@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { FileWithRevisionSchema, fileStateAt, type FilePage, type FileScope, type MessageAttachmentRef,
-  type RunFileProvenance, type TemporaryFileScope } from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+  type RunFileProvenance, type TemporaryFileScope } from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DomainError } from '../../src/modules/errors.js'
 import type { FileConversationAuthorization } from '../../src/modules/files/authorization.js'
 import type { AllocationSession, FileAllocation, FileAllocationRepository, FileRepository, StoredFile } from '../../src/modules/files/repository.js'

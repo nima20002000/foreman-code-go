@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { HarnessReleaseProvenanceSchema, type CompatibilityHarness, type HarnessReleaseProvenance } from '@graphql/contracts'
+import { HarnessReleaseProvenanceSchema, type CompatibilityHarness, type HarnessReleaseProvenance } from '@foreman-code/contracts'
 
 /**
  * Existing qualification pins, NOT new qualifications performed by this checker.

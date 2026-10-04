@@ -6,7 +6,7 @@ import {
   FileRetentionPreviewResultSchema, FileRetentionSaveInputSchema, FileRetentionSaveResultSchema,
   type FileRetentionPreference, type FileRetentionPreviewResult, type FileRetentionSaveInput,
   type FileRetentionSaveResult,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../../mocks/server'

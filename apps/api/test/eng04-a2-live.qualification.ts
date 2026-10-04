@@ -11,14 +11,14 @@ import {
   CurrentWorkflowReadResultSchema, RunStartV3InputSchema, RunStartV3ResultSchema,
   RepeatGraphSnapshotV3Schema, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3,
   canonicalGraphJson, type RepeatGraphSnapshotV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { readAcceptedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
 import { assertWorkflowRunSettlementLocked } from '../src/modules/runs/workflowRepositoryServices.js'
 import { assertRepeatCanonicalReceiptLocked } from '../src/modules/run-graph/repeatReceipts.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import type { WorkflowNativeProofRecord } from '../src/modules/runs/workflowNativeProof.js'
 
 type Case = { id: string; mode: 'complete' | 'stop-native' | 'stop-approval'; start: unknown;

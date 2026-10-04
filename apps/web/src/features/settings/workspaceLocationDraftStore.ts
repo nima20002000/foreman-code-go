@@ -1,4 +1,4 @@
-import type { ManagedWorkspace } from '@graphql/contracts/management'
+import type { ManagedWorkspace } from '@foreman-code/contracts/management'
 import { create } from 'zustand'
 
 /** Local edits only. Saved workspace data and request lifecycle stay in Query. */

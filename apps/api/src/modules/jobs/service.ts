@@ -1,15 +1,15 @@
 import { componentLogger } from '../../infrastructure/logger.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
-import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
-import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
-import { jobSpecDigests } from '@graphql/contracts/jobs-node'
-import type { RunInput } from '@graphql/contracts'
+import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
+import type { RunInput } from '@foreman-code/contracts'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { JobArtifactSchema, AcceptedJobSpecSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema,
-  JobStartSchema, isAutoJobSpec, type ResolvedJobDefinitionSpec, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec, type JobStart } from '@graphql/contracts/jobs'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+  JobStartSchema, isAutoJobSpec, type ResolvedJobDefinitionSpec, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec, type JobStart } from '@foreman-code/contracts/jobs'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
@@ -26,7 +26,7 @@ import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQu
 import { JobResourceRequestSchema } from '@graphql/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
-import type { JobCancellationRecoveryApply } from '@graphql/contracts/job-cancellation-recovery'
+import type { JobCancellationRecoveryApply } from '@foreman-code/contracts/job-cancellation-recovery'
 
 export const jobDigest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex')
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {

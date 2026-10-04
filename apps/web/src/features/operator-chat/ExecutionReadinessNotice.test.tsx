@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ExecutionReadiness } from '@graphql/contracts/management'
+import type { ExecutionReadiness } from '@foreman-code/contracts/management'
 import { server } from '../../mocks/server'
 import { ExecutionReadinessNotice } from './ExecutionReadinessNotice'
 

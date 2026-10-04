@@ -34,12 +34,12 @@ From a full checkout at the base SHA, use the repository's pinned package manage
 and retain its minimum-release-age and lockfile policies:
 
 ```sh
-corepack pnpm --filter @graphql/api add --save-exact pdf-lib@1.17.1 unpdf@1.4.0 @xmldom/xmldom@0.9.12
+corepack pnpm --filter @foreman-code/api add --save-exact pdf-lib@1.17.1 unpdf@1.4.0 @xmldom/xmldom@0.9.12
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
-corepack pnpm --filter @graphql/api test src/modules/files/formats/__tests__
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @foreman-code/api test src/modules/files/formats/__tests__
 ```
 
 Commit the resulting `apps/api/package.json` and `pnpm-lock.yaml` together. Neither

@@ -1,4 +1,4 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

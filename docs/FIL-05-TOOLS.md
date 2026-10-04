@@ -195,13 +195,13 @@ Run in the pinned checkout after migration registration:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
-corepack pnpm --filter @graphql/api test test/file-tools.test.ts
-corepack pnpm --filter @graphql/api exec node --import tsx --test test/file-tool-transfers.node-test.ts
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @foreman-code/api test test/file-tools.test.ts
+corepack pnpm --filter @foreman-code/api exec node --import tsx --test test/file-tool-transfers.node-test.ts
 # Explicit loopback TEST_DATABASE_URL, with "test" in the database name:
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-tools-postgres.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-tools-postgres.integration.test.ts --no-file-parallelism
 ```
 
 The PostgreSQL suite uses a random isolated schema and minimal FIL-03 foreign-key

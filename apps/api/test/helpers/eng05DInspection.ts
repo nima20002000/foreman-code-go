@@ -4,8 +4,8 @@ import { expect } from 'vitest'
 import {
   RUN_INSPECTION_TOOLS, RunStartV3InputSchema, RunStartV3ResultSchema,
   type RunInspectionToolName,
-} from '@graphql/contracts/wave25'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 
 export type InspectionHarness = Awaited<ReturnType<typeof currentOperatorIntegration>>

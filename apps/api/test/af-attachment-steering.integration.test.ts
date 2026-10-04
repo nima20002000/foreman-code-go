@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import type { SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import type { SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { afPublicationFixture } from './helpers/afPublicationFixture.js'
 import { withAfMcp } from './helpers/afMcp.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'

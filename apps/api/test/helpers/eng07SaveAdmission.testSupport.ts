@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { expect, vi } from 'vitest'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveInputSchema,
-  CurrentWorkflowSaveResultSchema, type CurrentWorkflowSaveInput } from '@graphql/contracts/wave25'
+  CurrentWorkflowSaveResultSchema, type CurrentWorkflowSaveInput } from '@foreman-code/contracts/wave25'
 import type { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { deferred } from './wave25Agent3.js'
 import { graphHeaders, graphRpcValue } from '../eng04-graph-composition-fixture.js'

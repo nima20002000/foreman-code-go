@@ -1,5 +1,5 @@
-import type { Message } from '@graphql/contracts'
-import { MessageAttachmentRefsSchema } from '@graphql/contracts/files'
+import type { Message } from '@foreman-code/contracts'
+import { MessageAttachmentRefsSchema } from '@foreman-code/contracts/files'
 import type pg from 'pg'
 
 /** Recover only the exact admitted request; a displayed publication cannot create a send input. */

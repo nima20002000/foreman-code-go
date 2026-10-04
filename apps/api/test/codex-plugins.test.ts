@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import type { CodexPluginSummary } from '@graphql/contracts/management'
+import type { CodexPluginSummary } from '@foreman-code/contracts/management'
 import { NativeCodexPlugins } from '../src/modules/harnesses/codexPlugins.js'
 
 const originalHome = process.env.CODEX_HOME

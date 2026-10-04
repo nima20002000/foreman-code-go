@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { FilePage, FileRow, PermanentFileScope } from '@graphql/contracts/files'
+import type { FilePage, FileRow, PermanentFileScope } from '@foreman-code/contracts/files'
 import {
   inheritedReferenceScope, referenceFileSize, referenceFilesKey, referenceFilesRoot, referenceScopeKey,
   visibleReferenceRows, workflowReferenceScope,

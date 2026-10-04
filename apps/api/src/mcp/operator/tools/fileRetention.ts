@@ -4,7 +4,7 @@ import {
   FileRetentionGetInputSchema, FileRetentionGetResultSchema,
   FileRetentionPreviewInputSchema, FileRetentionPreviewResultSchema,
   FileRetentionSaveInputSchema, FileRetentionSaveResultSchema,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { DomainError } from '../../../modules/errors.js'
 import { fileRetentionGrantsAllow } from '../../../modules/files/retention.js'

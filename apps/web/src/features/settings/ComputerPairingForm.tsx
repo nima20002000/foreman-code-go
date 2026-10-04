@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
-import { DeviceSetupApproveInputSchema, decodeWorkerIdentityRequest } from '@graphql/contracts/device-setup'
+import { DeviceSetupApproveInputSchema, decodeWorkerIdentityRequest } from '@foreman-code/contracts/device-setup'
 import { useApproveComputerSetup, useComputerSetupOptionsQuery, useRegisteredComputersQuery, useSelectedMainQuery } from '../../shared/api/computerSettings'
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'

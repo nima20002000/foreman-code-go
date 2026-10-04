@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
@@ -77,7 +77,7 @@ describe('exact accepted Claude profile admission', () => {
 
 
 it.each(['codex', 'opencode'] as const)('admits the exact selected %s profile without manufacturing a Claude pin', async driver => {
-  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   const f = fixture()
   const configuration = DEFAULT_HARNESS_DEFAULTS[driver]
   f.value.driverId = driver; f.value.configuration = configuration

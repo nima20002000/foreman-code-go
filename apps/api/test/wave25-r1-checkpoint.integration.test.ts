@@ -3,7 +3,7 @@ import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => {

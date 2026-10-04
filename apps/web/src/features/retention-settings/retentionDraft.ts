@@ -2,7 +2,7 @@ import {
   FileRetentionDurationSchema,
   type FileRetentionPreference,
   type FileRetentionPreviewResult,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 export type RetentionUnit = 'hours' | 'days'
 /** Local form representation only; all HTTP/domain shapes come from shared contracts. */

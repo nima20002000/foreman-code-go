@@ -1,5 +1,5 @@
-import { DurableInteractionSchema, HarnessExecutionSchema, ReviewJobSchema, RunStopCauseSchema } from '@graphql/contracts'
-import type { GraphEffect } from '@graphql/contracts/wave25'
+import { DurableInteractionSchema, HarnessExecutionSchema, ReviewJobSchema, RunStopCauseSchema } from '@foreman-code/contracts'
+import type { GraphEffect } from '@foreman-code/contracts/wave25'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { graphSourceDigest } from '../../run-graph/publication.js'
 import { assertOrchestratorGraphAuthority } from '../graphAuthority.js'

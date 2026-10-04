@@ -1,5 +1,5 @@
 import { useContext, useEffect, useRef, type ReactNode } from 'react'
-import type { HarnessSettingsSection } from '@graphql/contracts/management'
+import type { HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { harnessSections } from './settingsPresentation'

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ActivityChangeEnvelopeV1Schema, type NativeHarnessEvent } from '@graphql/contracts'
+import { ActivityChangeEnvelopeV1Schema, type NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { fixture } from './helpers/agentChatF1.js'
 

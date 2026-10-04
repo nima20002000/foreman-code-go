@@ -1,4 +1,4 @@
-import type { HarnessQualificationCheck } from '@graphql/contracts'
+import type { HarnessQualificationCheck } from '@foreman-code/contracts'
 import type { QualificationSuiteInput, QualificationSuiteResult } from '../types.js'
 
 export type Check = readonly [id: string, run: () => Promise<string | null>]

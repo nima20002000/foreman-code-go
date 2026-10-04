@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
 import type { Readable } from 'node:stream'
-import { JobArtifactSchema, type JobArtifact, type JobExecution } from '@graphql/contracts/jobs'
-import { JobArtifactFileWithRevisionSchema, JobArtifactMediaTypeSchema, type JobExecutionFileScope } from '@graphql/contracts/job-artifacts'
-import { fileStateAt, type FileWithRevision } from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { JobArtifactSchema, type JobArtifact, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobArtifactFileWithRevisionSchema, JobArtifactMediaTypeSchema, type JobExecutionFileScope } from '@foreman-code/contracts/job-artifacts'
+import { fileStateAt, type FileWithRevision } from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { JobArtifactPort } from '../../jobs/ports.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import { JobRepository } from '../../jobs/repository.js'
@@ -14,11 +14,11 @@ import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipa
 import { requireAuthorization } from '../../access/policy.js'
 import { DomainError } from '../../errors.js'
 import type { FileMutationSource } from '../repository.js'
-import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
+import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 import type { FileStorageService } from '../service.js'
 import { completedBytes } from '../tools/transfers.js'
 
-export type { JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
+export type { JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 export interface TrustedJobOutputReader {
   /** Main verifies receipt/exact ownership, or opens an immutable collected output after proven closure.
    * No caller path is opened by this adapter. The declared relative path is metadata, not a main disk path. */

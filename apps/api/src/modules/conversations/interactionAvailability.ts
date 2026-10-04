@@ -1,5 +1,5 @@
-import type { NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
-import { NativeInteractionResponseAvailabilitySchema, type NativeInteractionResponseAvailability } from '@graphql/contracts/interaction-activity'
+import type { NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
+import { NativeInteractionResponseAvailabilitySchema, type NativeInteractionResponseAvailability } from '@foreman-code/contracts/interaction-activity'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import { inspectNativeResponse, pendingResponseQuery, type ResponseAvailabilityInspector } from '../harnesses/responseAvailability.js'
 

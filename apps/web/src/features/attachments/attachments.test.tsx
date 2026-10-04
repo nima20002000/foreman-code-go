@@ -9,7 +9,7 @@ import {
   DEFAULT_FILE_RETENTION_SECONDS, FileWithRevisionSchema, MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS,
   TemporaryFileScopeSchema, temporaryFileExpiresAt,
   type FileMediaType, type FileWithRevision, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
 import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { AttachmentDraftProvider } from './AttachmentDraftProvider'

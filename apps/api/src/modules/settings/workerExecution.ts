@@ -4,7 +4,7 @@ import {
   WorkerExecutionSettingsSchema,
   type ManagementPrincipal,
   type WorkerExecutionSettings,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 

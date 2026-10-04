@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, open, readFile, readlink, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
-import type { FileRevision } from '@graphql/contracts/files'
+import type { FileRevision } from '@foreman-code/contracts/files'
 import { sha256 } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type OpenCodeExecutionFiles,
   type OpenCodeRegisteredFile } from './types.js'

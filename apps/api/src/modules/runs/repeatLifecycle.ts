@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, RepeatGraphScopeV3Schema,
-  type AcceptedWorkflowRunV3, type GraphEffectAuthority } from '@graphql/contracts/wave25'
+  type AcceptedWorkflowRunV3, type GraphEffectAuthority } from '@foreman-code/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'

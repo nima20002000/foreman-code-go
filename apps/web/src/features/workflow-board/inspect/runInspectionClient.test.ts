@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../mocks/server'
 import { ApiError } from '../../../shared/api/client'
-import { RunExecutionDetailSchema, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { RunExecutionDetailSchema, type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import {
   assertExecutionVersion, digestCurrentValue, readRunExecution, readRunExecutionBindings,
   readRunExecutions, readRunInspectionVersion,

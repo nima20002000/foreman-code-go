@@ -1,5 +1,5 @@
-import type { GraphActivity, GraphExecutionIdentity, GraphFact, NodeResolution } from '@graphql/contracts/wave25'
-import type { DurableInteraction, ReviewJob } from '@graphql/contracts'
+import type { GraphActivity, GraphExecutionIdentity, GraphFact, NodeResolution } from '@foreman-code/contracts/wave25'
+import type { DurableInteraction, ReviewJob } from '@foreman-code/contracts'
 import type { CurrentNativeActivity } from './nativeActivitySelection.js'
 
 type NodeState = Extract<GraphFact, { type: 'node.state' }>['state']

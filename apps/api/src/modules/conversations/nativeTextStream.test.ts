@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { createNativeTextStream } from './nativeTextStream.js'
 const owner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: 'chat-a', requestId: 'request-a' }, requestId: 'request-a', sessionId: 'session-a', turnId: 'turn-a' })
 const delta = (sequence: number, text: string): NativeHarnessEvent => ({ connectionId: 'connection-a', sequence, occurredAt: '2026-10-01T00:00:00Z', type: 'assistant.delta', payload: { itemId: 'item-a', text } })

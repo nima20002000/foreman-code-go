@@ -1,4 +1,4 @@
-import type { RunExecutionsListInput } from '@graphql/contracts/wave25'
+import type { RunExecutionsListInput } from '@foreman-code/contracts/wave25'
 import type { ExecutionPagePosition } from './inspectionCursor.js'
 
 export const INSPECTION_OCCURRENCE_COLUMNS = `o.occurrence_id,o.run_id as occurrence_run_id,o.workspace_id as occurrence_workspace_id,

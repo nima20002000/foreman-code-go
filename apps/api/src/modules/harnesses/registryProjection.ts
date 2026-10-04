@@ -1,5 +1,5 @@
-import { HarnessConfigurationSchema } from '@graphql/contracts'
-import { HarnessRegistryReadbackSchema, type ConfiguredHarnessInstanceDto, type HarnessRegistryReadback, type HarnessHostInventoryMetadata } from '@graphql/contracts/harness-registry'
+import { HarnessConfigurationSchema } from '@foreman-code/contracts'
+import { HarnessRegistryReadbackSchema, type ConfiguredHarnessInstanceDto, type HarnessRegistryReadback, type HarnessHostInventoryMetadata } from '@foreman-code/contracts/harness-registry'
 import type { HarnessInstanceProjection } from './instanceRegistry.js'
 import type { HarnessInstallationRecord } from './installationRegistry.js'
 

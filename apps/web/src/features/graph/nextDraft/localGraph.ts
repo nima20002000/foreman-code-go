@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
-import { WorkflowDefinitionV3Schema, CurrentAgentWorkflowNodeSchema, RepeatBlockV1Schema } from '@graphql/contracts/wave25'
+import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
+import { WorkflowDefinitionV3Schema, CurrentAgentWorkflowNodeSchema, RepeatBlockV1Schema } from '@foreman-code/contracts/wave25'
 
 // Form snapshots are not executable definitions. They may contain an unfinished
 // selection, partial outcome text or an invalid numeric field. Strict shared V3

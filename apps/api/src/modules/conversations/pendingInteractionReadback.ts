@@ -1,4 +1,4 @@
-import type { PendingNativeInteraction } from '@graphql/contracts'
+import type { PendingNativeInteraction } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** Native pending-list absence after restart is callback absence, never a response receipt. */

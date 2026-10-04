@@ -1,5 +1,5 @@
-import type { AgentHarness, HarnessConfiguration } from '@graphql/contracts'
-import { ExecutionReadinessSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import type { AgentHarness, HarnessConfiguration } from '@foreman-code/contracts'
+import { ExecutionReadinessSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { HarnessCatalogService } from './catalog.js'
 import type { NativeRollout } from './nativeRollout.js'

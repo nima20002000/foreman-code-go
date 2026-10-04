@@ -1,4 +1,4 @@
-import type { HarnessConfiguration, HarnessQualification } from '@graphql/contracts'
+import type { HarnessConfiguration, HarnessQualification } from '@foreman-code/contracts'
 import type { HarnessConfigurationQualifier } from './port.js'
 import { NativeHarnessFactories } from './runtimeFactory.js'
 import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'

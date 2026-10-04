@@ -1,7 +1,7 @@
-import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
-import { ClaudeQualificationProofSchema, ClaudeQualificationPinSchema, claudeQualificationCapabilities, type ClaudeQualificationPin } from '@graphql/contracts/claude-qualification'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
+import { ClaudeQualificationProofSchema, ClaudeQualificationPinSchema, claudeQualificationCapabilities, type ClaudeQualificationPin } from '@foreman-code/contracts/claude-qualification'
 import { isDeepStrictEqual } from 'node:util'
-import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { inheritedAgentEnvironment } from '../secrets.js'
 import { HarnessExecutionError } from '../errors.js'
 

@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration, IMMUTABLE_WORKFLOW_VERSION_COLUMNS, type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow } from './immutableRead.js'

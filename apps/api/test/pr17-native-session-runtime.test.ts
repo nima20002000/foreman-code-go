@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { describe, it } from 'vitest'
-import type { ApprovalResponseOption, CodexHarnessConfiguration, NativeSessionReference } from '@graphql/contracts'
+import type { ApprovalResponseOption, CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'

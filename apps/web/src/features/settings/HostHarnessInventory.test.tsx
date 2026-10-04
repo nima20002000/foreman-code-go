@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
-import { HarnessRegistryReadbackSchema, type HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+import { HarnessRegistryReadbackSchema, type HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { HostHarnessInventory } from './HostHarnessInventory'
 
 const mainId = '11111111-1111-4111-8111-111111111111'

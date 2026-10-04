@@ -3,9 +3,9 @@ import { isIP } from 'node:net'
 import { networkInterfaces, userInfo } from 'node:os'
 import { z } from 'zod'
 
-import { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema, type ConnectionProbe, type HostDiscovery, type TrustedEndpoint } from '@graphql/contracts/trusted-device-connection'
-export { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema } from '@graphql/contracts/trusted-device-connection'
-export type { ConnectionProbe, HostDiscovery, TrustedEndpoint } from '@graphql/contracts/trusted-device-connection'
+import { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema, type ConnectionProbe, type HostDiscovery, type TrustedEndpoint } from '@foreman-code/contracts/trusted-device-connection'
+export { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema } from '@foreman-code/contracts/trusted-device-connection'
+export type { ConnectionProbe, HostDiscovery, TrustedEndpoint } from '@foreman-code/contracts/trusted-device-connection'
 const AddressSchema = z.string().max(253).refine(value => isIP(value) !== 0 || /^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(value))
 export interface CommandResult { code: number | null; stdout: string; stderr: string; failure?: 'missing' | 'timeout' | 'unavailable' }
 export type ReadinessRunner = (executable: string, args: string[]) => Promise<CommandResult>

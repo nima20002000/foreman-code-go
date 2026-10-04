@@ -1,4 +1,4 @@
-import type { RunBoardSnapshotGetResult, RunDropdownPage, RunDropdownSummary } from '@graphql/contracts/run-snapshots'
+import type { RunBoardSnapshotGetResult, RunDropdownPage, RunDropdownSummary } from '@foreman-code/contracts/run-snapshots'
 
 export const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-runs' }
 export const runA: RunDropdownSummary = { runId: 'run-a', shortId: 'short-A',

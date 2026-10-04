@@ -1,5 +1,5 @@
-import type { DurableInteraction, ReviewJob } from '@graphql/contracts'
-import { GraphAttentionSchema, type GraphActivity, type GraphAttention, type RunGraphScope } from '@graphql/contracts/wave25'
+import type { DurableInteraction, ReviewJob } from '@foreman-code/contracts'
+import { GraphAttentionSchema, type GraphActivity, type GraphAttention, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 import { PUBLIC_PENDING_INTERACTION_SQL, PUBLIC_UNSETTLED_REVIEW_SQL } from './publicObligations.js'

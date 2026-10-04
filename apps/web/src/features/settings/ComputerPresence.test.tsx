@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { HarnessHostInventoryMetadataSchema } from '@graphql/contracts/harness-registry'
+import { HarnessHostInventoryMetadataSchema } from '@foreman-code/contracts/harness-registry'
 import { ComputerPresence } from './ComputerPresence'
 import { connectionSummary } from './computerPresenceModel'
 

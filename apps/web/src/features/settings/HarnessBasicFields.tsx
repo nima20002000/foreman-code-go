@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfiguration } from '@graphql/contracts'
+import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfiguration } from '@foreman-code/contracts'
 import { Alert, Button, Combobox, ConfirmDialog, Select, Switch } from '../../shared/ui/nocturne'
 import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/api/harnessSettings'
 import { fieldMessage, type FieldIssue } from './fieldValidation'

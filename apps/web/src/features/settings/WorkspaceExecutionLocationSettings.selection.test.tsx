@@ -3,9 +3,9 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ManagedWorkspace } from '@graphql/contracts/management'
-import type { WorkspaceBoundLocationReadback } from '@graphql/contracts/workspace-bound-location'
-import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import type { ManagedWorkspace } from '@foreman-code/contracts/management'
+import type { WorkspaceBoundLocationReadback } from '@foreman-code/contracts/workspace-bound-location'
+import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 
 import { server } from '../../mocks/server'
 import { queryKeys } from '../../shared/api/query'

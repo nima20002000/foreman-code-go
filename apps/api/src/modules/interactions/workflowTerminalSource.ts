@@ -1,4 +1,4 @@
-import type { HarnessExecution, NativeSessionReference } from '@graphql/contracts'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 import { matchesOpenCodeHistorySource, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
 import { DomainError } from '../errors.js'

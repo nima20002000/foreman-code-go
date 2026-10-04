@@ -1,5 +1,5 @@
 import { isDeepStrictEqual as same } from 'node:util'
-import type { TransferContext } from '@graphql/contracts/byte-transfer'
+import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../../interactions/workflowNativeCapture.js'

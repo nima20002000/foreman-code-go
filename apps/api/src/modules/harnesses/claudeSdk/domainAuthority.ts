@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { DurableInteractionSchema, PendingNativeInteractionSchema, type ApprovalResponseOption, type NativeSessionReference } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { DurableInteractionSchema, PendingNativeInteractionSchema, type ApprovalResponseOption, type NativeSessionReference } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorAuthority } from '../../access/runAuthority.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { credentialAuthority } from '../../interactions/wave25/credentialAuthority.js'
@@ -10,7 +10,7 @@ import type { PostgresOperatorConversationRepository } from '../../conversations
 import type { PostgresAgentChatRepository } from '../../conversations/agentChatRepository.js'
 import { DomainError } from '../../errors.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity, type ClaudeInteractionAnswer, type ClaudeInteractionAuthority } from './interactions.js'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 
 export type ClaudeDomainBinding =
   | { kind: 'workflow'; runId: string; executionId: string; attempt: number; getOwner(): RunOwnership | undefined }

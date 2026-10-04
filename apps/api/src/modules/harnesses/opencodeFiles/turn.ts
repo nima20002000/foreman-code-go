@@ -2,7 +2,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
-  AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@graphql/contracts/files'
+  AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@foreman-code/contracts/files'
 import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,

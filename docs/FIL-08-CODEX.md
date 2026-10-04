@@ -217,7 +217,7 @@ In a complete checkout with the pinned dependencies, the added bridge tests can
 be run explicitly without adding a package script:
 
 ```sh
-corepack pnpm --filter @graphql/api exec node --import tsx --test test/codex-file-delivery.node-test.ts
+corepack pnpm --filter @foreman-code/api exec node --import tsx --test test/codex-file-delivery.node-test.ts
 ```
 
 Run the repository checks in `AGENTS.md` and the existing FIL-05 tests as part of

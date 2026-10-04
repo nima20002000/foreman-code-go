@@ -1,4 +1,4 @@
-import type { WorkflowSchedule } from '@graphql/contracts/schedules'
+import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 
 export interface ScheduleDispatcherPort {
   listDueSchedules(input: { throughUtc: string; limit: number; cursor?: string }): Promise<{

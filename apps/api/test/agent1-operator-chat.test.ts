@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { OperatorConfigurationVersion } from '@graphql/contracts'
+import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'

@@ -1,4 +1,4 @@
-import { ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@graphql/contracts'
+import { ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@foreman-code/contracts'
 export const conversationActivityKey = (requestId: string, id: string) => JSON.stringify([requestId, id])
 export const conversationActivityId = (conversationId: string, requestId: string, id: string) => JSON.stringify(['conversation-activity', conversationId, requestId, id])
 export function publicActivityProvenance(input: unknown): { native?: ActivityNativeIdentity; parent?: WorkRef } {

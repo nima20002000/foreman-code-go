@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import { beforeGraphCommit } from '../run-graph/connection.js'

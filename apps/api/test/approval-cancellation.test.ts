@@ -8,7 +8,7 @@ import {
   type HarnessExecutionRequest,
   type NativeHarnessEvent,
   type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import { it, vi } from 'vitest'
 import type pg from 'pg'
@@ -31,7 +31,7 @@ import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 const now = '2026-09-16T00:00:00.000Z'
 function deferred<T>() {

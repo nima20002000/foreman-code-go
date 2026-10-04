@@ -1,4 +1,4 @@
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { expect, it, vi } from 'vitest'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
 import type { CompatibilityProbeOwnership } from '../src/modules/harnesses/compatibility/probe.js'

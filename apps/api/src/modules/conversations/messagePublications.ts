@@ -1,6 +1,6 @@
 import { readClaudeMessagePublicationReceipts, type ClaudeMessagePublicationReceipt } from '../harnesses/claudeSdk/publications.js'
 import type pg from 'pg'
-import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { DomainError } from '../errors.js'
 import { bindingIdentity } from '../files/tools/context.js'
 

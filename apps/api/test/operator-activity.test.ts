@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from '../src/modules/conversations/operatorActivity.js'
 import { nativeAssistantText } from '../src/modules/conversations/operatorText.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'

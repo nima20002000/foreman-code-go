@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GraphDraftV3Schema, GraphDraftOperationV3Schema, WorkflowChoiceSchema,
-  WorkflowVersionV3Schema, ChoiceResultEnvelopeSchema } from '@graphql/contracts/wave25'
+  WorkflowVersionV3Schema, ChoiceResultEnvelopeSchema } from '@foreman-code/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations, removeRelationship } from './model'
 

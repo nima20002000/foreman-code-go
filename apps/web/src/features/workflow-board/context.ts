@@ -1,5 +1,5 @@
 import { createContext, useContext, type ReactNode } from 'react'
-import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code/contracts/wave25'
 
 /** Callbacks and presentation context only; neither drafts nor Run facts live here. */
 export const WorkflowBoardContext = createContext<{

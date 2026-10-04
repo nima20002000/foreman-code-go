@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 
 const principal: ManagementPrincipal = { id: 'h2-reader', name: 'Reader', audience: 'operator', revokedAt: null,

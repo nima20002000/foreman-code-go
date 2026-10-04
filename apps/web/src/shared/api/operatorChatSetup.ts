@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { OperatorChatSetupSchema, OperatorChatSetupQuerySchema, type OperatorChatSetupQuery, type OperatorChatSetup } from '@graphql/contracts'
+import { OperatorChatSetupSchema, OperatorChatSetupQuerySchema, type OperatorChatSetupQuery, type OperatorChatSetup } from '@foreman-code/contracts'
 import { apiClient } from './client'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 

@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw'
 import {
   SkillArchiveInputSchema, SkillCreateInputSchema, SkillUpdateInputSchema,
   type SkillSummary, type SkillVersion,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 // Deterministic unit-test fixture for the Skills HTTP contract. The browser always uses the real API.
 interface Stored { summary: SkillSummary; versions: SkillVersion[] }

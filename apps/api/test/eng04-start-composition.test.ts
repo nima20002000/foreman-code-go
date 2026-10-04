@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { DomainError } from '../src/modules/errors.js'
 import { repeatNativeStartStore, executeRepeatEngineStart, type RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
 import type { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHost.js'

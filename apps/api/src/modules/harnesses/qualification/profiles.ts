@@ -1,4 +1,4 @@
-import type { CompatibilityHarness, HarnessProfileId } from '@graphql/contracts'
+import type { CompatibilityHarness, HarnessProfileId } from '@foreman-code/contracts'
 
 /**
  * Behavior profiles replace exact-version branches. Baselines are the upstream

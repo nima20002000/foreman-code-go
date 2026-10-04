@@ -10,13 +10,13 @@ import {
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
   CodexPluginListInputSchema, CodexPluginListResultSchema, CodexPluginGetInputSchema, CodexPluginDetailResultSchema,
   CodexPluginChangeInputSchema, CodexPluginChangeResultSchema, CodexPluginOperationsResultSchema, CodexPluginReconcileInputSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
 import { DomainError } from '../modules/errors.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
-import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
-import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@foreman-code/contracts/management'
+import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
   app.get('/api/management/harnesses/claude/setup-options', async (request) =>

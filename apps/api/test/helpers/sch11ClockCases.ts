@@ -1,4 +1,4 @@
-import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
+import type { ScheduleConfiguration } from '@foreman-code/contracts/schedules'
 
 export const sch11Settings = { timezone: 'UTC', enabled: true, policy: 'latest_saved' as const }
 export const sch11Once = {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HarnessExecutionRequestSchema } from '@graphql/contracts'
-import type { CanonicalRunGraphScope } from '@graphql/contracts/wave25'
+import { HarnessExecutionRequestSchema } from '@foreman-code/contracts'
+import type { CanonicalRunGraphScope } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import * as publication from '../src/modules/run-graph/publication.js'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'

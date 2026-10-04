@@ -4,12 +4,12 @@ import {
   createRouter,
   redirect,
 } from '@tanstack/react-router'
-import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
+import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@foreman-code/contracts'
 import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
-import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
+import { BrowserAuthSearchSchema } from '@foreman-code/contracts/management'
 import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
-import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@graphql/contracts/management'
+import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@foreman-code/contracts/management'
 import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'

@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileWithRevisionSchema, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileWithRevisionSchema, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { attachmentLifecycleQueryKey, readAttachmentLifecycle } from '../attachments/attachmentLifecycle'

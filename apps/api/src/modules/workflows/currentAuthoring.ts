@@ -2,7 +2,7 @@ import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   workflowSaveIssues, CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
   CurrentWorkflowSavedSchema, CurrentWorkflowReadInputSchema, CurrentWorkflowReadResultSchema,
@@ -11,7 +11,7 @@ import {
   sameWorkflowValue, workflowNodeNames,
   CurrentEditSaveInputSchema, CurrentEditMutationInputSchema, CurrentEditReadInputSchema, preserveWorkflowGeometry,
   type CurrentWorkflowValidateInput, type CurrentEditSaveInput,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'

@@ -1,5 +1,5 @@
 import { jobDigest } from '../../src/modules/jobs/service.js'
-import { ResolvedJobDefinitionSpecSchema, type JobExecution } from '@graphql/contracts/jobs'
+import { ResolvedJobDefinitionSpecSchema, type JobExecution } from '@foreman-code/contracts/jobs'
 export function jobSpec() {
   const digest='1'.repeat(64),mainId='11111111-1111-4111-8111-111111111111'
   return ResolvedJobDefinitionSpecSchema.parse({source:{approvedSourceId:mainId,snapshotId:mainId,commit:'2'.repeat(40),manifestDigest:digest},

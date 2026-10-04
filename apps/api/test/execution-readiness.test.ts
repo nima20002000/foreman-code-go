@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
 import type { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'

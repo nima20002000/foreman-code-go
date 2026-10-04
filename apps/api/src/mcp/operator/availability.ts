@@ -1,4 +1,4 @@
-import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@graphql/contracts/management'
+import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
 import { retiredExecutionTool } from './retiredExecutionTools.js'

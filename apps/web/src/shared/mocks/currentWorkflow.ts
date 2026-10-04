@@ -1,9 +1,9 @@
 import { nativeDefinition } from './nativeFixtureTypes'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, WorkflowRunV3Schema, RepeatGraphScopeV3Schema,
   RepeatGraphCurrentV3Schema, repeatGraphTopologyV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 /** Synthetic CURRENT V3 fixture. It never creates a legacy definition, retags a
  * prior version, starts a provider, or proves database/native qualification. */

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
+import { ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'

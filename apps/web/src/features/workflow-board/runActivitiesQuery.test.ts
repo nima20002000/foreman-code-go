@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { RepeatGraphScopeV3, RunActivitiesPage, RunActivityPublic } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, RunActivitiesPage, RunActivityPublic } from '@foreman-code/contracts/wave25'
 import { server } from '../../mocks/server'
 import { ApiError } from '../../shared/api/client'
 import { isTransientRunActivityError, mergeOlderRunActivities, mergeRunActivities,

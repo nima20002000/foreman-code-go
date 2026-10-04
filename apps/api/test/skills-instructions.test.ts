@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { AgentConfigurationVersion, HarnessExecutionRequest, ResolvedSkill } from '@graphql/contracts'
+import type { AgentConfigurationVersion, HarnessExecutionRequest, ResolvedSkill } from '@foreman-code/contracts'
 import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
 import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
 

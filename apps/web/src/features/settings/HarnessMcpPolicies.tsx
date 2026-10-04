@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { withAdvancedDefaults, type CodexMcpToolPolicy, type CodexAdvancedConfiguration } from '@graphql/contracts'
+import { withAdvancedDefaults, type CodexMcpToolPolicy, type CodexAdvancedConfiguration } from '@foreman-code/contracts'
 import { Button, Checkbox, Select } from '../../shared/ui/nocturne'
 import { useNativeMcpServers } from '../../shared/api/harnessSettings'
 import type { HarnessEditor } from './harnessEditor'

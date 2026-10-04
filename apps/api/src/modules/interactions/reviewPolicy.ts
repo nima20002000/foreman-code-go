@@ -1,4 +1,4 @@
-import type { NativeSessionLane, ReviewCleanup, ReviewJob, WorkflowRun } from '@graphql/contracts'
+import type { NativeSessionLane, ReviewCleanup, ReviewJob, WorkflowRun } from '@foreman-code/contracts'
 
 /** Never pair an old provider ID with another turn's correlation, even on attach. */
 export function reviewPreflightIdentity(

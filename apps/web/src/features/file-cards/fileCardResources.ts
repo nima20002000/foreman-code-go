@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { fileStateAt, type File, type FileState } from '@graphql/contracts/files'
+import { fileStateAt, type File, type FileState } from '@foreman-code/contracts/files'
 import { ApiError } from '../../shared/api/client'
 
 /** Derived state, not a second cache of the server DTO. Wake at the actual expiry and on resume. */

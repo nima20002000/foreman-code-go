@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { GraphIdSchema } from '@graphql/contracts/wave25'
-import { RunInputSchema } from '@graphql/contracts'
+import { GraphIdSchema } from '@foreman-code/contracts/wave25'
+import { RunInputSchema } from '@foreman-code/contracts'
 import type { RepeatNodeRef, RepeatNodeInput, RepeatScope } from '../runs/repeatResolution.js'
 
 export const WorkflowJobPreparationSchema=z.object({executionId:z.uuid(),attemptId:z.uuid(),operationId:z.uuid(),

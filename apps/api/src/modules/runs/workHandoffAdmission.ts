@@ -1,10 +1,10 @@
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, WorkActivationIdentitySchema, WorkHandoffResultSchema,
   WorkActivationInputSchema, WorkLimitDenialSchema, WorkRequestSchema, WorkReturnSchema,
   canonicalGraphJson, parseWorkHandoffResult, workConnectionForRequest,
   type WorkActivationInput, type WorkLimitDenial, type WorkNotice, type WorkRequest, type WorkReturn, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RepeatLockedHooks } from './repeatPostgres.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'

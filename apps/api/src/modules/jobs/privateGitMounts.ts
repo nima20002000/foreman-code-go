@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join } from 'node:path'
 import { JOB_PRIVATE_GIT_LAYOUT, verifyPrivateJobRepositoryMounts, type PrivateJobRepositoryMounts } from '../sources/repository.js'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 export { JOB_PRIVATE_GIT_LAYOUT }
 export type VerifiedJobGitMounts = PrivateJobRepositoryMounts
 export const JOB_GIT_CONTAINER_DIRECTORY = '/graphql-job-git' as const

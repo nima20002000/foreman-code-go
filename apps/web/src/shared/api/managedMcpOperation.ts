@@ -1,4 +1,4 @@
-import type { HarnessMcpManagedInput, HarnessMcpPlan } from '@graphql/contracts/management'
+import type { HarnessMcpManagedInput, HarnessMcpPlan } from '@foreman-code/contracts/management'
 
 export type ManagedMcpOperation = {
   input: HarnessMcpManagedInput

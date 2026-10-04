@@ -1,6 +1,6 @@
-import { InteractionSummarySchema, type InteractionSummary, type WorkRef } from '@graphql/contracts/activity'
-import type { DurableInteraction } from '@graphql/contracts'
-import { InteractionActivityProjectionSchema, type InteractionActivityProjection } from '@graphql/contracts/interaction-activity'
+import { InteractionSummarySchema, type InteractionSummary, type WorkRef } from '@foreman-code/contracts/activity'
+import type { DurableInteraction } from '@foreman-code/contracts'
+import { InteractionActivityProjectionSchema, type InteractionActivityProjection } from '@foreman-code/contracts/interaction-activity'
 
 /** Supplied by the owning runtime after checking the exact callback/recovery binding.
  * Qualification is never inferred from a persisted pending interaction. */

@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { describe, expect, it } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { OperatorConversationEvents } from '../src/modules/conversations/operatorChat.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'

@@ -1,4 +1,4 @@
-# `@graphql/api`
+# `@foreman-code/api`
 
 This package owns the real local API, product persistence, LangGraph workflow
 mapping, and native Codex/OpenCode process adapters.
@@ -63,7 +63,7 @@ want to delete the local database volume.
 
 ```sh
 pnpm build
-pnpm --filter @graphql/api start
+pnpm --filter @foreman-code/api start
 # In a separate shell, against the test database:
 pnpm test:integration
 pnpm test:production

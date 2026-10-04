@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, type PendingNativeInteraction } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type PendingNativeInteraction } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'

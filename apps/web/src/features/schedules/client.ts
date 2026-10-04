@@ -2,7 +2,7 @@ import {
   ScheduleDisableInputSchema, ScheduleDisableResultSchema, ScheduleGetInputSchema, ScheduleGetResultSchema,
   ScheduleSaveInputSchema, ScheduleSaveResultSchema,
   type ScheduleDisableInput, type ScheduleGetInput, type ScheduleSaveInput, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 /** Transport seam only. See README.md: SCH-02 freezes payloads, not HTTP paths. */

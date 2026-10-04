@@ -1,4 +1,4 @@
-import type { ActivitySnapshotV1 } from '@graphql/contracts'
+import type { ActivitySnapshotV1 } from '@foreman-code/contracts'
 import { Button } from '../../shared/ui/nocturne'
 
 /** A durable decision receipt is not another permission prompt or an instruction to resend. */

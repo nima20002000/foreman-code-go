@@ -1,7 +1,7 @@
 import {
   HarnessConfigurationSchema, withAdvancedDefaults,
   type HarnessConfiguration,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { FieldValidationError } from './fieldValidation'
 

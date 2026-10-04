@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
+import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
 
 it.each(['service', 'mcp'] as const)('rejects an ephemeral Operator host profile via %s before writing defaults or Operator revisions', async channel => {

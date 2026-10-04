@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import type { RunBoardSnapshotGetInput } from '@graphql/contracts/run-snapshots'
+import type { RunBoardSnapshotGetInput } from '@foreman-code/contracts/run-snapshots'
 import { subagentsApi } from './client'
 import { ApiError } from '../../shared/api/client'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'

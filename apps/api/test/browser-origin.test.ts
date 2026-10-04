@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { FastifyRequest } from 'fastify'
 import type pg from 'pg'
-import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
+import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { loadConfig } from '../src/config.js'
 import { LocalDevBrowserAccess } from '../src/modules/access/localDevBrowser.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'

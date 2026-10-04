@@ -2,8 +2,8 @@ import type { FileHandle } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { createInflateRaw } from 'node:zlib'
 import type { z } from 'zod'
-import type { JobArtifactFileRevisionSchema } from '@graphql/contracts/job-artifacts'
-import type { FileRevision } from '@graphql/contracts/files'
+import type { JobArtifactFileRevisionSchema } from '@foreman-code/contracts/job-artifacts'
+import type { FileRevision } from '@foreman-code/contracts/files'
 
 import { DomainError } from '../errors.js'
 

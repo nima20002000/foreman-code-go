@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema,
   ExecutableWorkflowV3Schema,
@@ -7,7 +7,7 @@ import {
   SavedRunVersionSnapshotSchema,
   SavedWorkflowVersionDetailSchema,
   WorkflowVersionV3Schema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import { at, digest, location, noRepeatScenario, runCandidate } from './helpers/eng04ArchitectureScenarios.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'

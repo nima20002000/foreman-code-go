@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Command, GraphInterrupt, MemorySaver, interrupt } from '@langchain/langgraph'
-import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@foreman-code/contracts'
 import { it, vi } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'

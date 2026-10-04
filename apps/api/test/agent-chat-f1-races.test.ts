@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, it } from 'vitest'
-import type { ExecutionResult } from '@graphql/contracts'
+import type { ExecutionResult } from '@foreman-code/contracts'
 import { agentChatInputHash, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { context, deferred, eventually, fixture } from './helpers/agentChatF1.js'
 

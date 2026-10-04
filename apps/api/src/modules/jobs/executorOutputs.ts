@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
 import { open, type FileHandle } from 'node:fs/promises'
-import type { AcceptedJobSpec } from '@graphql/contracts'
+import type { AcceptedJobSpec } from '@foreman-code/contracts'
 
 export class JobOutputCollectionError extends Error {}
 

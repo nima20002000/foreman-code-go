@@ -3,7 +3,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { staysOnWorkflowBoard } from '@graphql/contracts/wave25'
+import { staysOnWorkflowBoard } from '@foreman-code/contracts/wave25'
 import { BoardHistoryNavigationBoundary } from './WorkspaceRouteEntry'
 import { RunsSelectorSearchSchema, useSelectedRun, type SelectedRunState } from '../features/runs-selector'
 import { UnsavedChangesProvider } from '../shared/ui/UnsavedChangesProvider'

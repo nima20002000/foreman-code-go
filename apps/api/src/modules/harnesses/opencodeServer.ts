@@ -20,7 +20,7 @@ import {
   type NativeSessionReference,
   type OpenCodeHarnessConfiguration,
   type PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
@@ -47,7 +47,7 @@ import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 import { harnessProfile } from './qualification/profiles.js'
-import type { RunSubagent, RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
 

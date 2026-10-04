@@ -10,8 +10,8 @@ import { afterAll, beforeAll, describe, it } from 'vitest'
 import {
   FilePageSchema, FileWithRevisionSchema, MAX_FILE_BYTES, MAX_FILE_READ_BYTES,
   applyFileRetention, fileStateAt, type FileWithRevision, type PermanentFileScope,
-} from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { ApiConfig } from '../src/config.js'
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileReferenceMigration } from '../src/infrastructure/fileReferenceMigration.js'

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { currentOperatorAuthority } from '../../src/modules/access/runAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'

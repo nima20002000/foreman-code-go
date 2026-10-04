@@ -1,4 +1,4 @@
-import type { OperatorActivity } from '@graphql/contracts'
+import type { OperatorActivity } from '@foreman-code/contracts'
 import { Icon } from '../../shared/ui/nocturne'
 import { OperatorThinking } from './OperatorThinking'
 

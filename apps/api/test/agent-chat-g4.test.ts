@@ -5,8 +5,8 @@ import { describe, it, vi } from 'vitest'
 import {
   AgentChatReadbackQuerySchema, AgentChatStateSchema, ReadAgentChatRequestSchema, ReadAgentChatResponseSchema,
   type AgentChatTurn,
-} from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { registerAgentChatTools } from '../src/mcp/operator/tools/agentChat.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'

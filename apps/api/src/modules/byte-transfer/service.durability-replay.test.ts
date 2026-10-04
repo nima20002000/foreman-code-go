@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { TransferContext, TransferIntent } from '@graphql/contracts/byte-transfer'
+import type { TransferContext, TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferService } from './service.js'
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { HarnessNativeEvent } from '@graphql/contracts'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import { normalizeNativeProducerEvent, NATIVE_PRODUCER_MAX_BYTES,
   NATIVE_PRODUCER_REJECTION_TYPE } from '../src/modules/run-graph/nativeProducerNormalization.js'
 

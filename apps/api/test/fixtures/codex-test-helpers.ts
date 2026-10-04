@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, writeFile, appendFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type NativeHarnessEvent } from '@graphql/contracts'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type NativeHarnessEvent } from '@foreman-code/contracts'
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
 import { isQualifiedCodexVersion, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import type { CodexProtocol, JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'

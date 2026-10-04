@@ -7,8 +7,8 @@ import { registerHostHarnessOverrideRoutes } from '../modules/harnesses/instance
 import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { registerJobRoutes } from './jobs.js'
 import { CurrentWorkflowCreateInputSchema, RunActivitiesInputSchema,
-  RunHandoffsReadInputSchema } from '@graphql/contracts/wave25'
-import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
+  RunHandoffsReadInputSchema } from '@foreman-code/contracts/wave25'
+import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@foreman-code/contracts/management'
 import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
 import { registerRunInspectionRoutes } from './runInspection.js'
 import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
@@ -44,9 +44,9 @@ import {
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
-} from '@graphql/contracts/management'
-import { HarnessQualificationRunParamsSchema } from '@graphql/contracts/harness-qualification'
-import { ManualRunStartInputSchema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/management'
+import { HarnessQualificationRunParamsSchema } from '@foreman-code/contracts/harness-qualification'
+import { ManualRunStartInputSchema } from '@foreman-code/contracts/wave25'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'

@@ -2,7 +2,7 @@
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@foreman-code/contracts'
 import { ApprovalInbox } from './ApprovalInbox'
 import { useApprovalInboxStore } from './approvalInboxStore'
 

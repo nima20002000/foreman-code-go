@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { OperatorConfigurationVersionSchema } from '@graphql/contracts'
+import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { createClaudeFileCallResolver } from '../src/modules/files/claude/callResolver.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'

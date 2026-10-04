@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { CLAUDE_QUALIFICATION_CHECKS } from '@graphql/contracts/claude-qualification'
+import { CLAUDE_QUALIFICATION_CHECKS } from '@foreman-code/contracts/claude-qualification'
 import type { AcceptedClaudeProfile } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
 import { inspectClaudeOperatorConfiguration } from '../src/modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'

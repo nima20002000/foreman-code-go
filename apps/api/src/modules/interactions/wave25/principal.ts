@@ -1,5 +1,5 @@
-import type { DurableInteraction } from '@graphql/contracts'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import type { DurableInteraction } from '@foreman-code/contracts'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { requireRespondableInteraction } from '../../access/appPolicy.js'
 import { canUserInteract } from '../../access/userPolicy.js'

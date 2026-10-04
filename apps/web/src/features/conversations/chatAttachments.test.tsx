@@ -8,15 +8,15 @@ import { http, HttpResponse } from 'msw'
 import {
   DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, SendOperatorMessageRequestSchema,
   type Message, type OperatorConversationState, type SendOperatorMessageRequest,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   agentChatFixtures, SendAgentChatMessageRequestSchema, SendAgentChatMessageResponseSchema,
   type AgentChatState, type AgentChatTurn, type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
+} from '@foreman-code/contracts/agent-chat'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, FileWithRevisionSchema, temporaryFileExpiresAt,
   type FileMediaType, type FileWithRevision, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'

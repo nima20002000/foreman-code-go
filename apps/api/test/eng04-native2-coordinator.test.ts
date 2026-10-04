@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import { HarnessExecutionRequestSchema } from '@foreman-code/contracts'
 import { DomainError } from '../src/modules/errors.js'
 import { native2Fixture } from './eng04-native2-fixtures.js'
 import { nativeEventBatches } from '../src/modules/interactions/nativeEventBatches.js'

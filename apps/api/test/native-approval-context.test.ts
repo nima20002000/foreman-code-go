@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import type { NativeHarnessEvent, PendingNativeInteraction } from '@graphql/contracts'
+import type { NativeHarnessEvent, PendingNativeInteraction } from '@foreman-code/contracts'
 import { nativeApprovalContext } from '../src/modules/interactions/nativeApprovalContext.js'
 
 const pending: PendingNativeInteraction = {

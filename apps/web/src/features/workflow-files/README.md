@@ -138,9 +138,9 @@ Run in the full pinned checkout:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec vitest run src/features/workflow-files/workflowFiles.test.tsx src/features/workflow-files/workflowFilesModel.test.ts
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec vitest run src/features/workflow-files/workflowFiles.test.tsx src/features/workflow-files/workflowFilesModel.test.ts
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { ManagedWorkspaceDefaultsSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@graphql/contracts/management'
+import { ManagedWorkspaceDefaultsSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 

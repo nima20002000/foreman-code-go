@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
 

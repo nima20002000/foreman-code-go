@@ -1,4 +1,4 @@
-import { telemetrySelectorKey, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector } from '@graphql/contracts/resource-telemetry'
+import { telemetrySelectorKey, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
 import { useResourceTelemetryQuery, type ReceivedTelemetry } from '../../shared/api/resourceTelemetry'
 import { Alert, Badge, Card, CardBody, CardHeader, MetricCard } from '../../shared/ui/nocturne'
 import { capturedMetricView, coverageView, formatDuration, isCurrent, metricView, reasonLabels, sampleClock, shortId, type MetricView } from './telemetryView'

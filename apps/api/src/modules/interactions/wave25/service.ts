@@ -1,6 +1,6 @@
 import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
 import type { InteractionNativeRuntime } from '../runtimePorts.js'
 import type { InteractionResponder } from '../service.js'

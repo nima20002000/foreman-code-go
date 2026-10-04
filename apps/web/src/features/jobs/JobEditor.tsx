@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { JobDefinitionSpecSchema, isAutoJobSpec, jobPolicyRequirements, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobDefinitionSpecSchema, isAutoJobSpec, jobPolicyRequirements, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec } from '@foreman-code/contracts/jobs'
 import { Alert, Button, Dialog, Select, Textarea, TextField } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { jobsClient } from './client'

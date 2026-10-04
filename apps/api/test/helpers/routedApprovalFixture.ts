@@ -1,4 +1,4 @@
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { vi } from 'vitest'
 import { br1002OpenCodeRuntime } from './wave25Br1002OpenCodeRuntime.js'
 

@@ -1,10 +1,10 @@
 import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
-import { AgentSchema, RunActivitySchema } from '@graphql/contracts'
+import { AgentSchema, RunActivitySchema } from '@foreman-code/contracts'
 import {
   CurrentRunDetailsSchema, RunExecutionBindingSchema, RunExecutionDetailSchema,
   WorkflowVersionV3Schema, WorkflowRunV3Schema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3,
   makeCurrentWorkflowFixture, type WorkflowVersionV3, type RunExecutionDetail,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { createCurrentBoardMock } from '../../../shared/mocks/currentBoard'
 import { inspectionScopeForRun, type RunInspectionFixture } from '../../../shared/mocks/runInspection'
 import { digestCurrentValue } from '../runDetailsClient'

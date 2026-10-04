@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { graphHarness } from './helpers/eng04A1GraphHarness.js'
 
 function latch() {

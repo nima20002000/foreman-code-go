@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { expect, it } from 'vitest'
-import { SourceFilesystemOperationSchema } from '@graphql/contracts/source-operations'
+import { SourceFilesystemOperationSchema } from '@foreman-code/contracts/source-operations'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { sourcePackageHeader, sourcePackageStream, VerifiedSourcePackageReader } from './operationPackage.js'
 function fixture() {

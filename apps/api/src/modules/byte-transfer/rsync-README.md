@@ -109,9 +109,9 @@ queue, clear peer slots or kill peer processes. Only requeue a confirmed lost ow
 Focused:
 
 ```sh
-node scripts/heavy-job.mjs -- corepack pnpm --filter @graphql/api exec vitest run src/modules/byte-transfer/rsync.test.ts
-node scripts/heavy-job.mjs -- corepack pnpm --filter @graphql/api exec tsc --noEmit
-node scripts/heavy-job.mjs -- corepack pnpm --filter @graphql/api exec eslint src/modules/byte-transfer/rsync*.ts --max-warnings 0
+node scripts/heavy-job.mjs -- corepack pnpm --filter @foreman-code/api exec vitest run src/modules/byte-transfer/rsync.test.ts
+node scripts/heavy-job.mjs -- corepack pnpm --filter @foreman-code/api exec tsc --noEmit
+node scripts/heavy-job.mjs -- corepack pnpm --filter @foreman-code/api exec eslint src/modules/byte-transfer/rsync*.ts --max-warnings 0
 ```
 
 Physical test is skipped unless `RUN_RSYNC_PHYSICAL=1`. Supply

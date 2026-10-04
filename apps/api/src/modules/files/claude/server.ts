@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import {
   AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileCreateWorkingCopyInputSchema,
   AgentFileWriteWorkingCopyInputSchema, AgentFileApplyFormatEditInputSchema, AgentFilePublishInputSchema,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
 import { DomainError } from '../../errors.js'
 import { ClaudeFileBridge, type ClaudeFileAdmission } from '../../harnesses/claudeSdk/files.js'

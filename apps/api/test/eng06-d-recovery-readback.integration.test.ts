@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RUN_INSPECTION_TOOLS, RunRecordDetailSchema, RunVersionDetailSchema } from '@graphql/contracts/wave25'
+import { RUN_INSPECTION_TOOLS, RunRecordDetailSchema, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {
   executionRows, readback, readParity, recoveryFixture, runPath, scope, toolValue, assertRecoveryReceipts,

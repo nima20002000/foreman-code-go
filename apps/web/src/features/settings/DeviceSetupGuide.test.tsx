@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { ConnectionSetupStatus, DeviceSetupGuide } from './DeviceSetupGuide'
 
 afterEach(cleanup)

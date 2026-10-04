@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { TransferIntentSchema } from '@graphql/contracts/byte-transfer'
-import { SourceMaterializationRecordSchema, type SourceRootRecord } from '@graphql/contracts/source-admission'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
+import { SourceMaterializationRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationChannel.js'
 

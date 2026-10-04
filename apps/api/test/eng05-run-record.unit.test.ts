@@ -2,11 +2,11 @@ import { Buffer } from 'node:buffer'
 import type pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   AcceptedWorkflowRunV3Schema, CurrentOperatorToolNameSchema, RUN_INSPECTION_LIMITS, RUN_INSPECTION_TOOLS,
   RunRecordDetailSchema, RunRecordGetInputSchema, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import {
   runInspectionRequirements, runInspectionToolAvailable, unavailableRunInspectionToolCall,

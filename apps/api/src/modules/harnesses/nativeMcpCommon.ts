@@ -1,7 +1,7 @@
 import { APP_MCP_PATH, APP_MCP_SERVER_NAME, APP_MCP_TOKEN, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, isAppLauncher } from './appMcpLauncher.js'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList, HarnessMcpManagedPreset } from '@graphql/contracts/management'
+import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList, HarnessMcpManagedPreset } from '@foreman-code/contracts/management'
 import { canonical } from './codexProtocol.js'
 import { DomainError } from '../errors.js'
 export type JsonObject = Record<string, unknown>

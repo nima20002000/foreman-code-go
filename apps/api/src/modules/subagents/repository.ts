@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import type { HarnessNativeEvent } from '@graphql/contracts'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import { RunSubagentMessageSchema, RunSubagentSchema, RunSubagentToolSchema, subagentCapabilities,
-  type RunSubagent, type SubagentSource } from '@graphql/contracts/subagents'
+  type RunSubagent, type SubagentSource } from '@foreman-code/contracts/subagents'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { sanitizeSubagentText, sanitizeSubagentValue } from './normalization.js'

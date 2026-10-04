@@ -1,7 +1,7 @@
 import {
   nextOccurrences, scheduleAdmissionDecision,
   type ScheduleAdmissionDecision, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 
 export const SCHEDULE_DISPATCH_BATCH_SIZE = 100
 export interface DueScheduleStep {

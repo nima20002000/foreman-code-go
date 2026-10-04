@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { DurableInteraction, ReviewStatus } from '@graphql/contracts'
+import type { DurableInteraction, ReviewStatus } from '@foreman-code/contracts'
 import { Alert } from '../../shared/ui/nocturne'
 import { reviewStatusPresentation } from './reviewStatusPresentation'
 

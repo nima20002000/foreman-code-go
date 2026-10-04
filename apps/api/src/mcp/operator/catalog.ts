@@ -1,4 +1,4 @@
-import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
+import type { ManagementAction, OperatorToolName } from '@foreman-code/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
   { name: 'worker_execution_settings_get', action: 'settings:read' },

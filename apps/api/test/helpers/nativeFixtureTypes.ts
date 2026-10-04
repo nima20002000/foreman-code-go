@@ -1,4 +1,4 @@
-import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 /** Existing native-only tests must prove they did not receive a non-agent job node. */
 export function agentOnlyVersion(value:unknown) {
   const version=WorkflowVersionV3Schema.parse(value)

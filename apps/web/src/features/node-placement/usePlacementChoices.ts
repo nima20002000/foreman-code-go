@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { NodePlacementChoicesInput } from '@graphql/contracts/placement-readback'
+import type { NodePlacementChoicesInput } from '@foreman-code/contracts/placement-readback'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { isRunAccessError } from '../runs-selector/query'
 import { readPlacementChoices } from './client'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ActivityItem, ActivitySnapshotV1 } from '@graphql/contracts/activity'
+import type { ActivityItem, ActivitySnapshotV1 } from '@foreman-code/contracts/activity'
 import { activityScopeKey, reconcileActivityScopes, reconcileActivitySnapshot } from './activityMerge'
 const scope = { kind: 'operator_chat' as const, conversationId: 'chat-a' }
 const text = (id: string, revision: string, content: string, final = false): ActivityItem => ({ id, revision, order: id === 'old' ? '1' : '2', owner: { kind: 'chat_request', conversationId: 'chat-a', requestId: 'request-a' }, source: { schemaVersion: 1, system: 'test', observedAt: '2026-10-01T00:00:00Z' }, evidence: 'confirmed', kind: 'text', text: content, finality: final ? 'authoritative_final' : 'provisional' })

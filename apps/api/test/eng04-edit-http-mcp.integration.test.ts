@@ -1,8 +1,8 @@
-import { AgentSchema } from '@graphql/contracts'
+import { AgentSchema } from '@foreman-code/contracts'
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveResultSchema,
-  CurrentWorkflowReadResultSchema, workflowNodeNames } from '@graphql/contracts/wave25'
+  CurrentWorkflowReadResultSchema, workflowNodeNames } from '@foreman-code/contracts/wave25'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { writerFixture, type WriterFixture } from './eng04-writer-fixtures.js'

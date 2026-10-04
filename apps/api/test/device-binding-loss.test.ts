@@ -1,8 +1,8 @@
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import { mainIdentityProofMessage } from '@foreman-code/contracts/device-identity-node'
 import { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 

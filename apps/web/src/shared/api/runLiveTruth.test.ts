@@ -1,4 +1,4 @@
-import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
+import { type CurrentRunDetails as GetRunResponse } from '@foreman-code/contracts/wave25'
 import { describe, expect, it } from 'vitest'
 import { keepLatestRunResponse, shareRunResponseOrSelection } from './runLiveCache'
 import { makeSyntheticRun } from '../../features/graph/fixtures/scaleData'

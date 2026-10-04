@@ -1,4 +1,4 @@
-import { type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import { type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../../shared/mocks/currentWorkflow'
 import { describe, expect, it } from 'vitest'
 import { repeatPlanFromLocalDraft, validateRepeatDraft, type RepeatLocalDraft } from './repeatModel'

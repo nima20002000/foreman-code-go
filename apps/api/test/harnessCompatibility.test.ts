@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CompatibilityHarness } from '@graphql/contracts'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { HarnessCompatibilityService, compatibilityCacheKey } from '../src/modules/harnesses/compatibility/service.js'
 import type { CompatibilityCache, CompatibilityCacheEntry } from '../src/modules/harnesses/compatibility/cache.js'
 import type { CompatibilityProbe, HarnessInstallation } from '../src/modules/harnesses/compatibility/probe.js'

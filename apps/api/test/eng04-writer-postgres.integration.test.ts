@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { canonicalGraphJson, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
+import { canonicalGraphJson, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { graphHeaders, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { commandInputHash } from '../src/modules/commands/postgres.js'

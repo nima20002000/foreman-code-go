@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { open, mkdir, lstat, unlink, rmdir, type FileHandle } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, parse, sep } from 'node:path'
-import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import type { RsyncStoreOwnership } from './rsyncWriterOwnership.js'
 import type { RsyncReceiverLease, RsyncSnapshot, RsyncStagedBytes } from './rsync.js'
 

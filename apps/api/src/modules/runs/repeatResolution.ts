@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
-import type { ExecutionResult, HarnessExecution, RunInput } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { ExecutionResult, HarnessExecution, RunInput } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type {
   AgentGraphExecutionIdentity, GraphExecutionIdentity, NodeResolution, RepeatBlockV1, RepeatDecisionV1,
   RepeatExecutionIdentityV1, RepeatExitDataV1, RepeatOccurrenceIdentityV1,
   RepeatOccurrenceV1, WorkflowVersionV3, WorkflowRelationship,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { compileExecutionTopology, decideExecutionAdmission, type ExecutionTopology } from './topology.js'

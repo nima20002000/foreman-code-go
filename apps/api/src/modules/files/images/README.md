@@ -6,15 +6,15 @@ The frozen file contract and all shared manifests/configuration are unchanged.
 
 ## Integration prerequisite: one new dependency
 
-Add `sharp` as an exact **runtime** dependency of `@graphql/api`, and regenerate
+Add `sharp` as an exact **runtime** dependency of `@foreman-code/api`, and regenerate
 `pnpm-lock.yaml` using the repository-pinned pnpm and its release-age policy:
 
 ```sh
-corepack pnpm --filter @graphql/api add --save-exact sharp@0.35.4
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api test src/modules/files/images/index.test.ts src/modules/files/archives/index.test.ts
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
+corepack pnpm --filter @foreman-code/api add --save-exact sharp@0.35.4
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api test src/modules/files/images/index.test.ts src/modules/files/archives/index.test.ts
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
 ```
 
 This registration/lockfile change is **not** included: those shared files are
@@ -65,7 +65,7 @@ remain the caller's responsibility; defaults do not assert any model support.
 
 ## Resource policy and limits
 
-Input/output file bytes use `MAX_FILE_BYTES` from `@graphql/contracts/files`
+Input/output file bytes use `MAX_FILE_BYTES` from `@foreman-code/contracts/files`
 (25 MiB at the frozen base). Decoding is limited to 16,777,216 total pixels
 summed over all frames, 8,192 pixels per frame dimension, and 64 frames. Raw
 validation output is explicitly RGBA uchar (at most 64 MiB). Native output is

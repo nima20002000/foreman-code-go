@@ -2,7 +2,7 @@ import {
   RunDropdownListInputSchema, RunDropdownPageSchema,
   RunBoardSnapshotGetInputSchema, RunBoardSnapshotGetResultSchema,
   type RunDropdownListInput, type RunBoardSnapshotGetInput,
-} from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/run-snapshots'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import type { RunsSelectorScope } from './types'
 

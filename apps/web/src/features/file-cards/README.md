@@ -26,7 +26,7 @@ fallback. Empty attachment arrays render nothing.
 
 `fileCardKey` and `resolveMessageFileCards` are also exported. The latter returns
 one DTO or `undefined` per reference, in message order. All domain types and
-validation come from `@graphql/contracts/files`; use `FileWithRevisionSchema`,
+validation come from `@foreman-code/contracts/files`; use `FileWithRevisionSchema`,
 not `FileRowSchema`, to parse historical revision readback.
 
 The enclosing app already supplies `QueryClientProvider`. Keep `client` stable
@@ -202,15 +202,15 @@ pnpm (do not use a plain npm install), run from the repo root:
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @foreman-code/contracts build
 cd apps/web
 node ../../scripts/heavy-job.mjs -- corepack pnpm exec vitest run --maxWorkers=4 \
   src/features/file-cards/fileCardClient.test.ts \
   src/features/file-cards/fileCards.test.tsx
 cd ../..
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```
 
 Then run the broader root checks in AGENTS.md and the existing app's permitted

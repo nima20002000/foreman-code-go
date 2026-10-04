@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { DomainError } from '../../src/modules/errors.js'
 import { ExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
   HarnessCompatibilitySchema, type CompatibilityHarness, type HarnessCompatibility,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { FileCompatibilityCache, type CompatibilityCache, type CompatibilityCacheEntry } from './cache.js'
 import { CompatibilityCheckError, compatibilityReason } from './errors.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'

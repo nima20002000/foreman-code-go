@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, NativeSessionLaneSchema,
-  type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
-import { SourceActiveNativeSessionSchema, type SourceActiveNativeSession } from '@graphql/contracts/source-operations'
-import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+  type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
+import { SourceActiveNativeSessionSchema, type SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
+import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '../placement/persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'

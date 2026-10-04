@@ -1,11 +1,11 @@
 import type pg from 'pg'
-import { RunExecutionStateSchema, RunOutcomeSchema } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { RunExecutionStateSchema, RunOutcomeSchema } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   RunBoardSnapshotGetInputSchema, RunBoardSnapshotGetResultSchema, RunBoardSnapshotSchema,
   RunDropdownListInputSchema, RunDropdownPageSchema, RunDropdownSummarySchema, runDropdownStatus,
   type RunBoardSnapshotGetResult, type RunDropdownPage,
-} from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/run-snapshots'
 import { isAuthorized, requireAuthorization, type AuthorizedResource } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'

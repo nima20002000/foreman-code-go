@@ -1,4 +1,4 @@
-import { GraphEditIntentV3Schema, type GraphEditIntentV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, type GraphEditIntentV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import type { NextDraftEdit } from './state'
 import type { NextDraftContext } from './model'
 

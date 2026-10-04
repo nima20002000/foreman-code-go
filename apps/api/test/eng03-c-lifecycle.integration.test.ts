@@ -55,7 +55,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     const create = f.provider.createSession.bind(f.provider)
     const failing = f.f.version.definition.nodes[2]!.id
     let failedSession: string | undefined
-    let terminal: import('@graphql/contracts').NativeHarnessEvent | undefined
+    let terminal: import('@foreman-code/contracts').NativeHarnessEvent | undefined
     const result = { outcome: 'failed' as const,
       error: { code: 'SYNTHETIC_PROCESS_EXIT', message: 'Task-owned provider exited.', retryable: false } }
     vi.spyOn(f.provider, 'createSession').mockImplementation(async (input) => {

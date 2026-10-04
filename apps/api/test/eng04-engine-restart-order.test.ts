@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { setImmediate } from 'node:timers/promises'
 import { MemorySaver } from '@langchain/langgraph-checkpoint'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { test, vi } from 'vitest'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import type { RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'

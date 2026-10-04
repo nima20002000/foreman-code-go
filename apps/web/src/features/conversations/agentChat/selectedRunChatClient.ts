@@ -1,13 +1,13 @@
 import {
   AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema,
   type AgentChatState, type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
+} from '@foreman-code/contracts/agent-chat'
 import {
   ReadSelectedRunChatResponseSchema, SelectedRunChatSelectionSchema,
   SendSelectedRunChatRequestSchema, InterruptSelectedRunChatRequestSchema,
   type SelectedRunChatExecution, type SelectedRunChatSelection,
-} from '@graphql/contracts/selected-run-chat'
-import type { SelectedRunChatKey } from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/selected-run-chat'
+import type { SelectedRunChatKey } from '@foreman-code/contracts/run-snapshots'
 import { apiClient, ApiError, type RequestOptions } from '../../../shared/api/client'
 import { agentChatRoot } from '../../../shared/api/agentChat'
 import { resolvedSelectedChatKey, sameSelectedTarget } from './selectedRunChatModel'

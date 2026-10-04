@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DomainError } from '../errors.js'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number }
 export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })

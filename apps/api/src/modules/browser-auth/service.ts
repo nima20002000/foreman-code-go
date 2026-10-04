@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   DEFAULT_MANAGEMENT_ACTIONS, OwnerSetupRequestSchema,
   type ManagementPrincipal, type OwnerSetupStatus,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { betterAuth } from 'better-auth'
 import { hashPassword } from 'better-auth/crypto'
 import type { FastifyReply, FastifyRequest } from 'fastify'

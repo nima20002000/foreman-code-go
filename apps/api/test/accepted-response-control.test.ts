@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { activitySnapshotFixtures, type OperatorConversationState, type PendingNativeInteraction } from '@graphql/contracts'
-import type { AgentChatState } from '@graphql/contracts/agent-chat'
+import { activitySnapshotFixtures, type OperatorConversationState, type PendingNativeInteraction } from '@foreman-code/contracts'
+import type { AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { acceptedOperatorResponseControl, acceptedResponseControl } from '../src/modules/conversations/acceptedResponseControl.js'
 
 const pending: PendingNativeInteraction = {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { loadConfig } from '../../config.js'
 import { JobService } from '../jobs/service.js'
 import { jobSpec } from '../../../test/helpers/jobFixture.js'

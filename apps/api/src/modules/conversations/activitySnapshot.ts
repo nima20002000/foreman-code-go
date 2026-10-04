@@ -1,4 +1,4 @@
-import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivityScope, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivityScope, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
 import { conversationActivityId, conversationActivityKey, publicActivityProvenance } from './activityIdentity.js'
 import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'
 import type { PostgresAgentChatRepository } from './agentChatRepository.js'

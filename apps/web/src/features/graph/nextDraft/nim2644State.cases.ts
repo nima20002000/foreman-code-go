@@ -1,8 +1,8 @@
 import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import assert from 'node:assert/strict'
-import type { Agent } from '@graphql/contracts'
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
-import { sameExecutableWorkflow } from '@graphql/contracts/wave25'
+import type { Agent } from '@foreman-code/contracts'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
+import { sameExecutableWorkflow } from '@foreman-code/contracts/wave25'
 import { acknowledgeAgentEdits } from './agentEdits'
 import { authoringHints, entryChoices, mergeAcknowledgement, removeNode, roleEvidence, type NextDraftContext } from './model'
 

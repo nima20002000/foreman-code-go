@@ -1,8 +1,8 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { JobExecution } from '@graphql/contracts/jobs'
-import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
+import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
 import {
   RUN_INSPECTION_LIMITS, RunAcceptedInputValueSchema, RunExecutionBindingSchema,
   RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema,
@@ -13,7 +13,7 @@ import {
   canonicalGraphJson, RunRecordGetInputSchema, RunRecordDetailSchema, WorkflowRunV3Schema,
   type RunExecutionBindingsPage, type RunExecutionDetail, type RunExecutionSummary,
   type RunExecutionsPage, type RunVersionDetail, type RunRecordDetail, type GraphExecutionIdentity,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { JobRepository } from '../jobs/repository.js'

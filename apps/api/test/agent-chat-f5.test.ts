@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, it } from 'vitest'
-import { AgentConfigurationVersionSchema, type PendingNativeInteraction } from '@graphql/contracts'
-import type { AgentChatTurn, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { AgentConfigurationVersionSchema, type PendingNativeInteraction } from '@foreman-code/contracts'
+import type { AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import {
   AGENT_CHAT_OPEN_TURN_LIMIT, agentChatInputHash, agentChatKey, PostgresAgentChatRepository, type AgentConversationRow,

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { ExecutionScopedNativeSessionManagerResolver } from '../interactions/runtimePorts.js'
 import type { SubagentControlResolver } from './types.js'
 

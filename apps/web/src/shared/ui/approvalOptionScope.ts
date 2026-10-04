@@ -1,4 +1,4 @@
-import type { ApprovalResponseOption } from '@graphql/contracts'
+import type { ApprovalResponseOption } from '@foreman-code/contracts'
 
 const scopeLabels: Record<ApprovalResponseOption['persistence'], string> = {
   request: 'This request only.',

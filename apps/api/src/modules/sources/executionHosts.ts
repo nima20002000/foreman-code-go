@@ -1,7 +1,7 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
-import type { SourceManifest } from '@graphql/contracts/source-materialization'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
+import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
@@ -9,9 +9,9 @@ import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
 import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 import type { SourceExecutionHostPort } from './service.js'
-import type { SourceActiveNativeSession } from '@graphql/contracts/source-operations'
-import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
+import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
+import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 
 /** Installed lifetime capture only: never accepted from filesystem requests. */
 export interface SourceNativeSessionCapture {

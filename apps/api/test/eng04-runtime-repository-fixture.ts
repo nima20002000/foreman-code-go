@@ -1,4 +1,4 @@
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { WorkflowNativeProofServices } from '../src/modules/runs/workflowNativeProof.js'
 import type { RepeatRepositoryActivation } from '../src/modules/runs/port.js'
 

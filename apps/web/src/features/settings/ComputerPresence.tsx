@@ -1,5 +1,5 @@
-import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
-import type { HarnessHostInventoryMetadata } from '@graphql/contracts/harness-registry'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import type { HarnessHostInventoryMetadata } from '@foreman-code/contracts/harness-registry'
 import { useHostHarnessRegistryQuery } from '../../shared/api/computerSettings'
 import { presentationFor } from './computerPresenceModel'
 import './computerSettings.css'

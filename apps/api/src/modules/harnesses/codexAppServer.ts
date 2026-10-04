@@ -10,7 +10,7 @@ import {
   type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
   type ExecutionResult, type McpDetection, type NativeHarnessCapabilities, type NativeHarnessEvent,
   type NativeSessionReference, type PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'

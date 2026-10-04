@@ -1,8 +1,8 @@
 import { constants } from 'node:fs'
 import { open, readFile, realpath, statfs } from 'node:fs/promises'
 import { normalize } from 'node:path'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import type { JobRuntimeNativeAdmission } from '@graphql/contracts/job-runtime'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import type { JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
 import type { PodmanCommandRunner } from './executorPodman.js'
 
 export interface OCIProcessIdentity { pid: number; startTicks: string; bootId: string }

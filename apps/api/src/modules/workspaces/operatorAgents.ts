@@ -3,17 +3,17 @@ import {
   AgentSchema, AgentConfigurationVersionSchema, projectHarnessEffort,
   validateHarnessWorkflowCompatibility, CodexSessionCompatibilitySchema, withAdvancedDefaults,
   type Agent, type HarnessConfiguration,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   AgentCreateInputSchema, AgentUpdateInputSchema, AgentCloneInputSchema,
   type AgentCreateInput, type AgentUpdateInput, type AgentCloneInput, type ManagementPrincipal,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { HostHarnessOverrideService } from '../harnesses/instanceSettings/service.js'
-import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from './admission.js'

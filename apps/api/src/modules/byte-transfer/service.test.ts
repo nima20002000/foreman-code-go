@@ -3,7 +3,7 @@ import { mkdtemp, rm, appendFile, writeFile, readFile, symlink, mkdir, rename, l
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BYTE_TRANSFER_POLICY, type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY, type TransferContext, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferService } from './service.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const fixtureRoot = fileURLToPath(new URL('../../../../../../../../', import.meta.url))

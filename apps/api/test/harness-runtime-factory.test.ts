@@ -1,5 +1,5 @@
 import { input } from './fixtures/codex-test-helpers.js'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { NativeHarnessFactories, type NativeFactoryInfrastructure } from '../src/modules/harnesses/runtimeFactory.js'
 import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'

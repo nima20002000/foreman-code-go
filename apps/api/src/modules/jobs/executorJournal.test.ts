@@ -1,4 +1,4 @@
-import type { JobExecution } from '@graphql/contracts/jobs'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -8,8 +8,8 @@ import { identity } from '../sources/privateFilesystem.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
-import { jobSpecDigests } from '@graphql/contracts/jobs-node'
-import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
+import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
+import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { jobSupervisorIdentity } from './executor.js'
@@ -239,8 +239,8 @@ describe('installed actual Job factory with native/process doubles', () => {
     const processes = await import('../harnesses/recovery/processRegistry.js')
     const installed = await import('./installedRuntimeHost.js'), qualification = await import('./qualification.js')
     const { OwnedOCIContainer } = await import('./executorContainerOwner.js')
-    const { JOB_INPUT_DIRECTORY } = await import('@graphql/contracts/job-inputs')
-    const { jobInputSnapshotDigest } = await import('@graphql/contracts/job-inputs-node')
+    const { JOB_INPUT_DIRECTORY } = await import('@foreman-code/contracts/job-inputs')
+    const { jobInputSnapshotDigest } = await import('@foreman-code/contracts/job-inputs-node')
     const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
     vi.spyOn(installed, 'inspectInstalledJobRuntimeCandidate').mockResolvedValue()
     vi.spyOn(qualification, 'assertJobRuntimeEntryContext').mockResolvedValue(undefined as never)

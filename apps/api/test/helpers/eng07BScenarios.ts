@@ -1,8 +1,8 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
-import { AgentConfigurationVersionSchema, type ExecutionResult } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, type ExecutionResult } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 export const scenarioIds = ['S3-01', 'S3-02', 'S3-03', 'S3-04', 'S3-05-early', 'S3-05-limit'] as const
 export type ScenarioId = typeof scenarioIds[number]

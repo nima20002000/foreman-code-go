@@ -1,11 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { ManagementActionSchema, type ManagementAction } from '@graphql/contracts/management'
-import { CurrentOperatorCapabilitiesSchema, CurrentOperatorToolNameSchema } from '@graphql/contracts/wave25'
+import { ManagementActionSchema, type ManagementAction } from '@foreman-code/contracts/management'
+import { CurrentOperatorCapabilitiesSchema, CurrentOperatorToolNameSchema } from '@foreman-code/contracts/wave25'
 import {
   ScheduleDisableInputSchema, ScheduleDisableResultSchema, ScheduleGetInputSchema, ScheduleGetResultSchema,
   ScheduleSaveInputSchema, ScheduleSaveResultSchema,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import {

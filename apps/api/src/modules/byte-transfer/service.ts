@@ -6,7 +6,7 @@ import { Readable } from 'node:stream'
 import { z } from 'zod'
 import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, TransferContextSchema,
   TransferProgressSchema, VerifiedTransferReceiptSchema, type TransferIntent, type TransferContext,
-  type TransferProgress, type VerifiedTransferReceipt, type ByteTransferPort } from '@graphql/contracts/byte-transfer'
+  type TransferProgress, type VerifiedTransferReceipt, type ByteTransferPort } from '@foreman-code/contracts/byte-transfer'
 
 export type TransferOperation = 'start' | 'status' | 'append' | 'finish' | 'cancel' | 'read'
 export class TransferExpiredError extends Error {}

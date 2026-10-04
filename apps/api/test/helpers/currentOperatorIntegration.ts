@@ -1,7 +1,7 @@
 import { ExecutionReadinessService } from '../../src/modules/harnesses/executionReadiness.js'
 import { NativeRollout } from '../../src/modules/harnesses/nativeRollout.js'
 import { randomUUID } from 'node:crypto'
-import { ManagementActionSchema } from '@graphql/contracts/management'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../../src/app.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'

@@ -1,9 +1,9 @@
 import type pg from 'pg'
-import { RunOutcomeSchema } from '@graphql/contracts'
+import { RunOutcomeSchema } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema,
-  SavedRunVersionSnapshotSchema, ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
+  SavedRunVersionSnapshotSchema, ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { CurrentJournalRunPinSchema as GraphEditRunPinSchema, CurrentJournalRunStateSchema as GraphEditRunStateSchema,
-  type CurrentJournalRunState as GraphEditRunState } from '@graphql/contracts/wave25'
+  type CurrentJournalRunState as GraphEditRunState } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { hasSaveNativeSettlement } from './saveNativeSettlement.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,

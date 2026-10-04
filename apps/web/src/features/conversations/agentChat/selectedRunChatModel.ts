@@ -1,6 +1,6 @@
-import type { AgentChatContext, AgentChatState } from '@graphql/contracts/agent-chat'
-import type { SelectedRunChatExecution, SelectedRunChatSelection } from '@graphql/contracts/selected-run-chat'
-import type { SelectedRunChatKey } from '@graphql/contracts/run-snapshots'
+import type { AgentChatContext, AgentChatState } from '@foreman-code/contracts/agent-chat'
+import type { SelectedRunChatExecution, SelectedRunChatSelection } from '@foreman-code/contracts/selected-run-chat'
+import type { SelectedRunChatKey } from '@foreman-code/contracts/run-snapshots'
 
 /** The null conversation is a pre-creation draft address, NOT a SelectedRunChatKey. */
 export function selectedChatDraftKey(selection: SelectedRunChatExecution, agentId: string, conversationId: string | null): string {

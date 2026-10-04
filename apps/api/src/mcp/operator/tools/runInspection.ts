@@ -1,13 +1,13 @@
 import { registerRunHistoryTools, unavailableRunHistoryToolCall } from './runHistory.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementScope } from '@foreman-code/contracts/management'
 import {
   RUN_INSPECTION_TOOLS, RunInspectionToolNameSchema, type RunInspectionToolName,
   RunRecordGetInputSchema, RunRecordDetailSchema,
   RunExecutionsListInputSchema, RunExecutionsPageSchema, RunExecutionGetInputSchema, RunExecutionDetailSchema,
   RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema, RunVersionGetInputSchema, RunVersionDetailSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'

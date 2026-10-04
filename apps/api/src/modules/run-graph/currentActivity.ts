@@ -1,7 +1,7 @@
 import {
   NativeGraphActivityRecordSchema, GraphExecutionIdentitySchema, RUN_GRAPH_LIMITS, canonicalGraphJson,
   type RunGraphScope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import type { RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import { runHandoffs, runNodeDisplays, SETTLE_MS, TRAVEL_MS, useRunChoreography } from './runChoreography'
 
 const edges = [

@@ -1,9 +1,9 @@
-import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
+import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { z } from 'zod'
-import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec } from '@foreman-code/contracts/jobs'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
-  type JobQueueTicket } from '@graphql/contracts/job-admission'
+  type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 const root = (workspaceId: string) => `/api/management/workspaces/${encodeURIComponent(workspaceId)}/jobs`
@@ -107,8 +107,8 @@ export const jobsClient = {
 }
 
 /** Save only digest-verified immutable bytes; artifact HTML is never opened in the app origin. */
-export async function downloadJobArtifact(workspaceId: string, artifact: import('@graphql/contracts/jobs').JobArtifact, signal?: AbortSignal) {
-  const { JobArtifactSchema } = await import('@graphql/contracts/jobs')
+export async function downloadJobArtifact(workspaceId: string, artifact: import('@foreman-code/contracts/jobs').JobArtifact, signal?: AbortSignal) {
+  const { JobArtifactSchema } = await import('@foreman-code/contracts/jobs')
   const pin = JobArtifactSchema.parse(artifact)
   if (pin.state !== 'available' || pin.byteSize > 64 * 1024 * 1024) throw new ApiError({ code: 'ARTIFACT_UNAVAILABLE', message: 'Artifact expired, unavailable or above the 64 MiB browser download limit.' })
   const { assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError } = await import('../../shared/api/sessionBoundary')

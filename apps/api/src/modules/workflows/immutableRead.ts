@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { AgentConfigurationVersionSchema, type AgentConfigurationVersion } from '@graphql/contracts'
-import { SavedWorkflowVersionSchema, SavedWorkflowDefinitionSchema, canonicalGraphJson, type SavedWorkflowVersion } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import { SavedWorkflowVersionSchema, SavedWorkflowDefinitionSchema, canonicalGraphJson, type SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 
 /** Physical columns are authority too. A valid JSON body cannot impersonate a

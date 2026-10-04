@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@graphql/contracts/source-materialization'
+import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'

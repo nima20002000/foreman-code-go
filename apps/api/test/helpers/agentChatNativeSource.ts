@@ -1,4 +1,4 @@
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { canonical, qualifyCodex } from '../../src/modules/harnesses/codexProtocol.js'

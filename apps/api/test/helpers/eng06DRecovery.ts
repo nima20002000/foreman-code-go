@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   RUN_INSPECTION_TOOLS, RunAcceptedInputValueSchema, RunExecutionDetailSchema,
   RunExecutionsPageSchema, RunRecordDetailSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
   makeCurrentWorkflowFixture, type RunInspectionToolName, type RunExecutionDetail,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../../src/app.js'
 import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpointSaver.js'

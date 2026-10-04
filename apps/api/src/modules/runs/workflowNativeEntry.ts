@@ -1,5 +1,5 @@
-import type { HarnessExecution } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { HarnessExecution } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, poisonGraphTransaction,
   type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'

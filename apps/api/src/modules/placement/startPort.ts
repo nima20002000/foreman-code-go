@@ -1,6 +1,6 @@
-import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { RunStartV3Input } from '@graphql/contracts/wave25'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { RunStartV3Input } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { PlacementCommitFence } from './admission.js'
 

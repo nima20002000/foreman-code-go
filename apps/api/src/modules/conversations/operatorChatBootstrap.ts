@@ -1,4 +1,4 @@
-import type { OperatorConversationState } from '@graphql/contracts'
+import type { OperatorConversationState } from '@foreman-code/contracts'
 
 export const OPERATOR_BOOTSTRAP_FRAME_BYTES = 512 * 1024
 

@@ -1,15 +1,15 @@
-import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { AgentSourceAttemptAuthority, installedSourceAttemptAuthority } from './agentSourceAuthority.js'
 import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '../placement/persistence.js'
 import { readReconciledDispatchIntent, readRemoteReceipts } from '../runs/remote/persistence.js'
 import { readNativeExecutionBinding } from '../placement/executionBinding.js'
 import { sourceMaterializationDigest } from './bindingHash.js'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
@@ -18,7 +18,7 @@ import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
+import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
 import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from './rootPolicies.js'
 import { InstalledWorkspaceRootHosts } from './rootHosts.js'
@@ -36,7 +36,7 @@ import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
 import { isDeepStrictEqual } from 'node:util'
-import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
@@ -107,7 +107,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
-  const installationFence = async (sql: GraphSqlClient, value: import('@graphql/contracts/source-admission').SourceRootRecord) => {
+  const installationFence = async (sql: GraphSqlClient, value: import('@foreman-code/contracts/source-admission').SourceRootRecord) => {
     await assertDeviceHostInstallation(sql, value.selection.hostRef, value.selection.hostRef.kind === 'main'
       ? value.selection.hostRef.mainId : value.registration!.workerInstallationId)
   }
@@ -138,7 +138,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       await owners.prepareIdentity(root, record.receipt)
     },
   }
-  const confirmedClosed = async (sql: GraphSqlClient, record: import('@graphql/contracts/source-admission').SourceMaterializationRecord) => {
+  const confirmedClosed = async (sql: GraphSqlClient, record: import('@foreman-code/contracts/source-admission').SourceMaterializationRecord) => {
     const original = await readDispatchIntent(sql, record.receipt.executionId)
     if (original) {
       const intent = await readReconciledDispatchIntent(sql, record.operationId, true)

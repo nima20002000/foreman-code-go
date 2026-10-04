@@ -1,5 +1,5 @@
-import { AgentSchema, AgentConfigurationVersionSchema, projectHarnessEffort } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { AgentSchema, AgentConfigurationVersionSchema, projectHarnessEffort } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

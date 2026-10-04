@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
-import type { NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
+import type { NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 
 import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/harnesses/port.js'

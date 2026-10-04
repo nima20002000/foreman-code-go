@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { repeatGraphClient, type RepeatGraphClient } from './canonicalClient'

@@ -1,18 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   SourceApproveInputSchema, SourceGetInputSchema, SourceListInputSchema, SourceRootBindInputSchema, SourceRootGetInputSchema, SourceRootListInputSchema,
   ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema,
   type VerifiedSourceWorkingTree, type ApprovedSource, type ApprovedSourcePin, type SourceRootRecord, type SourceMaterializationRecord,
-} from '@graphql/contracts/source-admission'
-import type { RootBinding, SourceManifest } from '@graphql/contracts/source-materialization'
+} from '@foreman-code/contracts/source-admission'
+import type { RootBinding, SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { requireAuthorization } from '../access/policy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
-import type { RunExecutionLocation } from '@graphql/contracts'
+import type { RunExecutionLocation } from '@foreman-code/contracts'
 import { captureGitSource } from './capture.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
@@ -24,9 +24,9 @@ import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofP
 import type { MaterializationAttempt } from './ports.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourcePreparationReconciliation } from './preparationReconciliation.js'
-import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
+import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
 
 export interface SourceExecutionHostPort {

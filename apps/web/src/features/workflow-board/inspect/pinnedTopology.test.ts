@@ -1,6 +1,6 @@
 import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { pinnedNodeStates, pinnedTopology, type PinnedNodeDisplayCut } from './pinnedTopology'
 
 describe('immutable canvas display projection', () => {

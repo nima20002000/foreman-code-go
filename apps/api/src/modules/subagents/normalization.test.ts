@@ -1,4 +1,4 @@
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import { completedNativeAssistantMessage, nativeAssistantText } from '../conversations/operatorText.js'
 import { createClaudeEventNormalizer } from '../harnesses/claudeSdk/normalization.js'
 import { describe, expect, it } from 'vitest'

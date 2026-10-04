@@ -1,4 +1,4 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
 import { canonicalRunGraphReadApi } from '../../src/modules/run-graph/repeatReadService.js'
 import { ProjectionDatabase, projectionScope } from '../eng04-projection-fixture.js'

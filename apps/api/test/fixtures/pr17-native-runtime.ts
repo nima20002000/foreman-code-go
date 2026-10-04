@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { NativeHarnessEvent, NativeSessionReference, OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionReference, OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 import { OpenCodeNativeSessionManager, type OpenCodeServerController } from '../../src/modules/harnesses/opencodeServer.js'
 import type { NativeSessionStart } from '../../src/modules/harnesses/port.js'
 

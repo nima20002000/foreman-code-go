@@ -14,7 +14,7 @@ import {
   type NativeHarnessEvent,
   type NativeSessionReference,
   type PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../modules/harnesses/port.js'
 import { harnessProfile } from '../modules/harnesses/qualification/profiles.js'

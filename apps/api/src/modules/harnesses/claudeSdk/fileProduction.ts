@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { NativeMessageSubmissionSchema } from '@graphql/contracts/claude'
+import { NativeMessageSubmissionSchema } from '@foreman-code/contracts/claude'
 import { currentOperatorAuthority } from '../../access/runAuthority.js'
 import { PostgresFileConversationAuthorization } from '../../files/authorization.js'
 import type { ClaudeFileAdmission } from './files.js'

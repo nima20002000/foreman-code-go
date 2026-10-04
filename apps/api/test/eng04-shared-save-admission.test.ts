@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { WorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { sharedFixture } from './eng04-shared-fixture.js'
 import { assertMeaningfulSaveAdmitted, readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
 

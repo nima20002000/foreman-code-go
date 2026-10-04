@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RepeatGraphBatchV3Schema, reduceRepeatGraphPageV3 } from '@graphql/contracts/wave25'
+import { RepeatGraphBatchV3Schema, reduceRepeatGraphPageV3 } from '@foreman-code/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'

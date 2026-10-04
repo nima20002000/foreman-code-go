@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { useRevokeComputer } from '../../shared/api/computerSettings'
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SendOperatorMessageResponseSchema } from '@graphql/contracts'
+import { SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { apiClient } from '../../shared/api/client'
 import { getOperatorConversationHistory } from '../../shared/api/operatorChatHistory'
 import { beginSessionChange, clearProtectedStorage, finishSessionChange } from '../../shared/api/sessionBoundary'

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { FilePageSchema, type PermanentFileScope } from '@graphql/contracts/files'
-import type { ManagementScope } from '@graphql/contracts/management'
+import { FilePageSchema, type PermanentFileScope } from '@foreman-code/contracts/files'
+import type { ManagementScope } from '@foreman-code/contracts/management'
 
 import { hasAction } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'

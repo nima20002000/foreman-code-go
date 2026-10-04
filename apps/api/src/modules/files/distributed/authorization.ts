@@ -1,5 +1,5 @@
-import type { ArtifactAttempt, ArtifactAuthority, ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ArtifactAttempt, ArtifactAuthority, ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { DomainError } from '../../errors.js'

@@ -1,4 +1,4 @@
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import type {
   Agent,
   AgentExecutionState,
@@ -8,7 +8,7 @@ import type {
   ReviewStatus,
   WorkflowExecutionPolicy,
   WorkflowRunSummary,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import type { Edge, Node } from '@xyflow/react'
 

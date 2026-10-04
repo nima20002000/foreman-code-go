@@ -1,5 +1,5 @@
 import type { Edge, Node, ReactFlowProps } from '@xyflow/react'
-import type { RunBoardSnapshot, RunBoardNodeSnapshot, RunBoardEdgeSnapshot } from '@graphql/contracts/run-snapshots'
+import type { RunBoardSnapshot, RunBoardNodeSnapshot, RunBoardEdgeSnapshot } from '@foreman-code/contracts/run-snapshots'
 
 export type AvailableRunBoardSnapshot = Extract<RunBoardSnapshot, { kind: 'available' }>
 export type SavedBoardNode = Node<{ snapshot: RunBoardNodeSnapshot }, 'savedBoardNode'>

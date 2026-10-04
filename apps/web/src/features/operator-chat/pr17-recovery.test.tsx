@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type OperatorConversationState } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type OperatorConversationState } from '@foreman-code/contracts'
 import { OperatorChat } from './OperatorChat'
 import { useOperatorChatStore } from './operatorChatStore'
 

@@ -1,7 +1,7 @@
 import { webcrypto } from 'node:crypto'
 import { it, expect, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { JobArtifact } from '@graphql/contracts/jobs'
+import type { JobArtifact } from '@foreman-code/contracts/jobs'
 import { server } from '../../mocks/server'
 import { downloadJobArtifact } from './client'
 import { execution } from './fixtures'

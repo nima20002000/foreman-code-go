@@ -1,5 +1,5 @@
-import type { NativeMessageSubmission } from '@graphql/contracts'
-export type { NativeMessageSubmission } from '@graphql/contracts'
+import type { NativeMessageSubmission } from '@foreman-code/contracts'
+export type { NativeMessageSubmission } from '@foreman-code/contracts'
 import type {
   AgentHarness,
   ExecutionResult,
@@ -13,11 +13,11 @@ import type {
   NativeSessionReference,
   PendingNativeInteraction,
   OperatorConfigurationVersion,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { ResponseAvailabilityInspector } from './responseAvailability.js'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 
 export interface NativeEventInput {

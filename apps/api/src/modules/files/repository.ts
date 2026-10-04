@@ -1,5 +1,5 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { File, FilePage, FileScope, FileWithRevision, PermanentFileScope, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { File, FilePage, FileScope, FileWithRevision, PermanentFileScope, MessageAttachmentRef } from '@foreman-code/contracts/files'
 
 export type FileQuery = GraphSqlClient
 export type FileMutationSource = 'http' | 'mcp' | 'device'

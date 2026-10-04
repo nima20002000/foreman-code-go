@@ -9,7 +9,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { flushSync } from 'react-dom'
 import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphDraftV3Schema, staysOnWorkflowBoard, sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import { GraphDraftV3Schema, staysOnWorkflowBoard, sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { ActionMenu, AgentFacts, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentationStore } from '../useGraphPresentation'

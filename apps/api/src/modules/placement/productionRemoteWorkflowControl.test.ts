@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { AgentConfigurationVersion, HarnessExecution } from '@graphql/contracts'
+import type { AgentConfigurationVersion, HarnessExecution } from '@foreman-code/contracts'
 import type { RunOwnership } from '../runs/ownership.js'
 import { ExecutionScopedNativeSessionManagerResolver, type NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'

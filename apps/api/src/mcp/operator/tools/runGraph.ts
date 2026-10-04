@@ -7,7 +7,7 @@ import {
   CanonicalRunGraphSnapshotSchema as RunGraphSnapshotSchema,
   CanonicalRunGraphEventsResponseSchema as RunGraphEventsResponseSchema,
   CanonicalRunGraphCurrentSchema, CanonicalRunGraphReadCapabilitiesSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import type { OperatorRequestContext } from '../types.js'
 import { canonicalRunGraphReadApi } from '../../../modules/run-graph/repeatReadService.js'

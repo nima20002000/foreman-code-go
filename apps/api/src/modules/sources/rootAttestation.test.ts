@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, symlink, rename, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { qualifyApprovedRootAllowlist, verifyApprovedRootAllowlist, attestWorkspaceRoot, browseApprovedRoot, createWorkspaceRootWorkerHandler } from './rootAttestation.js'
-import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture() {

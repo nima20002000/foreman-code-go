@@ -1,10 +1,10 @@
-import { DeviceSetupApproveInputSchema,DeviceSetupOptionsSchema,encodeWorkerEnrollmentCode,type DeviceSetupApproveInput,type DeviceSetupOptions } from '@graphql/contracts/device-setup'
-import { verifiedWorkerIdentityRequest } from '@graphql/contracts/device-setup-node'
+import { DeviceSetupApproveInputSchema,DeviceSetupOptionsSchema,encodeWorkerEnrollmentCode,type DeviceSetupApproveInput,type DeviceSetupOptions } from '@foreman-code/contracts/device-setup'
+import { verifiedWorkerIdentityRequest } from '@foreman-code/contracts/device-setup-node'
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest, MainDeviceIdentityPublicSchema, type MainDeviceIdentityPublic } from '@graphql/contracts/device-identity'
-import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest, MainDeviceIdentityPublicSchema, type MainDeviceIdentityPublic } from '@foreman-code/contracts/device-identity'
+import { pairingProof, publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -15,7 +15,7 @@ export class DeviceAccessError extends DomainError {
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export type PairDeviceInput = DevicePairingRequest
-export { pairingProof } from '@graphql/contracts/device-identity-node'
+export { pairingProof } from '@foreman-code/contracts/device-identity-node'
 interface DeviceRow { record: DeviceRegistration; public_key: string; credential_expires_at: Date }
 export class PostgresDeviceAccessService {
   constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string, authorizationRevision: number) => void,private readonly setupOptions:()=>DeviceSetupOptions=()=>({endpoint:null,available:false,reason:'listener-unconfigured'})) {}

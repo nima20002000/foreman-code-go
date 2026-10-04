@@ -1,4 +1,4 @@
-import type { TelemetryReason, TelemetrySample } from '@graphql/contracts/resource-telemetry'
+import type { TelemetryReason, TelemetrySample } from '@foreman-code/contracts/resource-telemetry'
 import type { Tone } from '../../shared/ui/nocturne'
 
 const MIB = 1024 ** 2

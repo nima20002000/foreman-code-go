@@ -1,7 +1,7 @@
-import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
 import { canonicalGraphJson, GraphEvidenceSchema, GraphExecutionIdentitySchema, GraphIdSchema,
   GraphDigestSchema, RepeatOccurrenceIdentityV1Schema, RunGraphScopeSchema, type GraphEvidence,
-  type GraphExecutionIdentity } from '@graphql/contracts/wave25'
+  type GraphExecutionIdentity } from '@foreman-code/contracts/wave25'
 import { z } from 'zod'
 import { beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { currentRunGraphPublication, graphSourceDigest } from '../run-graph/publication.js'

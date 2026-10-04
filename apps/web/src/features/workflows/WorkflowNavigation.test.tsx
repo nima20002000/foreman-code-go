@@ -10,7 +10,7 @@ import {
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { UrlSearchSelectionSchema } from '@graphql/contracts'
+import { UrlSearchSelectionSchema } from '@foreman-code/contracts'
 import { http, HttpResponse } from 'msw'
 
 import { server } from '../../mocks/server'

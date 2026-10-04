@@ -1,7 +1,7 @@
 import type {
   BoardFilesListInput, FilePage, FileRow, PermanentFileScope,
   WorkflowReferenceFileScope, WorkspaceReferenceFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 export type WorkflowFilesIdentity = Pick<BoardFilesListInput, 'workspaceId' | 'workflowId'>
 

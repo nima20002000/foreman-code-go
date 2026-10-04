@@ -1,14 +1,14 @@
-import type { JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
+import type { JobRunCleanup } from '@foreman-code/contracts/job-run-cleanup'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import type { JobSql } from './repository.js'
 import type {
   AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinition, JobDefinitionSpec,
   ResolvedJobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec,
-} from '@graphql/contracts/jobs'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { JobQueueLimitsSchema } from '@graphql/contracts/job-admission'
-import type { JobResourceRequest } from '@graphql/contracts/job-verification-policy'
+} from '@foreman-code/contracts/jobs'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { JobQueueLimitsSchema } from '@foreman-code/contracts/job-admission'
+import type { JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
 import type { z } from 'zod'
 
 /** Resource envelopes and queue limits come from reviewed application configuration. */

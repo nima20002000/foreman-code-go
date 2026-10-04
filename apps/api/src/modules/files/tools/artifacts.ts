@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
-import { FileRevisionSchema, MAX_FILE_BYTES, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, MAX_FILE_BYTES, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileByteStorage } from '../storage.js'
 import type { FileToolSessions } from './context.js'

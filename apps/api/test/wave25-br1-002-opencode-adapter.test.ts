@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { nativeMessageId, object, OPENCODE_HISTORY_PAGE_SIZE } from '../src/modules/harnesses/opencodeProtocol.js'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'

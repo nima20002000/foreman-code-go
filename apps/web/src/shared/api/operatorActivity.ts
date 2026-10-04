@@ -1,4 +1,4 @@
-import { OperatorActivityPageSchema, OperatorActivityQuerySchema, type OperatorActivity, type OperatorActivityQuery } from '@graphql/contracts'
+import { OperatorActivityPageSchema, OperatorActivityQuerySchema, type OperatorActivity, type OperatorActivityQuery } from '@foreman-code/contracts'
 import { apiClient, type RequestOptions } from './client'
 
 export function getOperatorActivity(conversationId: string, query: Partial<OperatorActivityQuery> = {}, options?: RequestOptions) {

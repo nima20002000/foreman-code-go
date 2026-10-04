@@ -1,6 +1,6 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ApprovedRootAllowlist, WorkspaceRootSelection, WorkspaceRootPolicy, WorkspaceRootAttestation, WorkspaceRootBrowseResult } from '@graphql/contracts/workspace-root-policies'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ApprovedRootAllowlist, WorkspaceRootSelection, WorkspaceRootPolicy, WorkspaceRootAttestation, WorkspaceRootBrowseResult } from '@foreman-code/contracts/workspace-root-policies'
 export interface AuthorizedWorkspaceRoot {
   selection: WorkspaceRootSelection; allowlist: ApprovedRootAllowlist; ownerPrincipalId: string
   registration: WorkspaceRootPolicy['registration']

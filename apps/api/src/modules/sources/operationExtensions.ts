@@ -1,4 +1,4 @@
-import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
+import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { createSourceOperationWorkerHandler, type SourceOperationWorkerOptions } from './operationWorker.js'
 

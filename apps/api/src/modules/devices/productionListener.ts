@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:https'
 import type { Socket } from 'node:net'
 import { WebSocketServer } from 'ws'
-import { DEVICE_FRAME_BYTES } from '@graphql/contracts/device-connection'
+import { DEVICE_FRAME_BYTES } from '@foreman-code/contracts/device-connection'
 import { deviceUpgradeHandler } from './deviceCarrier.js'
 import type { DeviceEndpoint } from './deviceEndpoint.js'
 import { deviceHttpHandler } from './deviceHttp.js'
@@ -19,7 +19,7 @@ export class ProductionDeviceListener {
   private closing = false
   private starting: Promise<void> | undefined
   private stopping: Promise<void> | undefined
-  private publicTrust: import('@graphql/contracts/device-identity').DeviceTlsTrust | undefined
+  private publicTrust: import('@foreman-code/contracts/device-identity').DeviceTlsTrust | undefined
   publicTlsTrust() { return this.publicTrust ? { ...this.publicTrust } : undefined }
   private serverClosed = false
   private websocketClosed = false
@@ -45,7 +45,7 @@ export class ProductionDeviceListener {
       const hostname = new URL(this.config.advertisedEndpoint).hostname.replace(/^\[|\]$/g, '')
       if (!(isIP(hostname) ? x509.checkIP(hostname) : x509.checkHost(hostname))) throw new Error('The approved device TLS certificate does not match its public endpoint.')
     }
-    let publicTrust: import('@graphql/contracts/device-identity').DeviceTlsTrust | undefined
+    let publicTrust: import('@foreman-code/contracts/device-identity').DeviceTlsTrust | undefined
     const anchor = materials[2]
     if (anchor?.status === 'fulfilled') {
       const certificatePem = anchor.value.toString('utf8')

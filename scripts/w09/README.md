@@ -75,7 +75,7 @@ optional ownership guard: held/unknown defers deletion after the tombstone,
 without permitting expired byte access. A/B own their staging/materialization
 cleanup ports. Offline eviction remains best effort.
 
-Focused units are `corepack pnpm --filter @graphql/api exec vitest run
+Focused units are `corepack pnpm --filter @foreman-code/api exec vitest run
  test/distributed-artifacts.test.ts --maxWorkers=1`. The committed DB fault fixture
 is `test/artifact-edges-postgres.integration.test.ts`; only the orchestrator runs
 it with an explicitly owned loopback `TEST_DATABASE_URL`. No two-device acceptance

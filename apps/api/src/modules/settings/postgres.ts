@@ -3,7 +3,7 @@ import {
   HarnessDefaultsSchema,
   withAdvancedDefaults,
   type HarnessDefaults,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

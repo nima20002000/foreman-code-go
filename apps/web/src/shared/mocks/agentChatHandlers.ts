@@ -4,8 +4,8 @@ import {
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, agentChatFixtures, type AgentChatContext, type AgentChatState,
   type AgentChatTurn,
-} from '@graphql/contracts/agent-chat'
-import type { ManagementAction } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/agent-chat'
+import type { ManagementAction } from '@foreman-code/contracts/management'
 import { agentChatContextKey } from '../../features/conversations/agentChat/model'
 
 const at = '2026-09-27T12:00:00.000Z'

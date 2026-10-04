@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import type pg from 'pg'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexAppServer.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 

@@ -4,7 +4,7 @@ import {
   validateHarnessWorkflowCompatibility,
   type HarnessConfiguration,
   type WorkflowApprovalConfiguration,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 

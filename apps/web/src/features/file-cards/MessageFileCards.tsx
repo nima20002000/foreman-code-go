@@ -1,4 +1,4 @@
-import type { FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { FileWithRevision, MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { FileCard } from './FileCard'
 import type { FileCardClient } from './fileCardClient'
 import { fileCardKey, resolveMessageFileCards } from './fileCardPresentation'

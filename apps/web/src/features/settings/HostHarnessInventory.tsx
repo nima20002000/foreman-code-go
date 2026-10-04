@@ -1,5 +1,5 @@
-import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
-import type { HarnessRegistryReadback, HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import type { HarnessRegistryReadback, HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { Alert } from '../../shared/ui/nocturne'
 import { ComputerPresence } from './ComputerPresence'
 import './computerSettings.css'

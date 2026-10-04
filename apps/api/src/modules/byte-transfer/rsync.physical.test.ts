@@ -2,7 +2,7 @@ import { it, expect } from 'vitest'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdtemp, open, writeFile, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { TransferIntent } from '@graphql/contracts/byte-transfer'
+import type { TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { NodeRsyncExecutor, RsyncStagingTransport, RSYNC_SSH_ARGS, type RsyncEndpoint,
   type RsyncStagingPorts, type RsyncExecutor } from './rsync.js'
 import { RsyncPrivateStore } from './rsyncStore.js'

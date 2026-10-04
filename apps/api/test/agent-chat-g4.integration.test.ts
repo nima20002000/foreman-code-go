@@ -3,13 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest'
-import { MessageSchema, type Message } from '@graphql/contracts'
+import { MessageSchema, type Message } from '@foreman-code/contracts'
 import {
   AgentChatHistoryPageSchema, AgentChatStateSchema, AgentChatStateResponseSchema, AgentChatTurnPageSchema, ReadAgentChatResponseSchema,
   type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

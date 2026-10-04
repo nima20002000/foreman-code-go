@@ -1,6 +1,6 @@
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator,commandInputHash } from '../src/modules/commands/postgres.js'
 const principal:ManagementPrincipal={id:'actual-job-command-actor',name:'Job actor',audience:'operator',grants:[],expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null}
 afterEach(()=>vi.restoreAllMocks())

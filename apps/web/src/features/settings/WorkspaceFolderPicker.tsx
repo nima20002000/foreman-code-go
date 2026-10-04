@@ -1,7 +1,7 @@
 import { useContext, useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { useBoundFolderDirectories, type BoundFolderBrowser } from '../../shared/api/workspaceBoundLocation'
 import { useCreateWorkspaceFolder, useRenameWorkspaceFolder, useUndoWorkspaceFolder, useDeleteWorkspaceFolders, useHarnessDirectories, useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
-import { WorkspaceFolderNameSchema, type WorkspaceFolderRenameInput } from '@graphql/contracts/management'
+import { WorkspaceFolderNameSchema, type WorkspaceFolderRenameInput } from '@foreman-code/contracts/management'
 import { WorkspaceLocationCard } from './WorkspaceLocationCard'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import { CommandAttempt } from '../../shared/api/commandAttempt'

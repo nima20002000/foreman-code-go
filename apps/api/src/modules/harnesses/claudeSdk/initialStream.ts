@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 
 /** Prime the admitted first-input iterator so session persistence can complete
  * before session-scoped text readers are built. This never offers another input

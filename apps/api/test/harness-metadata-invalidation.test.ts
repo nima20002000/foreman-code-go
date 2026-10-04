@@ -1,6 +1,6 @@
 import pg from 'pg'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { describe, expect, it } from 'vitest'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'

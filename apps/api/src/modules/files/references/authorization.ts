@@ -1,5 +1,5 @@
-import { PermanentFileScopeSchema, type PermanentFileScope } from '@graphql/contracts/files'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import { PermanentFileScopeSchema, type PermanentFileScope } from '@foreman-code/contracts/files'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'

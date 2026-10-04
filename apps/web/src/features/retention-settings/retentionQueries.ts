@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type {
   FileRetentionGetResult, FileRetentionPreviewInput, FileRetentionSaveResult,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { attachmentLifecycleQueryKey } from '../attachments/attachmentLifecycle'
 import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'

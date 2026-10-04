@@ -1,5 +1,5 @@
-import { ExecutionReadinessSchema, type ExecutionReadiness } from '@graphql/contracts/management'
-import type { AgentHarness } from '@graphql/contracts'
+import { ExecutionReadinessSchema, type ExecutionReadiness } from '@foreman-code/contracts/management'
+import type { AgentHarness } from '@foreman-code/contracts'
 import { apiClient } from '../../shared/api/client'
 
 export function getExecutionReadiness(harness: AgentHarness, signal?: AbortSignal,

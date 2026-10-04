@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { isAuthorized } from '../src/modules/access/policy.js'
 import { operatorToolAvailable, operatorToolRequirements } from '../src/mcp/operator/availability.js'
 import { OPERATOR_TOOL_ACTIONS } from '../src/mcp/operator/catalog.js'

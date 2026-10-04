@@ -2,11 +2,11 @@ import {
   AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema,
   HarnessWorkflowCompatibilitySchema, NativeSessionReferenceSchema,
   type DurableInteraction, type HarnessExecution,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson,
   type AgentGraphExecutionIdentity, type RunGraphScope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import { PostgresRepeatReviewerBindings } from '../repeatReviewer.js'
 import { DomainError } from '../../errors.js'

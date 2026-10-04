@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import type { ExecutionResult, NativeHarnessEvent, OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { ExecutionResult, NativeHarnessEvent, OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 
 export type JsonObject = Record<string, unknown>
 export interface OpenCodeEvent extends JsonObject { id?: string; type: string; properties?: JsonObject; sseId?: string }

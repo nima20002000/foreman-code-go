@@ -1,4 +1,4 @@
-import { AgentMutationResultSchema, ManagedWorkspaceSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@graphql/contracts/management'
+import { AgentMutationResultSchema, ManagedWorkspaceSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@foreman-code/contracts/management'
 import {
   GraphEditReadResultV3Schema, GraphEditReadInputV3Schema, GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
   type GraphEditReadInputV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3, type GraphEditDiscardInputV3, type GraphEditReadResultV3,
@@ -7,7 +7,7 @@ import {
   GraphDraftOperationV3Schema, CurrentRunPageSchema, sameAuthoredWorkflow, sameExecutableWorkflow,
   preserveWorkflowPresentation, workflowNodeNames,
   type GraphDraftOperationV3, type WorkflowDefinitionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
 import type { z } from 'zod'
 import type { DraftRequest } from './state'

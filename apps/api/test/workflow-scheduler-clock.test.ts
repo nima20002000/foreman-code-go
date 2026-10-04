@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   nextOccurrences, parseScheduleSaveInput, ScheduleConfigurationSchema, ScheduleSaveInputSchema,
   scheduleOccurrenceId, WorkflowScheduleSchema, type ScheduleConfiguration,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { planDueSchedule } from '../src/modules/schedules/dispatchPlan.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
 import { sch11ClockCases, sch11Minute, sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'

@@ -1,4 +1,4 @@
-import type { PendingNativeInteraction } from '@graphql/contracts'
+import type { PendingNativeInteraction } from '@foreman-code/contracts'
 import { Fragment, useId } from 'react'
 import { summarizeApprovalRequest } from '../approvals/approvalPresentation'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'

@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import type { RepeatGraphScopeV3, RunExecutionDetail } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, RunExecutionDetail } from '@foreman-code/contracts/wave25'
 import { sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { readRunExecution, readRunExecutionBindings, readRunExecutions, readRunInspectionVersion, type ExecutionFilters } from '../runDetailsClient'
 

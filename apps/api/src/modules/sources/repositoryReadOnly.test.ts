@@ -6,7 +6,7 @@ import { PrivateSourceMaterializer } from './materialization.js'
 import { verifyPrivateSourceRepository } from './repository.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { openPrivateRoot, identity } from './privateFilesystem.js'
-import type { RootBinding } from '@graphql/contracts/source-materialization'
+import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 const git = vi.hoisted(() => vi.fn())
 vi.mock('./capture.js', () => ({ qualifiedGit: git }))
 const roots: string[] = []

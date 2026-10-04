@@ -2,12 +2,12 @@ import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { telemetryComputerFixture, telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { telemetryComputerFixture, telemetryOwnedFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
 import {
   TelemetrySelectorResultSchema, telemetrySelectorKey, type TelemetryOwner, type TelemetrySelector,
   type TelemetrySelectorTarget, type TrustedTelemetryContext,
-} from '@graphql/contracts/resource-telemetry'
+} from '@foreman-code/contracts/resource-telemetry'
 import { ResourceTelemetryService } from '../ingestion/service.js'
 import { registerResourceTelemetrySelectorRoutes } from '../../../routes/resourceTelemetrySelector.js'
 import { registerResourceTelemetrySelectorTools } from '../../../mcp/operator/resourceTelemetrySelector.js'

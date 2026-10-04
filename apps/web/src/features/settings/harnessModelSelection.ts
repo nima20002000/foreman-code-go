@@ -1,5 +1,5 @@
-import { ClaudeEffortSchema, type HarnessConfiguration, type AgentEffort } from '@graphql/contracts'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import { ClaudeEffortSchema, type HarnessConfiguration, type AgentEffort } from '@foreman-code/contracts'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 
 const knownEfforts = new Set<string>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
 export function supportedEfforts(model: HarnessOptions['models'][number] | undefined): AgentEffort[] {

@@ -1,9 +1,9 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, ResolvedJobDefinitionSpecSchema,
-  type JobDefinition, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+  type JobDefinition, type JobExecution, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
-import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 export type JobSql = GraphSqlClient
 
 export class JobRepository {

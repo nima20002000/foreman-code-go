@@ -119,8 +119,8 @@ function modules(db) {
     const requireFrom = (name) => {
       if (name === 'node:crypto') return runtimeRequire(name)
       if (name === 'pg') return { Pool }
-      if (name === '@graphql/contracts/wave25') return wave
-      if (name === '@graphql/contracts' || name === '@graphql/contracts/management') return new Proxy({}, { get: () => schema })
+      if (name === '@foreman-code/contracts/wave25') return wave
+      if (name === '@foreman-code/contracts' || name === '@foreman-code/contracts/management') return new Proxy({}, { get: () => schema })
       if (name.endsWith('/errors.js')) return { DomainError }
       if (name.endsWith('/access/policy.js')) return { requireAuthorization: authorize, isAuthorized: (p, a, s) => {
         try { authorize(p, a, s); return true } catch { return false }

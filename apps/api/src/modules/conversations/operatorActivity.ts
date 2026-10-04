@@ -1,5 +1,5 @@
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
-import type { AgentHarness, NativeHarnessEvent, OperatorActivity } from '@graphql/contracts'
+import type { AgentHarness, NativeHarnessEvent, OperatorActivity } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
 type RecordValue = Record<string, unknown>

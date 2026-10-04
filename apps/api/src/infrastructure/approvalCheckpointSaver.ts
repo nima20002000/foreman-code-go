@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres'
 import type { BaseCheckpointSaver, SerializerProtocol } from '@langchain/langgraph-checkpoint'
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 import type { GraphTransactionSql } from '../modules/run-graph/connection.js'
 import { assertGraphTransaction } from '../modules/run-graph/connection.js'
 import { DomainError } from '../modules/errors.js'

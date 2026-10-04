@@ -3,7 +3,7 @@ import { createClaudeFileMcpServer, type ClaudeFileSdk } from '../../files/claud
 import type { AgentFileToolService } from '../../files/tools/service.js'
 import { productionClaudeFileAdmission } from './fileProduction.js'
 import type pg from 'pg'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { DomainError } from '../../errors.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'

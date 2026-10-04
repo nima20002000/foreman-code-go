@@ -1,4 +1,4 @@
-import type { HarnessConfiguration } from '@graphql/contracts'
+import type { HarnessConfiguration } from '@foreman-code/contracts'
 import { DomainError } from '../../errors.js'
 
 /** Main production has no authorized host/profile API-key delivery source.

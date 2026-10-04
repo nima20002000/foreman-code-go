@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   RESOURCE_TELEMETRY_CAPABILITY, TELEMETRY_LIMITS, TelemetryCollectedBatchSchema, TelemetryHostSchema,
   TelemetrySelectorSchema, TelemetrySelectorTargetSchema, telemetryCanonical, telemetrySelectorKey,
@@ -7,7 +7,7 @@ import {
   type TelemetryIdentity, type TelemetryOwner, type TelemetryReason, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector,
   type TelemetrySelectorResult, type TelemetrySelectorTarget,
   type TrustedTelemetryContext, type TelemetryReadService,
-} from '@graphql/contracts/resource-telemetry'
+} from '@foreman-code/contracts/resource-telemetry'
 import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from '../readback/selector.js'
 import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
 

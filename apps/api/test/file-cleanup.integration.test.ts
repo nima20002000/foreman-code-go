@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, it } from 'vitest'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, MAX_FILE_BYTES, FileWithRevisionSchema, TemporaryFileSchema,
   temporaryFileExpiresAt, type FileState,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileReferenceMigration } from '../src/infrastructure/fileReferenceMigration.js'

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { JobRuntimeApprovalSchema, JobRuntimeProfileSchema, JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission,
-  type JobRuntimeFingerprint, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+  type JobRuntimeFingerprint, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'

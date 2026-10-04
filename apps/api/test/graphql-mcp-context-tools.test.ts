@@ -1,4 +1,4 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 

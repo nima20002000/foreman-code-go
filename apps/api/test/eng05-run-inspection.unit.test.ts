@@ -5,8 +5,8 @@ import {
   RunExecutionSummarySchema, RunAcceptedInputValueSchema, RunVersionDetailSchema,
   RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema,
   CurrentOperatorToolNameSchema, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import {
   runInspectionRequirements, runInspectionToolAvailable, unavailableRunInspectionToolCall,

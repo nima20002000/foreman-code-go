@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { RepeatGraphCurrentV3, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { RepeatGraphCurrentV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import type { AgentNodeState, AgentNodeTransition } from '../../../shared/ui/nocturne'
 import type { EdgeSignal } from '../../graph/signalEdge'
 import { lifecycleView } from '../runFacts'

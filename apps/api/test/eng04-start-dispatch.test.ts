@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
 import { runStartSemantics } from '../src/modules/runs/repeatStartDispatch.js'
 import { startFixture } from './eng04-start-fixtures.js'
 

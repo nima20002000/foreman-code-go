@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
-import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings, type OperatorConfigurationVersion } from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { acceptOperatorConfiguration } from '../src/modules/conversations/operatorAcceptedConfiguration.js'
 
 function fixture() {

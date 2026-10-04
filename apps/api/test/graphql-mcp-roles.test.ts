@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
-import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppInteractionService } from '../src/modules/interactions/app.js'

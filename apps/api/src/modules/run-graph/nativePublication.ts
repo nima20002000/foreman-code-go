@@ -1,5 +1,5 @@
-import type { HarnessNativeEvent } from '@graphql/contracts'
-import type { RunGraphScope } from '@graphql/contracts/wave25'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import type { RunGraphScope } from '@foreman-code/contracts/wave25'
 import type { ExclusiveGraphConnection } from './connection.js'
 import { withRunGraphPublication } from './publication.js'
 import { appendNativeGraphEvent, type NativeGraphWork } from './nativeIngestion.js'

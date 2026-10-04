@@ -1,11 +1,11 @@
 import { nativeNode } from './nativeFixtureTypes'
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { AgentMutationResultSchema, AgentVersionResultSchema, ManagedAgentPageSchema, ManagedWorkspaceSchema } from '@graphql/contracts/management'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { AgentMutationResultSchema, AgentVersionResultSchema, ManagedAgentPageSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { CurrentManagedWorkflowSchema, CurrentManagedWorkflowPageSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema, CurrentWorkflowValidationSchema,
-  CurrentWorkflowCapabilitiesSchema, GraphEditReadResultV3Schema, GraphEditStageInputV3Schema } from '@graphql/contracts/wave25'
+  CurrentWorkflowCapabilitiesSchema, GraphEditReadResultV3Schema, GraphEditStageInputV3Schema } from '@foreman-code/contracts/wave25'
 import { resetTestFixtures } from './handlers'
 import { setMockScenario } from './scenarios'
 

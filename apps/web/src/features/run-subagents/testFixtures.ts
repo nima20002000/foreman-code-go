@@ -1,4 +1,4 @@
-import { RunSubagentSchema, RunSubagentMessageSchema, RunSubagentToolSchema, subagentCapabilities, type RunSubagent } from '@graphql/contracts/subagents'
+import { RunSubagentSchema, RunSubagentMessageSchema, RunSubagentToolSchema, subagentCapabilities, type RunSubagent } from '@foreman-code/contracts/subagents'
 import { runA } from '../run-board/testFixtures'
 
 export const scope = { workspaceId: runA.workspaceId, workflowId: runA.workflowId, runId: runA.runId }

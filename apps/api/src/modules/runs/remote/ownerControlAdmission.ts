@@ -1,5 +1,5 @@
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import { RemoteOwnerControlSchema, type RemoteOwnerControl } from '@graphql/contracts/remote-execution'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { RemoteOwnerControlSchema, type RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
 import type { InteractionDeliveryClaim } from '../../interactions/delivery.js'
 import { assertInteractionNativeDispatchLocked } from '../../interactions/wave25/delivery.js'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'

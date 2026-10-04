@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
+import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { useCheckHostHarnessInstance } from '../../shared/api/computerSettings'
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'

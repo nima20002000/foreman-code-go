@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'
-import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 const digest = 'a'.repeat(64)
 const mainId = randomUUID(), deviceId = randomUUID()
 const connection = { mainId, deviceId, workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }

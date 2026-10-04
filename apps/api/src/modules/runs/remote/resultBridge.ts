@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
-import type { DispatchIntent, AcceptedNodePlacement } from '@graphql/contracts/node-placement'
-import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@graphql/contracts/remote-execution'
+import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
+import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@foreman-code/contracts/remote-execution'
 
 export interface RemoteCommitAuthority {
   intent: DispatchIntent

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
 import { GraphEditReadResultV3Schema, sameExecutableWorkflow,
-  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
+  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
@@ -51,7 +51,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
   ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
 vi.mock('../../../shared/api/query', async (original) => {
-  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   return { ...await original<typeof import('../../../shared/api/query')>(),
     useInteractionsQuery: () => ({ data: { items: [] } }),
     useAgentDefaultsQuery: () => ({ isError: false, data: { value: {

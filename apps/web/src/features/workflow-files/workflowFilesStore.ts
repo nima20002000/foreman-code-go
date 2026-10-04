@@ -1,5 +1,5 @@
 import { createStore } from 'zustand/vanilla'
-import type { FileWithRevision } from '@graphql/contracts/files'
+import type { FileWithRevision } from '@foreman-code/contracts/files'
 import type { SelectionIssue } from '../attachments/attachmentFiles'
 
 interface RemovalSelection { row: FileWithRevision; commandId: string }

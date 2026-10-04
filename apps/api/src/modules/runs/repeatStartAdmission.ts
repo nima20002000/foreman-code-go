@@ -3,15 +3,15 @@ import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from '.
 import { randomUUID } from 'node:crypto'
 import type { ScheduleStartGuard } from '../schedules/startGuard.js'
 import type pg from 'pg'
-import { IdSchema } from '@graphql/contracts'
-import type { RunDropdownTrigger } from '@graphql/contracts/run-snapshots'
+import { IdSchema } from '@foreman-code/contracts'
+import type { RunDropdownTrigger } from '@foreman-code/contracts/run-snapshots'
 import { insertRunBoardSnapshot } from './boardSnapshot.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema,
   GraphDigestSchema, RunStartV3InputSchema, SavedRunVersionSnapshotSchema, canonicalGraphJson,
   sameWorkflowValue, type AcceptedRepeatStartV1, type AcceptedWorkflowRunV3, type RunStartV3Input,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'

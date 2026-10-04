@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import {
   AcceptedNodePlacementSchema, DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent,
-} from '@graphql/contracts/node-placement'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/node-placement'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 
 export function placementDigest(value: unknown): string {

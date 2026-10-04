@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ScheduleGetInputSchema, ScheduleInstantSchema } from '@graphql/contracts/schedules'
+import { ScheduleGetInputSchema, ScheduleInstantSchema } from '@foreman-code/contracts/schedules'
 import { DomainError } from '../errors.js'
 
 export const OccurrenceCursorSchema = ScheduleGetInputSchema.extend({

@@ -1,5 +1,5 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { RunSubagent, SubagentAvailableActions } from '@graphql/contracts/subagents'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { RunSubagent, SubagentAvailableActions } from '@foreman-code/contracts/subagents'
 import { isAuthorized } from '../access/policy.js'
 import type { SubagentControlLease } from './types.js'
 

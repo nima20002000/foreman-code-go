@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionRequestSchema } from '@graphql/contracts'
-import { ManagedWorkspaceCommandResultSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionRequestSchema } from '@foreman-code/contracts'
+import { ManagedWorkspaceCommandResultSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 

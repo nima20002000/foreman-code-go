@@ -2,7 +2,7 @@ import { Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-rou
 import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { ComputerSettings } from '../features/settings/ComputerSettings'
-import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { Alert } from '../shared/ui/nocturne'
 import { HarnessComputerScope } from '../features/settings/HarnessComputerScope'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'

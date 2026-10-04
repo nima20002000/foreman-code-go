@@ -1,6 +1,6 @@
 import { replaceEqualDeep } from '@tanstack/react-query'
-import { RunLiveSequenceSchema } from '@graphql/contracts'
-import type { CurrentRunDetails } from '@graphql/contracts/wave25'
+import { RunLiveSequenceSchema } from '@foreman-code/contracts'
+import type { CurrentRunDetails } from '@foreman-code/contracts/wave25'
 
 function hasActivityOrder(activity: CurrentRunDetails['liveActivity']): boolean {
   return Boolean(activity && RunLiveSequenceSchema.safeParse(activity.sequence).success

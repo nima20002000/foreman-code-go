@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
-import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema, WorkflowRunSchema } from '@foreman-code/contracts'
 import pg from 'pg'
 import { describe, it } from 'vitest'
 

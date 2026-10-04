@@ -5,7 +5,7 @@ import type pg from 'pg'
 import {
   WorkspaceStorageFolderDeleteInputSchema, WorkspaceStorageFoldersListInputSchema,
   type ManagementPrincipal, type WorkspaceStorageFolder, type WorkspaceStorageFolderDeleteInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

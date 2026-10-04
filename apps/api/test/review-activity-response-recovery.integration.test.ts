@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import type { NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { buildApp } from '../src/app.js'

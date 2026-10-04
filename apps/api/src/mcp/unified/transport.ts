@@ -8,7 +8,7 @@ import type { FileReferenceService } from '../../modules/files/references/servic
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
 import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
-import type { ManagementAudience, ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementAudience, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'

@@ -1,7 +1,7 @@
 import {
   CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentRunDetailsSchema, CurrentManagedWorkflowCommandResultSchema, CurrentManagedWorkflowPageSchema, RunStartV3InputSchema, RunStartV3ResultSchema, CurrentWorkflowCreateInputSchema, 
   type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse, type CurrentRunDetails, type CurrentWorkflowCreateInput,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import {
   ApiErrorResponseSchema,
   CreateMessageRequestSchema,
@@ -60,7 +60,7 @@ import {
   type SaveHarnessDefaultsRequest,
   type SaveHarnessDefaultsResponse,
   type WorkspaceDetailsRequest,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { z } from 'zod'
 import { notifyAuthenticationRequired } from './authEvents'
 import { collectManagementPages, managementPageUrl } from './managementPaging'
@@ -106,7 +106,7 @@ import {
   type WorkspaceLocationValidateInput,
   type WorkflowArchiveInput,
   type WorkflowUpdateInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 
 export type RequestOptions = Omit<RequestInit, 'body' | 'method'> & {

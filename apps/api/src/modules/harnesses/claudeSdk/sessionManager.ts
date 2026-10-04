@@ -2,7 +2,7 @@ import { claudeNativeEvent } from './nativeEvents.js'
 import { createClaudeEventNormalizer } from './normalization.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../../subagents/nativeReadback.js'
 import { createHash, randomUUID } from 'node:crypto'
-import type { AgentHarness, ExecutionResult, McpDetection, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { AgentHarness, ExecutionResult, McpDetection, NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../port.js'
 import { HarnessExecutionError } from '../errors.js'
 import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
@@ -123,7 +123,7 @@ export function createClaudeNativeSessionManager(options: {
   appMcpAccess?: 'management' | 'none'
   credentialEnvironmentVariables?: readonly string[]
   supportedInteractionKinds?: readonly string[]
-  pendingInteractions?: (session: NativeSessionReference) => readonly import('@graphql/contracts').PendingNativeInteraction[]
+  pendingInteractions?: (session: NativeSessionReference) => readonly import('@foreman-code/contracts').PendingNativeInteraction[]
 }): ClaudeNativeSessionManager {
   // The provider enum addition is integrated by the designated shared-contract writer.
   const harness = 'claude' as AgentHarness

@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { type CompatibilityHarness } from '@graphql/contracts'
-import { HarnessQualificationSchema, type HarnessQualification } from '@graphql/contracts/harness-qualification'
+import { type CompatibilityHarness } from '@foreman-code/contracts'
+import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 
 export class HarnessQualificationRepository {
   constructor(private readonly pool: pg.Pool) {}

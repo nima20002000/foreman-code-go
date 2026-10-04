@@ -3,7 +3,7 @@ import {
   type NativeGraphProjectionKey, type NativeGraphActivityRecord,
   type NativeGraphCorrelationRecord, type RunGraphScope, type NativeGraphProjectionFence,
   type NativeGraphProjectionAuthority,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'

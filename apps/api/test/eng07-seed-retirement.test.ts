@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, AgentSchema } from '@graphql/contracts'
-import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, AgentSchema } from '@foreman-code/contracts'
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { readImmutableWorkflowVersion } from '../src/modules/workflows/immutableRead.js'
 

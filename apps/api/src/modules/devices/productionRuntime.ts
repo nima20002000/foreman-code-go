@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { RuntimeIdentity } from '@graphql/contracts'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { RuntimeIdentity } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { API_APPLICATION_VERSION } from '../../infrastructure/applicationVersion.js'
 import { PostgresDeviceAccessService } from './access.js'
@@ -111,7 +111,7 @@ export class ProductionDeviceRuntime {
     if (!this.endpoint) throw new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'The selected-main device endpoint has not initialized.', 503)
     return this.endpoint
   }
-  private setupOptions(): import('@graphql/contracts/device-setup').DeviceSetupOptions {
+  private setupOptions(): import('@foreman-code/contracts/device-setup').DeviceSetupOptions {
     if (!this.listenerConfig) return { endpoint: null, available: false, reason: 'listener-unconfigured' }
     const endpoint = this.listenerConfig.advertisedEndpoint ?? null
     if (!endpoint) return { endpoint, available: false, reason: 'endpoint-unconfigured' }

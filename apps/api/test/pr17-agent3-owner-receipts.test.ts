@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import type { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { memoryConversation, operator, ReviewManager } from './fixtures/agent1OperatorChat.js'

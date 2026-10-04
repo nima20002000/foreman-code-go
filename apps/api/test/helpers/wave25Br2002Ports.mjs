@@ -217,8 +217,8 @@ export async function ports(options = {}) {
     async finishStoppedReviews(runId, required) { await transact(null, runId, (pub) => this.finishStoppedReviewsInPublication(pub, required)) }
   }
   const stubs = {
-    '@graphql/contracts': { DurableInteractionSchema: schema, ReviewJobSchema: schema },
-    '@graphql/contracts/wave25': { GraphInteractionSchema: schema, GraphReviewSchema: schema, RUN_GRAPH_LIMITS: { nodes: 1000, exchanges: 2000 }, WorkflowRunV2Schema: schema, GraphAttentionSchema: schema, GraphExecutionIdentitySchema: schema, NativeGraphActivityRecordSchema: schema, canonicalGraphJson: JSON.stringify },
+    '@foreman-code/contracts': { DurableInteractionSchema: schema, ReviewJobSchema: schema },
+    '@foreman-code/contracts/wave25': { GraphInteractionSchema: schema, GraphReviewSchema: schema, RUN_GRAPH_LIMITS: { nodes: 1000, exchanges: 2000 }, WorkflowRunV2Schema: schema, GraphAttentionSchema: schema, GraphExecutionIdentitySchema: schema, NativeGraphActivityRecordSchema: schema, canonicalGraphJson: JSON.stringify },
     'context.js': { identity, fail, isV2: async () => data.v2, assertBudget: async () => undefined, readContext: async (_sql,r,requireOpen) => {
       if (requireOpen && (data.stopped || data.cleanupAllowed || data.executionCompleted)) fail('EXECUTION_STOPPED')
       return contextFor(r)

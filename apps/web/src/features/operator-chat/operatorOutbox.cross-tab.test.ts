@@ -241,7 +241,7 @@ describe('PR19: command-lifetime uncertainty', () => {
     const outbox = await tab()
     await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/a')
     const saved = JSON.parse(window.localStorage.getItem(key())!)
-    const { SendOperatorMessageRequestSchema } = await import('@graphql/contracts')
+    const { SendOperatorMessageRequestSchema } = await import('@foreman-code/contracts')
     expect(SendOperatorMessageRequestSchema.safeParse(saved.command ?? saved).success).toBe(false)
     expect(outbox.readPendingOperatorMessage('conversation-one').command?.content).toBe('Continue.')
   })

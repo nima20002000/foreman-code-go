@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { AgentConfigurationVersionSchema, type AgentConfigurationVersion, type NativeSessionReference } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
 
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'

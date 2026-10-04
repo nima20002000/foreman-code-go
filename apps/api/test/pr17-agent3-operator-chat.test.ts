@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type NativeHarnessEvent, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type NativeHarnessEvent, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { OperatorChatService, type OperatorChatAuthority } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation, type ConversationRow } from '../src/modules/conversations/operatorChatRepository.js'
 import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'

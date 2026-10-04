@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   HarnessCompatibilityListSchema, HarnessCompatibilitySchema,
   type CompatibilityHarness, type HarnessCompatibilityList, type HarnessCompatibility,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { apiClient, type RequestOptions } from './client'
 
 export const harnessCompatibilityKey = ['workbench', 'management', 'harness-compatibility'] as const

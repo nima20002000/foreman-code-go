@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream'
 import type {
   FileRevision, FileWithRevision, MessageAttachmentRef, TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import type { AgentFileToolService } from '../../files/tools/service.js'
 import type { FileToolOperation } from '../../files/tools/types.js'
 

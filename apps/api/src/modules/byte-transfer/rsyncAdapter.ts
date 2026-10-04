@@ -1,4 +1,4 @@
-import { TransferIntentSchema, type ByteTransferPort, type TransferContext, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
+import { TransferIntentSchema, type ByteTransferPort, type TransferContext, type VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferSender } from './sender.js'
 import type { RsyncStagedBytes } from './rsync.js'
 

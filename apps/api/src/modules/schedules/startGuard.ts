@@ -1,4 +1,4 @@
-import type { AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+import type { AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 
 /** Internal composition only. Never accepted from an HTTP/MCP request. Both

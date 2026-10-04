@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ZodError } from 'zod'
-import { WorkflowSaveIssuesSchema, workflowSaveIssues, type WorkflowSaveIssue } from '@graphql/contracts/wave25'
+import { WorkflowSaveIssuesSchema, workflowSaveIssues, type WorkflowSaveIssue } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../shared/api/client'
 import { Button, Dialog, Icon } from '../../shared/ui/nocturne'
 import type { AuthoringIssue } from '../graph/nextDraft/model'

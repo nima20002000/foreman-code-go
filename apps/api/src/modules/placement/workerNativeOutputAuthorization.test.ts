@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AuthorizedFileCaller } from '../files/tools/types.js'
 import type { AcceptedArtifactPublication } from '../files/distributed/publication.js'
 import type { FileQuery } from '../files/repository.js'
-import type { WorkerMcpRelayRequest } from '@graphql/contracts/worker-mcp-relay'
-import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import type { WorkerMcpRelayRequest } from '@foreman-code/contracts/worker-mcp-relay'
+import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { createWorkerNativeOutputAuthorizationPort } from './workerMcpRelay.js'
 
 // SQL authority and context-resolution boundaries are doubles. This tests the

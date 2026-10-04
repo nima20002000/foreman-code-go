@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RemoteOperationJournal } from './operationJournal.js'
-import type { DispatchIntent } from '@graphql/contracts/node-placement'
-import type { RemoteOwnerControl } from '@graphql/contracts/remote-execution'
+import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
+import type { RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 afterEach(async () => { await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })

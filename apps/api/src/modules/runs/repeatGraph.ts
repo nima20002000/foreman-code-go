@@ -2,7 +2,7 @@ import { workflowJobNodeAction, type WorkflowJobNodeStore } from '../jobs/workfl
 import type { WorkflowJobDriver } from '../jobs/workflowRuntimePorts.js'
 import { Annotation, END, START, StateGraph, type Command } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
-import { WorkflowVersionV3Schema, type RepeatOccurrenceV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, type RepeatOccurrenceV1, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { repeatNodeAction, type RepeatExecutionDriver, type RepeatGraphState, type RepeatNodeStore } from './repeatNode.js'

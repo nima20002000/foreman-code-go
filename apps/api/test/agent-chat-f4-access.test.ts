@@ -1,8 +1,8 @@
 import Fastify from 'fastify'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import type { ManagementAction, ManagementPrincipal, ManagementScope, OperatorToolName } from '@graphql/contracts/management'
+import { agentChatFixtures, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import type { ManagementAction, ManagementPrincipal, ManagementScope, OperatorToolName } from '@foreman-code/contracts/management'
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'

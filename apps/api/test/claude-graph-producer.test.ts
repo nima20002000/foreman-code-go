@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { HarnessNativeEvent } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture, parseNativeGraphObservation, type NativeGraphProjectionKey, type RunGraphScope } from '@graphql/contracts/wave25'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, parseNativeGraphObservation, type NativeGraphProjectionKey, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { claudeNativeGraphObservation } from '../src/modules/run-graph/nativeIngestion.js'
 import { projectNativeEvidence, type ProjectionBinding } from '../src/modules/run-graph/nativeProjection.js'
 import { ReviewEvidenceTracker } from '../src/modules/interactions/reviewerEvidence.js'

@@ -1,8 +1,8 @@
-import type { AgentConfigurationVersion } from '@graphql/contracts'
+import type { AgentConfigurationVersion } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema,
   type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import {

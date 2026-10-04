@@ -1,7 +1,7 @@
 import { createPublicKey, generateKeyPairSync, sign } from 'node:crypto'
 import type pg from 'pg'
-import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema, MainEnrollmentProofRequestSchema, MainSignedEnrollmentProofSchema, type MainIdentityProofRequest, type MainSignedIdentityProof, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@graphql/contracts/device-identity'
-import { mainIdentityProofMessage, mainEnrollmentProofMessage, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema, MainEnrollmentProofRequestSchema, MainSignedEnrollmentProofSchema, type MainIdentityProofRequest, type MainSignedIdentityProof, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@foreman-code/contracts/device-identity'
+import { mainIdentityProofMessage, mainEnrollmentProofMessage, publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 import { DeviceAccessError } from './access.js'
 
 export const mainDeviceIdentityMigration = { version: 282102, sql: 'create table device_main_identity (main_id uuid primary key, record jsonb not null);' } as const

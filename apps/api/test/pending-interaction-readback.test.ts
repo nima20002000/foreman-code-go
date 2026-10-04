@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type PendingNativeInteraction } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { pendingInteractionAfterHistory } from '../src/modules/conversations/pendingInteractionReadback.js'
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
 const source = NATIVE_INTERACTION_FIXTURES.codex

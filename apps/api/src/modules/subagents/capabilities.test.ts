@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { subagentCapabilities, type RunSubagent } from '@graphql/contracts/subagents'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { subagentCapabilities, type RunSubagent } from '@foreman-code/contracts/subagents'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { subagentAvailableActions } from './capabilities.js'
 const principal: ManagementPrincipal = { id: 'p', name: 'Scoped', audience: 'operator', grants: [{ actions: ['runs:read', 'runs:subagents:input', 'runs:stop'], scope: { runIds: ['r'] } }], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
 const child = { id: 'child', workspaceId: 'w', workflowId: 'wf', runId: 'r', status: 'running', evidence: 'confirmed', nativeMode: 'codex-multi-agent-v2',

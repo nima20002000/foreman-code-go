@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
 import { workflowJobResult } from '../src/modules/jobs/workflowResult.js'
 import { jobExecution } from './helpers/jobFixture.js'
 import { workflowJobNodeAction } from '../src/modules/jobs/workflowNode.js'

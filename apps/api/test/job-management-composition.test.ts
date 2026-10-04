@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'

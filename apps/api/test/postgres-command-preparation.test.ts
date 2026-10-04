@@ -1,6 +1,6 @@
 import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 
 const principal: ManagementPrincipal = { id: 'actor', name: 'Actor', audience: 'operator', grants: [],

@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures, type AgentChatState, type AgentChatStreamEvent } from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { agentChatFixtures, type AgentChatState, type AgentChatStreamEvent } from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { AgentChatEvents, type AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { AGENT_CHAT_FRAME_BYTES, agentChatStreamFrame } from '../src/modules/conversations/agentChatStream.js'

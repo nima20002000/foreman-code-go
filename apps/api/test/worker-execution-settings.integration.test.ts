@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
-import { WorkerExecutionSettingsSchema, type ManagementGrant } from '@graphql/contracts/management'
+import { WorkerExecutionSettingsSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

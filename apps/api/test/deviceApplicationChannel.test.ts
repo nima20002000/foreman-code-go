@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { negotiateDeviceExtensions } from '@graphql/contracts/device-application'
+import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import type { HarnessConfiguration, HarnessExecutionRequest } from '@graphql/contracts'
+import type { HarnessConfiguration, HarnessExecutionRequest } from '@foreman-code/contracts'
 import { buildHarnessPrompt, MAX_HARNESS_PROMPT_BYTES } from '../src/modules/harnesses/prompt.js'
 import { NativeHarnessConfigurationQualifier } from '../src/modules/harnesses/nativeConfigurationQualifier.js'
 

@@ -23,7 +23,7 @@ const exports = [
 ];
 const contractPackage = JSON.parse(await readFile(join(repository, 'packages/contracts/package.json')));
 const alias = Object.fromEntries(Object.entries(contractPackage.exports).map(([name, value]) => [
-  name === '.' ? '@graphql/contracts' : `@graphql/contracts/${name.slice(2)}`,
+  name === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${name.slice(2)}`,
   join(repository, 'packages/contracts', value.import.replace('./dist/', './src/').replace(/\.js$/, '.ts')),
 ]));
 await build({ stdin: { contents: exports.map(([path, names]) =>

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { it } from 'vitest'
 

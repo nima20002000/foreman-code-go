@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { WorkspaceFolderCreateInput } from '@graphql/contracts/management'
+import type { WorkspaceFolderCreateInput } from '@foreman-code/contracts/management'
 
 import { server } from '../../mocks/server'
 import { harnessSettingsKeys, type useHarnessDirectories } from '../../shared/api/harnessSettings'

@@ -1,6 +1,6 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 export const br2001Providers = ['codex', 'opencode'] as const
 export type Br2001Provider = typeof br2001Providers[number]

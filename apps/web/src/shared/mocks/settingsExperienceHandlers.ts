@@ -1,6 +1,6 @@
 import { http, HttpResponse } from 'msw'
 import { BrowserAccessSessionSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
-  WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@graphql/contracts/management'
+  WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { getMockScenarioState } from './scenarios'
 
 // Development/test fixtures only. These handlers do not create or authenticate real credentials.

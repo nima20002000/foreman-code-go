@@ -1,6 +1,6 @@
 import type {
   HarnessExecution, ReviewJob, RunLiveActivity, RunNodeLiveActivity, WorkflowDefinition, WorkflowRun,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { nativeAction, nativeObject, nativeString, nodeAction } from './nativeAction.js'
 
 /** Internal DB read model. Raw tool arguments never enter this projection. */

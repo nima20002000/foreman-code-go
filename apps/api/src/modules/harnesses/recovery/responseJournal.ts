@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeResponseIdentity } from '../port.js'
 import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'

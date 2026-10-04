@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import type { HostHarnessOverride, HostHarnessOverrideListInput, HostHarnessOverrideTargetSchema } from '@graphql/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessOverrideListInput, HostHarnessOverrideTargetSchema } from '@foreman-code/contracts/harness-registry'
 import type { z } from 'zod'
 import { useHostHarnessOverridesQuery, useHostHarnessRegistryQuery, useSaveHostHarnessOverride } from '../../shared/api/computerSettings'
 import { sessionGeneration, sessionSignal } from '../../shared/api/sessionBoundary'

@@ -1,5 +1,5 @@
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { SourceMaterializationRecordSchema } from '@graphql/contracts/source-admission'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type pg from 'pg'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions/workflowClosure.js'

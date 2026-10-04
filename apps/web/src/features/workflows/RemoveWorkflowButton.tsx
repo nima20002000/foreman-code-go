@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query'
-import type { WorkflowArchiveInput } from '@graphql/contracts/management'
+import type { WorkflowArchiveInput } from '@foreman-code/contracts/management'
 import type { apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'

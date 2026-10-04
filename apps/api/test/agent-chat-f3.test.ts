@@ -7,10 +7,10 @@ import { afterEach, describe, it } from 'vitest'
 import {
   DEFAULT_CODEX_ADVANCED_CONFIGURATION, type ExecutionResult,
   type HarnessExecution, type NativeHarnessEvent, type NativeSessionReference,
-} from '@graphql/contracts'
-import type { AgentChatContext, AgentChatOrigin, AgentChatTurn } from '@graphql/contracts/agent-chat'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import type { AgentChatContext, AgentChatOrigin, AgentChatTurn } from '@foreman-code/contracts/agent-chat'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'

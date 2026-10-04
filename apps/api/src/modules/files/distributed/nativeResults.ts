@@ -1,7 +1,7 @@
-import { ArtifactAttemptSchema, type ArtifactAttempt } from '@graphql/contracts/artifact-edges'
-import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
+import { ArtifactAttemptSchema, type ArtifactAttempt } from '@foreman-code/contracts/artifact-edges'
+import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, fileStateAt, type AgentFilePublishResult,
-  type MessageAttachmentRef } from '@graphql/contracts/files'
+  type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolContext } from '../tools/types.js'
 import type { TemporaryFileService } from '../service.js'
 import { digest, targetOf } from '../tools/context.js'

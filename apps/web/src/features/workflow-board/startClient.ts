@@ -1,4 +1,4 @@
-import { WorkflowRunV3Schema, RunStartV3InputSchema, RunStartV3ResultSchema, sameWorkflowValue, type RunStartV3Input } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema, RunStartV3InputSchema, RunStartV3ResultSchema, sameWorkflowValue, type RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient } from '../../shared/api/client'
 
 export type BoardStartInput = RunStartV3Input

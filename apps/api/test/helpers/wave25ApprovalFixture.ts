@@ -1,5 +1,5 @@
-import type { AgentConfigurationVersion, HarnessExecution, WorkflowRun } from '@graphql/contracts'
-import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { AgentConfigurationVersion, HarnessExecution, WorkflowRun } from '@foreman-code/contracts'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 /** Synthetic accepted identities only. Never starts a native session. */
 export function approvalFixture() {
@@ -89,7 +89,7 @@ export const routeDenialCases: ReadonlyArray<readonly [string, (version: Workflo
 
 export function deliveryFixture() {
   const createdAt = '2026-09-21T00:00:00.000Z'
-  const interaction: import('@graphql/contracts').DurableInteraction = {
+  const interaction: import('@foreman-code/contracts').DurableInteraction = {
     id: 'interaction-approval', revision: 1, workspaceId: 'workspace-approval', workflowId: 'workflow-approval',
     runId: 'run-approval', executionId: 'execution-agent-worker', requestingAgentId: 'agent-worker',
     harness: 'codex', providerVersion: 'synthetic-test', nativeSessionId: 'session-agent-worker',
@@ -105,7 +105,7 @@ export function deliveryFixture() {
     status: 'decided', deliveryState: 'not_started', selectedOptionId: 'approve-once', selectedSemantic: 'approve_once',
     nativeResponse: { decision: 'accept' }, createdAt, updatedAt: createdAt, decidedAt: createdAt,
   }
-  const session: import('@graphql/contracts').NativeSessionReference = {
+  const session: import('@foreman-code/contracts').NativeSessionReference = {
     harness: interaction.harness, providerVersion: interaction.providerVersion, nativeSessionId: interaction.nativeSessionId,
   }
   const proof: import('../../src/modules/interactions/delivery.js').NativeResponseDeliveryEvidence = {

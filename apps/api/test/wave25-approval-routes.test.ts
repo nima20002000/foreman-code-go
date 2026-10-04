@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../src/modules/workflows/approvalRoutes.js'
-import { ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { validateReviewerBootstrap } from '../src/modules/workflows/reviewerBootstrap.js'
 import { approvalFixture, routeDenialCases } from './helpers/wave25ApprovalFixture.js'
 

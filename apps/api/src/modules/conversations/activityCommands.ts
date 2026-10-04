@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import type { ActivityScope, ActivitySourceRevision, InteractionSummary } from '@graphql/contracts'
-import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema } from '@graphql/contracts/interaction-activity'
+import type { ActivityScope, ActivitySourceRevision, InteractionSummary } from '@foreman-code/contracts'
+import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema } from '@foreman-code/contracts/interaction-activity'
 
 interface Receipt { principal_id: string; operation: string; command_id: string; revision: string; status: string; control: unknown; acknowledgment?: unknown }
 export function projectActivityCommands(conversationId: string, scope: ActivityScope, rows: readonly Receipt[], scopeRevision: string) {

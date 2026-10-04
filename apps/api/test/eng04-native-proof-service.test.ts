@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { StoredRepeatExecution } from '../src/modules/runs/repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'

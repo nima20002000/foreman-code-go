@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
-import type { Message, OperatorActivity } from '@graphql/contracts'
+import type { Message, OperatorActivity } from '@foreman-code/contracts'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'

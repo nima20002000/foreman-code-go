@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   nextOccurrences, ScheduleOccurrenceSchema, scheduleOccurrenceId,
   type ScheduleOccurrence, type WorkflowSchedule,
-} from '@graphql/contracts/schedules'
-import { RunStartV3InputSchema, type RunStartV3Input } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/schedules'
+import { RunStartV3InputSchema, type RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import {

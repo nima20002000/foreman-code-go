@@ -1,4 +1,4 @@
-import { RepeatRunReadInputSchema, RepeatRunReadbackSchema, type RepeatRunReadInput, type RepeatRunReadback } from '@graphql/contracts/wave25'
+import { RepeatRunReadInputSchema, RepeatRunReadbackSchema, type RepeatRunReadInput, type RepeatRunReadback } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../shared/api/client'
 export function createRepeatClient(client: ApiClient = apiClient) {
   return { async run(raw: RepeatRunReadInput, options?: RequestOptions): Promise<RepeatRunReadback> {

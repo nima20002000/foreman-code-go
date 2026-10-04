@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { JobDefinitionSaveSchema, JobDefinitionSpecSchema } from '@graphql/contracts/jobs'
-import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema } from '@graphql/contracts/job-admission'
+import { JobDefinitionSaveSchema, JobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
+import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema } from '@foreman-code/contracts/job-admission'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
-import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@graphql/contracts/job-cancellation-recovery'
+import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@foreman-code/contracts/job-cancellation-recovery'
 interface Scope {
   workspaceId: string; runId: string; nodeExecutionId: string; definitionId: string; versionId: string;
   executionId: string; ticketId: string; fileId: string; revisionId: string; recoveryId: string

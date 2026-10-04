@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { withAdvancedDefaults, type HarnessConfiguration } from '@graphql/contracts'
+import { withAdvancedDefaults, type HarnessConfiguration } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeHarnessFactories, NativeHarnessAllocation, HarnessRuntimeRole } from './runtimeFactory.js'
 import type { ProductionHarnessRegistry } from './productionRegistry.js'

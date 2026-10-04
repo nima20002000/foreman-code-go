@@ -1,6 +1,6 @@
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1, parseWorkHandoffResult,
-  type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+  type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'

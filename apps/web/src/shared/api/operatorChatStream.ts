@@ -1,5 +1,5 @@
 import { OperatorConversationStateSchema, OperatorConversationStreamEventSchema,
-  type OperatorConversationState, type OperatorConversationStreamEvent } from '@graphql/contracts'
+  type OperatorConversationState, type OperatorConversationStreamEvent } from '@foreman-code/contracts'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal } from './sessionBoundary'
 
 export type OperatorChatConnection = 'connecting' | 'connected' | 'reconnecting' | 'unavailable'

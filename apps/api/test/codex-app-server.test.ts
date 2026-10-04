@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'

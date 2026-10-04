@@ -1,9 +1,9 @@
 import {
   AgentFileListInputSchema, AgentFileReadInputSchema, MAX_FILE_BYTES, MAX_FILE_PAGE_SIZE,
   MAX_FILE_READ_BYTES, parseAgentFileReadResult,
-} from '@graphql/contracts/files'
-import { IdSchema } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import { IdSchema } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentReferenceAccess, type AgentReferenceDependencies } from './agentAccess.js'
 import type { AgentReferenceSubject, BoundAgentReferences } from './agentTypes.js'
 

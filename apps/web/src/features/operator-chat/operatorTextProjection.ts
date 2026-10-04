@@ -1,4 +1,4 @@
-import { ActivityChangeEnvelopeV1Schema, type Message } from '@graphql/contracts'
+import { ActivityChangeEnvelopeV1Schema, type Message } from '@foreman-code/contracts'
 
 export const OPERATOR_TEXT_ITEMS = 128
 export const OPERATOR_TEXT_BYTES = 128 * 1024

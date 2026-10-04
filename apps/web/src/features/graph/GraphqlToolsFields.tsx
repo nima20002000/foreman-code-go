@@ -1,7 +1,7 @@
 import {
   GRAPHQL_AGENT_TOOLS, effectiveGraphqlTools, graphqlRoleTools,
   type GraphqlAgentTool, type GraphqlToolOverride,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { Checkbox, SegmentedControl } from '../../shared/ui/nocturne'
 

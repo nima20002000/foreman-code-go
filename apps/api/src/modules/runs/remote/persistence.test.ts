@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
 import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { ReviewStatus } from '@graphql/contracts'
+import type { ReviewStatus } from '@foreman-code/contracts'
 import { reviewStatusPresentation } from './reviewStatusPresentation'
 const now = Date.parse('2026-09-20T12:00:00.000Z')
 const pending = { status: 'pending' as const, deliveryState: 'not_started' as const }

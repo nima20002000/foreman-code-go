@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
-import { HostHarnessOverrideSaveSchema, HostHarnessInstanceCheckInputSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { HostHarnessOverrideSaveSchema, HostHarnessInstanceCheckInputSchema, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessInstanceProfileChecks } from '../src/modules/harnesses/instanceSettings/profileChecks.js'

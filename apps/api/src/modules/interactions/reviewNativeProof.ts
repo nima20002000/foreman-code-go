@@ -1,5 +1,5 @@
-import { HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type ReviewJob } from '@graphql/contracts'
-import { canonicalGraphJson, type NativeGraphObservation } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type ReviewJob } from '@foreman-code/contracts'
+import { canonicalGraphJson, type NativeGraphObservation } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { currentRunGraphPublication, hasRunGraphPublication, graphSourceDigest, type RunGraphPublication } from '../run-graph/publication.js'

@@ -186,12 +186,12 @@ After restoring the pinned workspace normally, start with:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web test -- src/features/conversations/agentChat/SCH10.selectedRunChat.test.tsx src/features/conversations/agentChat/SCH10.selectedRunChatClient.test.ts src/features/conversations/agentChat/SCH10.selectedRunChatModel.test.ts
-corepack pnpm --filter @graphql/web test -- src/features/conversations/agentChat src/features/runs-selector src/features/run-board
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web test -- src/features/conversations/agentChat/SCH10.selectedRunChat.test.tsx src/features/conversations/agentChat/SCH10.selectedRunChatClient.test.ts src/features/conversations/agentChat/SCH10.selectedRunChatModel.test.ts
+corepack pnpm --filter @foreman-code/web test -- src/features/conversations/agentChat src/features/runs-selector src/features/run-board
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```
 
 Also run the repository's required integration/acceptance gates after the mount

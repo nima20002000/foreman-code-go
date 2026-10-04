@@ -4,7 +4,7 @@ import {
   RUN_INSPECTION_LIMITS, RunAcceptedInputValueSchema, RunExecutionDetailSchema,
   RunExecutionBindingsPageSchema, RunExecutionBindingSchema, RunExecutionsPageSchema,
   RunExecutionsListInputSchema, RunInputSourceSchema, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { inspectionExecutionsQuery } from '../src/modules/runs/inspectionPageQuery.js'
 import { decodeExecutionPageCursor, encodeExecutionPageCursor } from '../src/modules/runs/inspectionCursor.js'
 

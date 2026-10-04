@@ -1,6 +1,6 @@
 import { ZodError } from 'zod'
-import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
-import { RepeatOccurrenceV1Schema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
+import { RepeatOccurrenceV1Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readWorkflowClosure, readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'

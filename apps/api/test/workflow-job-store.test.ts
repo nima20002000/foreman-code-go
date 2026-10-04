@@ -1,7 +1,7 @@
 import { describe,expect,it,vi } from 'vitest'
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
-import { makeCurrentWorkflowFixture,WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture,WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { ExclusiveGraphConnection,type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'

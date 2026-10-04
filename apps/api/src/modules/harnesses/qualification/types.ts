@@ -1,4 +1,4 @@
-import type { CompatibilityHarness, HarnessProfileId, HarnessQualificationCheck } from '@graphql/contracts'
+import type { CompatibilityHarness, HarnessProfileId, HarnessQualificationCheck } from '@foreman-code/contracts'
 
 /**
  * The app's own integration tests for a harness binary. A suite runs real

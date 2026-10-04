@@ -1,5 +1,5 @@
-import type { HarnessConfiguration } from '@graphql/contracts'
-import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { HarnessConfiguration } from '@foreman-code/contracts'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 /** These are immutable accepted versions, never a current editable workflow. */
 export type ApprovalRouteVersion = WorkflowVersionV3

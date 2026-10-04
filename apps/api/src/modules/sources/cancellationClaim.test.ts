@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { MaterializationReceiptSchema, type RootBinding } from '@graphql/contracts/source-materialization'
+import { MaterializationReceiptSchema, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { openPrivateRoot, identity } from './privateFilesystem.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim,

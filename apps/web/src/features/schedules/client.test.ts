@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { ScheduleSaveInput } from '@graphql/contracts/schedules'
+import type { ScheduleSaveInput } from '@foreman-code/contracts/schedules'
 import { server } from '../../mocks/server'
 import { scheduleApi, schedulePath } from './client'
 

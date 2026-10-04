@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager, type OpenCodeServerController } from '../src/modules/harnesses/opencodeServer.js'
 import { childEnvironmentFingerprint } from '../src/modules/harnesses/opencodeTransport.js'

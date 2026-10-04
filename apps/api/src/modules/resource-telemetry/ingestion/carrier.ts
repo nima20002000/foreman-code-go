@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import {
   CollectionChallengeSchema, RESOURCE_TELEMETRY_CAPABILITY, TELEMETRY_LIMITS, telemetryCanonical,
   type ResourceCollector, type TelemetryIdentity, type TrustedTelemetryContext,
-} from '@graphql/contracts/resource-telemetry'
+} from '@foreman-code/contracts/resource-telemetry'
 import type { DeviceExtensionRegistration, DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
 import { resourceTelemetryExtension } from './ports.js'
 import { ResourceTelemetryService, TelemetryRejected } from './service.js'

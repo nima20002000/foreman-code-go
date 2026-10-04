@@ -1,12 +1,12 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   CurrentEditDraftSchema, CurrentEditIntentSchema, CurrentEditReadResultSchema, CurrentEditStageInputSchema,
   CurrentEditSaveInputSchema, CurrentWorkflowSavedSchema, WorkflowVersionV3Schema,
   sameExecutableWorkflow, sameWorkflowValue,
   type CurrentEditIntent, type CurrentEditStageInput, type CurrentEditDraft,
   type CurrentEditSaveInput, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { requireCurrentWorkflowAccess } from '../workflows/currentWorkflowPolicy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

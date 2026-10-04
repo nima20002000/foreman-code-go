@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
-import { HarnessExecutionSchema, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type DurableInteraction, type HarnessExecution } from '@foreman-code/contracts'
 import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, RepeatOccurrenceV1Schema,
-  CurrentRunVersionSnapshotSchema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+  CurrentRunVersionSnapshotSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity, repeatSlotId,
   type RepeatNodeRef, type RepeatScope } from '../runs/repeatResolution.js'

@@ -1,4 +1,4 @@
-import { AgentSchema, type Agent } from '@graphql/contracts'
+import { AgentSchema, type Agent } from '@foreman-code/contracts'
 
 function localAgentsKey(workspaceId: string) {
   return `graphql-local-agents:${workspaceId}`

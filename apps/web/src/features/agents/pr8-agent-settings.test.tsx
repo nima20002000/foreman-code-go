@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@graphql/contracts'
+import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@foreman-code/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

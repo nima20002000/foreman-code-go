@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { AgentEffortSchema, withAdvancedDefaults, type HarnessConfiguration } from '@graphql/contracts'
+import { AgentEffortSchema, withAdvancedDefaults, type HarnessConfiguration } from '@foreman-code/contracts'
 import { Select, Switch, Textarea, TextField } from '../../shared/ui/nocturne'
 import { HarnessSectionFields } from './HarnessSectionFields'
 import { HarnessTokenList } from './HarnessTokenList'

@@ -1,4 +1,4 @@
-import { RuntimeIdentitySchema } from '@graphql/contracts'
+import { RuntimeIdentitySchema } from '@foreman-code/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'

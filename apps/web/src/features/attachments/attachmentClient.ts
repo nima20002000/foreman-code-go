@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { ApiErrorResponseSchema } from '@graphql/contracts'
+import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import {
   FileWithRevisionSchema, TemporaryFileScopeSchema, fileStateAt,
   type FileMediaType, type FileWithRevision, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
 import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'

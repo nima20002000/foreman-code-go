@@ -1,4 +1,4 @@
-import { AgentChatStateSchema, AgentChatStreamEventSchema, type AgentChatState, type AgentChatStreamEvent } from '@graphql/contracts/agent-chat'
+import { AgentChatStateSchema, AgentChatStreamEventSchema, type AgentChatState, type AgentChatStreamEvent } from '@foreman-code/contracts/agent-chat'
 import { agentChatConversationPath } from './agentChat'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal } from './sessionBoundary'
 

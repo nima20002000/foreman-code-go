@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { RunSubagentsListInputSchema, RunSubagentGetInputSchema, RunSubagentItemsInputSchema, RunSubagentInputSchema, RunSubagentInterruptSchema,
-  RunSubagentsPageSchema, RunSubagentDetailSchema, RunSubagentMessagesPageSchema, RunSubagentToolsPageSchema, RunSubagentCommandReceiptSchema } from '@graphql/contracts/subagents'
+  RunSubagentsPageSchema, RunSubagentDetailSchema, RunSubagentMessagesPageSchema, RunSubagentToolsPageSchema, RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'

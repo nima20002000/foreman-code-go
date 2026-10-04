@@ -1,4 +1,4 @@
-import type { RunDropdownPage, RunDropdownStatus, RunDropdownSummary } from '@graphql/contracts/run-snapshots'
+import type { RunDropdownPage, RunDropdownStatus, RunDropdownSummary } from '@foreman-code/contracts/run-snapshots'
 
 export const RUNS_PAGE_SIZE = 25
 export const RUNS_MAX_PAGES = 10

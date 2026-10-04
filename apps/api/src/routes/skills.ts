@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import {
   SkillArchiveInputSchema, SkillCreateInputSchema, SkillGetInputSchema, SkillGetResultSchema, SkillListInputSchema,
   SkillMutationResultSchema, SkillPageSchema, SkillUpdateInputSchema, SkillVersionListInputSchema, SkillVersionPageSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { SkillCatalogService } from '../modules/skills/catalog.js'
 import { DomainError } from '../modules/errors.js'

@@ -7,8 +7,8 @@ import { PrivateSourceMaterializer } from '../../sources/materialization.js'
 import { verifyPrivateSourceRepository, preparePrivateJobRepositoryMounts } from '../../sources/repository.js'
 import { verifyMaterializedWorkingDirectory } from '../../sources/workingDirectory.js'
 import { verifyApprovedRootAllowlist } from '../../sources/rootAttestation.js'
-import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 
 /** Main metadata and physical verification remain distinct. No source is created. */
 export function createInstalledJobSource(input: { journal: RemoteOperationJournal; application: WorkerJobApplicationSink;

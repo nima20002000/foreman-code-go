@@ -1,8 +1,8 @@
-import { AgentConfigurationVersionSchema, type HarnessExecution } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema,
   CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
 

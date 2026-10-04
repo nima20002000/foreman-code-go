@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ExecutableWorkflowV3Schema, parseRepeatExitResultV1 } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, parseRepeatExitResultV1 } from '@foreman-code/contracts/wave25'
 import { scenarioFixture, scenarioIds } from './helpers/eng07BScenarios.js'
 
 describe('ENG07-B S3 scenario fixture integrity (no PostgreSQL required)', () => {

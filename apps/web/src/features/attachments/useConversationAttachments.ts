@@ -4,7 +4,7 @@ import { useStore } from 'zustand'
 import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
   type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { AttachmentDraftContext } from './attachmentContext'
 import { attachmentDraftKey } from './attachmentFiles'
 import type { AttachmentProgressMap, AttachmentSelection, AttachmentSendSnapshot, UploadVariables } from './attachmentDrafts'

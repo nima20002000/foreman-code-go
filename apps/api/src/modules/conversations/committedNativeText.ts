@@ -1,10 +1,10 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
-import type { ActivityTextIdentity, ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
+import type { ActivityTextIdentity, ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { normalizeNativeTextOperations } from './nativeTextStream.js'
 import { nativeActivityFence } from './nativeActivityFence.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 
 /** Canonical message writes precede presentation coalescing; each source operation keeps its provenance. */
 export function committedNativeText(input: {

@@ -5,10 +5,10 @@ import {
   type DurableInteraction,
   type InteractionRecoveryQuery,
   type NativeHarnessEvent,
-} from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
-import type { ManagementScope } from '@graphql/contracts/management'
+import type { ManagementScope } from '@foreman-code/contracts/management'
 
 import { DomainError } from '../errors.js'
 import { requireRespondableInteraction } from '../access/appPolicy.js'

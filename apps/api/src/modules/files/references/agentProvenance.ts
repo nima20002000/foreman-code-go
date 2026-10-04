@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { RunFileProvenanceSchema, type AgentFileReadInput } from '@graphql/contracts/files'
+import { RunFileProvenanceSchema, type AgentFileReadInput } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
 import type { AgentReferenceContext, ReferenceReadRepository } from './agentTypes.js'

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import { operatorActivity } from '../src/modules/conversations/operatorActivity.js'
 import { nativeActivityFence } from '../src/modules/conversations/nativeActivityFence.js'
 import { normalizeNativeTextOperations } from '../src/modules/conversations/nativeTextStream.js'

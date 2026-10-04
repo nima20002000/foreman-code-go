@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { type HarnessDefaults, type AgentHarness, type ClaudeHarnessConfiguration, ClaudeHarnessConfigurationSchema, HarnessDefaultsSchema } from '@graphql/contracts'
-import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@graphql/contracts/management'
+import { type HarnessDefaults, type AgentHarness, type ClaudeHarnessConfiguration, ClaudeHarnessConfigurationSchema, HarnessDefaultsSchema } from '@foreman-code/contracts'
+import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { Button, Checkbox, ErrorState, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'

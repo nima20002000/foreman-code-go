@@ -1,4 +1,4 @@
-import type { ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
@@ -15,21 +15,21 @@ import type { z } from 'zod'
 
 import {
   ExecutionLocationSchema, NativeSessionReferenceSchema, type AgentConfigurationVersion, type HarnessExecution, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   AgentChatStateSchema, AgentChatStreamEventSchema, SendAgentChatMessageRequestSchema, AgentChatReadbackQuerySchema,
   InterruptAgentChatRequestSchema, CancelQueuedAgentChatTurnRequestSchema, RespondAgentChatInteractionRequestSchema,
   type AgentChatBlockedReason, type AgentChatCapabilities, type AgentChatContext, type AgentChatOrigin, type AgentChatQuery,
   type AgentChatSessionState, type AgentChatState, type AgentChatStreamEvent, type AgentChatTurn, type SendAgentChatMessageRequest,
-} from '@graphql/contracts/agent-chat'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
-import { RepeatOccurrenceIdentityV1Schema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/agent-chat'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
+import { RepeatOccurrenceIdentityV1Schema } from '@foreman-code/contracts/wave25'
 
-import { SelectedRunChatKeySchema } from '@graphql/contracts/run-snapshots'
+import { SelectedRunChatKeySchema } from '@foreman-code/contracts/run-snapshots'
 import {
   ReadSelectedRunChatRequestSchema, ReadSelectedRunChatResponseSchema, SendSelectedRunChatRequestSchema,
   InterruptSelectedRunChatRequestSchema, type ReadSelectedRunChatResponse,
-} from '@graphql/contracts/selected-run-chat'
+} from '@foreman-code/contracts/selected-run-chat'
 import {
   assertRunChatConversation, findRunChatConversation, resolveRunChatSelection, runChatStorageKey,
   staleRunChat, withRunChatAuthority, type RunChatAuthorityCheck,
@@ -52,7 +52,7 @@ import type { PostgresOperatorConversationRepository } from './operatorChatRepos
 import { completedNativeAssistantMessage } from './operatorText.js'
 import { nativeActivityFence } from './nativeActivityFence.js'
 import { createNativeTextStream } from './nativeTextStream.js'
-import type { ActivityScope } from '@graphql/contracts/activity'
+import type { ActivityScope } from '@foreman-code/contracts/activity'
 import {
   agentChatCorrelation, agentChatKey, agentConversation, type AgentConversationRow, type AgentChatInterruptTarget, type NewAgentConversation, PostgresAgentChatRepository,
 } from './agentChatRepository.js'

@@ -1,7 +1,7 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
-import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, type RepeatBlockV1 } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, type RepeatBlockV1 } from '@foreman-code/contracts/wave25'
 
 export const unsupportedReviewerScopes = ['reviewer-in-block/requester-outside', 'different-blocks'] as const
 export const supportedReviewerScopes = ['ordinary', 'same-block', 'reviewer-outside/requester-in-block', 'native-self-review-outside'] as const

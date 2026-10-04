@@ -5,7 +5,7 @@ import {
   InteractionListInputSchema,
   ManagedInteractionPageSchema,
   ManagedInteractionSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'

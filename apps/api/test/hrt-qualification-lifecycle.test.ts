@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import type { QualificationSuiteInput } from '../src/modules/harnesses/qualification/types.js'
 
 vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof import('node:fs/promises')>(), mkdtemp: vi.fn(async () => '/qualification-owned'), rm: vi.fn(async () => undefined) }))
@@ -17,7 +17,7 @@ function gate<T = void>() {
 
 function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationService>[6] = async () => 'schema') {
   const inspectBinary = vi.fn(async () => ({ binary: '/fixture/codex', sha256: 'a'.repeat(64) }))
-  const save = vi.fn(async (qualification: import('@graphql/contracts/harness-qualification').HarnessQualification, evidence?: Record<string, unknown>): Promise<void> => { void qualification; void evidence })
+  const save = vi.fn(async (qualification: import('@foreman-code/contracts/harness-qualification').HarnessQualification, evidence?: Record<string, unknown>): Promise<void> => { void qualification; void evidence })
   const run = vi.fn(async (input: QualificationSuiteInput) => { void input; return { checks: [{ id: 'live', passed: true, detail: null }], evidence: {} } })
   const audit = vi.fn(async (): Promise<void> => undefined)
   const settings = vi.fn(async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }))

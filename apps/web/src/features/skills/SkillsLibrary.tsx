@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
-import type { SkillSummary } from '@graphql/contracts/management'
+import type { SkillSummary } from '@foreman-code/contracts/management'
 import { useWorkspaceNames } from './workspaceNames'
 import { LoadMore } from '../../shared/ui/LoadMore'
 import { Badge, Button, EmptyState, ErrorState, Icon, LoadingState, SearchField, Select, Switch } from '../../shared/ui/nocturne'

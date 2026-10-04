@@ -10,7 +10,7 @@ import type { ExecutionLocation, RunExecutionLocation } from '../src/index.js'
 const execute = promisify(execFile)
 const packageRoot = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
-const specifiers = Object.keys(manifest.exports).map(path => path === '.' ? '@graphql/contracts' : `@graphql/contracts/${path.slice(2)}`)
+const specifiers = Object.keys(manifest.exports).map(path => path === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${path.slice(2)}`)
 let fixture: string
 beforeAll(async () => {
   const cache = join(packageRoot, 'node_modules', '.cache')
@@ -27,7 +27,7 @@ describe('fresh compiled contracts in native Node ESM', () => {
     expectTypeOf<RunExecutionLocation>().toEqualTypeOf<{ runnerId: string; rootPath: string; locationRevision: number; identityHash: string }>()
   })
   it.each(specifiers)('loads %s as the first import', async (specifier) => {
-    const path = specifier === '@graphql/contracts' ? '.' : `./${specifier.slice('@graphql/contracts/'.length)}`
+    const path = specifier === '@foreman-code/contracts' ? '.' : `./${specifier.slice('@foreman-code/contracts/'.length)}`
     await stat(join(fixture, manifest.exports[path].import))
     await stat(join(fixture, manifest.exports[path].types))
     await execute(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(specifier)})`], { cwd: fixture })
@@ -35,8 +35,8 @@ describe('fresh compiled contracts in native Node ESM', () => {
   it('shares the unchanged location schema through root exports and bound readback', async () => {
     await execute(process.execPath, ['--input-type=module', '--eval', `
       import assert from 'node:assert/strict';
-      const root = await import('@graphql/contracts');
-      const bound = await import('@graphql/contracts/workspace-bound-location');
+      const root = await import('@foreman-code/contracts');
+      const bound = await import('@foreman-code/contracts/workspace-bound-location');
       assert.equal(bound.WorkspaceBoundLocationReadbackSchema.options[0].shape.executionLocation, root.ExecutionLocationSchema);
       assert.equal(bound.WorkspaceBoundLocationReadbackSchema.options[1].shape.executionLocation, root.ExecutionLocationSchema);
       assert.deepEqual(bound.WorkspaceBoundLocationReadbackSchema.parse({ evidence: 'legacy_missing', workspaceId: 'workspace',

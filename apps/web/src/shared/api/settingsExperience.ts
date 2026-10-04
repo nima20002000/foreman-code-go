@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ManagedWorkspaceDefaultsSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema,
-  BrowserAccessSessionSchema, type WorkspaceDefaultsUpdateInput } from '@graphql/contracts/management'
+  BrowserAccessSessionSchema, type WorkspaceDefaultsUpdateInput } from '@foreman-code/contracts/management'
 import { apiClient } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'

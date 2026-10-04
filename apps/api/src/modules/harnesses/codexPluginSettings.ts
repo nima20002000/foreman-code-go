@@ -6,7 +6,7 @@ import {
   CodexPluginOperationsResultSchema, CodexPluginReconcileInputSchema,
   type CodexPluginChangeInput, type CodexPluginChangeResult, type CodexPluginListInput,
   type CodexPluginReconcileInput, type ManagementPrincipal,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

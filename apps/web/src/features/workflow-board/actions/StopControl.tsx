@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { reserveBoardStop, sendBoardStop, recordBoardStopReceipt, settleBoardStop, useBoardStopOutbox } from '../stopOutbox'
 import { runActionsClient } from './client'
 import { useActionLifetime } from './state'

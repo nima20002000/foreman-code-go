@@ -13,7 +13,7 @@ import { productionOpenCodeChatFiles } from '../opencodeFiles/production.js'
 import type { NativeHarnessSessionManager } from '../port.js'
 import type { NativeProcessRegistry } from '../recovery/processRegistry.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
-import type { OperatorConfigurationVersion } from '@graphql/contracts'
+import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 import type { NativeResponseJournal } from '../recovery/responseJournal.js'
 import { operatorCodexFileAdmissions } from './codex.js'
 import { adoptOperatorFilePublications, operatorTurnHasFileInputs, recordOperatorFileSubmission,

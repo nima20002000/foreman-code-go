@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { WorkspaceRootListInputSchema, WorkspaceRootListResultSchema } from '@graphql/contracts/workspace-root-policies'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { WorkspaceRootListInputSchema, WorkspaceRootListResultSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationValidateInputSchema, WorkspaceBoundLocationBrowseInputSchema,
   WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema,
-  WorkspaceBoundLocationReadbackSchema, WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
-import { WorkspaceRootConfigurationAdoptSchema, WorkspaceRootConfigurationAdoptResultSchema } from '@graphql/contracts/workspace-bound-location'
+  WorkspaceBoundLocationReadbackSchema, WorkspaceBoundLocationSetResultSchema } from '@foreman-code/contracts/workspace-bound-location'
+import { WorkspaceRootConfigurationAdoptSchema, WorkspaceRootConfigurationAdoptResultSchema } from '@foreman-code/contracts/workspace-bound-location'
 import { requirePrincipal } from '../access/http.js'
 import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'

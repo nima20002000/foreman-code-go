@@ -8,8 +8,8 @@ import {
   type ManagementPrincipal,
   type ManagedWorkspace,
   type WorkspaceCreateInput,
-} from '@graphql/contracts/management'
-import { WorkspaceSchema } from '@graphql/contracts'
+} from '@foreman-code/contracts/management'
+import { WorkspaceSchema } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'

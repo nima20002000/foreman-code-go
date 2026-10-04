@@ -1,4 +1,4 @@
-import type { AgentChatContext } from '@graphql/contracts/agent-chat'
+import type { AgentChatContext } from '@foreman-code/contracts/agent-chat'
 import { EmptyState, Spinner } from '../../shared/ui/nocturne'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'

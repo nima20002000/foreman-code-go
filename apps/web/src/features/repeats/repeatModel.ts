@@ -7,7 +7,7 @@ import {
   type RepeatBlockV1,
   type RepeatPlanV1,
   type WorkflowDefinitionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 export type RepeatLocalBlockDraft = {
   id: string

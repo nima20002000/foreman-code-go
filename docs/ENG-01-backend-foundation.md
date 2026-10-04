@@ -64,5 +64,5 @@ corepack pnpm db:down
 ```
 
 The normal `corepack pnpm typecheck`, `corepack pnpm lint`, `corepack pnpm test`, and `corepack pnpm build` root
-commands include `@graphql/api`. The integration test stays separate so the
+commands include `@foreman-code/api`. The integration test stays separate so the
 ordinary unit suite does not silently require local infrastructure.

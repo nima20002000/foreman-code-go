@@ -1,4 +1,4 @@
-import { parseWorkHandoffResult, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { parseWorkHandoffResult, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import type { RepeatExecutionDriver } from './repeatNode.js'
 import { ExecutionLimiter } from './limiter.js'

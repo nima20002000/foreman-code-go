@@ -1,4 +1,4 @@
-import type { JobExecution, PreparedJobSpec } from '@graphql/contracts/jobs'
+import type { JobExecution, PreparedJobSpec } from '@foreman-code/contracts/jobs'
 import type { RepeatNodeRef, RepeatResolution } from '../runs/repeatResolution.js'
 import type { RepeatGraphState } from '../runs/repeatNode.js'
 import { repeatConflict } from '../runs/repeatResolution.js'

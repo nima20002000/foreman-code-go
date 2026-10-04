@@ -2,9 +2,9 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { registerAppRoute } from '../../harnesses/appMcpLauncher.js'
 import type { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
-import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
-import { TransferIntentSchema } from '@graphql/contracts/byte-transfer'
-import { WorkerMcpRelayResponseSchema } from '@graphql/contracts/worker-mcp-relay'
+import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
+import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
+import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
 
 const PublicationCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),

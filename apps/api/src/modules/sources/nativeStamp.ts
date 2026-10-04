@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { VerifiedSourceWorkingTreeSchema, type SourceMaterializationRecord, type VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
+import { VerifiedSourceWorkingTreeSchema, type SourceMaterializationRecord, type VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
 import { sourceMaterializationDigest } from './bindingHash.js'
 import { sourceSha256 } from './manifest.js'
 import { DomainError } from '../errors.js'

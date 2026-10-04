@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { JobRuntimeProfileSaveSchema, JobRuntimeQualificationCommandSchema } from '@graphql/contracts/job-runtime'
+import { JobRuntimeProfileSaveSchema, JobRuntimeQualificationCommandSchema } from '@foreman-code/contracts/job-runtime'
 import { z } from 'zod'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { JobRuntimeProfiles } from '../modules/jobs/runtimeProfiles.js'

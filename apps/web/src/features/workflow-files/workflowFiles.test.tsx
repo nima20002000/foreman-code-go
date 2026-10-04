@@ -7,7 +7,7 @@ import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   FileWithRevisionSchema, type FileMediaType, type FileWithRevision, type PermanentFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { server } from '../../mocks/server'
 import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { WorkflowFilesButton } from './WorkflowFilesButton'

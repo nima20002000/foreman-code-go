@@ -1,7 +1,7 @@
 import {
   AcceptedRepeatStartV1Schema, canonicalGraphJson, RepeatGraphScopeV3Schema,
   type RepeatGraphScopeV3, type AcceptedRepeatStartV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { RepeatStartPublication } from '../runs/repeatStartAdmission.js'
 import { assertGraphTransaction, poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { openRunGraphPublication, type RunGraphPublication } from './publication.js'

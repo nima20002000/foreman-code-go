@@ -1,5 +1,5 @@
 import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement, type AuthoringIssue } from './model'
 import type { DraftFailure, DraftRequest, NextDraftEdit } from './state'
 import type { NextDraftApi } from './transport'

@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
 
-import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@graphql/contracts/wave25'
+import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@foreman-code/contracts/wave25'
 import { CurrentWorkflowAuthoring } from './currentAuthoring.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
-  type SavedManagedWorkflow as ManagedWorkflow } from '@graphql/contracts/wave25'
+  type SavedManagedWorkflow as ManagedWorkflow } from '@foreman-code/contracts/wave25'
 import {
   WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, type ManagementPrincipal,
   WorkflowBatchArchiveInputSchema, type WorkflowBatchArchiveInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
 import { hasAction, requireAuthorization } from '../access/policy.js'

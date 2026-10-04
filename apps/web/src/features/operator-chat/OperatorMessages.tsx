@@ -1,5 +1,5 @@
-import type { Message, OperatorActivity } from '@graphql/contracts'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import type { Message, OperatorActivity } from '@foreman-code/contracts'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { ChatMessageFiles } from '../conversations/ChatMessageFiles'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'

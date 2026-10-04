@@ -1,9 +1,9 @@
-import { ExecutionResultSchema, HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
+import { ExecutionResultSchema, HarnessNativeEventSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
 import {
   canonicalGraphJson, graphJsonBytes, parseNativeGraphObservation, sameGraphScope,
   assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
   type NativeGraphProjectionKey,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { poisonGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, type CurrentNativeActivity } from './currentActivity.js'
 import { publicNodeProjectionDelta, readPublicNodeProjection } from './publicProjection.js'

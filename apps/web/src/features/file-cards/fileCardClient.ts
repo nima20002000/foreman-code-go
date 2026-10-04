@@ -1,5 +1,5 @@
-import { ApiErrorResponseSchema } from '@graphql/contracts'
-import { FileWithRevisionSchema, MAX_FILE_BYTES, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { ApiErrorResponseSchema } from '@foreman-code/contracts'
+import { FileWithRevisionSchema, MAX_FILE_BYTES, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { ApiError } from '../../shared/api/client'
 import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { DEFAULT_MANAGEMENT_ACTIONS, type ManagementPrincipal } from '@graphql/contracts/management'
+import { DEFAULT_MANAGEMENT_ACTIONS, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FastifyRequest } from 'fastify'
 import type pg from 'pg'
 

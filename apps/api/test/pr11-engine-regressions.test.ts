@@ -3,8 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { AgentConfigurationVersion, ExecutionResult, HarnessExecution, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
-import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
+import type { AgentConfigurationVersion, ExecutionResult, HarnessExecution, NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, it, vi } from 'vitest'
 

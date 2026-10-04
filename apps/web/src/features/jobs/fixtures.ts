@@ -1,6 +1,6 @@
-import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, JobLogPage } from '@graphql/contracts/jobs'
-import { JobDefinitionSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
-import { JobQueueTicketSchema } from '@graphql/contracts/job-admission'
+import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, JobLogPage } from '@foreman-code/contracts/jobs'
+import { JobDefinitionSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
+import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 const digest = 'a'.repeat(64)
 const uuid = '11111111-1111-4111-8111-111111111111'
 export const definition: JobDefinition & { spec: ResolvedJobDefinitionSpec } = {

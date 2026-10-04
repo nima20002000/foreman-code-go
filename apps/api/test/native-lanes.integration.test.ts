@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { NativeSessionLaneSchema } from '@graphql/contracts'
+import { NativeSessionLaneSchema } from '@foreman-code/contracts'
 
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'

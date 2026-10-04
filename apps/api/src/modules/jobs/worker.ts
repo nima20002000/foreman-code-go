@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { JobLogChunkSchema, JobProcessStateSchema, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
+import { JobLogChunkSchema, JobProcessStateSchema, type JobExecution, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import { DomainError } from '../errors.js'
 import { JobRepository, sameLog, type JobSql } from './repository.js'
 

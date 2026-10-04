@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { pendingOperatorSetupTarget } from './operatorSetupTarget'
-import type { SendOperatorMessageRequest } from '@graphql/contracts'
+import type { SendOperatorMessageRequest } from '@foreman-code/contracts'
 
 it.each(['codex', 'opencode'] as const)('checks the original %s pending command, never the other shared harness', (harness) => {
   const settings = harness === 'codex' ? { harness, model: 'saved', reasoningEffort: 'medium', serviceTier: 'standard', showThinking: false }

@@ -1,10 +1,10 @@
-import { NativeExecutionPlacementSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@graphql/contracts/node-placement'
-import type { SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { NativeExecutionPlacementSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
+import type { SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { posix } from 'node:path'
 import { DomainError } from '../errors.js'
 import { placementDigest, readPlacement } from './binding.js'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 function sourceMaterializationDigest(record: SourceMaterializationRecord): string {
   return commandInputHash({ receipt: record.receipt, sourceBindingHash: record.sourceBindingHash,
     rootPolicyId: record.rootPolicyId, rootPolicyRevision: record.rootPolicyRevision,

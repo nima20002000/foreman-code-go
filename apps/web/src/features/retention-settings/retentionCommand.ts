@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { z } from 'zod'
-import { FileRetentionSaveInputSchema } from '@graphql/contracts/files'
+import { FileRetentionSaveInputSchema } from '@foreman-code/contracts/files'
 import { ApiError } from '../../shared/api/client'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { retentionSeconds } from './retentionDraft'

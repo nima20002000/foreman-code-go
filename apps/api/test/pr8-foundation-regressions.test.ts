@@ -8,7 +8,7 @@ import {
   OperatorConfigurationVersionSchema,
   projectHarnessEffort,
   type AgentHarness,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +17,7 @@ import { inTransaction } from '../src/infrastructure/transaction.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
-import { ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { configurationInput } from '../src/modules/workspaces/agentConfiguration.js'
 import { DeterministicNativeSessionManager } from '../src/testing/deterministicNativeSession.js'
 

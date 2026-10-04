@@ -1,5 +1,5 @@
-import type { JobExecution } from '@graphql/contracts/jobs'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

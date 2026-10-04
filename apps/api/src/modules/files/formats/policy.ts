@@ -1,4 +1,4 @@
-import { MAX_FILE_BYTES, MAX_FILE_READ_BYTES } from "@graphql/contracts/files";
+import { MAX_FILE_BYTES, MAX_FILE_READ_BYTES } from "@foreman-code/contracts/files";
 import type { DocumentFormat, DocumentText, FailureStatus, FormatFailure, TextSection } from "./types.js";
 
 export const FORMAT_LIMITS = Object.freeze({

@@ -1,6 +1,6 @@
-import type { AgentConfigurationVersion } from '@graphql/contracts'
+import type { AgentConfigurationVersion } from '@foreman-code/contracts'
 import type pg from 'pg'
-import type { SavedWorkflowDefinition, SavedWorkflowVersion } from '@graphql/contracts/wave25'
+import type { SavedWorkflowDefinition, SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import type { WorkflowRepository } from './port.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration, readSavedWorkflowDefinition, IMMUTABLE_WORKFLOW_VERSION_COLUMNS,

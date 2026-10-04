@@ -1,4 +1,4 @@
-import type { HarnessOptions } from '@graphql/contracts/management'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 
 function object(value: unknown): Record<string, unknown> {

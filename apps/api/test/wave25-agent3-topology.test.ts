@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { NodeResolution, WorkflowRelationship, WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { NodeResolution, WorkflowRelationship, WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { compileExecutionTopology, decideExecutionAdmission, selectedTerminalResolutions } from '../src/modules/runs/topology.js'
 
 function version(ids: string[], edges: WorkflowRelationship[], entry = ids[0]!): WorkflowVersionV3 {

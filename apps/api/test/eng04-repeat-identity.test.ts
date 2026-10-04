@@ -3,7 +3,7 @@ import {
   RepeatOccurrenceV1Schema,
   validateRepeatDecisionV1,
   validateRepeatSuccessorV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import {
   exitDecision,

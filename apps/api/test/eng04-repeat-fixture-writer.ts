@@ -1,11 +1,11 @@
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
+import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, WorkflowVersionV3Schema,
   type RepeatGraphScopeV3, type CurrentWorkflowSaveInput, type CurrentWorkflowSavedSchema, type makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

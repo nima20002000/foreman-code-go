@@ -3,7 +3,7 @@ import {
   SkillArchiveInputSchema, SkillCreateInputSchema, SkillGetResultSchema, SkillMutationResultSchema, SkillPageSchema,
   SkillUpdateInputSchema, SkillVersionPageSchema,
   type SkillArchiveInput, type SkillCreateInput, type SkillMutationResult, type SkillUpdateInput, type SkillSummary,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { apiClient } from '../../shared/api/client'
 import { collectManagementPages, managementPageUrl } from '../../shared/api/managementPaging'
 

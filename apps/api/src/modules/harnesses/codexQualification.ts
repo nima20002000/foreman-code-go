@@ -1,4 +1,4 @@
-import type { CodexHarnessConfiguration } from '@graphql/contracts'
+import type { CodexHarnessConfiguration } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import { isObject, object, type JsonObject } from './codexStdioTransport.js'

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InteractionSummary, OperatorConversationState } from '@graphql/contracts'
+import type { InteractionSummary, OperatorConversationState } from '@foreman-code/contracts'
 import { getOperatorConversation, respondOperatorInteraction, sendOperatorMessage } from '../../shared/api/client'
 import { listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
 import { OperatorChat } from './OperatorChat'

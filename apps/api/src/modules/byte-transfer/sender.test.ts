@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import type { ByteTransferPort, TransferContext, TransferIntent, TransferProgress, VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
+import type { ByteTransferPort, TransferContext, TransferIntent, TransferProgress, VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferSender } from './sender.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 it('resumes the same immutable intent after lost chunk/final ACK and keeps reads bounded', async () => {

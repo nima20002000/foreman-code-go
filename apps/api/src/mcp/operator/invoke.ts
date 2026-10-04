@@ -1,7 +1,7 @@
 import type { FileReferenceToolName } from './tools/fileReferences.js'
 import type { RunHistoryToolName } from './tools/runHistory.js'
-import type { RunInspectionToolName } from '@graphql/contracts/wave25'
-import type { OperatorToolName } from '@graphql/contracts/management'
+import type { RunInspectionToolName } from '@foreman-code/contracts/wave25'
+import type { OperatorToolName } from '@foreman-code/contracts/management'
 import type { WorkflowScheduleToolName } from './tools/workflowSchedules.js'
 
 import { DomainError } from '../../modules/errors.js'

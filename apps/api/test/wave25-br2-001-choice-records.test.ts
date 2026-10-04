@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction } from '../src/modules/run-graph/connection.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { readRepeatAcceptedResultLocked } from '../src/modules/runs/repeatPostgres.js'

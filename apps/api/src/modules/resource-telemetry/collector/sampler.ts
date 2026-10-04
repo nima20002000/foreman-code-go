@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { TELEMETRY_LIMITS, telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity } from '@graphql/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
 import { cpuWindow, type CpuBaseline } from './cpu.js'
 import { disjointAccounting } from './linuxCgroup.js'
 import { counter as parseCounter, parseHostCpu, parseHostMemory, parseOnlineCpus, safeBytes, sourceFailure, type HostConstants } from './linuxProcfs.js'

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  ExecutableWorkflowV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+  ExecutableWorkflowV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { reviewerScopeFixture, supportedReviewerScopes, unsupportedReviewerScopes,

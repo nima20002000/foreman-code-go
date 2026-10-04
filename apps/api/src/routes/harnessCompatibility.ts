@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import {
   HarnessCompatibilityListSchema, HarnessCompatibilitySchema,
   HarnessCompatibilityRetryBodySchema, HarnessCompatibilityRetryParamsSchema,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { requirePrincipal } from '../modules/access/http.js'
 import { isAuthorized, requireAuthorization } from '../modules/access/policy.js'
 import type { HarnessCompatibilityService } from '../modules/harnesses/compatibility/service.js'

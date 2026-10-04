@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { JobDefinitionSchema } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema } from '@foreman-code/contracts/jobs'
 import { expect, it } from 'vitest'
 
 import { buildApp } from '../src/app.js'

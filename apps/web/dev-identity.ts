@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { checkoutIdentity } from '@graphql/contracts/runtime-identity-node'
+import { checkoutIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import type { Plugin } from 'vite'
 
 export function devIdentity(apiUrl: string): Plugin {

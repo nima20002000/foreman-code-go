@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
-import type { CodexPluginDetailResult, CodexPluginSummary } from '@graphql/contracts/management'
+import type { CodexPluginDetailResult, CodexPluginSummary } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 import { assertCodexUnchanged, qualifyCodex } from './codexProtocol.js'
 import { runCommand } from './process.js'

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef } from 'react'
 import { useStore } from 'zustand'
 import { Download, Files } from 'lucide-react'
-import type { FileWithRevision, PermanentFileScope } from '@graphql/contracts/files'
+import type { FileWithRevision, PermanentFileScope } from '@foreman-code/contracts/files'
 import { Button, IconButton } from '../../shared/ui/nocturne/Button'
 import { Dialog, Tooltip } from '../../shared/ui/nocturne/Overlays'
 import { Icon } from '../../shared/ui/nocturne/Icon'

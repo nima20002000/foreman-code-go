@@ -1,16 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { HarnessQualificationListSchema, HarnessQualificationRunParamsSchema, HarnessQualificationSchema } from '@graphql/contracts/harness-qualification'
+import { HarnessQualificationListSchema, HarnessQualificationRunParamsSchema, HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 
 import {
   ExecutionReadinessInputSchema, ExecutionReadinessSchema,
   HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateInputSchema,
   HarnessDefaultsUpdateResultSchema, HarnessGetInputSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
-import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
+import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function registerHarnessTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'claude_setup_options_get')) server.registerTool('claude_setup_options_get', {

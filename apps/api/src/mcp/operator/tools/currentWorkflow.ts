@@ -5,7 +5,7 @@ import {
   CurrentWorkflowReadResultSchema, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   CurrentWorkflowValidateInputSchema, CurrentWorkflowValidationSchema,
   CurrentEditReadInputSchema, CurrentEditReadResultSchema, CurrentEditMutationToolInputSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { currentWorkflowAvailable, type CurrentWorkflowOperation } from '../../../modules/workflows/currentWorkflowPolicy.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure, toolResult } from '../../shared/results.js'

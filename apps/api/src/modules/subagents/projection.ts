@@ -1,5 +1,5 @@
-import { HarnessNativeEventSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import { HarnessNativeEventSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { normalizeSubagentEvent, isChildCandidate } from './normalization.js'
 import { applySubagentChanges, readChildren } from './repository.js'

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { ApiError } from '../../shared/api/client'

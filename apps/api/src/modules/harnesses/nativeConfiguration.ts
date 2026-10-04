@@ -1,7 +1,7 @@
 import {
   HarnessConfigurationSchema, HarnessQualificationSchema, type AgentHarness, type HarnessConfiguration,
-} from '@graphql/contracts'
-import { HarnessOptionsResultSchema } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import { HarnessOptionsResultSchema } from '@foreman-code/contracts/management'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 import { NativeHarnessFactories } from './runtimeFactory.js'

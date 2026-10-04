@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type PendingNativeInteraction } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type PendingNativeInteraction } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { nativeInteractionAvailability } from '../src/modules/conversations/interactionAvailability.js'
 const interaction = NATIVE_INTERACTION_FIXTURES.codex

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
+import { type CurrentRunDetails as GetRunResponse } from '@foreman-code/contracts/wave25'
 import { makeSyntheticRun } from '../../features/graph/fixtures/scaleData'
 import { keepLatestRunResponse } from './runLiveCache'
 

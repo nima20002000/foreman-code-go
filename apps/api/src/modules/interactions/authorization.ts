@@ -1,4 +1,4 @@
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 

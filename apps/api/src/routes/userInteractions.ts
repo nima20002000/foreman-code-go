@@ -1,9 +1,9 @@
 import {
   GetInteractionResponseSchema, ListInteractionsResponseSchema, RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
-} from '@graphql/contracts'
-import { InteractionListInputSchema } from '@graphql/contracts/management'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import { InteractionListInputSchema } from '@foreman-code/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 
 import { requireLocalRequest } from '../modules/access/http.js'

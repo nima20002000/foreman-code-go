@@ -1,6 +1,6 @@
 import {
   FilePageSchema, MAX_FILE_PAGE_SIZE, type File as FileMetadata, type FilePage, type TemporaryFileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
 import { attachmentDraftKey } from './attachmentFiles'
 

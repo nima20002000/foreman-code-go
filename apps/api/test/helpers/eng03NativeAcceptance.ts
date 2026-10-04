@@ -11,10 +11,10 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
   type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { ScheduleGetResultSchema, ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
+import { ScheduleGetResultSchema, ScheduleSaveResultSchema } from '@foreman-code/contracts/schedules'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { ScheduleClearResultSchema, ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'

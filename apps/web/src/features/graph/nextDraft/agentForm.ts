@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { SavedNodePlacementSchema } from '@graphql/contracts/node-placement'
-import { AssignedSkillSchema, GraphqlToolDefaultsSchema, GraphqlToolOverrideSchema, HarnessConfigurationSchema } from '@graphql/contracts'
+import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
+import { AssignedSkillSchema, GraphqlToolDefaultsSchema, GraphqlToolOverrideSchema, HarnessConfigurationSchema } from '@foreman-code/contracts'
 
 // Raw form state is browser-only, including unfinished JSON. Publication still
 // uses the shared Agent and harness validation through Save agent settings.

@@ -3,7 +3,7 @@ import { DistributedArtifactPublicationService, type ArtifactPublicationAuthorit
 import { PostgresDistributedPublicationLedger } from './distributed/publicationLedger.js'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 
 import type { ApiConfig } from '../../config.js'
 import { registerFileRoutes } from '../../routes/files.js'

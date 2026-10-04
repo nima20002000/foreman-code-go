@@ -5,7 +5,7 @@ import {
   CanonicalRunGraphSnapshotSchema, CanonicalRunGraphCurrentSchema, CanonicalRunGraphEventsResponseSchema,
   CanonicalRunGraphHttpSnapshotQuerySchema as RunGraphHttpSnapshotQuerySchema,
   CanonicalRunGraphHttpEventsQuerySchema as RunGraphHttpEventsQuerySchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { canonicalRunGraphReadApi } from '../modules/run-graph/repeatReadService.js'
 import type { RunGraphReadApi } from '../modules/run-graph/readService.js'
 import { RunGraphError, runGraphErrorResponse, runGraphErrorStatus } from '../modules/run-graph/errors.js'

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@graphql/contracts'
-import type { HarnessSettingsSection } from '@graphql/contracts/management'
+import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
+import type { HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { Button, Checkbox, Select, TextField } from '../../shared/ui/nocturne'
 import type { HarnessEditor } from './harnessEditor'
 import { fieldMessage, type FieldIssue } from './fieldValidation'

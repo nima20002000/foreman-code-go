@@ -173,12 +173,12 @@ Run in the full pinned checkout:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-cleanup.test.ts test/file-cleanup-bytes.test.ts test/file-cleanup-postgres.test.ts test/file-storage.test.ts test/file-retention.test.ts
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-cleanup.test.ts test/file-cleanup-bytes.test.ts test/file-cleanup-postgres.test.ts test/file-storage.test.ts test/file-retention.test.ts
 # Explicit disposable loopback TEST_DATABASE_URL; database name must contain 'test'.
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-cleanup.integration.test.ts test/files.integration.test.ts test/file-retention.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-cleanup.integration.test.ts test/files.integration.test.ts test/file-retention.integration.test.ts test/file-references.integration.test.ts --no-file-parallelism
 ```
 
 Then run the repository-wide verification commands in AGENTS.md. No revision,

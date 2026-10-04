@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { BYTE_TRANSFER_POLICY, TransferProgressSchema, TransferIntentSchema, VerifiedTransferReceiptSchema,
-  type ByteTransferPort, type TransferContext, type TransferIntent, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
+  type ByteTransferPort, type TransferContext, type TransferIntent, type VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 
 /** A/C supply only an already sealed immutable source/output snapshot, never a live work-file path. */
 export interface ImmutableTransferSource {

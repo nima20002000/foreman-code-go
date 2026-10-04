@@ -1,4 +1,4 @@
-# `@graphql/contracts`
+# `@foreman-code/contracts`
 
 The contracts package is the neutral boundary shared by the UI, API,
 orchestrator, and harness adapters. It contains Zod schemas and inferred
@@ -32,6 +32,6 @@ neutral link from that logical Agent projection to its current `RunSummary`;
 browser wait, resource, and runner facts stay on the run projection and are
 not encoded in harness metadata.
 
-Import the public surface from `@graphql/contracts`. No React, persistence,
+Import the public surface from `@foreman-code/contracts`. No React, persistence,
 transport, LangGraph implementation, or native runner implementation belongs
 here.

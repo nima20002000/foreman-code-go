@@ -3,15 +3,15 @@ import { canonical } from './codexProtocol.js'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 
-import { HarnessDefaultsSchema, HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { HarnessDefaultsSchema, HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSettingsRepository } from '../settings/postgres.js'
 import type { HarnessConfigurationQualifier } from './port.js'
 import { DomainError } from '../errors.js'
-import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
+import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export class HarnessCatalogService {
   private readonly checks = new QualificationCache<{ qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string }>()

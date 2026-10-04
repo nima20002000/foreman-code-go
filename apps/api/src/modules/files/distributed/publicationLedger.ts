@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
+import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import type { PublicationLink } from '../tools/types.js'
 import { PostgresFileToolRepository } from '../tools/postgres.js'
 import { DomainError } from '../../errors.js'

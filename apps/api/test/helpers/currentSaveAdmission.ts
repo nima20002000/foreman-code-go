@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 /** Synthetic rows for query-boundary tests only. The production reader still
  * validates exact physical columns, V3 snapshots and the immutable hash. These

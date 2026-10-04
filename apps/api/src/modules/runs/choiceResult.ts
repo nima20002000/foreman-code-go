@@ -1,5 +1,5 @@
-import type { ExecutionResult } from '@graphql/contracts'
-import { AcceptedCurrentNodeResultSchema, parseChoiceResultEnvelope, type WorkflowChoice, type ChoiceResultEnvelope } from '@graphql/contracts/wave25'
+import type { ExecutionResult } from '@foreman-code/contracts'
+import { AcceptedCurrentNodeResultSchema, parseChoiceResultEnvelope, type WorkflowChoice, type ChoiceResultEnvelope } from '@foreman-code/contracts/wave25'
 
 /** Parsing-only view of the exact Codex/OpenCode final-text carrier. Bound the
  * original result here so durable record rechecks can use the same policy without

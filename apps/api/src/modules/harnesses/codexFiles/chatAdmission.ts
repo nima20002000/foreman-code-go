@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
-import { MessageAttachmentRefsSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { MessageAttachmentRefsSchema, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { PostgresAccessService } from '../../access/postgres.js'
 import { PostgresFileConversationAuthorization } from '../../files/authorization.js'
 import type { TemporaryFileService } from '../../files/service.js'

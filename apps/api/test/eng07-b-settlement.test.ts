@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RunRecordDetailSchema, makeCurrentWorkflowFixture, type RunRecordDetail } from '@graphql/contracts/wave25'
+import { RunRecordDetailSchema, makeCurrentWorkflowFixture, type RunRecordDetail } from '@foreman-code/contracts/wave25'
 import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport.js'
 
 type Intent = { pending: boolean; attempts: number } | undefined

@@ -9,7 +9,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { CurrentWorkspaceDetails as WorkspaceDetailsResponse } from '@graphql/contracts/wave25'
+import type { CurrentWorkspaceDetails as WorkspaceDetailsResponse } from '@foreman-code/contracts/wave25'
 import { useGraphDraftStore } from '../features/graph/store'
 
 import { routeTree } from '../app/router'

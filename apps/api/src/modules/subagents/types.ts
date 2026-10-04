@@ -1,5 +1,5 @@
-import type { HarnessNativeEvent } from '@graphql/contracts'
-import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool, SubagentNativeMode } from '@graphql/contracts/subagents'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool, SubagentNativeMode } from '@foreman-code/contracts/subagents'
 
 export interface SubagentProjectionContext {
   workspaceId: string; workflowId: string; workflowVersionId: string; runId: string
@@ -33,4 +33,4 @@ export interface SubagentNativeHistoryPage {
 export type SubagentNativeHistoryReader = (child: RunSubagent, cursor?: string) => Promise<SubagentNativeHistoryPage>
 export type SubagentStoredItem = RunSubagentMessage | RunSubagentTool
 
-export type SubagentNativeRecoverySource = (executionId: string, session: import('@graphql/contracts').NativeSessionReference, cursor: string | undefined, signal: AbortSignal) => Promise<import('../harnesses/port.js').NativeSubagentHistoryPage>
+export type SubagentNativeRecoverySource = (executionId: string, session: import('@foreman-code/contracts').NativeSessionReference, cursor: string | undefined, signal: AbortSignal) => Promise<import('../harnesses/port.js').NativeSubagentHistoryPage>

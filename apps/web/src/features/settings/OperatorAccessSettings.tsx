@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { BrowserAccessLogoutSchema } from '@graphql/contracts/management'
+import { BrowserAccessLogoutSchema } from '@foreman-code/contracts/management'
 import { apiClient, ApiError, enrollOperator } from '../../shared/api/client'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { rotateProtectedSession } from '../../shared/api/protectedChatStorage'

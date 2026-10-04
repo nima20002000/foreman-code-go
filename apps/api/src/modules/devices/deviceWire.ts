@@ -1,7 +1,7 @@
-import { DEVICE_BUFFER_BYTES, DEVICE_FRAME_BYTES, DEVICE_QUEUE_DEPTH, type DeviceFrame } from '@graphql/contracts/device-connection'
+import { DEVICE_BUFFER_BYTES, DEVICE_FRAME_BYTES, DEVICE_QUEUE_DEPTH, type DeviceFrame } from '@foreman-code/contracts/device-connection'
 
 export class DeviceConnectionError extends Error {
-  constructor(readonly code: import('@graphql/contracts/device-connection').DeviceFailureCode) { super(code) }
+  constructor(readonly code: import('@foreman-code/contracts/device-connection').DeviceFailureCode) { super(code) }
 }
 /** Adapter must install message/error/close handlers synchronously, before returning. */
 export interface DeviceSocket {
@@ -48,7 +48,7 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
     const text = String(data)
     if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) { finish(new DeviceConnectionError('backpressure')); raw.close(); return }
     if (text.includes('blocked')) {
-      try { const frame = JSON.parse(text) as { type?: string; code?: string }; if (frame.type === 'blocked') terminalFailure = new DeviceConnectionError(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(frame.code ?? '') ? frame.code as import('@graphql/contracts/device-connection').DeviceFailureCode : 'malformed-frame') } catch { /* parser reports malformed JSON at consumption */ }
+      try { const frame = JSON.parse(text) as { type?: string; code?: string }; if (frame.type === 'blocked') terminalFailure = new DeviceConnectionError(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(frame.code ?? '') ? frame.code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame') } catch { /* parser reports malformed JSON at consumption */ }
     }
     queue.push(text); queuedBytes += Buffer.byteLength(text); wake?.()
   }

@@ -1,9 +1,9 @@
 import type pg from 'pg'
-import { MessageSchema, type ActivitySourceRevision, type Message } from '@graphql/contracts'
+import { MessageSchema, type ActivitySourceRevision, type Message } from '@foreman-code/contracts'
 import {
   FileWithRevisionSchema, MessageAttachmentRefsSchema, fileStateAt,
   type FileWithRevision, type MessageAttachmentRef,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { readOriginalMessageInputs } from './originalMessageInputs.js'
 import { DomainError } from '../errors.js'

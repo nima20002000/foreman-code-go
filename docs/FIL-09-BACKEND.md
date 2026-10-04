@@ -72,8 +72,8 @@ Not executed: `opencode-files-mcp.test.ts` against the actual FIL-05/MCP depende
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api exec vitest run test/opencode-files.test.ts test/opencode-files-mcp.test.ts
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api exec vitest run test/opencode-files.test.ts test/opencode-files-mcp.test.ts
 node scripts/test-opencode-files.mjs
 corepack pnpm typecheck
 corepack pnpm lint

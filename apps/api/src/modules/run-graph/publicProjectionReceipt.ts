@@ -1,7 +1,7 @@
 import {
   PublicGraphProjectionSchema, PublicGraphDeltaSchema, canonicalGraphJson,
   GraphSequenceSchema, type PublicGraphProjection, type PublicGraphDelta, type RunGraphScope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { readPublicProjectionLocked } from './compactSnapshot.js'
 import { graphSourceDigest } from './publication.js'

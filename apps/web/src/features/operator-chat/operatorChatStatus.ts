@@ -1,4 +1,4 @@
-import type { OperatorConversationState, OperatorConversationSummary } from '@graphql/contracts'
+import type { OperatorConversationState, OperatorConversationSummary } from '@foreman-code/contracts'
 import { chatBackgroundWork } from '../conversations/chatWorkStatus'
 import type { OperatorChatConnection } from '../../shared/api/operatorChatStream'
 

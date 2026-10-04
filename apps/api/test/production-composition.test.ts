@@ -4,8 +4,8 @@ import {
   DurableInteractionSchema,
   type AgentConfigurationVersion,
   type DurableInteraction,
-} from '@graphql/contracts'
-import { ManagementPrincipalSchema, type ManagementAction, type ManagementScope } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import { ManagementPrincipalSchema, type ManagementAction, type ManagementScope } from '@foreman-code/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'

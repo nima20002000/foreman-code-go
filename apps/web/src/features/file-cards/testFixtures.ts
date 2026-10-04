@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { FileWithRevisionSchema, FileRevisionSchema, temporaryFileExpiresAt, type FileMediaType, type FileScope, type FileState } from '@graphql/contracts/files'
+import { FileWithRevisionSchema, FileRevisionSchema, temporaryFileExpiresAt, type FileMediaType, type FileScope, type FileState } from '@foreman-code/contracts/files'
 
 export const TEST_DOWNLOAD_PATH = '/api/operator/conversations/conversation-a/files/{fileId}/revisions/{revisionId}/content'
 export const TEST_HANDLER_PATH = '*/api/operator/conversations/conversation-a/files/:fileId/revisions/:revisionId/content'

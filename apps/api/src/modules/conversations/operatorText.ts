@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 
 type ObjectValue = Record<string, unknown>
 function object(value: unknown): ObjectValue { return value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {} }

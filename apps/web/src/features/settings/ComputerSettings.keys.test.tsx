@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CanonicalMachineReference, DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { CanonicalMachineReference, DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { ComputerSettings } from './ComputerSettings'
 vi.mock('../runtime-qualification/ComputerRuntimeApprovals', () => ({ ComputerRuntimeApprovals: () => null }))
 

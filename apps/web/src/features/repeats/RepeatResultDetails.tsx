@@ -1,5 +1,5 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { sameWorkflowValue, type RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
+import { sameWorkflowValue, type RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Button } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'

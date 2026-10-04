@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

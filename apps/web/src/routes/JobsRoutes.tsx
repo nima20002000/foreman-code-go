@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import type { JobExecution } from '@graphql/contracts/jobs'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import { JobsDirectory, JobRerun } from '../features/jobs/JobsDirectory'
 import { JobResult } from '../features/jobs/JobResult'

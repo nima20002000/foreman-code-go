@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { HarnessWorkflowCompatibilitySchema, OpenCodeHarnessConfigurationSchema } from '@graphql/contracts'
+import { HarnessWorkflowCompatibilitySchema, OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { configuration, advanced } from './opencode-fixtures.js'
 
 for (const handler of ['user', 'orchestrator'] as const) {

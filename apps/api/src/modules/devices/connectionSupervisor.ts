@@ -1,9 +1,9 @@
-import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@graphql/contracts/device-application'
+import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, DeviceApplicationError, deviceNegotiationHash, extensionDescriptors, type DeviceApplicationRequestOptions, type DeviceExtensionRegistration } from './deviceApplicationChannel.js'
-import { verifyMainIdentityProof } from '@graphql/contracts/device-identity-node'
-import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
+import { verifyMainIdentityProof } from '@foreman-code/contracts/device-identity-node'
+import type { MainIdentityProofRequest } from '@foreman-code/contracts/device-identity'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 
 const blocked = new Set(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame'])
@@ -81,7 +81,7 @@ export class DeviceConnectionSupervisor {
         if (frame.connectionGeneration !== hello.connectionGeneration) throw new DeviceConnectionError('wrong-main')
         const advertised = capabilities.extensions ?? []
         if (!Array.isArray(advertised) || advertised.length > 16) throw new DeviceConnectionError('malformed-frame')
-        const extensions = advertised as import('@graphql/contracts/device-application').DeviceNegotiatedExtension[]
+        const extensions = advertised as import('@foreman-code/contracts/device-application').DeviceNegotiatedExtension[]
         let recomputed: typeof extensions
         try { recomputed = negotiateDeviceExtensions(parseExtensionDescriptors(extensions.map((item) => ({ namespace: item.namespace, version: item.version, role: item.mainCanRequest && item.workerCanRequest ? 'duplex' : item.mainCanRequest ? 'client' : 'server', maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes }))), extensionDescriptors(this.options.extensions ?? [])) } catch { throw new DeviceConnectionError('malformed-frame') }
         if (JSON.stringify(recomputed) !== JSON.stringify(extensions)) throw new DeviceConnectionError('malformed-frame')
@@ -111,8 +111,8 @@ export class DeviceConnectionSupervisor {
     }
   }
 }
-function classifiedFailure(code: unknown): import('@graphql/contracts/device-connection').DeviceFailureCode {
-  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@graphql/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
+function classifiedFailure(code: unknown): import('@foreman-code/contracts/device-connection').DeviceFailureCode {
+  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
 }
 function pause(ms: number, signal: AbortSignal) {
   if (signal.aborted) return Promise.resolve()

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { FileRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { FileRevision, MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolContext } from '../../src/modules/files/tools/types.js'
 import { sha256 } from '../../src/modules/harnesses/opencodeFiles/attachments.js'
 import type { OpenCodeExecutionFiles, OpenCodeFileService } from '../../src/modules/harnesses/opencodeFiles/types.js'

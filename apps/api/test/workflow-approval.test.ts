@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES,
-  type HarnessConfiguration } from '@graphql/contracts'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+  type HarnessConfiguration } from '@foreman-code/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { validateReviewerBootstrap } from '../src/modules/workflows/reviewerBootstrap.js'
 import { assertOrchestratorInteractionAuthority } from '../src/modules/interactions/authorization.js'
 

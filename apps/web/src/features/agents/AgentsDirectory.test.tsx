@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { Agent } from '@graphql/contracts'
+import type { Agent } from '@foreman-code/contracts'
 
 import { AgentsDirectoryContent } from './AgentsDirectory'
 import { useAgentDirectoryStore } from './agentDirectoryStore'

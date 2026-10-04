@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { NodeResolutionSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { NodeResolutionSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 import { compileExecutionTopology, decideExecutionAdmission } from '../src/modules/runs/topology.js'
 

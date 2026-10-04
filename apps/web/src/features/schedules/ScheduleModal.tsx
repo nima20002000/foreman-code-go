@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type RefObject } from 'react'
 import { useStore } from 'zustand'
-import type { ScheduleGetInput } from '@graphql/contracts/schedules'
+import type { ScheduleGetInput } from '@foreman-code/contracts/schedules'
 import { Button, Dialog, Select, Switch, TextField, Tooltip } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import {

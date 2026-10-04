@@ -1,4 +1,4 @@
-import type { JobExecution } from '@graphql/contracts'
+import type { JobExecution } from '@foreman-code/contracts'
 import { executeJob, type JobExecutorPorts, type JobExecutorResult } from './executor.js'
 
 /** W07 carrier routes job payloads here; W08 remains the launch/owner authority. */

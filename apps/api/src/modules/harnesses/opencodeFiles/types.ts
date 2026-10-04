@@ -1,6 +1,6 @@
 import type { AgentFileToolService } from '../../files/tools/service.js'
 import type { FileToolContext } from '../../files/tools/types.js'
-import type { FileRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { FileRevision, MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 
 /** The authenticated, persisted admission supplies this. It is NOT an HTTP/tool input. */

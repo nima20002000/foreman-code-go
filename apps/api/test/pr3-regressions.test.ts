@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_HARNESS_DEFAULTS,
   type Agent,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'

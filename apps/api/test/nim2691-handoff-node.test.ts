@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, WorkRequestSchema } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, WorkRequestSchema } from '@foreman-code/contracts/wave25'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { workHandoffNodeAction } from '../src/modules/runs/workHandoffNode.js'
 

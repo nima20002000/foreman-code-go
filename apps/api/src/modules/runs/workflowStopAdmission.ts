@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { commandInputHash } from '../commands/postgres.js'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest, readRepeatRunSourceLocked } from '../run-graph/publication.js'

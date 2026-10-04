@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useSearch } from '@tanstack/react-router'
 import { useContext, useEffect, useRef, useState, type FormEvent } from 'react'
-import { safeAuthReturnTo, type BrowserSignInRequest, type OwnerSetupRequest } from '@graphql/contracts/management'
+import { safeAuthReturnTo, type BrowserSignInRequest, type OwnerSetupRequest } from '@foreman-code/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { browserAuthClient, useOwnerSetupStatus } from '../../shared/api/browserAuth'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'

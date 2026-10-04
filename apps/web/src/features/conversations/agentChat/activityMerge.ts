@@ -1,5 +1,5 @@
-import type { OperatorActivity } from '@graphql/contracts'
-import type { ActivityItem, ActivityScope, ActivitySnapshotV1, ActivitySourceRevision, InteractionSummary } from '@graphql/contracts/activity'
+import type { OperatorActivity } from '@foreman-code/contracts'
+import type { ActivityItem, ActivityScope, ActivitySnapshotV1, ActivitySourceRevision, InteractionSummary } from '@foreman-code/contracts/activity'
 
 /** Canonical structural scope key; object property insertion order is not identity. */
 export function activityScopeKey(scope: ActivityScope): string {

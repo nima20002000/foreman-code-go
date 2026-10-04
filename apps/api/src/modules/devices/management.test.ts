@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/server'
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { MainDeviceIdentityPublicSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
-import { DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { MainDeviceIdentityPublicSchema, type DeviceRegistration } from '@foreman-code/contracts/device-identity'
+import { DeviceSetupOptionsSchema } from '@foreman-code/contracts/device-setup'
 import { describe, expect, it, vi } from 'vitest'
 import { registerDeviceManagementTools, type DeviceManagementService } from './management.js'
 

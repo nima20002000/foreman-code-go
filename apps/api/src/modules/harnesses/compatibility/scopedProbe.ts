@@ -1,6 +1,6 @@
 import { CompatibilityCheckError } from './errors.js'
 import { randomUUID } from 'node:crypto'
-import type { CompatibilityHarness } from '@graphql/contracts'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import type { NativeProcessRegistry, NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'

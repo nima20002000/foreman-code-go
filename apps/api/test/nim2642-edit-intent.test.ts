@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { CurrentJournalRunPinSchema, type CurrentJournalRunState } from '@graphql/contracts/wave25'
+import { CurrentJournalRunPinSchema, type CurrentJournalRunState } from '@foreman-code/contracts/wave25'
 import { currentSaveAdmissionFixture } from './helpers/currentSaveAdmission.js'
 import { readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
 import { sameAffectedSet } from '../src/modules/graph-drafts/durableEditIntent.js'

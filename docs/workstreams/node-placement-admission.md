@@ -68,10 +68,10 @@ Focused commands from the lane worktree:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts exec tsc -p tsconfig.build.json
-corepack pnpm --filter @graphql/api exec tsc --noEmit
-corepack pnpm --filter @graphql/api exec eslint src/modules/placement src/infrastructure/nodePlacementMigration.ts test/node-placement.test.ts test/node-placement-transaction.test.ts --max-warnings 0
-corepack pnpm --filter @graphql/api exec vitest run test/node-placement.test.ts test/node-placement-transaction.test.ts --maxWorkers 1
+corepack pnpm --filter @foreman-code/contracts exec tsc -p tsconfig.build.json
+corepack pnpm --filter @foreman-code/api exec tsc --noEmit
+corepack pnpm --filter @foreman-code/api exec eslint src/modules/placement src/infrastructure/nodePlacementMigration.ts test/node-placement.test.ts test/node-placement-transaction.test.ts --max-warnings 0
+corepack pnpm --filter @foreman-code/api exec vitest run test/node-placement.test.ts test/node-placement-transaction.test.ts --maxWorkers 1
 ```
 
 Orchestrator integration must prove migration SQL, exact replay after saved edits,

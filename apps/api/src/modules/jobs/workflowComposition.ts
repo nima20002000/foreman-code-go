@@ -1,9 +1,9 @@
 import { releaseUnstartedJobComputer } from './computerSelection.js'
 import { readRunJobCleanup } from './runCleanup.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
-import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
-import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
-import type { PreparedJobSpec, JobArtifact, JobExecution } from '@graphql/contracts/jobs'
+import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
+import type { PreparedJobSpec, JobArtifact, JobExecution } from '@foreman-code/contracts/jobs'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -13,7 +13,7 @@ import type { WorkflowJobLockedPort, WorkflowJobDriver } from './workflowRuntime
 import type { WorkflowJobPreparation } from './workflowPreparation.js'
 import type { JobService } from './service.js'
 import type { PostgresJobDispatch } from './dispatch.js'
-import { RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
 
 export interface WorkflowJobOutputs {
   listCanonicalOutputs(sql:GraphTransactionSql,execution:JobExecution):Promise<JobArtifact[]>

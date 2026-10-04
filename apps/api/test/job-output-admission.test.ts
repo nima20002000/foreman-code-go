@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import pg from 'pg'
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import type { FileWithRevision } from '@graphql/contracts/files'
-import { RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
-import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
-import { JobOutputPublicationInputSchema, type JobOutputAdmission, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
+import type { FileWithRevision } from '@foreman-code/contracts/files'
+import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
+import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
+import { JobOutputPublicationInputSchema, type JobOutputAdmission, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 import { commandInputHash } from '../src/modules/commands/postgres.js'
 import { JobPublicationAuthority } from '../src/modules/jobs/authority.js'
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
@@ -28,7 +28,7 @@ import { VerifiedJobOutputReader } from '../src/modules/files/jobs/transferReade
 import { createWorkerJobOutputCollector } from '../src/modules/runs/remote/jobCanonicalOutputs.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
-import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 const digest=(v:string|Uint8Array)=>createHash('sha256').update(v).digest('hex')
 /** Modeled SQL/session authority unit boundary. Actual PostgreSQL pairing/ownership is in the root-only fixture. */
 async function fixture() {

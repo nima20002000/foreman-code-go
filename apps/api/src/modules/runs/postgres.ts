@@ -1,8 +1,8 @@
 import {
   HarnessExecutionSchema, HarnessNativeEventSchema, RunActivitySchema,
   type ExecutionResult, type HarnessExecution, type HarnessNativeEvent, type RunActivity, type WorkflowRunSummary,
-} from '@graphql/contracts'
-import { RunDetailsV3Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { RunDetailsV3Schema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'

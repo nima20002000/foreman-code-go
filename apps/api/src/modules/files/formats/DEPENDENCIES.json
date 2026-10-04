@@ -1,5 +1,5 @@
 {
-  "targetPackage": "@graphql/api",
+  "targetPackage": "@foreman-code/api",
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
     "pdf-lib": "1.17.1",

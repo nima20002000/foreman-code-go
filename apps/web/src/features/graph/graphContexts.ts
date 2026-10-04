@@ -1,5 +1,5 @@
 import { createContext } from 'react'
-import type { ApprovalHandler } from '@graphql/contracts'
+import type { ApprovalHandler } from '@foreman-code/contracts'
 import type { GraphRuntimeScope } from './runtimeIndex'
 
 export const GraphNodeMenuContext = createContext<{

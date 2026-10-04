@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeSessionReferenceSchema, type HarnessExecution } from '@graphql/contracts'
-import type { SelectedRunChatTarget } from '@graphql/contracts/selected-run-chat'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
+import type { SelectedRunChatTarget } from '@foreman-code/contracts/selected-run-chat'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import {
   allExecutions, conversationPages, historicalFixture, historicalRows, openHistoricalApi, qualifyLocation,
   readSelected, readSnapshot, runA, saveWithoutY, selectedPath, sendAndFinish, startSaved, targetFor,

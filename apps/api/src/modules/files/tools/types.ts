@@ -2,8 +2,8 @@ import type { Readable } from 'node:stream'
 import type {
   AgentFileCreateWorkingCopyResult, AgentFileReadResult, FilePage, FileRevision, FileWithRevision,
   MessageAttachmentRef, PermanentFileScope, RunFileProvenance, TemporaryFileScope,
-} from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 export const FILE_TOOL_NAMES = ['files.list', 'files.read', 'files.create_working_copy', 'files.publish_result'] as const
 export type FileToolName = typeof FILE_TOOL_NAMES[number]

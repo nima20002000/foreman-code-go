@@ -11,7 +11,7 @@ import { http } from 'msw'
 import {
   boardSearchForInspection, CANONICAL_RUN_GRAPH_ROUTES, CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema,
   type RepeatGraphScopeV3, type WorkspaceBoardInspection,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { useGraphDraftStore } from '../graph/store'

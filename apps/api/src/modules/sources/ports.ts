@@ -1,4 +1,4 @@
-import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt } from '@graphql/contracts/source-materialization'
+import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 
 /** Main persists this exact approved pin; neither worker nor resolver chooses latest. */
 export type SourceSnapshotPin = Pick<SourceManifest, 'snapshotId' | 'manifestDigest' | 'approvedSourceId'>

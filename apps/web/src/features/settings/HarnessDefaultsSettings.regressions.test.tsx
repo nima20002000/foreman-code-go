@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-q
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@foreman-code/contracts'
 import { queryKeys } from '../../shared/api/query'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'

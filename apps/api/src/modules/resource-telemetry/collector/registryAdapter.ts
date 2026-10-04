@@ -1,4 +1,4 @@
-import { telemetryCanonical } from '@graphql/contracts/resource-telemetry'
+import { telemetryCanonical } from '@foreman-code/contracts/resource-telemetry'
 import type { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 export type { NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
 import { accountingHandle } from './linuxCgroup.js'

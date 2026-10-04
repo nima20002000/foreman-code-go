@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import type { HarnessOptions } from '@graphql/contracts/management'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { codexModelOptions, openCodeOptions } from '../src/modules/harnesses/operatorOptions.js'
 import { latestNativeModel, nativeModelDefaults } from '../src/modules/harnesses/modelDefaults.js'
 

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { repeatNodeAction, inactiveRepeatResolution, repeatTerminalResolution, type RepeatNodeStore } from '../src/modules/runs/repeatNode.js'
 import type { RepeatResolution } from '../src/modules/runs/repeatResolution.js'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 
 function fixture(suffix: string) {
   const f = makeCurrentWorkflowFixture(suffix)

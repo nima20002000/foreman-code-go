@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { HarnessOptionsResultSchema } from '@graphql/contracts/management'
+import { HarnessOptionsResultSchema } from '@foreman-code/contracts/management'
 import { NativeConfigurationService } from '../src/modules/harnesses/nativeConfiguration.js'
 
 const directories: string[] = []

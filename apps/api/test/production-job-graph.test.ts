@@ -1,6 +1,6 @@
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, it, vi } from 'vitest'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { buildRepeatGraph, type RepeatGraphStore } from '../src/modules/runs/repeatGraph.js'
 import type { WorkflowJobNodeStore } from '../src/modules/jobs/workflowNode.js'
 import type { RepeatResolution } from '../src/modules/runs/repeatResolution.js'

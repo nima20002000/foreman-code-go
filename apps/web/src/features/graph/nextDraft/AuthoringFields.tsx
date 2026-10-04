@@ -1,6 +1,6 @@
-import { JOB_WORKFLOW_OUTCOMES } from '@graphql/contracts/job-workflow'
+import { JOB_WORKFLOW_OUTCOMES } from '@foreman-code/contracts/job-workflow'
 import { useId, useState } from 'react'
-import type { WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import type { DraftAgentEdits } from './agentEdits'
 import { attachAgent, changeApprovalHandler, entryChoices, nodeTitle, putRelationship,
   removeRelationship, roleEvidence, setWorkConnectionLimit, type DraftNode, type NextDraftContext } from './model'

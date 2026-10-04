@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { randomBytes } from 'node:crypto'
 
-import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
+import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import { requireHarnessQualification } from './qualification/gate.js'

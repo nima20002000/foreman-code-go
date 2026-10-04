@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import type { JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
-import type { JobDefinition } from '@graphql/contracts/jobs'
+import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
+import type { JobDefinition } from '@foreman-code/contracts/jobs'
 import { Alert, Button, Card, CardBody } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
 import { useJobDefinitions } from './query'

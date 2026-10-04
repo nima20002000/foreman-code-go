@@ -1,6 +1,6 @@
-import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
 import { GraphFactSchema, GraphInteractionSchema, assertNativeGraphProjectionAuthority,
-  type GraphEffect, type GraphEvidence, type GraphFact } from '@graphql/contracts/wave25'
+  type GraphEffect, type GraphEvidence, type GraphFact } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import type { GraphResumeClaim } from '../deliveryPostgres.js'
 import { INTERACTION_DELIVERY_LEASE_MS } from '../delivery.js'

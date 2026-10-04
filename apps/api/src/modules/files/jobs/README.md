@@ -58,7 +58,7 @@ They must not be omitted when the shared metadata union expands.
 Focused checks:
 
 ```sh
-corepack pnpm --filter @graphql/api exec vitest run \
+corepack pnpm --filter @foreman-code/api exec vitest run \
   test/job-artifacts.test.ts test/job-document-isolation.test.ts \
   test/file-storage.test.ts test/codex-file-delivery.test.ts test/file-tools.test.ts \
   --maxWorkers=1

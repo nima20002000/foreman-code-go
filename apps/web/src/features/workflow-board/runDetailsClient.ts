@@ -1,10 +1,10 @@
-import { AgentVersionResultSchema } from '@graphql/contracts/management'
+import { AgentVersionResultSchema } from '@foreman-code/contracts/management'
 import { CurrentRunVersionSnapshotSchema, RepeatGraphScopeV3Schema, canonicalGraphJson,
   RunVersionDetailSchema, RunExecutionsListInputSchema, RunExecutionsPageSchema, RunExecutionGetInputSchema,
   RunExecutionDetailSchema, RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema,
   GraphExecutionIdentitySchema, RUN_INSPECTION_LIMITS,
   type RunExecutionDetail, type RunExecutionSummary, type RunExecutionsListInput, type WorkflowVersionV3,
-  sameWorkflowValue, type RepeatGraphScopeV3, type RepeatGraphCurrentV3, type CurrentRunDetails } from '@graphql/contracts/wave25'
+  sameWorkflowValue, type RepeatGraphScopeV3, type RepeatGraphCurrentV3, type CurrentRunDetails } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import { readBoardRun, scopeForBoardRun } from './client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'

@@ -2,8 +2,8 @@ import { Readable } from 'node:stream'
 import {
   AgentFileReadInputSchema, FileWithRevisionSchema, MAX_FILE_BYTES,
   PermanentFileScopeSchema, parseAgentFileReadResult, type PermanentFileScope,
-} from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'

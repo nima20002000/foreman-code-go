@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-import { HostHarnessOverrideListSchema, HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSchema, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import { HostHarnessOverrideListSchema, HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSchema, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
@@ -43,13 +43,13 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
     await pool.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5::jsonb)', [deviceId, mainId, workerInstallationId, 'fixture-public-key', JSON.stringify(registration)])
     const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
     const settings = new HarnessInstanceSettingsRepository(pool), proofs = new HostHarnessProfileEvidenceRepository(pool)
-    const authority = { authorize: async (principal: import('@graphql/contracts/management').ManagementPrincipal, action: 'harnesses:read' | 'harnesses:update', host: import('@graphql/contracts/device-identity').CanonicalMachineReference, installation: string, client?: pg.PoolClient) => {
+    const authority = { authorize: async (principal: import('@foreman-code/contracts/management').ManagementPrincipal, action: 'harnesses:read' | 'harnesses:update', host: import('@foreman-code/contracts/device-identity').CanonicalMachineReference, installation: string, client?: pg.PoolClient) => {
       if (!client) throw new Error('Host authorization must share settings transaction.')
       await authorizeDeviceHost(client, principal, action, host, installation)
     } }
     let currentEnvironment = 'fixture-env-1'
     // Typed native-port replay: tests HTTP/MCP admission and persistence, never qualifies a physical CLI.
-    const nativeReplay = vi.fn(async (value: import('@graphql/contracts/harness-registry').HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence> => {
+    const nativeReplay = vi.fn(async (value: import('@foreman-code/contracts/harness-registry').HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence> => {
       input.signal.throwIfAborted()
       return { target: value.target, instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint,
         driverId: value.driverId, driverRevision: 'fixture-driver', protocolRevision: 'fixture-protocol', suiteRevision: 'fixture-suite',

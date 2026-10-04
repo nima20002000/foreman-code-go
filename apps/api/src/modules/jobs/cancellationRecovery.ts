@@ -2,15 +2,15 @@ import { createHash, createPublicKey, randomUUID, sign, verify } from 'node:cryp
 import { isDeepStrictEqual as same } from 'node:util'
 import type pg from 'pg'
 import type { FastifyRequest } from 'fastify'
-import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
-import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
+import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema, JobCancellationRecoveryReadSchema,
   JobCancellationGrantSchema, SignedJobCancellationGrantSchema, JobCancellationRecoveryApplySchema,
   JOB_CANCELLATION_GRANT_TTL_MS, jobCancellationGrantMessage, jobCancellationClosureMessage,
-  type SignedJobCancellationClosure } from '@graphql/contracts/job-cancellation-recovery'
-import { RemoteJobDispatchIntentSchema } from '@graphql/contracts/remote-job-execution'
-import type { JobExecution } from '@graphql/contracts/jobs'
+  type SignedJobCancellationClosure } from '@foreman-code/contracts/job-cancellation-recovery'
+import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
+import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'

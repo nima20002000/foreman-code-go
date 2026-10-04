@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   HarnessQualificationListSchema, type CompatibilityHarness,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type { z } from 'zod'
 import { apiClient } from './client'
 

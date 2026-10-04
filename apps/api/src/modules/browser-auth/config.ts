@@ -1,4 +1,4 @@
-import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
+import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { z } from 'zod'
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])

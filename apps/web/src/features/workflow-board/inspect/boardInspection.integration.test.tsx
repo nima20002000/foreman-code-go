@@ -10,7 +10,7 @@ import { http, HttpResponse } from 'msw'
 import {
   boardSearchForInspection, boardSearchForRun, runInspectionKey,
   type RepeatGraphScopeV3, type WorkspaceBoardInspection,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../../app/router'
 import { server } from '../../../mocks/server'
 import { bindMockInstallation } from '../../../shared/mocks/handlers'

@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceRevision, type InteractionSummary, type WorkRef, type WorkSummary } from '@graphql/contracts'
-import { REPEAT_GRAPH_LIMITS, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceRevision, type InteractionSummary, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
+import { REPEAT_GRAPH_LIMITS, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from './activities.js'
 import { readNativeActivityFacts, projectNativeActivityFacts } from './nativeActivitySnapshot.js'

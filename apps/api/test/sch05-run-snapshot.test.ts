@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { AcceptedRepeatStartV1Schema } from '@graphql/contracts/wave25'
-import { RunBoardSnapshotSchema } from '@graphql/contracts/run-snapshots'
+import { AcceptedRepeatStartV1Schema } from '@foreman-code/contracts/wave25'
+import { RunBoardSnapshotSchema } from '@foreman-code/contracts/run-snapshots'
 import { projectRunBoardSnapshot } from '../src/modules/runs/boardSnapshotProjection.js'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { decodeRunHistoryCursor, encodeRunHistoryCursor } from '../src/modules/runs/historyCursor.js'

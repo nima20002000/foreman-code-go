@@ -1,5 +1,5 @@
-import { DurableInteractionSchema, ReviewJobSchema } from '@graphql/contracts'
-import { RUN_GRAPH_LIMITS, type RunGraphScope } from '@graphql/contracts/wave25'
+import { DurableInteractionSchema, ReviewJobSchema } from '@foreman-code/contracts'
+import { RUN_GRAPH_LIMITS, type RunGraphScope } from '@foreman-code/contracts/wave25'
 
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import type { CurrentExchanges } from '../../run-graph/compactSnapshot.js'

@@ -1,4 +1,4 @@
-import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema, WorkflowRunSchema } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

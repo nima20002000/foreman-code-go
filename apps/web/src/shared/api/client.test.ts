@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
-import { CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { HarnessConfigurationCheckResultSchema } from '@foreman-code/contracts/management'
+import { CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../mocks/currentWorkflow'
 
 import { ApiError, ApiClient, apiClient } from './client'

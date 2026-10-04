@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
-import { RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
 import { DomainError } from '../src/modules/errors.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'

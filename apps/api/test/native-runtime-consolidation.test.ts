@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import {
   DEFAULT_CODEX_ADVANCED_CONFIGURATION, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   type HarnessConfiguration, type WorkflowApprovalConfiguration,
-} from '@graphql/contracts'
-import { ManagementHarnessConfigurationSchema } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import { ManagementHarnessConfigurationSchema } from '@foreman-code/contracts/management'
 import { it } from 'vitest'
 
 import { assertNativeWorkflowConfiguration } from '../src/modules/harnesses/nativeWorkflowConfiguration.js'

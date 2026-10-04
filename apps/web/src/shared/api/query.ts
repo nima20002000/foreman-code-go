@@ -1,4 +1,4 @@
-import type { CurrentRunDetails, CurrentWorkspaceDetails } from '@graphql/contracts/wave25'
+import type { CurrentRunDetails, CurrentWorkspaceDetails } from '@foreman-code/contracts/wave25'
 import {
   useMutation,
   useInfiniteQuery,
@@ -14,11 +14,11 @@ import type {
   GetHarnessDefaultsResponse,
   SaveHarnessDefaultsRequest,
   SaveHarnessDefaultsResponse,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type {
   ManagedWorkspace, WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
   WorkflowArchiveInput, WorkflowUpdateInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 import {
   apiClient,

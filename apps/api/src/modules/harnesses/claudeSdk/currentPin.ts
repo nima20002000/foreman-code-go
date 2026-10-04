@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import { readFile, readdir, realpath, stat } from 'node:fs/promises'
-import type { ClaudeQualificationPin } from '@graphql/contracts/claude-qualification'
+import type { ClaudeQualificationPin } from '@foreman-code/contracts/claude-qualification'
 import { claudeDiscoveryDeclaration } from '../claudeDiscovery.js'
 import { discoverLauncher, type LauncherEvidence, type TargetEnvironment } from '../hostDiscovery.js'
 

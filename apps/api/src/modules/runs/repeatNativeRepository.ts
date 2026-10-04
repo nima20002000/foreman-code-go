@@ -1,4 +1,4 @@
-import { type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { retainWorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'

@@ -161,8 +161,8 @@ package manager or dependencies were installed.
 In a complete checkout with the pinned toolchain and dependencies, run:
 
 ```sh
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api exec vitest run \
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api exec vitest run \
   test/codex-file-registration.test.ts test/codex-file-runtime.test.ts \
   test/codex-app-server.test.ts
 corepack pnpm typecheck

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import type { WorkspaceArchiveInput } from '@graphql/contracts/management'
+import type { WorkspaceArchiveInput } from '@foreman-code/contracts/management'
 
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys, useArchiveManagedWorkspaceMutation } from '../../shared/api/query'

@@ -1,5 +1,5 @@
-import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, DEFAULT_WORKFLOW_APPROVAL_HANDLER, AgentStatusSchema, ApiErrorResponseSchema, ScenarioIdSchema, type AgentStatus, type Agent, type AgentDefaults, type HarnessDefaults, type BrowserProfileSummary, type Conversation, type Message, type ResourceSummary, type RunnerSummary, type ScenarioId, type WorkflowDefaults, type WorkflowRunSummary } from '@graphql/contracts'
-import { type WorkflowDefinitionV3 as WorkflowDefinition, type CurrentWorkspaceDetails as WorkspaceDetails } from '@graphql/contracts/wave25'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, DEFAULT_WORKFLOW_APPROVAL_HANDLER, AgentStatusSchema, ApiErrorResponseSchema, ScenarioIdSchema, type AgentStatus, type Agent, type AgentDefaults, type HarnessDefaults, type BrowserProfileSummary, type Conversation, type Message, type ResourceSummary, type RunnerSummary, type ScenarioId, type WorkflowDefaults, type WorkflowRunSummary } from '@foreman-code/contracts'
+import { type WorkflowDefinitionV3 as WorkflowDefinition, type CurrentWorkspaceDetails as WorkspaceDetails } from '@foreman-code/contracts/wave25'
 
 export const MOCK_SCENARIOS = [
   'normal',

@@ -1,4 +1,4 @@
-import { MAX_FILE_BYTES } from "@graphql/contracts/files";
+import { MAX_FILE_BYTES } from "@foreman-code/contracts/files";
 
 export const ZIP_LIMITS = Object.freeze({
   archiveBytes: MAX_FILE_BYTES,

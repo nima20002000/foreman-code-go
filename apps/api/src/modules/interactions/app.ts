@@ -11,11 +11,11 @@ import {
   GraphqlToolOverrideSchema,
   effectiveGraphqlTools,
   type GraphqlAgentTool,
-} from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
 import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
 import { workerScope, workerScopesForAction, hasWorkerAction, requireReadableInteraction, requireRespondableInteraction } from '../access/appPolicy.js'

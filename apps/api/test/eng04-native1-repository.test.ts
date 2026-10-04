@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatLockedHooks } from '../src/modules/runs/repeatPostgres.js'

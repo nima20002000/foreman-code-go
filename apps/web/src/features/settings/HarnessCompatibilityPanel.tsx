@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { CompatibilityHarness, HarnessCompatibility } from '@graphql/contracts'
+import type { CompatibilityHarness, HarnessCompatibility } from '@foreman-code/contracts'
 import { ApiError } from '../../shared/api/client'
 import { useHarnessCompatibilityQuery, useRetryHarnessCompatibility } from '../../shared/api/harnessCompatibility'
 import { useCheckHarnessQualification, useHarnessQualificationsQuery } from '../../shared/api/harnessQualification'

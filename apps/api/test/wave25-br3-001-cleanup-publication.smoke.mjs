@@ -116,7 +116,7 @@ function fixture({ status = 'delivered', native = true, stopped = false, executi
   const cache = new Map()
   const schema = { parse: (value) => value }
   const substitutes = {
-    '@graphql/contracts/wave25': { GraphExecutionIdentitySchema: schema, GraphAttentionSchema: schema,
+    '@foreman-code/contracts/wave25': { GraphExecutionIdentitySchema: schema, GraphAttentionSchema: schema,
       NativeGraphActivityRecordSchema: schema, WorkflowRunV2Schema: schema, RunGraphScopeSchema: schema,
       canonicalGraphJson: canonical, RUN_GRAPH_LIMITS: { nodes: 1000, exchanges: 2000 } },
     [resolve(modules, 'run-graph/connection.ts')]: { assertGraphTransaction: () => undefined },

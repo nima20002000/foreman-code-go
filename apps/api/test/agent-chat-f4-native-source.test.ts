@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 
 import { nativeSourceContent } from './helpers/agentChatNativeSource.js'
 

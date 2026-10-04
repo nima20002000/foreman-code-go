@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent, PendingNativeInteraction } from '@graphql/contracts'
+import type { NativeHarnessEvent, PendingNativeInteraction } from '@foreman-code/contracts'
 
 const MAX_TARGETS = 5
 const MAX_COUNTED_CHANGES = 100

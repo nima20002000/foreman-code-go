@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { AcceptedWorkflowRunV3Schema, GraphIdSchema, type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, GraphIdSchema, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { settleRepeatNativeExecutionWithProofLocked } from '../interactions/repeatNativeSettlement.js'
 import { repeatNativePending } from '../interactions/repeatNativeEvidence.js'

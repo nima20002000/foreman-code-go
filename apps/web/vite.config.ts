@@ -1,4 +1,4 @@
-import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
+import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { devIdentity } from './dev-identity'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'

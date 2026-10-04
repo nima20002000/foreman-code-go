@@ -9,14 +9,14 @@ import {
   RunExecutionLocationSchema,
   type AgentConfigurationVersion,
   type RunExecutionLocation,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   WorkspaceLocationValidationSchema,
   type ManagementPrincipal,
   type WorkspaceLocationAccessMode,
   type WorkspaceLocationSetInput,
   type WorkspaceLocationValidateInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
 import { requireAuthorization } from '../access/policy.js'

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { RUN_INSPECTION_TOOLS, RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema } from '@graphql/contracts/wave25'
+import { RUN_INSPECTION_TOOLS, RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'

@@ -1,5 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/server'
-import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 
 import { DomainError } from '../../modules/errors.js'

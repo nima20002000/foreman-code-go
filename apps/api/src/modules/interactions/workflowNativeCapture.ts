@@ -1,5 +1,5 @@
-import type { HarnessExecution, HarnessNativeEvent, NativeSessionReference } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { HarnessExecution, HarnessNativeEvent, NativeSessionReference } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import type { RunOwnership } from '../runs/ownership.js'

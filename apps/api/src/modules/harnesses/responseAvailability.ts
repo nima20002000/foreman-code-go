@@ -1,4 +1,4 @@
-import type { NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
+import type { NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from './port.js'
 
 /** Read-only exact-request inquiry. Inspection must not attach, start, auto-reply or reconcile a response. */

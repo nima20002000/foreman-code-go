@@ -5,12 +5,12 @@ import { randomUUID } from 'node:crypto'
 import { join, parse, sep } from 'node:path'
 import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, VerifiedTransferReceiptSchema,
   RsyncControlRequestSchema, RsyncControlResponseSchema, type RsyncControlRequest,
-  type TransferIntent, type TransferContext, type ByteTransferPort, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
-import { TrustedConnectionCheckSchema, type TrustedConnectionCheck } from '@graphql/contracts/trusted-device-connection'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+  type TransferIntent, type TransferContext, type ByteTransferPort, type VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
+import { TrustedConnectionCheckSchema, type TrustedConnectionCheck } from '@foreman-code/contracts/trusted-device-connection'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
-import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
-import type { SourcePreparationClosure, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
+import type { SourcePreparationClosure, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { authenticatedTransferAuthority, transferContextForBinding, type AcceptedTransferAuthority } from './carrier.js'
 import type { ImmutableTransferSource } from './sender.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
@@ -38,7 +38,7 @@ export interface RsyncBackendSelection {
   entryPoint: string
   revalidate?: (signal: AbortSignal) => Promise<void>
 }
-export type { RsyncControlRequest } from '@graphql/contracts/byte-transfer'
+export type { RsyncControlRequest } from '@foreman-code/contracts/byte-transfer'
 export interface RsyncControlChannel {
   /** Capture rsync-stage-v1 on the exact existing authenticated W07 connection. No new socket/supervisor. */
   capture(): { binding: Readonly<DeviceSessionBinding>; request(payload: RsyncControlRequest,

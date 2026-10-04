@@ -4,7 +4,7 @@ import {
   AgentChatHistoryPageSchema, AgentChatTurnPageSchema, AgentChatReadbackQuerySchema, AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, type AgentChatStreamEvent,
-} from '@graphql/contracts/agent-chat'
+} from '@foreman-code/contracts/agent-chat'
 
 import { requirePrincipal } from '../modules/access/http.js'
 import type { AgentChatService } from '../modules/conversations/agentChat.js'

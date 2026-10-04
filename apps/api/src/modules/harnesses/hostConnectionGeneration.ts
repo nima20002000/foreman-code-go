@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 
 /** Derived fencing evidence from W07's actual authenticated binding, not another host identity. */
 export function harnessConnectionGeneration(binding: Readonly<DeviceConnectionIdentity & { connectionEpoch: string }>): string {

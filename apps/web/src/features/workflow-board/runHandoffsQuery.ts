@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { RepeatGraphScopeV3Schema, RunHandoffsReadSchema,
-  type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+  type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { ApiError, apiClient, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 

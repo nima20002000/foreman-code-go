@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
 import { RsyncControlRequestSchema, RsyncControlResponseSchema, TransferIntentSchema,
-  type TransferIntent } from '@graphql/contracts/byte-transfer'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
+  type TransferIntent } from '@foreman-code/contracts/byte-transfer'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import { authenticatedTransferAuthority, transferContextForBinding, type AcceptedTransferAuthority } from '../byte-transfer/carrier.js'
 import type { RsyncWriterOwnership } from '../byte-transfer/rsyncWriterOwnership.js'
 import type { DeviceExtensionContext, DeviceExtensionRegistration } from './deviceApplicationChannel.js'

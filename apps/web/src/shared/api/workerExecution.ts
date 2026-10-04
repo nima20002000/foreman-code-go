@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { WorkerExecutionSettingsSchema } from '@graphql/contracts/management'
+import { WorkerExecutionSettingsSchema } from '@foreman-code/contracts/management'
 import { apiClient } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'

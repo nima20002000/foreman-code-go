@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import type { McpDetection, NativeHarnessCapabilities } from '@graphql/contracts'
+import type { McpDetection, NativeHarnessCapabilities } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
 import { remoteMcpPreflight } from './remoteMcpPreflight.js'

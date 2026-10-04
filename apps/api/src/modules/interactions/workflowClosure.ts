@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema,
-  type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+  type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'

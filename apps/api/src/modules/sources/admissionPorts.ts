@@ -1,7 +1,7 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
-import type { RootBinding } from '@graphql/contracts/source-materialization'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
+import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
 
 export interface AuthorizedSourceRoot {

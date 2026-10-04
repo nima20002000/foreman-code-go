@@ -1,8 +1,8 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunHandoffsReadInputSchema, RunHandoffsReadSchema, WorkNoticeSchema,
-  canonicalGraphJson, type RunHandoffsRead } from '@graphql/contracts/wave25'
+  canonicalGraphJson, type RunHandoffsRead } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
 import { safeNodeName } from './nativeAction.js'

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema, RespondOperatorInteractionRequestSchema } from '@graphql/contracts'
+import { CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema, RespondOperatorInteractionRequestSchema } from '@foreman-code/contracts'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'

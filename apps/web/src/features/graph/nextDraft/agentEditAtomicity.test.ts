@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ApiClient } from '../../../shared/api/client'
 import { coalesceAgentEdits, configureAgentOperations } from './agentEdits'
 import { fixture } from './core.cases'

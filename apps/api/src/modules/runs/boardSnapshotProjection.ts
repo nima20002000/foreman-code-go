@@ -1,5 +1,5 @@
-import type { RunBoardSnapshot } from '@graphql/contracts/run-snapshots'
-import type { AcceptedRepeatStartV1 } from '@graphql/contracts/wave25'
+import type { RunBoardSnapshot } from '@foreman-code/contracts/run-snapshots'
+import type { AcceptedRepeatStartV1 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 
 /** Admission projection only. Never call this from a history read.

@@ -1,6 +1,6 @@
-import type { DurableInteraction, NativeHarnessEvent } from '@graphql/contracts'
+import type { DurableInteraction, NativeHarnessEvent } from '@foreman-code/contracts'
 import type pg from 'pg'
-import type { GraphEffect } from '@graphql/contracts/wave25'
+import type { GraphEffect } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionDeliveryRepository, type GraphResumeClaim } from '../deliveryPostgres.js'
 import { observeNativeDispatch } from './dispatchWait.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence,

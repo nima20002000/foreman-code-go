@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import {
   CURRENT_WORKFLOW_ROUTES, CurrentWorkflowReadInputSchema, CurrentWorkflowSaveInputSchema,
   CurrentWorkflowValidateInputSchema, CurrentEditReadInputSchema, CurrentEditMutationInputSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'
 import type { RunManagementService } from '../modules/runs/management.js'

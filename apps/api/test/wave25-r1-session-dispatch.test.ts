@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { NativeSessionLane } from '@graphql/contracts'
+import type { NativeSessionLane } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'

@@ -1,5 +1,5 @@
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
-import type { Agent } from '@graphql/contracts'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
+import type { Agent } from '@foreman-code/contracts'
 import { workflowToGraph } from './mapper'
 import { retainArray, sameFields } from './graphReferences'
 import type { GraphMapperOptions, GraphNode, GraphProjection } from './types'

@@ -1,8 +1,8 @@
-import { DurableInteractionSchema } from '@graphql/contracts'
+import { DurableInteractionSchema } from '@foreman-code/contracts'
 import type {
   AgentConfigurationVersion, AgentHarness, HarnessExecution, HarnessExecutionRequest,
   NativeHarnessEvent, NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { nativeLanes } from './helpers/nativeLanes.js'
 import { reviewerFixture } from './helpers/reviewerAudit.js'

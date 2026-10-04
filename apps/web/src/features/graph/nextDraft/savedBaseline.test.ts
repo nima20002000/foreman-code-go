@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema } from '@foreman-code/contracts/wave25'
 import { ApiClient, ApiError } from '../../../shared/api/client'
 import { fixture } from './core.cases'
 import { discardMeaningfulChanges } from './model'

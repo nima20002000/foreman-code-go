@@ -1,4 +1,4 @@
-import type { ExecutionResult } from '@graphql/contracts'
+import type { ExecutionResult } from '@foreman-code/contracts'
 
 export class HarnessExecutionError extends Error {
   readonly result: ExecutionResult

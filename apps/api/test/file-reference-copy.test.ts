@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import { describe, it } from 'vitest'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema,
-  AgentFileWorkingCopyEditResultSchema, MAX_FILE_READ_BYTES, type PermanentFileScope } from '@graphql/contracts/files'
+  AgentFileWorkingCopyEditResultSchema, MAX_FILE_READ_BYTES, type PermanentFileScope } from '@foreman-code/contracts/files'
 import { DomainError } from '../src/modules/errors.js'
 import type { FileQuery } from '../src/modules/files/repository.js'
 import type { FileByteStorage } from '../src/modules/files/storage.js'

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { it } from 'vitest'
-import type { HarnessExecutionRequest, NativeHarnessEvent, ResolvedSkill } from '@graphql/contracts'
+import type { HarnessExecutionRequest, NativeHarnessEvent, ResolvedSkill } from '@foreman-code/contracts'
 import { environment, errorCode, FixtureServer, manager, request } from './opencode-fixtures.js'
 
 const hash = (text: string) => `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`

@@ -1,4 +1,4 @@
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from './harnessEditor'
 import { selectNativeModel } from './harnessModelSelection'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'

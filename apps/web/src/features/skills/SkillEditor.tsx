@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAX_SKILL_INSTRUCTIONS_CHARS } from '@graphql/contracts'
-import { SkillCreateInputSchema, type SkillSummary, type SkillVersion } from '@graphql/contracts/management'
+import { MAX_SKILL_INSTRUCTIONS_CHARS } from '@foreman-code/contracts'
+import { SkillCreateInputSchema, type SkillSummary, type SkillVersion } from '@foreman-code/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'

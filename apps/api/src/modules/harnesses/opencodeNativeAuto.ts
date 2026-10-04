@@ -1,4 +1,4 @@
-import type { OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 

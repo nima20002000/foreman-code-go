@@ -1,4 +1,4 @@
-import type { AgentChatStreamEvent } from '@graphql/contracts/agent-chat'
+import type { AgentChatStreamEvent } from '@foreman-code/contracts/agent-chat'
 
 export const AGENT_CHAT_FRAME_BYTES = 512 * 1024
 

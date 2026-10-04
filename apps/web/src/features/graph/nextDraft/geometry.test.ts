@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { applyGraphGeometry } from '../geometry'
 import { createGraphTopologyProjector } from '../topology'
 import type { GraphProjection } from '../types'
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { fixture } from './core.cases'
 
 it('the shared geometry seam preserves entry, typed relationships, choices and unrelated node references', () => {

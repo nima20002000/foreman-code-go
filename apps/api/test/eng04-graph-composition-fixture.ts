@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
-import { AgentSchema, type AgentConfigurationVersion } from '@graphql/contracts'
-import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
+import { AgentSchema, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import { makeCurrentWorkflowFixture, CANONICAL_RUN_GRAPH_ROUTES, CurrentWorkflowSaveResultSchema,
-  SavedManagedWorkflowCommandResultSchema, type CurrentFixtureForm } from '@graphql/contracts/wave25'
+  SavedManagedWorkflowCommandResultSchema, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

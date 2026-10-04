@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
 import { GraphEditReadResultV3Schema,
-  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
+  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { queryKeys } from '../../../shared/api/query'
@@ -38,7 +38,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
 }))
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas fixture</div> }))
 vi.mock('../../../shared/api/query', async (original) => {
-  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   return { ...await original<typeof import('../../../shared/api/query')>(),
     useInteractionsQuery: () => ({ data: { items: [] } }),
     useAgentDefaultsQuery: () => ({ isError: false, data: { value: {

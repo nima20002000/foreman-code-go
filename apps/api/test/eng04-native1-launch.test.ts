@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { repeatLaunchClaim, repeatPossibleSubmissionLocked, requireRepeatNativeHooks } from '../src/modules/runs/repeatNativeRepository.js'
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'

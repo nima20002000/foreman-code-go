@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HarnessQualificationSchema } from '@graphql/contracts/harness-qualification'
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import { HarnessQualificationRegistry } from './registry.js'
 import { requireHarnessQualification, runAsQualificationCandidate, runWithReadOnlyQualification } from './gate.js'
 

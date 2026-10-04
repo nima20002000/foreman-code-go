@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 // Current execution always consumes an explicitly saved entry. Legacy entry
 // inference and V1-to-V2 conversion are retired; historical ENG03 evidence stays

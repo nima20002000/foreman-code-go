@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
-import { safeAuthReturnTo } from '@graphql/contracts/management'
+import { safeAuthReturnTo } from '@foreman-code/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { authenticationRequiredEvent } from '../../shared/api/authEvents'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'

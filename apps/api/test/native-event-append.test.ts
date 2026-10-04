@@ -1,4 +1,4 @@
-import type { HarnessNativeEvent } from '@graphql/contracts'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 

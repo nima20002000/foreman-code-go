@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { WorkerObservation } from '@graphql/contracts/node-placement'
+import type { WorkerObservation } from '@foreman-code/contracts/node-placement'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'

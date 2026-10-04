@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ClaudeMcpServerNameSchema, ClaudeMcpServerSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { ClaudeMcpServerNameSchema, ClaudeMcpServerSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { useClaudeSetupOptions } from '../../shared/api/harnessSettings'
 import { Alert, Button, TextField } from '../../shared/ui/nocturne'
 

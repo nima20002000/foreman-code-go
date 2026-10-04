@@ -34,7 +34,7 @@ intentionally not included. The new component loads its own scoped stylesheet.
 ## HTTP and state
 
 `retentionClient.ts` calls the existing `apiClient.request` boundary with the frozen
-`@graphql/contracts/files` input and result schemas:
+`@foreman-code/contracts/files` input and result schemas:
 
 - `GET /api/management/file-retention`
 - `POST /api/management/file-retention/preview`
@@ -134,11 +134,11 @@ Run in the full pinned checkout:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec node ../../scripts/heavy-job.mjs -- vitest run src/features/retention-settings/ChatRetentionSettings.test.tsx src/features/retention-settings/retentionDraft.test.ts
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec node ../../scripts/heavy-job.mjs -- vitest run src/features/retention-settings/ChatRetentionSettings.test.tsx src/features/retention-settings/retentionDraft.test.ts
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```
 
 Then mount and verify the account page at 390px against the FIL-40 backend with its

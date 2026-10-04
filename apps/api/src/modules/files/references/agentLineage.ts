@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { FileScope } from '@graphql/contracts/files'
+import type { FileScope } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { AgentReferenceContext } from './agentTypes.js'
 

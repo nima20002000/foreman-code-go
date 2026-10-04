@@ -1,6 +1,6 @@
-import type { AgentChatState } from '@graphql/contracts/agent-chat'
-import type { OperatorConversationState, PendingNativeInteraction } from '@graphql/contracts'
-import { AcceptedChatResponseControlSchema, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
+import type { AgentChatState } from '@foreman-code/contracts/agent-chat'
+import type { OperatorConversationState, PendingNativeInteraction } from '@foreman-code/contracts'
+import { AcceptedChatResponseControlSchema, type AcceptedChatResponseControl } from '@foreman-code/contracts/interaction-activity'
 
 function responseNative(pending: PendingNativeInteraction): AcceptedChatResponseControl['native'] {
   const request = pending.request

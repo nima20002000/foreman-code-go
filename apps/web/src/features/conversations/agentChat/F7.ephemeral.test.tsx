@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import type { SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { intentUnavailable } from './model'
 import { completedFixture, ephemeralFixture, startedFixture } from './f7.testSupport'

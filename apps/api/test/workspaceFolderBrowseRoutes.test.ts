@@ -1,6 +1,6 @@
 import Fastify, { type FastifyRequest } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { BrowserAuthentication } from '../src/modules/browser-auth/service.js'

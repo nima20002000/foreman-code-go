@@ -1,5 +1,5 @@
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@graphql/contracts'
-import { agentChatFixtures, type AgentChatState } from '@graphql/contracts/agent-chat'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
+import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 
 export const chatHarnesses = ['codex', 'opencode'] as const
 

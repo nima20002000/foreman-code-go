@@ -1,5 +1,5 @@
-import { SendOperatorMessageRequestSchema, type SendOperatorMessageRequest, type OperatorChatSettings } from '@graphql/contracts'
-import type { MessageAttachmentRef } from '@graphql/contracts/files'
+import { SendOperatorMessageRequestSchema, type SendOperatorMessageRequest, type OperatorChatSettings } from '@foreman-code/contracts'
+import type { MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { sameAttachmentRefs } from '../conversations/chatAttachmentAttempt'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'

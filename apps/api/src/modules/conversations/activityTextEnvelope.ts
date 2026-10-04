@@ -1,5 +1,5 @@
-import { ActivityChangeEnvelopeV1Schema, type ActivityChangeEnvelopeV1 } from '@graphql/contracts'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import { ActivityChangeEnvelopeV1Schema, type ActivityChangeEnvelopeV1 } from '@foreman-code/contracts'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 
 /** Shared Operator/Agent/execution adapter. Transport arrival counters never become native provenance. */
 export function activityTextEnvelope(operation: ActivityTextOperation, harness: 'codex' | 'opencode' | 'claude'): ActivityChangeEnvelopeV1 {

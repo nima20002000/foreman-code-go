@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { changeCodexSandbox, OpenCodeHarnessConfigurationSchema, withAdvancedDefaults, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@graphql/contracts'
+import { changeCodexSandbox, OpenCodeHarnessConfigurationSchema, withAdvancedDefaults, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 import { Button, Select, TextField } from '../../shared/ui/nocturne'
 
 const sandboxChoices = [

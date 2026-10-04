@@ -4,10 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { workHandoffMigration } from '../src/infrastructure/workHandoffMigration.js'
-import { RunActivitySchema } from '@graphql/contracts'
+import { RunActivitySchema } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   CurrentWorkflowReadResultSchema, WorkActivationInputSchema, WorkNoticeSchema,
-  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
 import { readRepeatGraphExecutionsLocked } from '../src/modules/run-graph/repeatProjectionRows.js'

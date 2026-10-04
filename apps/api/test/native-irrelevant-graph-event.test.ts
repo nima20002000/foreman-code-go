@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { PostgresNativeGraphProjectionWriter } from '../src/modules/run-graph/nativeWriter.js'

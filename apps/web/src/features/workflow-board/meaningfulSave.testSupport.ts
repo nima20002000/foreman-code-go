@@ -1,8 +1,8 @@
-import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { HttpResponse } from 'msw'
 import { GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
   GraphEditReadResultV3Schema, RunStartV3InputSchema, ExecutableWorkflowV3Schema, sameWorkflowValue,
-  type GraphEditIntentV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3 } from '@graphql/contracts/wave25'
+  type GraphEditIntentV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3 } from '@foreman-code/contracts/wave25'
 import { createCurrentBoardMock } from '../../shared/mocks/currentBoard'
 import { fixture } from '../graph/nextDraft/core.cases'
 import { journalIntent, savedJournal } from '../graph/nextDraft/nim2644Journal.fixture'

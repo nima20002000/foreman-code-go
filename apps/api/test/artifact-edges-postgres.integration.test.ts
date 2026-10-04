@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { beforeAll, afterAll, describe, it, expect } from 'vitest'
-import type { ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
+import type { ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
 import { artifactEdgeMigrationSql } from '../src/infrastructure/artifactEdgeMigration.js'
 import { PostgresArtifactEdgeRepository } from '../src/modules/files/distributed/postgres.js'
 import { DomainError } from '../src/modules/errors.js'

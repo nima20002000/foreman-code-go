@@ -6,8 +6,8 @@ import {
   RunRecordDetailSchema, WorkflowRunV3Schema,
   RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema, RunVersionDetailSchema,
   makeCurrentWorkflowFixture, type RunExecutionSummary, type RunInspectionToolName,
-} from '@graphql/contracts/wave25'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport.js'

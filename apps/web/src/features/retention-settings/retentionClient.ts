@@ -6,7 +6,7 @@ import {
   FileRetentionSaveResultSchema,
   type FileRetentionPreviewInput,
   type FileRetentionSaveInput,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 const root = '/api/management/file-retention'

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@foreman-code/contracts'
 import { projectInteractionActivity, projectInteractionSummary, type InteractionActivityEvidence } from '../src/modules/interactions/activityProjection.js'
 
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'

@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { ActivityNativeIdentitySchema, OperatorActivitySchema, type ActivityNativeIdentity, type OperatorActivity } from '@graphql/contracts'
+import { ActivityNativeIdentitySchema, OperatorActivitySchema, type ActivityNativeIdentity, type OperatorActivity } from '@foreman-code/contracts'
 import type { OperatorActivityChange } from './operatorActivity.js'
 import { nativePersistenceRedactor, type NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { DomainError } from '../errors.js'

@@ -6,7 +6,7 @@ import {
   type ManagementAudience,
   type ManagementGrant,
   type ManagementPrincipal,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'

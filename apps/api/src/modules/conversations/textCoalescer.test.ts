@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { createTextCoalescer } from './textCoalescer.js'
 import { completedNativeAssistantMessage } from './operatorText.js'
 

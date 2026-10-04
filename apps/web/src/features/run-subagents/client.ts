@@ -4,7 +4,7 @@ import {
   RunSubagentsPageSchema, RunSubagentDetailSchema, RunSubagentMessagesPageSchema,
   RunSubagentToolsPageSchema, RunSubagentInputSchema, RunSubagentInterruptSchema,
   RunSubagentCommandReceiptSchema,
-} from '@graphql/contracts/subagents'
+} from '@foreman-code/contracts/subagents'
 import { ApiError, apiClient, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { agentChatFixtures, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
 import { agentChatFixtureFor } from '../../../shared/mocks/agentChatHandlers'
 import { useConversationDraftStore } from '../conversationDraftStore'

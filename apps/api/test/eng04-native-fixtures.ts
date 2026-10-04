@@ -1,5 +1,5 @@
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { RepeatWorkflowVersionV1Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { RepeatWorkflowVersionV1Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { freezeRepeatEntry, makeRepeatOccurrence, type RepeatScope } from '../src/modules/runs/repeatResolution.js'
 
 export const nativeAt = '2026-09-25T00:00:00.000Z'

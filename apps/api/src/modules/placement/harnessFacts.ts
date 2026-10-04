@@ -1,14 +1,14 @@
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema,
-  PinnedHarnessSelectionSchema, type HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+  PinnedHarnessSelectionSchema, type HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { z } from 'zod'
-import { HarnessQualificationSchema } from '@graphql/contracts/harness-qualification'
-import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { HarnessInstallationRegistry } from '../harnesses/installationRegistry.js'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { QUALIFICATION_TARGET_PROFILE } from '../harnesses/qualification/profiles.js'
-import type { CompatibilityHarness } from '@graphql/contracts'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { placementDigest } from './binding.js'
 const unavailable = (): never => { throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Exact persisted host profile and native qualification are required.', 409) }
 const QualificationIdentitySchema = z.object({

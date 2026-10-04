@@ -14,7 +14,7 @@ import {
   type AcceptedWorkflowRunV3, type RepeatGraphScopeV3, type RepeatGraphBatchV3,
   type CanonicalRunGraphScope, type RepeatGraphFactV3,
   type RepeatGraphEventV3, type RepeatGraphEffectV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import {
   assertGraphTransaction, beforeGraphCommit, beforeGraphCommitChecks, didGraphTransactionCommit, poisonGraphTransaction,
   type ExclusiveGraphConnection, type GraphTransactionSql,

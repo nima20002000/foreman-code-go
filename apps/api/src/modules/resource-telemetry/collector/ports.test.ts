@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { telemetryComputerFixture, telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
-import { TelemetryCollectedBatchSchema } from '@graphql/contracts/resource-telemetry'
+import { telemetryComputerFixture, telemetryOwnedFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
+import { TelemetryCollectedBatchSchema } from '@foreman-code/contracts/resource-telemetry'
 import type { PassiveNativeRegistry, TrustedNativeScope, TrustedNativeScopes } from './registryAdapter.js'
 
 const io = vi.hoisted(() => ({ read: vi.fn(), stat: vi.fn(), children: vi.fn(), create: vi.fn() }))

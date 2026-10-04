@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { beforeEach, expect, it, vi } from 'vitest'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
 import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'

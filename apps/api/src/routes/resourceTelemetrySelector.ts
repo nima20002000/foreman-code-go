@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { TelemetrySelectorService } from '@graphql/contracts/resource-telemetry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { TelemetrySelectorService } from '@foreman-code/contracts/resource-telemetry'
 import { requirePrincipal } from '../modules/access/http.js'
 import { RESOURCE_TELEMETRY_SELECTOR_ROUTE, resolveTelemetrySelector } from '../modules/resource-telemetry/readback/selector.js'
 import type { TelemetryDenialAudit } from '../modules/resource-telemetry/readback/adapters.js'

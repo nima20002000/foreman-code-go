@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import type { SourceMaterializationRecord, SourceRootRecord } from '@graphql/contracts/source-admission'
+import type { SourceMaterializationRecord, SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { authorizeClosedSourceRelease } from './operationAuthority.js'

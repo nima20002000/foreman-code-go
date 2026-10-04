@@ -1,5 +1,5 @@
-import type { ApprovedRootAllowlist, WorkspaceRootSelection, WorkspaceRootPolicy, WorkspaceRootAttestation } from '@graphql/contracts/workspace-root-policies'
-import type { WorkspaceBoundLocationReadback } from '@graphql/contracts/workspace-bound-location'
+import type { ApprovedRootAllowlist, WorkspaceRootSelection, WorkspaceRootPolicy, WorkspaceRootAttestation } from '@foreman-code/contracts/workspace-root-policies'
+import type { WorkspaceBoundLocationReadback } from '@foreman-code/contracts/workspace-bound-location'
 export const rootMainId = '11111111-1111-4111-8111-111111111111'
 export const rootDeviceId = '22222222-2222-4222-8222-222222222222'
 const filesystem = { device: '1', inode: '2', mountId: '3' }

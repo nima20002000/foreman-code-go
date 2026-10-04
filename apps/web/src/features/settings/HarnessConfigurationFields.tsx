@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { AgentHarnessSchema, DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration, type HarnessDefaults } from '@graphql/contracts'
-import type { HarnessSettingsSection } from '@graphql/contracts/management'
+import { AgentHarnessSchema, DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration, type HarnessDefaults } from '@foreman-code/contracts'
+import type { HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { Alert, Button, ConfirmDialog, Select } from '../../shared/ui/nocturne'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { useAutomaticHarnessCheck, useRefreshNativeHarness } from '../../shared/api/harnessSettings'

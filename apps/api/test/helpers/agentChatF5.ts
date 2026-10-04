@@ -3,7 +3,7 @@ import { setImmediate } from 'node:timers/promises'
 import {
   PendingNativeInteractionSchema,
   type ApprovalResponseOption, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 
 export function deferred() {

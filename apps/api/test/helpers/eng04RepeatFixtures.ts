@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import {
   RepeatWorkflowVersionV1Schema,
   canonicalGraphJson,
@@ -8,7 +8,7 @@ import {
   type RepeatDecisionV1,
   type RepeatOccurrenceV1,
   type RepeatWorkflowVersionV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import { ExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { DomainError } from '../../src/modules/errors.js'

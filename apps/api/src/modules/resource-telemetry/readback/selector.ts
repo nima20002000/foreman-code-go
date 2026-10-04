@@ -1,9 +1,9 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   TelemetrySelectorResultSchema, TelemetrySelectorTargetSchema, telemetryCanonical,
   type TelemetryHost, type TelemetryOwner, type TelemetrySelectorResult, type TelemetrySelectorService,
   type TelemetrySelectorTarget,
-} from '@graphql/contracts/resource-telemetry'
+} from '@foreman-code/contracts/resource-telemetry'
 import { DomainError } from '../../errors.js'
 import type { ResourceTelemetryService } from '../ingestion/service.js'
 import type { TelemetryDenialAudit } from './adapters.js'

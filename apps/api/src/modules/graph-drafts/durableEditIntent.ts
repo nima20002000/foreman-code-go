@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   CurrentJournalAdvanceInputSchema as GraphEditAdvanceInputSchema,
   CurrentJournalDiscardInputSchema as GraphEditDiscardInputSchema,
@@ -10,7 +10,7 @@ import {
   type CurrentJournalDiscardInput as GraphEditDiscardInput,
   type CurrentJournal as GraphEditIntent, type CurrentJournalReadInput as GraphEditReadInput,
   type CurrentJournalRunState as GraphEditRunState,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'

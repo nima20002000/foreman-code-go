@@ -4,8 +4,8 @@ export interface ExecutionTopology {
   entryNodeId: string
   order: string[]
   excluded: string[]
-  incoming: Map<string, import('@graphql/contracts/wave25').WorkflowRelationship[]>
-  outgoing: Map<string, import('@graphql/contracts/wave25').WorkflowRelationship[]>
+  incoming: Map<string, import('@foreman-code/contracts/wave25').WorkflowRelationship[]>
+  outgoing: Map<string, import('@foreman-code/contracts/wave25').WorkflowRelationship[]>
   sinks: string[]
   /** LangGraph supersteps, deliberately independent of the native execution budget. */
   recursionLimit: number
@@ -16,7 +16,7 @@ export interface ExecutionTopology {
  * execution semantics. Approval relationships are not execution dependencies. */
 export function compileExecutionTopology(version: {
   entryNodeId: string
-  definition: { entryNodeId?: string | null; nodes: readonly { id: string }[]; edges: readonly import('@graphql/contracts/wave25').WorkflowRelationship[] }
+  definition: { entryNodeId?: string | null; nodes: readonly { id: string }[]; edges: readonly import('@foreman-code/contracts/wave25').WorkflowRelationship[] }
 }): ExecutionTopology {
   const nodes = new Set(version.definition.nodes.map((node) => node.id))
   if (!nodes.size || nodes.size !== version.definition.nodes.length || !nodes.has(version.entryNodeId)
@@ -77,14 +77,14 @@ export function compileExecutionTopology(version: {
 }
 
 export type ExecutionAdmissionDecision =
-  | { kind: 'resolved'; resolution: import('@graphql/contracts/wave25').NodeResolution }
+  | { kind: 'resolved'; resolution: import('@foreman-code/contracts/wave25').NodeResolution }
   | { kind: 'waiting' | 'skipped' | 'excluded' }
-  | { kind: 'run'; selected: import('@graphql/contracts/wave25').WorkflowRelationship[] }
+  | { kind: 'run'; selected: import('@foreman-code/contracts/wave25').WorkflowRelationship[] }
 
 /** A missing fact is unresolved, not an unselected edge. Every incoming edge must settle first. */
 export function decideExecutionAdmission(
   topology: ExecutionTopology, nodeId: string,
-  resolutions: ReadonlyMap<string, import('@graphql/contracts/wave25').NodeResolution>,
+  resolutions: ReadonlyMap<string, import('@foreman-code/contracts/wave25').NodeResolution>,
 ): ExecutionAdmissionDecision {
   if (!topology.incoming.has(nodeId)) throw new DomainError('WORKFLOW_NODE_NOT_FOUND', `Node '${nodeId}' was not found.`, 409)
   const existing = resolutions.get(nodeId)
@@ -94,7 +94,7 @@ export function decideExecutionAdmission(
   }
   if (topology.excluded.includes(nodeId)) return { kind: 'excluded' }
   if (nodeId === topology.entryNodeId) return { kind: 'run', selected: [] }
-  const selected: import('@graphql/contracts/wave25').WorkflowRelationship[] = []
+  const selected: import('@foreman-code/contracts/wave25').WorkflowRelationship[] = []
   let unresolved = false
   for (const edge of topology.incoming.get(nodeId)!) {
     const source = resolutions.get(edge.source)
@@ -113,8 +113,8 @@ export function decideExecutionAdmission(
 
 /** Includes a selected branch end even when its node is not a static sink. */
 export function selectedTerminalResolutions(
-  resolutions: readonly import('@graphql/contracts/wave25').NodeResolution[],
-): import('@graphql/contracts/wave25').NodeResolution[] {
+  resolutions: readonly import('@foreman-code/contracts/wave25').NodeResolution[],
+): import('@foreman-code/contracts/wave25').NodeResolution[] {
   return resolutions.filter((resolution) => resolution.resolution === 'succeeded'
     && resolution.selectedRelationshipIds.length === 0).sort((a, b) => a.workflowNodeId < b.workflowNodeId ? -1 : a.workflowNodeId > b.workflowNodeId ? 1 : 0)
 }

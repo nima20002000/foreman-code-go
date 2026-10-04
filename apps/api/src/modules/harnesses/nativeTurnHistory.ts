@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { ExecutionResult } from '@graphql/contracts'
+import type { ExecutionResult } from '@foreman-code/contracts'
 
 export type NativeObject = Record<string, unknown>
 export function nativeObject(value: unknown): NativeObject {

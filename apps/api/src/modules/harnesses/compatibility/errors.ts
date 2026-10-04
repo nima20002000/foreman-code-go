@@ -1,4 +1,4 @@
-import type { HarnessCompatibility } from '@graphql/contracts'
+import type { HarnessCompatibility } from '@foreman-code/contracts'
 
 export class CompatibilityCheckError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'CompatibilityCheckError' }

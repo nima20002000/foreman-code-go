@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 

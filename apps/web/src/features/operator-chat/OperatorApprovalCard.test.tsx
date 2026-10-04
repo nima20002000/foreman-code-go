@@ -2,7 +2,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import type { PendingNativeInteraction } from '@graphql/contracts'
+import type { PendingNativeInteraction } from '@foreman-code/contracts'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 
 const option = (optionId: string, semantic: PendingNativeInteraction['responseOptions'][number]['semantic'], label: string, persistence: PendingNativeInteraction['responseOptions'][number]['persistence']) => ({

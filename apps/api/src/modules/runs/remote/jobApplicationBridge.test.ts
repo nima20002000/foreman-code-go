@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
-import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
+import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { JobApplicationBridge } from './jobApplicationBridge.js'
 vi.mock('../../access/liveManagementPrincipal.js', () => ({ readLiveManagementPrincipal: async () => { throw new Error('starter revoked') } }))
 function fixture() {

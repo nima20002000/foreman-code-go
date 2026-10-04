@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@foreman-code/contracts'
 
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { configuredHarness, defaultAgentForHarness, nextHarnessAgentName, initialModel, effortOptions } from './agentSettings'

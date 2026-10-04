@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { HostAwarePlacementDispatch, type AuthorizedPlacementTransport } from './hostComposition.js'
 import { freezePlacement } from './binding.js'
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 
 const mainId = '00000000-0000-4000-8000-000000000001'
 const deviceId = '00000000-0000-4000-8000-000000000002'

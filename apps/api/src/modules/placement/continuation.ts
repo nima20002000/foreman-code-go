@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { continuationValidator } from '../runs/continuation.js'
 import { interactionConnection } from '../interactions/connection.js'

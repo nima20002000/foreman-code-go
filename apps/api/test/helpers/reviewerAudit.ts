@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import type {
   AgentConfigurationVersion, DurableInteraction, HarnessExecution, NativeHarnessEvent,
   NativeSessionReference, PendingNativeInteraction, ReviewJob,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import type { IssuedWorkerCredential } from '../../src/modules/access/workerCredentials.js'
 import { DomainError } from '../../src/modules/errors.js'

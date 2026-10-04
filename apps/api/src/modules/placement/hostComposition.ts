@@ -1,5 +1,5 @@
-import type { AcceptedNodePlacement, DispatchIntent, OwnerControl, PlacementDispatchPort, WorkerObservation } from '@graphql/contracts/node-placement'
-import { DispatchIntentSchema, OwnerControlSchema, WorkerObservationSchema } from '@graphql/contracts/node-placement'
+import type { AcceptedNodePlacement, DispatchIntent, OwnerControl, PlacementDispatchPort, WorkerObservation } from '@foreman-code/contracts/node-placement'
+import { DispatchIntentSchema, OwnerControlSchema, WorkerObservationSchema } from '@foreman-code/contracts/node-placement'
 import { DomainError } from '../errors.js'
 import { readPlacement } from './binding.js'
 

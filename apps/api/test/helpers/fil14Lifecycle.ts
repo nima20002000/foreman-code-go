@@ -11,7 +11,7 @@ import { z } from 'zod'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, MAX_FILE_BYTES, FileWithRevisionSchema, temporaryFileExpiresAt,
   type FileState, type FileWithRevision,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { fileStorageMigration } from '../../src/infrastructure/fileStorageMigration.js'
 import { fileReferenceMigration } from '../../src/infrastructure/fileReferenceMigration.js'

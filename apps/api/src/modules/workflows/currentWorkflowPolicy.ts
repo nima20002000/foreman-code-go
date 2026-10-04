@@ -1,4 +1,4 @@
-import type { ManagementAction, ManagementPrincipal, ManagementScope } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementPrincipal, ManagementScope } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, requireAuthorization, type AuthorizedResource } from '../access/policy.js'
 
 type Requirement = { action: ManagementAction; scope: 'global' | 'workspace' | 'workflow' }

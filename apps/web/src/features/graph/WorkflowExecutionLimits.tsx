@@ -1,6 +1,6 @@
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useId, useRef, useState } from 'react'
-import type { WorkflowExecutionPolicy } from '@graphql/contracts'
+import type { WorkflowExecutionPolicy } from '@foreman-code/contracts'
 import { Alert, Button, TextField } from '../../shared/ui/nocturne'
 import { focusFirstInvalid } from '../settings/fieldValidation'
 import '../settings/settingsUsability.css'

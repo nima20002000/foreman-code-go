@@ -4,7 +4,7 @@ import { it } from 'vitest'
 
 import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeServer.js'
 import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'

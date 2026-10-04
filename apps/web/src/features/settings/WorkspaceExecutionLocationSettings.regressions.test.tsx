@@ -1,5 +1,5 @@
-import type { ManagedWorkspace } from '@graphql/contracts/management'
-import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import type { ManagedWorkspace } from '@foreman-code/contracts/management'
+import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

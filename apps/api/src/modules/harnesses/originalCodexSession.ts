@@ -1,4 +1,4 @@
-import type { ApprovalResponseOption, NativeSessionReference } from '@graphql/contracts'
+import type { ApprovalResponseOption, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeSessionStart } from './port.js'
 import type { CodexAppServerSessionManager, CodexOriginalSessionLifetime } from './codexAppServer.js'
 

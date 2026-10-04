@@ -1,4 +1,4 @@
-import type { HarnessExecutionRequest } from '@graphql/contracts'
+import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import { legacySkillPrompt } from '../skills/instructions.js'

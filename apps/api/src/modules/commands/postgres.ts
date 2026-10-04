@@ -1,7 +1,7 @@
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
-export { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+export { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
 
 import { DomainError } from '../errors.js'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FileRetentionPreferenceSchema, FileRetentionPreviewResultSchema } from '@graphql/contracts/files'
+import { FileRetentionPreferenceSchema, FileRetentionPreviewResultSchema } from '@foreman-code/contracts/files'
 import { matchesRetentionPreview, retentionDraft, retentionSeconds } from './retentionDraft'
 
 const preference = (durationSeconds: number) => FileRetentionPreferenceSchema.parse({

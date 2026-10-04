@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
-import { SUBAGENT_LIMITS, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import { SUBAGENT_LIMITS, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { Button, CodeBlock, Drawer, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'

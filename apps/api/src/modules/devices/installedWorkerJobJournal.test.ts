@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
-import { WorkerPairingConfigurationSchema } from '@graphql/contracts/device-identity'
-import { DeviceSessionBindingSchema } from '@graphql/contracts/device-connection'
-import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
+import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
+import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
+import { DeviceSessionBindingSchema } from '@foreman-code/contracts/device-connection'
+import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 
 const ports = vi.hoisted(() => ({ qualification: vi.fn(), open: vi.fn(), close: vi.fn(), jobs: vi.fn(), recover: vi.fn(), handle: vi.fn(), shutdown: vi.fn(), inputs: vi.fn() }))

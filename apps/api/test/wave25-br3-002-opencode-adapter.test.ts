@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 import { OPENCODE_RECONCILIATION_EVENT, matchesOpenCodeHistorySource, readOpenCodeReconciliation } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { openCodeReviewTerminalOutcome } from '../src/modules/harnesses/opencodeReviewTerminal.js'

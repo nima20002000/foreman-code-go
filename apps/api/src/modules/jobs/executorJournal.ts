@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { RemoteJobDispatchIntentSchema, RemoteJobConnectionIdentitySchema } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobDispatchIntentSchema, RemoteJobConnectionIdentitySchema } from '@foreman-code/contracts/remote-job-execution'
 
 const process = z.object({ pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
 const boundary = z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'), device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict()

@@ -5,7 +5,7 @@ import {
   ServiceHealthSchema,
   type ServiceHealth,
   type RuntimeIdentity,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify'
 import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
 import type pg from 'pg'

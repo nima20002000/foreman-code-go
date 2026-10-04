@@ -17,7 +17,7 @@ import {
   type PendingNativeInteraction,
   type ReviewJob,
   HarnessExecutionRequestSchema,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'

@@ -116,7 +116,7 @@ Root's shared strict request (`RsyncControlRequestSchema`):
 Response repeats exact kind/method/transferId. `receiver-verify` requires existing
 `VerifiedTransferReceiptSchema`; all other methods forbid receipt. Every frame
 and response forbids binary payload. The leaf imports Root's shared request,
-response and request type from `@graphql/contracts/byte-transfer`; it defines no
+response and request type from `@foreman-code/contracts/byte-transfer`; it defines no
 local wire parser or compatibility default. Root owns shared schema exports and
 their consumer/discovery tests.
 

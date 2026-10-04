@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 it('requires explicit V3 approval authority before a node can enter native work', () => {
   const fixture = makeCurrentWorkflowFixture('approval-entry', 'single')

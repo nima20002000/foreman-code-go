@@ -1,5 +1,5 @@
-import { RunEventsPageSchema } from '@graphql/contracts/management'
-import { CurrentRunDetailsSchema, CurrentRunPageSchema, RepeatGraphScopeV3Schema, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { RunEventsPageSchema } from '@foreman-code/contracts/management'
+import { CurrentRunDetailsSchema, CurrentRunPageSchema, RepeatGraphScopeV3Schema, type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 export async function readBoardRun(workspaceId: string, workflowId: string, runId: string, options?: RequestOptions) {

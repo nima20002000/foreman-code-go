@@ -1,4 +1,4 @@
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 
 export const savedClaudeConfiguration: ClaudeHarnessConfiguration = {
   harness: 'claude', model: 'claude-saved-model', authMode: 'subscription',

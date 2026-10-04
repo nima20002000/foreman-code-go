@@ -1,5 +1,5 @@
-import type { HarnessExecution, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { HarnessExecution, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import type { SessionWriteLease, SingleWriterSessionManager } from './sessionWriter.js'

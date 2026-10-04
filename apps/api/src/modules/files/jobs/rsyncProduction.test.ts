@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { TransferIntentSchema, TransferContextSchema } from '@graphql/contracts/byte-transfer'
+import { TransferIntentSchema, TransferContextSchema } from '@foreman-code/contracts/byte-transfer'
 import type { DeviceExtensionContext, DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { DomainError } from '../../errors.js'
 import { TransferExpiredError } from '../../byte-transfer/service.js'

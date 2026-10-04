@@ -1,4 +1,4 @@
-import { DurableInteractionSchema, ReviewJobSchema, RunStopCauseSchema, WorkflowRunSchema } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema, RunStopCauseSchema, WorkflowRunSchema } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { transact } from './wave25/context.js'
 import { recoverApprovalFailure } from './wave25/failureRecovery.js'

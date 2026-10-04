@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { fixture } from './core.cases'
 import { draftOperations, hasLocalChanges } from './model'
 import { editNextDraft, newNextDraft, nextDraftDirty, redoNextDraft, undoNextDraft } from './state'

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RunRecordDetailSchema, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
+import { RunRecordDetailSchema, RUN_INSPECTION_TOOLS } from '@foreman-code/contracts/wave25'
 import { isSettlementPendingCheckpointError } from '../src/modules/interactions/repeatNativeEvidence.js'
 import { readWorkflowCheckpoint } from '../src/modules/runs/repeatGraph.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'

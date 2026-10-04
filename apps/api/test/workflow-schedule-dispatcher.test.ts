@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { WorkflowScheduleSchema } from '@graphql/contracts/schedules'
+import { WorkflowScheduleSchema } from '@foreman-code/contracts/schedules'
 import { decideDueSchedule, planDueSchedule } from '../src/modules/schedules/dispatchPlan.js'
 import { WorkflowScheduleDispatcher, type ScheduleDispatcherPort } from '../src/modules/schedules/dispatcher.js'
 import { scheduleRejectionReason } from '../src/modules/schedules/postgresDispatcher.js'

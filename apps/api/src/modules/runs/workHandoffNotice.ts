@@ -1,7 +1,7 @@
 import {
   WorkNoticeSchema, WorkAlternativeSchema, canonicalGraphJson, workLimitNoticeText,
   type WorkActivationInput, type WorkAlternative, type WorkNotice, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatConflict, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 

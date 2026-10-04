@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema,
   canonicalGraphJson, makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type {
   ImmutableAgentConfigurationRow, ImmutableWorkflowVersionRow,
 } from '../../src/modules/workflows/immutableRead.js'

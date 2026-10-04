@@ -1,8 +1,8 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunSubagentSchema, RunSubagentGetInputSchema, RunSubagentsListInputSchema, RunSubagentItemsInputSchema,
-  RunSubagentMessagesPageSchema, RunSubagentToolsPageSchema, RunSubagentDetailSchema, RunSubagentsPageSchema } from '@graphql/contracts/subagents'
+  RunSubagentMessagesPageSchema, RunSubagentToolsPageSchema, RunSubagentDetailSchema, RunSubagentsPageSchema } from '@foreman-code/contracts/subagents'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

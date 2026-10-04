@@ -3,7 +3,7 @@ import type pg from 'pg'
 import { HostBoundExecutionManagers } from './nativeComposition.js'
 import { readAcceptedPlacement, readDispatchIntent } from './persistence.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 
 vi.mock('./persistence.js', () => ({ readAcceptedPlacement: vi.fn(), readDispatchIntent: vi.fn() }))
 const pool = {} as pg.Pool

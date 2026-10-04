@@ -1,5 +1,5 @@
-import type { HarnessOptions } from '@graphql/contracts/management'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { DomainError } from '../../errors.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { claudeEnvironment } from './configuration.js'

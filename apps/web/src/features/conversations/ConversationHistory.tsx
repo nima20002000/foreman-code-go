@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { Message } from '@graphql/contracts'
+import type { Message } from '@foreman-code/contracts'
 import { EmptyState, MessageBubble } from '../../shared/ui/nocturne'
 import './conversationHistory.css'
 

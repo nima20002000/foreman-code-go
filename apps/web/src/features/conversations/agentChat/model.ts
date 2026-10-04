@@ -1,6 +1,6 @@
 import { activityScopeKey, reconcileActivitySnapshot, sourceVectorIsStale, sourceVectorHasAdvance } from './activityMerge'
-import type { Message } from '@graphql/contracts'
-import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@graphql/contracts/agent-chat'
+import type { Message } from '@foreman-code/contracts'
+import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@foreman-code/contracts/agent-chat'
 
 /** A draft exists before a conversation does. Never key it by Agent alone or by a native id. */
 export function agentChatContextKey(context: AgentChatContext): string {

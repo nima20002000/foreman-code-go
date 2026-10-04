@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../errors.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { CodexAppServerSessionManager } from './codexAppServer.js'

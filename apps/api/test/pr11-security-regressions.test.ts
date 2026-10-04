@@ -5,8 +5,8 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { describe, it } from 'vitest'
 
 import { canReadInteraction, canRespondToInteraction } from '../src/modules/access/appPolicy.js'

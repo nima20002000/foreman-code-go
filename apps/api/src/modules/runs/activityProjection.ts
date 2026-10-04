@@ -1,5 +1,5 @@
 import { GraphIdSchema, RunActivityPublicSchema,
-  type RunActivityPublic, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+  type RunActivityPublic, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { repeatId } from './repeatResolution.js'
 import { safeNodeName } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'

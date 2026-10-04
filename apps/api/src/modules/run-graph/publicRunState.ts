@@ -1,4 +1,4 @@
-import { GraphRunStateSchema, type RunGraphScope } from '@graphql/contracts/wave25'
+import { GraphRunStateSchema, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { publicAttentionTotals, readPublicAttentionCounts, type PublicAttentionCount } from './currentAttention.js'
 import { RunGraphError } from './errors.js'

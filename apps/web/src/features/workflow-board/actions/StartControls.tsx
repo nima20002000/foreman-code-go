@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { sameWorkflowValue, type GraphEditIntentV3, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { sameWorkflowValue, type GraphEditIntentV3, type RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { useGraphDraftStore } from '../../graph/store'
 import { ApiError } from '../../../shared/api/client'
 import { nextDraftKey } from '../../graph/nextDraft/state'

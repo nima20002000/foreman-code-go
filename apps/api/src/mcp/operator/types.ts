@@ -9,7 +9,7 @@ import type { OperatorChatService } from '../../modules/conversations/operatorCh
 import type { AgentChatService } from '../../modules/conversations/agentChat.js'
 import type { FileRetentionService } from '../../modules/files/retention.js'
 
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import type { AgentManagementService } from '../../modules/workspaces/agents.js'
 import type { HarnessCatalogService } from '../../modules/harnesses/catalog.js'
@@ -26,8 +26,8 @@ export interface OperatorServices {
   jobs?: import('../../modules/jobs/service.js').JobService
   jobRuntimeProfiles?: import('../../modules/jobs/runtimeProfiles.js').JobRuntimeProfiles
   resourceTelemetry?: {
-    reads: import('@graphql/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
-    selectors: import('@graphql/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>
+    reads: import('@foreman-code/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
+    selectors: import('@foreman-code/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>
   }
   workspaceRoots?: import('../../modules/workspace-roots/service.js').WorkspaceBoundLocationService
   harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService

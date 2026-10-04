@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
 import { PostgresFileReferenceAuthorization } from '../src/modules/files/references/authorization.js'

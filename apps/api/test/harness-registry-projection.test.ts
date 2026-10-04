@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessRegistryReadbackSchema } from '@graphql/contracts/harness-registry'
+import { HarnessRegistryReadbackSchema } from '@foreman-code/contracts/harness-registry'
 import { projectHarnessInstance, projectHarnessRegistry } from '../src/modules/harnesses/registryProjection.js'
 
 describe('public registry projection', () => {

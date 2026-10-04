@@ -54,7 +54,7 @@ function fixture({ status = 'delivered', state = 'resumed', ack = null, retired 
   } }
   const fail = (code) => { throw Object.assign(new Error(code), { code }) }
   const imports = {
-    '@graphql/contracts/wave25': { canonicalGraphJson: JSON.stringify },
+    '@foreman-code/contracts/wave25': { canonicalGraphJson: JSON.stringify },
     '../postgres.js': { PostgresInteractionRepository: class { async cancelPendingForRun() { return 123 } } },
     './reviews.js': { Wave25InteractionCoordinationRepository: class {} },
     './delivery.js': { Wave25InteractionDeliveryRepository: class {} },

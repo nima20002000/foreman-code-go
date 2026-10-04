@@ -19,7 +19,7 @@ importers:
       '@fastify/static':
         specifier: 8.3.0
         version: 8.3.0
-      '@graphql/contracts':
+      '@foreman-code/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@langchain/core':
@@ -128,7 +128,7 @@ importers:
       '@fontsource-variable/inter':
         specifier: 5.3.0
         version: 5.3.0
-      '@graphql/contracts':
+      '@foreman-code/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@tailwindcss/vite':
@@ -222,7 +222,7 @@ importers:
 
   apps/worker:
     dependencies:
-      '@graphql/contracts':
+      '@foreman-code/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       ws:

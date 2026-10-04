@@ -1,10 +1,10 @@
-import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
+import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
-import type { JobDefinition } from '@graphql/contracts/jobs'
-import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
-import type { ManagedAgentSchema } from '@graphql/contracts/management'
-import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { JobDefinition } from '@foreman-code/contracts/jobs'
+import type { Agent, WorkflowApprovalConfiguration } from '@foreman-code/contracts'
+import type { ManagedAgentSchema } from '@foreman-code/contracts/management'
+import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 
 export type CatalogAgent = z.infer<typeof ManagedAgentSchema>
 /** savedDraft retains the authoritative base while draft acknowledges local batches. */

@@ -1,7 +1,7 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { graphJsonBytes, type CanonicalRunGraphReadCapabilities,
-  type RepeatGraphCurrentV3, type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3 } from '@graphql/contracts/wave25'
+  type RepeatGraphCurrentV3, type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3 } from '@foreman-code/contracts/wave25'
 import { RepeatGraphReadService } from './repeatReadService.js'
 import { RunGraphError } from './errors.js'
 import { observeGraph, type GraphMeasurementSink } from './measurements.js'

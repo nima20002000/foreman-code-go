@@ -1,4 +1,4 @@
-import { HarnessConfigurationSchema, type HarnessDefaults } from '@graphql/contracts'
+import { HarnessConfigurationSchema, type HarnessDefaults } from '@foreman-code/contracts'
 
 /** Reusable code/metadata only. A registration must not contain a live manager. */
 export interface HarnessDriverRegistration {

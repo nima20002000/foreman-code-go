@@ -17,8 +17,8 @@ import {
 import { WorkspaceFolderPicker } from '../settings/WorkspaceFolderPicker'
 import { LoadMore } from '../../shared/ui/LoadMore'
 import type { ComponentProps } from 'react'
-import type { Workspace } from '@graphql/contracts'
-import type { WorkspaceCreateInput } from '@graphql/contracts/management'
+import type { Workspace } from '@foreman-code/contracts'
+import type { WorkspaceCreateInput } from '@foreman-code/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 

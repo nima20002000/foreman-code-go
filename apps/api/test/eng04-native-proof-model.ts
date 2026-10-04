@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { settleRepeatNativeExecutionWithProofLocked } from '../src/modules/interactions/repeatNativeSettlement.js'
 

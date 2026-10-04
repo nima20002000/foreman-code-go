@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
-import { JobRuntimeApprovalSchema, JobRuntimeProfileListSchema, JobRuntimeQualificationCommandSchema, type JobRuntimeApproval } from '@graphql/contracts/job-runtime'
+import { JobRuntimeApprovalSchema, JobRuntimeProfileListSchema, JobRuntimeQualificationCommandSchema, type JobRuntimeApproval } from '@foreman-code/contracts/job-runtime'
 import { apiClient, ApiError } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 
 const keys = { root: ['workbench', 'job-runtime-profiles'] as const,
   workspace: (workspaceId: string) => [...keys.root, sessionGeneration(), workspaceId] as const }

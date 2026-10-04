@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
-import { GraphEditIntentV3Schema, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, type GraphEditReadResultV3 } from '@foreman-code/contracts/wave25'
 import { useGraphDraftStore } from '../store'
 import { fixture } from './core.cases'
 import { nextDraftDirty, nextDraftKey } from './state'

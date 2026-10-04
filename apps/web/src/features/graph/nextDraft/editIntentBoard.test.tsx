@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { GraphEditIntentV3Schema, type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
 import { fixture } from './core.cases'

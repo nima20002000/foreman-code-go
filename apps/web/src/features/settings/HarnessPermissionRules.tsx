@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from 'react'
-import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
+import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 import { Button, Icon, IconButton, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import './harnessPermissionRules.css'

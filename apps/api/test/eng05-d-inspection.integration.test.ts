@@ -7,8 +7,8 @@ import {
   CurrentWorkflowSaveResultSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema,
   RunExecutionsPageSchema, RunVersionDetailSchema, WorkflowVersionV3Schema,
   makeCurrentWorkflowFixture, type RunExecutionSummary,
-} from '@graphql/contracts/wave25'
-import { RunEventsListInputSchema, RunEventsPageSchema } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import { RunEventsListInputSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {

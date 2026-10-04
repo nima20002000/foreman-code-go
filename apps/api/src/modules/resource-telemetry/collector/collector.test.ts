@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { telemetryComputerFixture, telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
-import { TelemetryCollectedBatchSchema } from '@graphql/contracts/resource-telemetry'
+import { telemetryComputerFixture, telemetryOwnedFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
+import { TelemetryCollectedBatchSchema } from '@foreman-code/contracts/resource-telemetry'
 import { cpuWindow } from './cpu.js'
 import { disjointAccounting, type AccountingHandle } from './linuxCgroup.js'
 import { counter, parseHostCpu, parseHostMemory, parseOnlineCpus, parseProcStat, safeBytes, sourceFailure } from './linuxProcfs.js'

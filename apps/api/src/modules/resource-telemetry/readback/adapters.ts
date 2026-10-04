@@ -1,5 +1,5 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { TelemetryReadResultSchema, TelemetrySelectorSchema, type TelemetryReadService } from '@graphql/contracts/resource-telemetry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { TelemetryReadResultSchema, TelemetrySelectorSchema, type TelemetryReadService } from '@foreman-code/contracts/resource-telemetry'
 import { DomainError } from '../../errors.js'
 export const RESOURCE_TELEMETRY_READ_TOOL = 'resource_telemetry_read' as const
 export const RESOURCE_TELEMETRY_READ_ROUTE = '/api/management/resource-telemetry/read' as const

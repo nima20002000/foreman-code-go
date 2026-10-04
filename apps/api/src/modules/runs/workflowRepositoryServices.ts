@@ -1,11 +1,11 @@
 import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
-import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, AcceptedCurrentNodeResultSchema, canonicalGraphJson, RUN_GRAPH_LIMITS,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { openRepeatCanonicalPublicationLocked } from '../run-graph/repeatPublication.js'

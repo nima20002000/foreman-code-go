@@ -1,6 +1,6 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { SourceAction } from '@graphql/contracts/source-admission'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { SourceAction } from '@foreman-code/contracts/source-admission'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

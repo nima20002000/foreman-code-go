@@ -4,10 +4,10 @@ import {
   DEFAULT_FILE_RETENTION_SECONDS, FileRetentionDurationSchema, FileWithRevisionSchema,
   MessageAttachmentRefSchema, fileStateAt, temporaryFileExpiresAt,
   type FileScope,
-} from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
-import { JobArtifactFileRevisionSchema, JobArtifactRetentionSchema } from '@graphql/contracts/job-artifacts'
+import { JobArtifactFileRevisionSchema, JobArtifactRetentionSchema } from '@foreman-code/contracts/job-artifacts'
 import { z } from 'zod'
 import { DomainError } from '../errors.js'
 import type { FileAccess, FileConversation, FileConversationAuthorization } from './authorization.js'

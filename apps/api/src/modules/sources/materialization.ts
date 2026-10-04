@@ -4,12 +4,12 @@ import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest } from '@graphql/contracts/source-materialization'
+import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
-import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@graphql/contracts/source-admission'
-import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
+import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
 /** Lock the anchored directory inode, never a replaceable lock pathname. Linux

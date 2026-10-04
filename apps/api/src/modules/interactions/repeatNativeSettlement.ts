@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import {
   DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema,
   type HarnessExecution, type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest } from '../run-graph/publication.js'
 import { readWorkflowClosure, readUnboundWorkflowClosure, type UnboundWorkflowClosure } from './workflowClosure.js'

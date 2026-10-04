@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
-import { resourceTelemetryFixtures as fixtures } from '@graphql/contracts/resource-telemetry-fixtures'
+import { resourceTelemetryFixtures as fixtures } from '@foreman-code/contracts/resource-telemetry-fixtures'
 import { describe, expect, it } from 'vitest'
 import { ComputerContextCard, ResourceTelemetryPanel } from './ResourceTelemetryCards'
 import { formatBinaryBytes } from './telemetryView'

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 
-import { DurableInteractionSchema, type DurableInteraction, type HarnessNativeEvent } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction, type HarnessNativeEvent } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { it } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { NativeDeliveryOutcome, NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import { JobService, jobDigest } from '../src/modules/jobs/service.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { JobWorkerService } from '../src/modules/jobs/worker.js'

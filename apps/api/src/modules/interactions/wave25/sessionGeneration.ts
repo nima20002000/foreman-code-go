@@ -1,4 +1,4 @@
-import { GraphSequenceSchema, assertNativeGraphProjectionAuthority, sameGraphScope } from '@graphql/contracts/wave25'
+import { GraphSequenceSchema, assertNativeGraphProjectionAuthority, sameGraphScope } from '@foreman-code/contracts/wave25'
 import type { NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import type { WriterFence } from '../coordination.js'

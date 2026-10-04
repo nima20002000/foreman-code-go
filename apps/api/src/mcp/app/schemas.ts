@@ -6,7 +6,7 @@ import {
   GraphqlAgentToolSchema,
   RespondToInteractionRequestSchema,
   IdSchema,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { z } from 'zod'
 import { AppInteractionListInputSchema } from '../../modules/interactions/app.js'
 

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
@@ -7,7 +7,7 @@ import {
   canonicalGraphJson, parseRepeatExitResultV1, parseWorkHandoffResult,
   validateRepeatDecisionV1, validateRepeatSuccessorV1,
   type WorkflowRunV3, type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
   sealWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryPermit, type WorkflowNativeEntryRecord } from './workflowNativeEntry.js'

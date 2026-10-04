@@ -8,7 +8,7 @@ import {
   ApprovedRootAllowlistSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootWorkerRequestSchema, WorkspaceRootPolicySchema,
   type ApprovedRootAllowlist, type WorkspaceRootSelection, type WorkspaceRootAttestation, type WorkspaceRootPolicy, type WorkspaceRootBrowseResult,
   type WorkspaceRootWorkerRequest,
-} from '@graphql/contracts/workspace-root-policies'
+} from '@foreman-code/contracts/workspace-root-policies'
 import { anchored, directoryFlags, identity, openPrivateRoot, openChildDirectory } from './privateFilesystem.js'
 import { SourceError, sourceSha256 } from './manifest.js'
 

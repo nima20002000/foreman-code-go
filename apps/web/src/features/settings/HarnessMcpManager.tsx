@@ -2,7 +2,7 @@ import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsave
 import { useContext, useEffect, useRef, useState } from 'react'
 import {
   HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpList, type HarnessMcpPlan, type HarnessMcpManagedPreset, type HarnessMcpReconcileInput,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { Alert, Button, Checkbox, Dialog, Icon, Select, StatusBadge, Textarea, TextField } from '../../shared/ui/nocturne'
 import {
   useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useApplyManagedMcpChange, useHarnessSessionEpoch, useReconcileNativeMcpChange,

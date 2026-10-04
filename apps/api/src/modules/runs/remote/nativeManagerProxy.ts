@@ -2,10 +2,10 @@ import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema, NativeHarnessCapabilitiesSchema,
-  McpDetectionSchema, ExecutionResultSchema, ApprovalResponseSemanticSchema, AgentHarnessSchema, type AgentConfigurationVersion, type AgentHarness, type NativeSessionReference } from '@graphql/contracts'
+  McpDetectionSchema, ExecutionResultSchema, ApprovalResponseSemanticSchema, AgentHarnessSchema, type AgentConfigurationVersion, type AgentHarness, type NativeSessionReference } from '@foreman-code/contracts'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
+import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 
 export interface RemoteNativeTransport {

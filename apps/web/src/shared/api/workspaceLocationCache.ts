@@ -1,4 +1,4 @@
-import type { ManagedWorkspace } from '@graphql/contracts/management'
+import type { ManagedWorkspace } from '@foreman-code/contracts/management'
 
 /** Preserve location ordering without freezing unrelated workspace metadata. */
 export function keepLatestWorkspaceLocation(

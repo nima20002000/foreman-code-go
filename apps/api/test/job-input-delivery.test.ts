@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { jobExecution } from './helpers/jobFixture.js'
 import { ReadonlyJobInputDelivery, type JobInputDeliverySource } from '../src/modules/files/jobInputs/delivery.js'
 import { makeManifest, manifestBytes, snapshotDigest } from '../src/modules/files/jobInputs/manifest.js'
-import { JobBuildInputManifestSchema, JobInputAdmissionSchema } from '@graphql/contracts/job-inputs'
+import { JobBuildInputManifestSchema, JobInputAdmissionSchema } from '@foreman-code/contracts/job-inputs'
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex')
 const roots:string[]=[]
 afterEach(async()=>{for(const root of roots.splice(0)){await chmod(join(root,'project/.graphql-job-inputs'),0o700).catch(()=>{});await rm(root,{recursive:true,force:true})}})

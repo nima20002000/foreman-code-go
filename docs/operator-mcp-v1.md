@@ -22,9 +22,9 @@ The API remains loopback-bound by default. Operator HTTP and MCP requests valida
 Credential issuance and revocation are trusted local owner commands; neither is an MCP tool. The plaintext token is displayed once and only its SHA-256 digest is stored.
 
 ```sh
-corepack pnpm --filter @graphql/api credential issue --name local-owner --days 30
-corepack pnpm --filter @graphql/api credential issue --name workspace-operator --days 7 --workspace workspace-1
-corepack pnpm --filter @graphql/api credential revoke principal-UUID
+corepack pnpm --filter @foreman-code/api credential issue --name local-owner --days 30
+corepack pnpm --filter @foreman-code/api credential issue --name workspace-operator --days 7 --workspace workspace-1
+corepack pnpm --filter @foreman-code/api credential revoke principal-UUID
 ```
 
 The optional `--audience worker` flag creates a Worker-audience credential. At `/mcp` it is limited to the Agent tools of its bound role; it cannot call Operator tools.

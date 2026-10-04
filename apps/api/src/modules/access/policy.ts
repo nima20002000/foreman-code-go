@@ -2,7 +2,7 @@ import {
   ManagementPrincipalSchema,
   type ManagementAction,
   type ManagementPrincipal,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 
 import { DomainError } from '../errors.js'
 

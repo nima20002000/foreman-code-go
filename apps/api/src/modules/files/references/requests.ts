@@ -3,7 +3,7 @@ import {
   AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileReadResultSchema,
   FileWithRevisionSchema, MessageAttachmentRefSchema, PermanentFileScopeSchema,
   FileRetentionSaveInputSchema, MAX_FILE_BYTES,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { FileUploadRequestSchema } from '../requests.js'
 
 /** Backend transport composition only; the frozen contracts have no reference mutation envelopes. */

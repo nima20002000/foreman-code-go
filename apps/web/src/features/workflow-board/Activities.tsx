@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { defaultStringifySearch, useLocation, useRouter } from '@tanstack/react-router'
-import type { RepeatGraphScopeV3, RunActivityPublic } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, RunActivityPublic } from '@foreman-code/contracts/wave25'
 import { Alert, Button, Select } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { WorkflowDefinitionV3Schema } from '@graphql/contracts/wave25'
+import { WorkflowDefinitionV3Schema } from '@foreman-code/contracts/wave25'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { boardDraftContextKey } from '../workflow-board/keys'
 import { NextDraftEditor } from './nextDraft/NextDraftEditor'

@@ -1,9 +1,9 @@
-import type { WorkflowDefinitionV3, WorkflowNodeV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3, WorkflowNodeV3 } from '@foreman-code/contracts/wave25'
 import type {
   Agent,
   AgentExecutionState,
   WorkflowRunSummary,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import type { XYPosition } from '@xyflow/react'
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import type { HarnessExecution, NativeSessionReference } from '@graphql/contracts'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
 import { FixtureServer, manager, request, sessionFor } from './opencode-fixtures.js'

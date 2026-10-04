@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
 import { ApiClient } from './client'
 
 function fixture() {

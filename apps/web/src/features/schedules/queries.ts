@@ -3,7 +3,7 @@ import {
   ScheduleDisableInputSchema, ScheduleSaveInputSchema,
   type ScheduleDisableInput, type ScheduleGetInput, type ScheduleGetResult, type ScheduleSaveInput,
   type ScheduleSaveResult,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { scheduleApi } from './client'

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import type { GraphEditIntentV3 } from '@graphql/contracts/wave25'
+import type { GraphEditIntentV3 } from '@foreman-code/contracts/wave25'
 import { fixture } from './core.cases'
 import { newNextDraft, nextDraftKey } from './state'
 import { stageAgentEdits } from './agentEdits'

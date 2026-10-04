@@ -1,5 +1,5 @@
-import type { DurableInteraction } from '@graphql/contracts'
-import { ManagementPrincipalSchema, type ManagementAction, type ManagementPrincipal } from '@graphql/contracts/management'
+import type { DurableInteraction } from '@foreman-code/contracts'
+import { ManagementPrincipalSchema, type ManagementAction, type ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { DomainError } from '../errors.js'
 import { assertOrchestratorInteractionAuthority } from '../interactions/authorization.js'

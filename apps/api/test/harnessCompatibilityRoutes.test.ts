@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'

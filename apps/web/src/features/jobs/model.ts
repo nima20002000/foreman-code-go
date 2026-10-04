@@ -1,5 +1,5 @@
-import type { JobExecution, JobLogPage } from '@graphql/contracts/jobs'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import type { JobExecution, JobLogPage } from '@foreman-code/contracts/jobs'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { ApiError } from '../../shared/api/client'
 
 export const jobAccessLost = (error: unknown) => ApiError.is(error) && [401, 403, 404].includes(error.status)

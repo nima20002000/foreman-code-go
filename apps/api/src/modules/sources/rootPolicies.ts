@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema,
-  type ApprovedRootAllowlist, type WorkspaceRootSelection, type WorkspaceRootPolicy, type WorkspaceRootAttestation } from '@graphql/contracts/workspace-root-policies'
+  type ApprovedRootAllowlist, type WorkspaceRootSelection, type WorkspaceRootPolicy, type WorkspaceRootAttestation } from '@foreman-code/contracts/workspace-root-policies'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { authorizeSource } from './authority.js'

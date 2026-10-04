@@ -8,7 +8,7 @@ import {
   AgentFileApplyFormatEditInputSchema, AgentFileWriteWorkingCopyInputSchema,
   AgentFileWorkingCopyEditResultSchema, MAX_FILE_WRITE_BYTES,
   type AgentFileFormatEdit, type FileMediaType,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileByteStorage } from '../storage.js'
 import type { FileToolArtifacts } from './artifacts.js'

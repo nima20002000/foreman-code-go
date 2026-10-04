@@ -4,7 +4,7 @@ This checkpoint supplies a device-only transport core, not a mounted listener or
 
 Root-owned integration:
 
-- Export `packages/contracts/src/deviceConnection.ts` as `@graphql/contracts/device-connection` (dist JS/d.ts), independently of the identity export.
+- Export `packages/contracts/src/deviceConnection.ts` as `@foreman-code/contracts/device-connection` (dist JS/d.ts), independently of the identity export.
 - Pin `ws` 8.22.0 in API and worker artifacts, validate engines/advisories/48-hour release age and resolve the lockfile with pinned pnpm. The existing lock has no equivalent websocket server dependency. No Fastify websocket plugin is required by this Node upgrade adapter.
 - Create an explicitly approved separate HTTPS listener, with normal TLS certificates. Never mount onto the browser/MCP API listener or widen its origins, hosts or auth.
 - Construct `ws.WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })`. Register `deviceUpgradeHandler(endpoint, websocketServer)` as this listener's upgrade handler and `deviceHttpHandler` as its HTTP request handler. Set bounded HTTP/header/TLS handshake timeouts and connection limits in listener composition. Compression extensions are rejected.
@@ -21,7 +21,7 @@ Focused transport doubles cannot qualify real WSS, persisted main restart, the w
 
 ## Actual negotiated application channels
 
-Root/C packaging also includes worker-safe `deviceApplicationChannel.ts` and exports `@graphql/contracts/device-application`. Consume A's `933a7d8` signed `negotiationHash` contract/helper. The proof binds the sorted namespace/version/direction/byte-limit intersection; altered advertisements fail before ready. Registrations are supplied at service construction and changes require a fresh negotiated connection.
+Root/C packaging also includes worker-safe `deviceApplicationChannel.ts` and exports `@foreman-code/contracts/device-application`. Consume A's `933a7d8` signed `negotiationHash` contract/helper. The proof binds the sorted namespace/version/direction/byte-limit intersection; altered advertisements fail before ready. Registrations are supplied at service construction and changes require a fresh negotiated connection.
 
 ```ts
 const extensions: DeviceExtensionRegistration[] = [{

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { FileMediaType } from '@graphql/contracts/files'
+import type { FileMediaType } from '@foreman-code/contracts/files'
 
 /** Small, generated fixtures; no downloaded copyrighted documents. */
 export const fileFixtures: ReadonlyArray<{ filename: string; mediaType: FileMediaType; bytes: Buffer }> = [

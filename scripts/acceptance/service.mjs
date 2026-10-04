@@ -46,7 +46,7 @@ async function main() {
   stage = 'database-identity'
   const [{ loadConfig }, { createDatabase }, { createCheckpointStore }, { buildProductionApp }, { PostgresAccessService }, schemas, sdk] = await Promise.all([
     source('config.ts'), source('infrastructure/database.ts'), source('infrastructure/checkpoints.ts'), source('production.ts'),
-    source('modules/access/postgres.ts'), dependency('@graphql/contracts/wave25'), dependency('@modelcontextprotocol/client'),
+    source('modules/access/postgres.ts'), dependency('@foreman-code/contracts/wave25'), dependency('@modelcontextprotocol/client'),
   ])
   // Same production composition, engine, checkpointer, migrations and native
   // ownership services as src/server.ts. Only storage root and logger differ.

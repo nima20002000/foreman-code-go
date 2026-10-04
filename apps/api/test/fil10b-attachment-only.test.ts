@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { SendOperatorMessageRequestSchema } from '@graphql/contracts'
-import { SendAgentChatMessageRequestSchema } from '@graphql/contracts/agent-chat'
-import { AgentChatSendToolInputSchema, SendSelectedRunChatRequestSchema } from '@graphql/contracts/selected-run-chat'
+import { SendOperatorMessageRequestSchema } from '@foreman-code/contracts'
+import { SendAgentChatMessageRequestSchema } from '@foreman-code/contracts/agent-chat'
+import { AgentChatSendToolInputSchema, SendSelectedRunChatRequestSchema } from '@foreman-code/contracts/selected-run-chat'
 
 import { agentChatInputHash } from '../src/modules/conversations/agentChatRepository.js'
 import { commandHash, commandPayload } from '../src/modules/conversations/operatorChatRepository.js'

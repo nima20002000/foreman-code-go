@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
 import { MemorySaver } from '@langchain/langgraph'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
   RepeatWorkflowVersionV1Schema, makeCurrentWorkflowFixture, parseRepeatExitResultV1,
   validateRepeatDecisionV1, validateRepeatSuccessorV1, canonicalGraphJson,
   type RepeatOccurrenceV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { normalizeRepeatTerminal, repeatNodeAction, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'

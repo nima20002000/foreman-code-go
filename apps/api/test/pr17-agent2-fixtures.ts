@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { isDeepStrictEqual } from 'node:util'
 
-import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference, ReviewJob } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference, ReviewJob } from '@foreman-code/contracts'
 
 import type { PostgresInteractionCoordinationRepository, WriterFence } from '../src/modules/interactions/coordination.js'
 import type { ReviewerNativeRuntime } from '../src/modules/interactions/reviewerRuntime.js'

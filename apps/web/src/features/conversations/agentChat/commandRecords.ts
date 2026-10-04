@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import type { AgentChatState, AgentChatTurn, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@graphql/contracts/agent-chat'
+import type { AgentChatState, AgentChatTurn, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@foreman-code/contracts/agent-chat'
 import type { ChatAttachmentAttempt } from '../chatAttachmentAttempt'
 import { receiptForCommand } from './receiptReadback'
 

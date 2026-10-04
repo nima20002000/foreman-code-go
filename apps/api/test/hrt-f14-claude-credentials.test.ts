@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { OperatorConfigurationVersionSchema, withAdvancedDefaults, type HarnessQualification } from '@graphql/contracts'
-import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
+import { OperatorConfigurationVersionSchema, withAdvancedDefaults, type HarnessQualification } from '@foreman-code/contracts'
+import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { buildApp } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'

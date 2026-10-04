@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_MANAGEMENT_ACTIONS } from '@graphql/contracts/management'
+import { DEFAULT_MANAGEMENT_ACTIONS } from '@foreman-code/contracts/management'
 import { credentialActions } from '../src/cli/credentialAccess.js'
 import { parseCredentialArguments } from '../src/cli/operatorCredentialArguments.js'
 

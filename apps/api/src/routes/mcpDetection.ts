@@ -1,4 +1,4 @@
-import { AgentHarnessSchema, ExecutionLocationSchema, ScopedMcpDetectionSchema } from '@graphql/contracts'
+import { AgentHarnessSchema, ExecutionLocationSchema, ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
 import { z } from 'zod'

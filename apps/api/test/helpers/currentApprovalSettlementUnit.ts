@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { DurableInteractionSchema, HarnessExecutionSchema, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, HarnessExecutionSchema, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { decisionDigest } from '../../src/modules/interactions/wave25/publication.js'
 import { nativeApprovalContext } from '../../src/modules/interactions/nativeApprovalContext.js'

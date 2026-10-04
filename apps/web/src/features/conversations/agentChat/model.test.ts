@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { agentChatFixtures, openCodeChatCapabilities, type AgentChatState } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, openCodeChatCapabilities, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, mergeChatMessages, stateBelongsToContext } from './model'
-import type { Message } from '@graphql/contracts'
+import type { Message } from '@foreman-code/contracts'
 import { approvalState } from './testSupport'
 
 it('refreshes an accepted model projection at the same message revision without accepting changed content', () => {

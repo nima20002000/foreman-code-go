@@ -2,7 +2,7 @@ import type pg from 'pg'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, FileRetentionPreferenceSchema,
   type FileRetentionPreference,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { DomainError } from '../errors.js'
 

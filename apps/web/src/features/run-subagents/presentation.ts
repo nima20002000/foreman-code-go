@@ -1,4 +1,4 @@
-import type { RunSubagent, RunSubagentTool } from '@graphql/contracts/subagents'
+import type { RunSubagent, RunSubagentTool } from '@foreman-code/contracts/subagents'
 import type { Tone } from '../../shared/ui/nocturne'
 
 export const providerNames: Record<RunSubagent['provider'], string> = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' }

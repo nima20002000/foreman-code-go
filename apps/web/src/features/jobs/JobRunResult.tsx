@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
+import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { Alert } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
 import { jobError, jobReadRetry } from './model'

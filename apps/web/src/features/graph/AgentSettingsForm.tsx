@@ -1,5 +1,5 @@
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import { SavedNodePlacementSchema, type SavedNodePlacement } from '@graphql/contracts/node-placement'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { NodePlacementField, type NodePlacementOption } from '../node-placement/NodePlacementField'
 import type { AgentForm } from './nextDraft/agentForm'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
@@ -8,7 +8,7 @@ import {
   CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
   type Agent, type ApprovalHandler, type AssignedSkill, type GraphqlToolOverride, type HarnessDefaults, type WorkflowExecutionPolicy,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 
 import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
 import { configuredHarness, initialModel } from '../agents/agentSettings'

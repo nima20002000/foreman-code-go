@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { HarnessExecution, NativeSessionReference, ReviewJob } from '@graphql/contracts'
+import type { HarnessExecution, NativeSessionReference, ReviewJob } from '@foreman-code/contracts'
 import type { WorkflowNativeEntryPermit } from '../runs/workflowNativeEntry.js'
 import type { RepeatRunRepository } from '../runs/repeatPostgres.js'
 import { DomainError } from '../errors.js'

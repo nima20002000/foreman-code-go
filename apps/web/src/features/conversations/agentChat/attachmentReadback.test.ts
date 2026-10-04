@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { agentChatFixtures, type AgentChatState } from '@graphql/contracts/agent-chat'
-import type { ActivitySourceRevision } from '@graphql/contracts/activity'
+import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
+import type { ActivitySourceRevision } from '@foreman-code/contracts/activity'
 // Cross-boundary unit proof only; product modules continue to use their HTTP client.
 import { hydrateMessageAttachments } from '../../../../../api/src/modules/conversations/messageAttachments.js'
 import { agentActivitySnapshot } from '../../../../../api/src/modules/conversations/activitySnapshot.js'

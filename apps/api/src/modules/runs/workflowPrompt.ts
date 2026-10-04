@@ -1,4 +1,4 @@
-import { WorkflowChoiceSchema, type WorkflowChoice, type RepeatBlockV1 } from '@graphql/contracts/wave25'
+import { WorkflowChoiceSchema, type WorkflowChoice, type RepeatBlockV1 } from '@foreman-code/contracts/wave25'
 
 /** Request-only instructions derived from the immutable node. Never mutate the
  * saved configuration, accepted input, model settings, or routing authority. */

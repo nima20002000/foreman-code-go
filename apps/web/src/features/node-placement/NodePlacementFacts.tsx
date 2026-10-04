@@ -1,4 +1,4 @@
-import { NodePlacementReadbackSchema } from '@graphql/contracts/node-placement'
+import { NodePlacementReadbackSchema } from '@foreman-code/contracts/node-placement'
 import type { z } from 'zod'
 import './nodePlacement.css'
 

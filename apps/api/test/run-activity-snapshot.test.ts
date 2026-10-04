@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
 import { projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
 

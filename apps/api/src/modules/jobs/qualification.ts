@@ -6,17 +6,17 @@ import { constants } from 'node:fs'
 import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import type { JobSql } from './repository.js'
-import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
+import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
-export { JobQualificationCandidateSchema } from '@graphql/contracts/job-runtime'
-export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@graphql/contracts/job-runtime'
+export { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
+export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@foreman-code/contracts/job-runtime'
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 export function jobQualificationFingerprint(candidate: JobQualificationCandidate): string { return hash(candidate.fingerprint) }
 export interface JobQualificationRecord {

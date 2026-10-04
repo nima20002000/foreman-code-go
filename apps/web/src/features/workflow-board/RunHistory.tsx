@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { readBoardHistory } from './client'

@@ -1,9 +1,9 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   ApprovedRootAllowlistSchema, WorkspaceRootAttestationSchema, WorkspaceRootBrowseResultSchema,
   type ApprovedRootAllowlist, type WorkspaceRootPolicy, type WorkspaceRootWorkerRequest,
-} from '@graphql/contracts/workspace-root-policies'
+} from '@foreman-code/contracts/workspace-root-policies'
 import { DomainError } from '../errors.js'
 import { attestWorkspaceRoot, browseApprovedRoot, attestSourceNamespace } from './rootAttestation.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort } from './rootPolicyPorts.js'

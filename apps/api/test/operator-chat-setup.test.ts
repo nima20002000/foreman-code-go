@@ -2,7 +2,7 @@ import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspe
 import { openCodeMcpInspectorAdapter } from '../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'

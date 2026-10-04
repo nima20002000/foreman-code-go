@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { MessageSchema, SendOperatorMessageRequestSchema, type SendOperatorMessageRequest } from '@graphql/contracts'
-import { SendAgentChatMessageRequestSchema, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import { messageAttachmentIdentity, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { MessageSchema, SendOperatorMessageRequestSchema, type SendOperatorMessageRequest } from '@foreman-code/contracts'
+import { SendAgentChatMessageRequestSchema, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { messageAttachmentIdentity, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 
 import { agentChatInputHash } from '../src/modules/conversations/agentChatRepository.js'
 import { commandHash, commandPayload } from '../src/modules/conversations/operatorChatRepository.js'

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { HarnessInstanceProjection, HarnessInstanceRegistry } from './instanceRegistry.js'
 import type { LauncherEvidence } from './hostDiscovery.js'
 

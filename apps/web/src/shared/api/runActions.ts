@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { GetRunRequestSchema, type GetRunRequest } from '@graphql/contracts'
+import { GetRunRequestSchema, type GetRunRequest } from '@foreman-code/contracts'
 import { z } from 'zod'
 
 import { apiClient } from './client'

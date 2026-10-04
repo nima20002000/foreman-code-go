@@ -3,7 +3,7 @@ import {
   RepeatGraphFactV3Schema, RepeatGraphScopeV3Schema, sameCanonicalGraphScope,
   qualifyRepeatGraphExecution, validateRepeatGraphFactsV3, RUN_GRAPH_LIMITS,
   type RepeatGraphEffectV3, type RepeatGraphFactV3, type RepeatGraphScopeV3, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { RepeatEffect, RepeatFact } from '../runs/repeatPostgres.js'
 import type { RepeatCanonicalPublication } from '../runs/repeatRepositoryHost.js'
 import { repeatDigest, repeatId, repeatSlotId, repeatExecutionIdentity } from '../runs/repeatResolution.js'

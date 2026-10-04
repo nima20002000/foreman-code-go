@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { HostHarnessProfileCheckRequestSchema, HostHarnessInstanceCheckInputSchema, HostHarnessProfileEvidenceSchema, type HostHarnessInstanceCheckInput, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { HostHarnessProfileCheckRequestSchema, HostHarnessInstanceCheckInputSchema, HostHarnessProfileEvidenceSchema, type HostHarnessInstanceCheckInput, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'

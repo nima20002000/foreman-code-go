@@ -1,6 +1,6 @@
 import { pluginHash, pluginCanonical, pluginSourceIdentities, pluginCatalogRevision } from './codexPluginIdentity.js'
 import { z } from 'zod'
-import { CodexPluginSummarySchema, type CodexPluginSummary } from '@graphql/contracts/management'
+import { CodexPluginSummarySchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
 
 export { pluginHash, pluginCanonical } from './codexPluginIdentity.js'
 const NativeEntry = z.object({ pluginId: z.string(), name: z.string(), marketplaceName: z.string(),

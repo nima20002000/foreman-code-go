@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@graphql/contracts'
-import { AgentCreateInputSchema, AgentUpdateInputSchema, type ManagementPrincipal } from '@graphql/contracts/management'
-import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
+import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@foreman-code/contracts'
+import { AgentCreateInputSchema, AgentUpdateInputSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 import { configurationInput, saveAgentConfiguration } from '../src/modules/workspaces/agentConfiguration.js'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
@@ -14,7 +14,7 @@ import { FoundationSettingsManagementService } from '../src/modules/settings/man
 import type { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { acceptOperatorConfiguration } from '../src/modules/conversations/operatorAcceptedConfiguration.js'
-import type { OperatorConfigurationVersion } from '@graphql/contracts'
+import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 
 const mainId = randomUUID()
 const selection = { instanceId: randomUUID(), instanceRevision: '3', target: { hostRef: { kind: 'main' as const, mainId },

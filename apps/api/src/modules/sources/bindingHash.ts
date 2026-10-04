@@ -1,5 +1,5 @@
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
-import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import type { SourceRootRecord, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import type { MaterializationAttempt } from './ports.js'
 
 /** Known before filesystem preparation. Final W08/job dispatch digest additionally

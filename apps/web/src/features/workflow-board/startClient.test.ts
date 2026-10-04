@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RunStartV3InputSchema, RunStartV3ResultSchema } from '@graphql/contracts/wave25'
+import { RunStartV3InputSchema, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
 import { ApiClient } from '../../shared/api/client'
 import { createBoardStartClient, parseBoardStart } from './startClient'
 import { boardV3Fixture } from './v3Fixture.testSupport'

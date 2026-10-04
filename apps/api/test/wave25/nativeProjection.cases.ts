@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { WorkflowRun, WorkflowDefinition, HarnessExecution } from '@graphql/contracts'
+import type { WorkflowRun, WorkflowDefinition, HarnessExecution } from '@foreman-code/contracts'
 import { projectRunLiveActivity, type LiveActivityEvent } from '../../src/modules/runs/liveActivity.js'
 import { projectNativeEvidence, emptyNativeProjection, nativeProjectionActivity, reconcileNativeEvidence,
   NATIVE_PROJECTION_LIMITS, type ProjectionBinding, type ProjectionEvent, type NativeProjectionState } from '../../src/modules/run-graph/nativeProjection.js'

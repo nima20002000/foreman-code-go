@@ -6,18 +6,18 @@ import {
   OperatorConversationSummarySchema, type OperatorConversationSummary,
   type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema, OperatorHandoffHistoryPageSchema,
   type OperatorConversationHistoryPage, type OperatorConversationHistoryQuery,
-} from '@graphql/contracts/operator-chat'
+} from '@foreman-code/contracts/operator-chat'
 import type pg from 'pg'
-import { messageAttachmentIdentity } from '@graphql/contracts/files'
+import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { appendConversationTextOperation } from './conversationTextRepository.js'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
 import { OperatorChatCommands } from './operatorChatCommands.js'

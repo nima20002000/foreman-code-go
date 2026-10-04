@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { componentLogger } from '../../../infrastructure/logger.js'
 import type { CodexFileCall, CodexFileCallResult } from './port.js'
 import type { CodexFileTurn } from './turn.js'

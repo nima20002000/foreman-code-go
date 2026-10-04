@@ -1,4 +1,4 @@
-import type { AgentHarness, OperatorConfigurationVersion } from '@graphql/contracts'
+import type { AgentHarness, OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 /** An exact provider version is necessary, but is not a production/parity approval. */

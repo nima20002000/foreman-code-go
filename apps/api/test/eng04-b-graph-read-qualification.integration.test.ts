@@ -5,7 +5,7 @@ import {
   CanonicalRunGraphReadCapabilitiesSchema, CURRENT_WORKFLOW_ROUTES,
   RepeatGraphPageV3Schema, RepeatGraphSnapshotV3Schema, reduceRepeatGraphPageV3,
   type CanonicalRunGraphScope,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {

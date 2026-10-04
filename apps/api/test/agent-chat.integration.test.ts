@@ -8,10 +8,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   AgentConfigurationVersionSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecution, type NativeSessionReference,
-} from '@graphql/contracts'
-import { AgentChatHistoryPageSchema, AgentChatStateSchema, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import { AgentChatHistoryPageSchema, AgentChatStateSchema, type AgentChatState, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'

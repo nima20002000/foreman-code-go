@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RunStartV3ResultSchema } from '@graphql/contracts/wave25'
+import { RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {
   executionRows, fullRunInput, readback, recoveryFixture, toolValue, assertRecoveryReceipts, assertOriginalFailure,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import type { RunStartV3Input } from '@graphql/contracts/wave25'
+import type { RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11Minute, sch11Once } from './helpers/sch11ClockCases.js'

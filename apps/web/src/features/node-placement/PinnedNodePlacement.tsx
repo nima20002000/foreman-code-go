@@ -1,6 +1,6 @@
 import { useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { runReadErrorLabel } from '../runs-selector/query'
 import { NodePlacementFacts } from './NodePlacementFacts'

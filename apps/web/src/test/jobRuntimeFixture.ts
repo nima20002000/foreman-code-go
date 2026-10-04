@@ -1,5 +1,5 @@
-import { JobRuntimeProfileSchema, JobRuntimeFingerprintSchema, JobRuntimeApprovalSchema } from '@graphql/contracts/job-runtime'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { JobRuntimeProfileSchema, JobRuntimeFingerprintSchema, JobRuntimeApprovalSchema } from '@foreman-code/contracts/job-runtime'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 const uuid='11111111-1111-4111-8111-111111111111',digest='1'.repeat(64)
 const principal={id:'runtime-reader',name:'Runtime reader',audience:'operator',grants:[{actions:['job_definitions:read','job_definitions:write'],scope:{workspaceIds:['workspace-fixture']}}],expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null}
 const root=SourceRootRecordSchema.parse({version:1,source:{approvedSourceId:uuid,snapshotId:uuid,manifestDigest:digest},selection:{hostRef:{kind:'main',mainId:uuid},rootPolicyId:'root-policy',rootPolicyRevision:'1',locationRevision:'1'},binding:{version:1,mainId:uuid,deviceId:null,workerInstallationId:null,workspaceId:'workspace-fixture',rootId:uuid,bindingRevision:1,locationRevision:1,canonicalPath:'/approved',filesystem:{device:'1',inode:'2',mountId:'3'},accessMode:'exclusive-write',snapshotId:uuid,manifestDigest:digest},ownerPrincipalId:principal.id,authorizedByPrincipalId:principal.id,registration:null,attestationId:'actual-test-attestation',attestationDigest:digest,boundAt:'2026-10-01T00:00:00.000Z'})

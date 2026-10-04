@@ -4,13 +4,13 @@ import { chmod, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobQualificationCandidateSchema, JobRuntimeFingerprintSchema, JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
+import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobQualificationCandidateSchema, JobRuntimeFingerprintSchema, JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
 import { identity } from '../sources/privateFilesystem.js'
 import type { JobSql } from './repository.js'
 import { jobSpec } from '../../../test/helpers/jobFixture.js'
 import { captureInstalledRuntimeConfiguration, createInstalledJobRuntimeHost, inspectInstalledJobRuntime, inspectInstalledJobRuntimeCandidate, InstalledJobRuntimeCaptureInputSchema, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
 import * as qualification from './qualification.js'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 
 const id = '11111111-1111-4111-8111-111111111111'
 const digest = '1'.repeat(64)

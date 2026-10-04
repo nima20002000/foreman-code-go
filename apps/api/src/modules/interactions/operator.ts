@@ -1,5 +1,5 @@
-import type { DurableInteraction } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { DurableInteraction } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { InteractionService } from './service.js'
 
 type ListInput = {

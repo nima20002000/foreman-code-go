@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-import { agentChatFixtures } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { AgentChatCommands } from '../src/modules/conversations/agentChatCommands.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'

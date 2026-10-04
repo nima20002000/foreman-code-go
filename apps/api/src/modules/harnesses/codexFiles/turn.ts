@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream'
-import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import { warnCodexFileError } from './runtime.js'

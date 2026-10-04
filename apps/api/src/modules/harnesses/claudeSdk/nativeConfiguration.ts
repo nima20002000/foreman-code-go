@@ -1,8 +1,8 @@
-import { ClaudeHarnessConfigurationSchema } from '@graphql/contracts/claude'
+import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { requireClaudePolicyQualification, type ClaudePolicyQualification } from './configuration.js'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
-import type { HarnessOptions } from '@graphql/contracts/management'
-import type { HarnessQualification } from '@graphql/contracts'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import type { HarnessOptions } from '@foreman-code/contracts/management'
+import type { HarnessQualification } from '@foreman-code/contracts'
 
 /** Injected pinned-release discovery; it creates no conversation or model turn. */
 export interface ClaudeNativeConfigurationPort {

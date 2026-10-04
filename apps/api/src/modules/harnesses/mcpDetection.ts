@@ -5,7 +5,7 @@ import {
   type McpDetection,
   type McpCredentialArrangement,
   type ScopedMcpDetection,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'

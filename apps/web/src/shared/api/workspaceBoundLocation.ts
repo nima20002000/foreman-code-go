@@ -2,18 +2,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema,
   type ApprovedRootAllowlist, type WorkspaceRootSelection,
-} from '@graphql/contracts/workspace-root-policies'
+} from '@foreman-code/contracts/workspace-root-policies'
 import {
   WorkspaceBoundLocationReadbackSchema, WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationSetResultSchema,
   WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema,
   type WorkspaceBoundLocationReadback, type WorkspaceBoundLocationSetInput,
-} from '@graphql/contracts/workspace-bound-location'
+} from '@foreman-code/contracts/workspace-bound-location'
 import { ApiError, apiClient } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 import { locationMutationKey } from './workspaceLocationCache'
 import { queryKeys } from './query'
-import { HarnessDirectoryBrowseResultSchema } from '@graphql/contracts/management'
+import { HarnessDirectoryBrowseResultSchema } from '@foreman-code/contracts/management'
 
 export const boundLocationKeys = {
   root: ['workbench', 'bound-workspace-location'] as const,

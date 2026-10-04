@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { ScheduleGetResultSchema, ScheduleSaveResultSchema, scheduleUtcToLocalTime } from '@graphql/contracts/schedules'
+import { ScheduleGetResultSchema, ScheduleSaveResultSchema, scheduleUtcToLocalTime } from '@foreman-code/contracts/schedules'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'

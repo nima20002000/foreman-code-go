@@ -1,6 +1,6 @@
-import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import type { DispatchIntent, AcceptedNodePlacement } from '@graphql/contracts/node-placement'
+import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { DomainError } from '../errors.js'
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Worker composition supplies the established W07 channel request, not fetch to

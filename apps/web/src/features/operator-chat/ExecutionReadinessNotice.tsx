@@ -1,4 +1,4 @@
-import type { AgentHarness } from '@graphql/contracts'
+import type { AgentHarness } from '@foreman-code/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Button } from '../../shared/ui/nocturne'
 import { getExecutionReadiness } from './executionReadiness'

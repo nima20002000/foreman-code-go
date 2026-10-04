@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { TELEMETRY_LIMITS, TelemetryReadResultSchema, TelemetrySelectorSchema, telemetrySelectorKey, type TelemetryReadResult, type TelemetrySelector } from '@graphql/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, TelemetryReadResultSchema, TelemetrySelectorSchema, telemetrySelectorKey, type TelemetryReadResult, type TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
 import { apiClient, ApiError } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'

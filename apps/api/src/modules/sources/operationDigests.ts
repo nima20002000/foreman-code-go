@@ -1,6 +1,6 @@
 /** Worker-safe counterpart of the existing Main command canonical digest. */
 import { createHash } from 'node:crypto'
-import type { SourceRootRecord } from '@graphql/contracts/source-admission'
+import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { MaterializationAttempt } from './ports.js'
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`

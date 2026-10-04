@@ -1,5 +1,5 @@
 import { basename } from 'node:path'
-import type { CodexPluginDetailResult } from '@graphql/contracts/management'
+import type { CodexPluginDetailResult } from '@foreman-code/contracts/management'
 import { BoundedPluginFiles, pluginObject, safePluginPart } from './boundedPluginFiles.js'
 
 const names = (value: unknown): string[] => Object.keys(pluginObject(value)).sort()

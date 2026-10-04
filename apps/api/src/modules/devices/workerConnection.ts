@@ -1,5 +1,5 @@
-import { deviceTlsOptions } from '@graphql/contracts/device-tls-node'
-import type { DeviceTlsTrust } from '@graphql/contracts/device-identity'
+import { deviceTlsOptions } from '@foreman-code/contracts/device-tls-node'
+import type { DeviceTlsTrust } from '@foreman-code/contracts/device-identity'
 import type { DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import WebSocket from 'ws'
 import { DeviceConnectionSupervisor } from './connectionSupervisor.js'
@@ -11,9 +11,9 @@ export function createWorkerConnection(options: {
   appVersion: string
   extensions?: DeviceExtensionRegistration[]
   /** Synchronous admission revocation; caller tracks/join its physical drain. */
-  onBindingLost?(binding: Readonly<import('@graphql/contracts/device-connection').DeviceSessionBinding>): void
+  onBindingLost?(binding: Readonly<import('@foreman-code/contracts/device-connection').DeviceSessionBinding>): void
 }) {
-  let original: Readonly<import('@graphql/contracts/device-connection').DeviceSessionBinding> | undefined
+  let original: Readonly<import('@foreman-code/contracts/device-connection').DeviceSessionBinding> | undefined
   const connection = new DeviceConnectionSupervisor({
     identity: { mainId: options.pairing.mainId, deviceId: options.pairing.deviceId, workerInstallationId: options.pairing.workerInstallationId, keyRevision: options.pairing.keyRevision, authorizationRevision: options.pairing.authorizationRevision, bootId: options.bootId },
     appVersion: options.appVersion,

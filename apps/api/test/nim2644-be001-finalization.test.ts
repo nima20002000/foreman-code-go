@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import type { HarnessExecution, NativeSessionReference } from '@graphql/contracts'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { finalizeStoppedWorkflowSessions, type ClosedWorkflowSession } from '../src/modules/interactions/stoppedWorkflowFinalization.js'

@@ -1,7 +1,7 @@
 import {
   OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
   type OperatorConversationHistoryQuery,
-} from '@graphql/contracts/operator-chat'
+} from '@foreman-code/contracts/operator-chat'
 import { apiClient, type RequestOptions } from './client'
 
 /** Read-only, owner-scoped receipts. Never turn recovered history into a new POST. */

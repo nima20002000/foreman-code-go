@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { pairingProof, PostgresDeviceAccessService } from './access.js'
-import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 
 describe('device-only authentication', () => {
   it('rejects wrong audience tokens without attempting owner-cookie fallback', async () => {

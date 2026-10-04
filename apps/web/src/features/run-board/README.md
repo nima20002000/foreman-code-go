@@ -185,8 +185,8 @@ After merging the bundle and completing host wiring, run from the repository roo
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec vitest run src/features/run-board --maxWorkers=2
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec vitest run src/features/run-board --maxWorkers=2
 corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm test

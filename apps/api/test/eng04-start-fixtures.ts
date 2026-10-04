@@ -4,9 +4,9 @@ import type pg from 'pg'
 import {
   AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, canonicalGraphJson,
   type AcceptedWorkflowRunV3,
-} from '@graphql/contracts/wave25'
-import { RunBoardSnapshotSchema, type RunBoardSnapshot } from '@graphql/contracts/run-snapshots'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/wave25'
+import { RunBoardSnapshotSchema, type RunBoardSnapshot } from '@foreman-code/contracts/run-snapshots'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { beforeGraphCommit } from '../src/modules/run-graph/connection.js'
 import { repeatDigest } from '../src/modules/runs/repeatResolution.js'
 import type { RepeatStartPublication } from '../src/modules/runs/repeatStartAdmission.js'

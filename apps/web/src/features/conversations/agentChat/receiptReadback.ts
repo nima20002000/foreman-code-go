@@ -1,4 +1,4 @@
-import type { AgentChatState, AgentChatTurn } from '@graphql/contracts/agent-chat'
+import type { AgentChatState, AgentChatTurn } from '@foreman-code/contracts/agent-chat'
 import type { AgentChatCommandRecord } from './commandRecords'
 
 type Command = NonNullable<AgentChatCommandRecord['command']>

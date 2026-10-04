@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { SourceManifest, RootBinding } from '@graphql/contracts/source-materialization'
+import type { SourceManifest, RootBinding } from '@foreman-code/contracts/source-materialization'
 import { PrivateSourceMaterializer } from './materialization.js'
 import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 

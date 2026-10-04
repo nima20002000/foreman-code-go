@@ -1,4 +1,4 @@
-import { ScopedMcpDetectionSchema } from '@graphql/contracts'
+import { ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 import type { McpDetectionService } from '../harnesses/mcpDetection.js'

@@ -1,4 +1,4 @@
-import type { OperatorChatSetup } from '@graphql/contracts'
+import type { OperatorChatSetup } from '@foreman-code/contracts'
 import type { AcceptedClaudeProfile } from '../instanceSettings/acceptedProfile.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { compileClaudeConfiguration } from './configuration.js'

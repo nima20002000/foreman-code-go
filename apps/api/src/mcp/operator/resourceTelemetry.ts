@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { TelemetrySelectorSchema, type TelemetryReadService } from '@graphql/contracts/resource-telemetry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { TelemetrySelectorSchema, type TelemetryReadService } from '@foreman-code/contracts/resource-telemetry'
 import { toolFailure } from '../shared/results.js'
 import { readTelemetry, RESOURCE_TELEMETRY_READ_TOOL, type TelemetryDenialAudit } from '../../modules/resource-telemetry/readback/adapters.js'
 /** Tool listing is discovery only: the shared service resolves the exact live grant on every call. */

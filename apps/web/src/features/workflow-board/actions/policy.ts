@@ -1,4 +1,4 @@
-import type { RunExecutionsPage } from '@graphql/contracts/wave25'
+import type { RunExecutionsPage } from '@foreman-code/contracts/wave25'
 export type ActionRun = RunExecutionsPage['run']
 
 export function needsRunRefresh(run: ActionRun): boolean {

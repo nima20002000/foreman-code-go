@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import type { ManagedWorkspace } from '@graphql/contracts/management'
+import type { ManagedWorkspace } from '@foreman-code/contracts/management'
 
 import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'

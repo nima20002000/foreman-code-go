@@ -1,4 +1,4 @@
-import { GraphSequenceSchema, canonicalGraphJson, type RepeatGraphScopeV3, type RepeatGraphExecutionV3 } from '@graphql/contracts/wave25'
+import { GraphSequenceSchema, canonicalGraphJson, type RepeatGraphScopeV3, type RepeatGraphExecutionV3 } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from '../runs/ownership.js'
 import { beforeGraphCommit, poisonGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'

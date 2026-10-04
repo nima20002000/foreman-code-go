@@ -1,6 +1,6 @@
 import { BoardNotice } from './BoardNotice'
 import { ZodError } from 'zod'
-import { workflowSaveIssues, WorkflowSaveIssuesSchema, type WorkflowSaveIssue } from '@graphql/contracts/wave25'
+import { workflowSaveIssues, WorkflowSaveIssuesSchema, type WorkflowSaveIssue } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { Button } from '../../../shared/ui/nocturne'
 

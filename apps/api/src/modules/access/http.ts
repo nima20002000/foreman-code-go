@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
-import { BrowserAccessSessionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { BrowserAccessSessionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from './policy.js'
 import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'

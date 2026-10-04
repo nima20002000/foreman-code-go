@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 
 export type RootCandidate = { relativePath: string; accessMode: WorkspaceRootSelection['accessMode']; locationRevision: number; rootPolicyRevision: number }
 export type RootPickerDraft = { open: boolean; selected?: string; candidates: Record<string, RootCandidate>; editVersion: number; notice?: string; conflict?: boolean }

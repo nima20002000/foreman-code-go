@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { candidateFor } from './helpers/wave25Agent3.js'
 import { continuationValidator } from '../src/modules/runs/continuation.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../src/modules/workspaces/location.js'

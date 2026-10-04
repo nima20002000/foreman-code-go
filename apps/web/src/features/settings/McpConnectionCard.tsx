@@ -1,6 +1,6 @@
 import { useEffect, useId, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { AgentHarness, ExecutionLocation, McpDetection } from '@graphql/contracts'
+import type { AgentHarness, ExecutionLocation, McpDetection } from '@foreman-code/contracts'
 import type { ApiError } from '../../shared/api/client'
 import { useMcpDetectionQuery } from '../../shared/api/query'
 import { Alert, Badge, Button, Icon, type IconName, type Tone } from '../../shared/ui/nocturne'

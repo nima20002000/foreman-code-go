@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { GraphSequenceSchema, GraphIdSchema, canonicalGraphJson } from '@graphql/contracts/wave25'
+import { GraphSequenceSchema, GraphIdSchema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { NATIVE_PROJECTION_LIMITS, type NativeProjectionState } from './nativeProjection.js'
 import { RunGraphError } from './errors.js'
 const internalId = z.string().min(1).max(NATIVE_PROJECTION_LIMITS.identityLength)

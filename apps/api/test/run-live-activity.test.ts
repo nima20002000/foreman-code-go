@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { HarnessExecution, WorkflowDefinition, WorkflowRun } from '@graphql/contracts'
+import type { HarnessExecution, WorkflowDefinition, WorkflowRun } from '@foreman-code/contracts'
 import { projectRunLiveActivity, type LiveActivityEvent, type LiveReviewIdentity } from '../src/modules/runs/liveActivity.js'
 import { nativeAction, nodeAction, safeNodeName } from '../src/modules/runs/nativeAction.js'
 

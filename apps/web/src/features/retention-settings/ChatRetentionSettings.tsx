@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { MAX_FILE_RETENTION_SECONDS, MIN_FILE_RETENTION_SECONDS } from '@graphql/contracts/files'
+import { MAX_FILE_RETENTION_SECONDS, MIN_FILE_RETENTION_SECONDS } from '@foreman-code/contracts/files'
 import { secondsPerUnit } from './retentionDraft'
 import { Button, Checkbox, Dialog, Icon, IconButton, Select, TextField, Tooltip } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'

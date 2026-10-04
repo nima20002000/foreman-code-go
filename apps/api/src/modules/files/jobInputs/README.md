@@ -29,7 +29,7 @@ charged under the original source volume claim until proven process closure and
 root-owned cleanup. No TTL deletion of a potentially running source is added.
 
 Focused invocation:
-`corepack pnpm --filter @graphql/api exec vitest run test/job-input-delivery.test.ts test/job-input-channel.test.ts --maxWorkers=1`
+`corepack pnpm --filter @foreman-code/api exec vitest run test/job-input-delivery.test.ts test/job-input-channel.test.ts --maxWorkers=1`
 
 Root still owns PostgreSQL/authenticated HTTP-MCP persisted-readback execution,
 production composition, CI-B readonly-mount/native proof and physical acceptance.

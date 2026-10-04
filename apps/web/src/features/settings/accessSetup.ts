@@ -1,4 +1,4 @@
-import { BrowserCredentialSetupSchema, type BrowserCredentialSetup } from '@graphql/contracts/management'
+import { BrowserCredentialSetupSchema, type BrowserCredentialSetup } from '@foreman-code/contracts/management'
 
 /** Quote one POSIX shell argument. No user input is interpolated as shell syntax. */
 export function shellArgument(value: string): string {
@@ -7,11 +7,11 @@ export function shellArgument(value: string): string {
 }
 export function browserCredentialCommand(input: BrowserCredentialSetup): string {
   const value = BrowserCredentialSetupSchema.parse(input)
-  return ['corepack pnpm --filter @graphql/api credential issue', '--name', shellArgument(value.name),
+  return ['corepack pnpm --filter @foreman-code/api credential issue', '--name', shellArgument(value.name),
     '--days', String(value.days), '--audience operator', '--access', value.access,
     ...(value.workspaceId ? ['--workspace', shellArgument(value.workspaceId)] : [])].join(' ')
 }
 export function revokeCredentialCommand(principalId: string): string {
   if (!/^principal-[a-zA-Z0-9-]+$/.test(principalId)) throw new Error('Unexpected principal ID.')
-  return `corepack pnpm --filter @graphql/api credential revoke ${shellArgument(principalId)}`
+  return `corepack pnpm --filter @foreman-code/api credential revoke ${shellArgument(principalId)}`
 }

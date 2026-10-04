@@ -7,7 +7,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import Fastify, {type FastifyInstance} from 'fastify'
 import { beforeAll, afterAll, describe, it, expect } from 'vitest'
 import { deviceIdentityMigration } from '../src/modules/devices/migration.js'
-import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { pairingProof, publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 import { PostgresDeviceAccessService } from '../src/modules/devices/access.js'
 import { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
 import { signMainIdentityProof } from '../src/modules/devices/mainIdentity.js'
@@ -29,8 +29,8 @@ import { ResumableByteTransferSender } from '../src/modules/byte-transfer/sender
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
 import { DomainError } from '../src/modules/errors.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import type { JobSql } from '../src/modules/jobs/repository.js'
 const databaseUrl=process.env.TEST_DATABASE_URL,schema=`job_output_${randomUUID().replaceAll('-','')}`
 const hash=(v:Uint8Array|string)=>createHash('sha256').update(v).digest('hex')

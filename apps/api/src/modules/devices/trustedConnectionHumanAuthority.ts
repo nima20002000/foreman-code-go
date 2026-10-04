@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { DeviceRegistrationSchema, type DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema,
   TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema,
-  type TrustedConnectionConfigure, type TrustedConnectionApprovalReceipt, type TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
-export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@graphql/contracts/trusted-device-connection'
-export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
+  type TrustedConnectionConfigure, type TrustedConnectionApprovalReceipt, type TrustedConnectionApprovalRead } from '@foreman-code/contracts/trusted-device-connection'
+export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@foreman-code/contracts/trusted-device-connection'
+export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@foreman-code/contracts/trusted-device-connection'
 import { z } from 'zod'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'

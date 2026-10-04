@@ -5,7 +5,7 @@ import { createResourceSelection } from '../../shared/ui/resourceSelection'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { InfiniteData } from '@tanstack/react-query'
 import { LoadMore } from '../../shared/ui/LoadMore'
-import type { ManagedWorkspace, WorkspaceBatchArchiveInput, WorkspaceStorageFolderDeleteInput } from '@graphql/contracts/management'
+import type { ManagedWorkspace, WorkspaceBatchArchiveInput, WorkspaceStorageFolderDeleteInput } from '@foreman-code/contracts/management'
 
 import {
   queryKeys, useArchiveManagedWorkspaceMutation, useWorkspacePages,

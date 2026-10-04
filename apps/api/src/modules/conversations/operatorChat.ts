@@ -1,4 +1,4 @@
-import type { ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
@@ -18,9 +18,9 @@ import {
   CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
-} from '@graphql/contracts'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
-import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
+} from '@foreman-code/contracts'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { OperatorConversationHistoryQuery } from '@foreman-code/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'

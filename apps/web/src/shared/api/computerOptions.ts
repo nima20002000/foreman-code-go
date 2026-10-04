@@ -1,4 +1,4 @@
-import type { CanonicalMachineReference, DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { CanonicalMachineReference, DeviceRegistration } from '@foreman-code/contracts/device-identity'
 
 /** Presentation only. Registration is not a dispatch capability or a saved placement pin. */
 export type RegisteredComputerOption = {

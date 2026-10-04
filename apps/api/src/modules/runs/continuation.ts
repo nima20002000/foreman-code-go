@@ -1,5 +1,5 @@
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import { interactionConnection } from '../interactions/connection.js'

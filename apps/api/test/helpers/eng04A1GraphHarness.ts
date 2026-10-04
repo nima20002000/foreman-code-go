@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { MemorySaver } from '@langchain/langgraph'
-import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, parseRepeatExitResultV1, validateRepeatDecisionV1,
   type CurrentFixtureForm, type RepeatDecisionV1, type RepeatOccurrenceV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { buildRepeatGraph, type RepeatGraphStore } from '../../src/modules/runs/repeatGraph.js'
 import type { RepeatRunRepository } from '../../src/modules/runs/repeatPostgres.js'
 import {

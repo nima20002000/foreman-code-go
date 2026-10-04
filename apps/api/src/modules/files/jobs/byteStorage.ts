@@ -1,7 +1,7 @@
 import type { FileHandle } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { createGunzip } from 'node:zlib'
-import { JobArtifactMediaTypeSchema } from '@graphql/contracts/job-artifacts'
+import { JobArtifactMediaTypeSchema } from '@foreman-code/contracts/job-artifacts'
 import { DomainError } from '../../errors.js'
 import { FileByteStorage } from '../storage.js'
 import { readFileChunks, verifyFileType, type ExpectedFileBytes } from '../byteValidation.js'

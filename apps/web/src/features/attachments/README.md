@@ -5,7 +5,7 @@ Base: `nima20002000/graphql`, `feat/nim-2733-files`,
 
 Only new files in this directory are supplied. No composer, backend route,
 shared client, contract, stylesheet outside this directory, or dependency file
-is changed. The `@graphql/contracts/files` export already exists at this base.
+is changed. The `@foreman-code/contracts/files` export already exists at this base.
 No new dependency is needed.
 
 ## Mount lines
@@ -166,10 +166,10 @@ Run in the complete pinned repository:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec vitest run src/features/attachments/attachments.test.tsx --maxWorkers=1
-corepack pnpm --filter @graphql/web exec eslint src/features/attachments --max-warnings 0
-corepack pnpm --filter @graphql/web typecheck
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec vitest run src/features/attachments/attachments.test.tsx --maxWorkers=1
+corepack pnpm --filter @foreman-code/web exec eslint src/features/attachments --max-warnings 0
+corepack pnpm --filter @foreman-code/web typecheck
 ```
 
 Execution here: the first Corepack attempt could not obtain `pnpm@11.27.0`

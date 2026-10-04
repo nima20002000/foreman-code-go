@@ -1,4 +1,4 @@
-import type { CodexHarnessConfiguration } from '@graphql/contracts'
+import type { CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../errors.js'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { codexFileDynamicTools } from './index.js'

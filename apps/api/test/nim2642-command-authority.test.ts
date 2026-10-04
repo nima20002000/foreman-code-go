@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { commandInputHash, PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 
 /** SQL-client unit fixture only. The authenticated fixture covers persisted

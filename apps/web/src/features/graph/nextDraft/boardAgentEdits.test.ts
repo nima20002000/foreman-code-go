@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { GraphDraftOperationV3Schema } from '@graphql/contracts/wave25'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { GraphDraftOperationV3Schema } from '@foreman-code/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations } from './model'
 import { newNextDraft, editNextDraft, undoNextDraft, redoNextDraft, nextDraftDirty } from './state'

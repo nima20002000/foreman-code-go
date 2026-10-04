@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto'
 import { expect } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import {
   canonicalGraphJson, reduceRepeatGraphPageV3, RepeatGraphSnapshotV3Schema, RepeatGraphPageV3Schema,
   RepeatGraphCurrentV3Schema, RunRecordDetailSchema, RunExecutionsPageSchema, RunExecutionDetailSchema,
   RunExecutionBindingsPageSchema, RunVersionDetailSchema, WorkflowRunV3Schema, RUN_INSPECTION_TOOLS,
   type RepeatGraphSnapshotV3, type RepeatGraphEventV3, type RunExecutionSummary, type RunExecutionDetail,
   type RunExecutionBinding, type RepeatOccurrenceV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { runPath, type Harness, type Started } from './eng07BHarness.js'
 import type { Scenario } from './eng07BScenarios.js'
 

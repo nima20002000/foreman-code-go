@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BYTE_TRANSFER_POLICY as POLICY, TransferContextSchema, TransferIntentSchema,
-  type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
+  type TransferContext, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { nativeProcessExit } from '../harnesses/recovery/processRegistry.js'
 import type { RsyncProcessLaunch, RsyncRemoteWriter } from './rsyncWriterOwnership.js'
 import type { TransferAuthorization, TransferOperation } from './service.js'

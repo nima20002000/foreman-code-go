@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import type { PermanentFileScope } from '@graphql/contracts/files'
+import type { PermanentFileScope } from '@foreman-code/contracts/files'
 
 import { registerFileScopeRoutes, type FileRouteParams, type FileScopeRoute } from '../../../routes/files.js'
 import { requirePrincipal } from '../../access/http.js'

@@ -1,5 +1,5 @@
 import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
-import { sameExecutableWorkflow } from '@graphql/contracts/wave25'
+import { sameExecutableWorkflow } from '@foreman-code/contracts/wave25'
 import { fixture } from '../graph/nextDraft/core.cases'
 import { draftOperations, mergeAcknowledgement } from '../graph/nextDraft/model'
 import { savedPlacementFixture as placement } from './fixtures'

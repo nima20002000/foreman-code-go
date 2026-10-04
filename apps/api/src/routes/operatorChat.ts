@@ -6,8 +6,8 @@ import {
   SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema,
   RespondOperatorInteractionRequestSchema,
   type OperatorConversationStreamEvent,
-} from '@graphql/contracts'
-import { OperatorConversationHistoryQuerySchema, OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
+} from '@foreman-code/contracts'
+import { OperatorConversationHistoryQuerySchema, OperatorConversationHistoryPageSchema } from '@foreman-code/contracts/operator-chat'
 import { operatorChatBootstrapFrame } from '../modules/conversations/operatorChatBootstrap.js'
 import type { FastifyInstance } from 'fastify'
 import { requirePrincipal } from '../modules/access/http.js'

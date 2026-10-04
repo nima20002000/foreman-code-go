@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { PostgresScheduleDispatcher } from '../src/modules/schedules/postgresDispatcher.js'

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { Message } from '@graphql/contracts'
+import type { Message } from '@foreman-code/contracts'
 import { projectOperatorEnvelope, operatorTextPartKey, OPERATOR_TEXT_BYTES, projectOperatorText } from './operatorTextProjection'
 const envelope = (text: string, kind: 'text.append' | 'text.replace', eventId: string, final = false) => ({ schemaVersion: 1,
   owner: { kind: 'chat_request', conversationId: 'chat', requestId: 'A' }, native: { harness: 'codex', sessionId: 'session', turnId: 'turn', itemId: 'item' },

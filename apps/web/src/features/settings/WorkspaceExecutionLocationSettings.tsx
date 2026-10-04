@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, type RefObject } from 'react'
 import { useIsMutating } from '@tanstack/react-query'
-import { WorkspaceRootSelectionSchema, type ApprovedRootAllowlist, type WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import { WorkspaceRootSelectionSchema, type ApprovedRootAllowlist, type WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 import { useManagedWorkspaceQuery } from '../../shared/api/query'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { locationMutationKey } from '../../shared/api/workspaceLocationCache'

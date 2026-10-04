@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ScheduleOperatorCapabilitiesSchema } from '../src/mcp/operator/tools/workflowSchedules.js'
 import { JOB_TOOLS, unavailableJobToolCall } from '../src/mcp/operator/tools/jobs.js'

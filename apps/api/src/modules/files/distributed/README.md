@@ -30,6 +30,6 @@ launching a physical native harness.
 Focused verification (run the normal scheduler in the approved host PID namespace):
 
 ```sh
-node scripts/heavy-job.mjs --timeout-ms 240000 -- sh -c 'corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api exec vitest run test/canonical-native-artifacts.test.ts test/distributed-artifacts.test.ts src/modules/byte-transfer/service.test.ts src/modules/byte-transfer/sender.test.ts src/modules/byte-transfer/carrier.test.ts --maxWorkers=2'
-node scripts/heavy-job.mjs --timeout-ms 240000 -- sh -c 'corepack pnpm --filter @graphql/api exec eslint src/modules/files/distributed/nativeResults.ts test/canonical-native-artifacts.test.ts --max-warnings 0 && corepack pnpm --filter @graphql/api exec tsc --noEmit'
+node scripts/heavy-job.mjs --timeout-ms 240000 -- sh -c 'corepack pnpm --filter @foreman-code/contracts build && corepack pnpm --filter @foreman-code/api exec vitest run test/canonical-native-artifacts.test.ts test/distributed-artifacts.test.ts src/modules/byte-transfer/service.test.ts src/modules/byte-transfer/sender.test.ts src/modules/byte-transfer/carrier.test.ts --maxWorkers=2'
+node scripts/heavy-job.mjs --timeout-ms 240000 -- sh -c 'corepack pnpm --filter @foreman-code/api exec eslint src/modules/files/distributed/nativeResults.ts test/canonical-native-artifacts.test.ts --max-warnings 0 && corepack pnpm --filter @foreman-code/api exec tsc --noEmit'
 ```

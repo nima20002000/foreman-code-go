@@ -1,4 +1,4 @@
-import { DeleteOperatorConversationResponseSchema, ListOperatorConversationSummariesResponseSchema } from '@graphql/contracts'
+import { DeleteOperatorConversationResponseSchema, ListOperatorConversationSummariesResponseSchema } from '@foreman-code/contracts'
 import { apiClient, type RequestOptions } from './client'
 
 /** Status-only polling; all authentication/cancellation still uses the shared HTTP boundary. */

@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
-import type { SourceManifest, SourceEntry } from '@graphql/contracts/source-materialization'
+import type { SourceManifest, SourceEntry } from '@foreman-code/contracts/source-materialization'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
 import { SourceError, SOURCE_LIMITS, verifySourceBytes, verifySourceManifest } from './manifest.js'
 const MAGIC = Buffer.from('GSRC0001')

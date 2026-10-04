@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
-import type { AgentFileReadResult } from '@graphql/contracts/files'
+import type { AgentFileReadResult } from '@foreman-code/contracts/files'
 import { readPinnedInput } from '../src/modules/harnesses/opencodeFiles/attachments.js'
 import { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
 import { fileToolFixture } from './support/fileTools.js'

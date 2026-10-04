@@ -1,5 +1,5 @@
 import { useInternalNode, type InternalNode, type Node } from '@xyflow/react'
-import type { Agent } from '@graphql/contracts'
+import type { Agent } from '@foreman-code/contracts'
 import type { IconName } from '../../shared/ui/nocturne'
 
 /** Default worker diameter; authored dimensions and role defaults determine each actual rim. */

@@ -1,6 +1,6 @@
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { useCallback, useRef, useState } from 'react'
-import type { Agent } from '@graphql/contracts'
+import type { Agent } from '@foreman-code/contracts'
 import { Link } from '@tanstack/react-router'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'

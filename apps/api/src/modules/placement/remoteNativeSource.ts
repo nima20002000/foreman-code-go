@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import type { HarnessExecution } from '@graphql/contracts'
-import { canonicalGraphJson, sameWorkflowValue } from '@graphql/contracts/wave25'
+import type { HarnessExecution } from '@foreman-code/contracts'
+import { canonicalGraphJson, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import type { RunOwnership } from '../runs/ownership.js'

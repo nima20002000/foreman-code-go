@@ -5,7 +5,7 @@ import {
   MAX_FILE_PAGE_SIZE, FileSchema, FileScopeSchema, FileWithRevisionSchema, FilePageSchema, fileStateAt,
   type FileScope, type File, PermanentFileScopeSchema, MessageAttachmentRefSchema,
   type PermanentFileScope, type MessageAttachmentRef,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 import { DomainError } from '../errors.js'
 import type { AllocationSession, AllocationState, FileAllocation, FileReferenceRepository,

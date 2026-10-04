@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   makeCurrentWorkflowFixture, WorkspaceBoardSearchSchema, boardSearchForInspection, boardSearchForRun,
   readRunInspectionKey, resolveWorkflowBoardLocation, runInspectionKey, staysOnWorkflowBoard,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 
 const { scope, identities } = makeCurrentWorkflowFixture('inspection-links')
 const path = `/workspaces/${scope.workspaceId}`

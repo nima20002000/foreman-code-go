@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import { WorkspaceLocationIdentitySchema } from '@graphql/contracts/workspace-root-policies'
-import { ExecutionLocationSchema, type RunExecutionLocation } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { WorkspaceLocationIdentitySchema } from '@foreman-code/contracts/workspace-root-policies'
+import { ExecutionLocationSchema, type RunExecutionLocation } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   RepeatStartSnapshotV1Schema, RunStartV3InputSchema, RunExecutionLocationV3Schema,
   GraphDraftV3Schema, WorkflowDefinitionV3Schema, sameWorkflowValue,
   type RepeatStartSnapshotV1,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'

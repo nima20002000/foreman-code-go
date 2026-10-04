@@ -1,14 +1,14 @@
 import {
   ListInteractionsResponseSchema, RespondToInteractionRequestSchema, type DurableInteraction,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import { BrowserAccessSessionSchema, InteractionListInputSchema, ManagedWorkspaceSchema,
-  type ManagementAction } from '@graphql/contracts/management'
+  type ManagementAction } from '@foreman-code/contracts/management'
 import {
   CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, RunRecordDetailSchema, CurrentRunVersionSnapshotSchema,
   CurrentWorkflowCapabilitiesSchema, RunExecutionDetailSchema, RunExecutionsPageSchema,
   RunStartV3InputSchema, RunVersionDetailSchema, sameExecutableWorkflow, sameWorkflowValue,
   type RepeatGraphScopeV3, type RunExecutionSummary,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
 import { canUseBoardAction } from '../permissions'
 import { scopeForBoardRun } from '../client'

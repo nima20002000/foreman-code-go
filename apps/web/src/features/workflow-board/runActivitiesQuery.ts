@@ -1,7 +1,7 @@
-import type { ActivitySnapshotV1 } from '@graphql/contracts/activity'
+import type { ActivitySnapshotV1 } from '@foreman-code/contracts/activity'
 import { reconcileActivitySnapshot } from '../conversations/agentChat/activityMerge'
 import { RepeatGraphScopeV3Schema, RunActivitiesPageSchema, RUN_ACTIVITIES_RETAINED,
-  type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
+  type RunActivitiesPage, type RunActivityPublic } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 

@@ -1,6 +1,6 @@
 import { Annotation, Command, END, Send, START, StateGraph } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
-import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { repeatConflict } from './repeatResolution.js'
 
 const WorkState = Annotation.Root({ runId: Annotation<string>() })

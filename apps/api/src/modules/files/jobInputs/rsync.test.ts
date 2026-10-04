@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { JobInputAdmissionSchema, type JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
+import { JobInputAdmissionSchema, type JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
 import { CanonicalJobInputRsyncSource } from './rsync.js'
 import { CanonicalJobInputs } from './service.js'
 import { inputHash, makeManifest, recipient } from './manifest.js'

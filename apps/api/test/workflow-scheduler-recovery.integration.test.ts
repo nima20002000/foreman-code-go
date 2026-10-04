@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { nextOccurrences, scheduleOccurrenceId } from '@graphql/contracts/schedules'
+import { nextOccurrences, scheduleOccurrenceId } from '@foreman-code/contracts/schedules'
 import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { RemoteJobAcceptedSourceReadoutSchema, type RemoteJobDispatchIntent, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobAcceptedSourceReadoutSchema, type RemoteJobDispatchIntent, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
 import type { JobWorkerService } from '../../jobs/worker.js'
 
 export interface WorkerJobApplicationChannel { request(namespace: 'execution-v1', payload: unknown): Promise<{ payload: unknown }> }

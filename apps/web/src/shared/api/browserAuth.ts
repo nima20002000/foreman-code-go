@@ -2,7 +2,7 @@ import {
   BrowserAccessLogoutSchema, BrowserSignInRequestSchema, BrowserSignInResponseSchema,
   OwnerSetupRequestSchema, OwnerSetupResponseSchema, OwnerSetupStatusSchema,
   type BrowserSignInRequest, type OwnerSetupRequest,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from './client'
 

@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 
 import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'

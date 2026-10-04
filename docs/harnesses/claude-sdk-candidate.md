@@ -56,7 +56,7 @@ authorization is distinct from native sandbox enforcement.
 Focused deterministic command (no native CLI or credentials):
 
 ```sh
-corepack pnpm --filter @graphql/api exec vitest run src/modules/harnesses/claudeSdk/runner.test.ts src/modules/harnesses/claudeSdk/sessionManager.test.ts src/modules/harnesses/claudeSdk/discovery.test.ts --maxWorkers=1
+corepack pnpm --filter @foreman-code/api exec vitest run src/modules/harnesses/claudeSdk/runner.test.ts src/modules/harnesses/claudeSdk/sessionManager.test.ts src/modules/harnesses/claudeSdk/discovery.test.ts --maxWorkers=1
 ```
 
 Live SDK/model qualification is performed by the terminal owner through the

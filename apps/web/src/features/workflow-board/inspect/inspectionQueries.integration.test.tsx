@@ -9,7 +9,7 @@ import { http, HttpResponse } from 'msw'
 import {
   CurrentRunDetailsSchema, RunExecutionDetailSchema, RunExecutionBindingSchema,
   WorkflowVersionV3Schema, type RunExecutionDetail, type RunInputSourceSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { server } from '../../../mocks/server'
 import { digestCurrentValue, readRunExecution } from '../runDetailsClient'
 import { currentRunKey, useCurrentRunQuery } from '../currentRunQuery'

@@ -15,7 +15,7 @@ Source limits: 4,096 regular files, 16 MiB per file, 128 MiB expanded/package by
 The committed driver is `runSourceMaterializationFixture` in `acceptanceDriver.ts`. W09-C supplies its authenticated SourceByteReader and W07/W08 authorization callback. The runnable focused local fixture command is:
 
 ```sh
-corepack pnpm --filter @graphql/api exec vitest run src/modules/sources/sourceMaterialization.test.ts --maxWorkers=1
+corepack pnpm --filter @foreman-code/api exec vitest run src/modules/sources/sourceMaterialization.test.ts --maxWorkers=1
 ```
 
 This command exercises local filesystem/failure/Git fixtures only. It does not close the orchestrator-only production HTTP/MCP, real carrier, physical laptop, expiry/retention, bounded overhead or native execution gates. The composing W09-C driver must run those after W07-HUMAN approvals.

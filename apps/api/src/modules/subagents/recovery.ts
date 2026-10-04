@@ -1,8 +1,8 @@
-import { HarnessNativeEventSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
+import { HarnessNativeEventSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { RunSubagentCommandReceiptSchema } from '@graphql/contracts/subagents'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
 import type { RunSubagentService } from './service.js'
 
 /** Main startup has no proof whether pre-crash native dispatch ran. Never replay prompts or declare termination. */

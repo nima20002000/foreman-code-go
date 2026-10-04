@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { RepeatGraphScopeV3, RunExecutionSummary } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
 import { runActionsClient } from './client'
 import { actionKey, useDisclosure } from './state'
 

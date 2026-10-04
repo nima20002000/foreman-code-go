@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, it } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
 import { FileUploadRequestSchema } from '../src/modules/files/requests.js'
 import { fileDownloadHeaders } from '../src/routes/files.js'

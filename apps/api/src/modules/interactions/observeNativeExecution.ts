@@ -1,4 +1,4 @@
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'
 
 /** After approval delivery, observe the already-running turn; never submit a second prompt. */

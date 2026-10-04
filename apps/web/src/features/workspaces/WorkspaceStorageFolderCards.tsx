@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
-import type { WorkspaceStorageFolder, WorkspaceStorageFolderDeleteInput } from '@graphql/contracts/management'
+import type { WorkspaceStorageFolder, WorkspaceStorageFolderDeleteInput } from '@foreman-code/contracts/management'
 import { apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys } from '../../shared/api/query'

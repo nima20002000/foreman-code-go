@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { normalizeCodexNotification, type CodexNotificationEnvelope } from '../src/modules/harnesses/codexNormalization.js'
 import { codexNormalizationEnvelopes, codexNormalizationTranscript } from './fixtures/codex-normalization-transcript.js'
 import { codexRequestKey, translateCodexInteraction } from '../src/modules/harnesses/codexInteractions.js'

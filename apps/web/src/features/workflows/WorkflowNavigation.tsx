@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { ManagedWorkflow } from '@graphql/contracts/management'
+import type { ManagedWorkflow } from '@foreman-code/contracts/management'
 
 import { useInteractionsQuery, useWorkflowPages, useManagedWorkflowQuery } from '../../shared/api/query'
 import { LoadMore } from '../../shared/ui/LoadMore'

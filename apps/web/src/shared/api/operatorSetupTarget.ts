@@ -1,4 +1,4 @@
-import type { OperatorChatSetupQuery, SendOperatorMessageRequest } from '@graphql/contracts'
+import type { OperatorChatSetupQuery, SendOperatorMessageRequest } from '@foreman-code/contracts'
 
 /** Pending operations never inherit a newer shared selection or defaults revision. */
 export function pendingOperatorSetupTarget(conversationId: string | undefined,

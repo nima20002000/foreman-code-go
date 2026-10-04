@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WorkerNativeOutputPublicationInput } from '@graphql/contracts/worker-native-output'
+import type { WorkerNativeOutputPublicationInput } from '@foreman-code/contracts/worker-native-output'
 import { fileToolFixture } from '../../../../test/support/fileTools.js'
 import { WorkerNativeOutputRegistry, type WorkerNativeOutputPorts } from './workerNativeOutputRegistry.js'
 

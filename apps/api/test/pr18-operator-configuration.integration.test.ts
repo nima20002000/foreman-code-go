@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@foreman-code/contracts'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'

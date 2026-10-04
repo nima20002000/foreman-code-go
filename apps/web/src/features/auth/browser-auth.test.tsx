@@ -3,7 +3,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
+import { BrowserAuthSearchSchema } from '@foreman-code/contracts/management'
 import { server } from '../../mocks/server'
 import { browserAuthClient } from '../../shared/api/browserAuth'
 import { apiClient } from '../../shared/api/client'

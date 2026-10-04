@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@graphql/contracts/source-materialization'
+import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
 
 export class SourceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'SourceError' }

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { OperatorAccessPicker } from './OperatorAccessPicker'
 

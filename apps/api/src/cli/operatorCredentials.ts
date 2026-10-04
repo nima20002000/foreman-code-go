@@ -1,6 +1,6 @@
 import { loadEnvFile } from 'node:process'
 
-import type { ManagementGrant } from '@graphql/contracts/management'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
 import { credentialActions } from './credentialAccess.js'
 
 import { loadConfig } from '../config.js'

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
+import type { ScheduleConfiguration } from '@foreman-code/contracts/schedules'
 import { mockDeviceTimezone } from '../../test/deviceTimezone'
 import { buildScheduleCommand, createDraft, createScheduleEditorStore, draftIdentity } from './editorStore'
 

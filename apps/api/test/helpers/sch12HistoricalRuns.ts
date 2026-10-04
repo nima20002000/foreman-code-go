@@ -4,15 +4,15 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { expect, vi } from 'vitest'
 import {
   AgentConfigurationVersionSchema, type HarnessExecution, type NativeSessionReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import {
   AgentChatHistoryPageSchema, AgentChatTurnPageSchema, SendAgentChatMessageResponseSchema,
-} from '@graphql/contracts/agent-chat'
-import { RunBoardSnapshotGetResultSchema } from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/agent-chat'
+import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import {
   ReadSelectedRunChatResponseSchema, type SelectedRunChatTarget,
-} from '@graphql/contracts/selected-run-chat'
-import { makeCurrentWorkflowFixture, RunStartV3ResultSchema } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/selected-run-chat'
+import { makeCurrentWorkflowFixture, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../../src/app.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'

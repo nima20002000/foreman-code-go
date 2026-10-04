@@ -1,4 +1,4 @@
-import type { OperatorConversationState } from '@graphql/contracts'
+import type { OperatorConversationState } from '@foreman-code/contracts'
 import { activityScopeKey, applyCanonicalActivityItems, reconcileActivitySnapshot, sourceVectorIsStale, sourceVectorHasAdvance } from '../conversations/agentChat/activityMerge'
 import { mergeChatMessages } from '../conversations/agentChat/model'
 import { mergeOperatorActivity } from '../../shared/api/operatorActivity'

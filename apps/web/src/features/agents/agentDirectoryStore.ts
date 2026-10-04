@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Agent } from '@graphql/contracts'
+import type { Agent } from '@foreman-code/contracts'
 
 import {
   deleteAgentForSession,

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
+import { telemetryOwnedFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
 import { passiveRegistryOwnershipReader, type NativeLaunchObservation, type TrustedNativeScope } from './registryAdapter.js'
 import { LinuxSampler } from './sampler.js'
 

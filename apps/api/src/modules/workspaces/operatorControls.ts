@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import type { z } from 'zod'
-import type { HarnessMcpDetectionInputSchema, ManagementPrincipal } from '@graphql/contracts/management'
+import type { HarnessMcpDetectionInputSchema, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { McpDetectionService } from '../harnesses/mcpDetection.js'

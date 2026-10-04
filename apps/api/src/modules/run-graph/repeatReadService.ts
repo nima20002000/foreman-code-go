@@ -1,7 +1,7 @@
 import type pg from 'pg'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { CanonicalRunGraphScopeSchema, CanonicalRunGraphReadCapabilitiesSchema, type CanonicalRunGraphReadCapabilities,
-  type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3, type RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
+  type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3, type RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
 import type { RunGraphReadApi } from './readService.js'
 import { readRepeatGraphSnapshot, readRepeatGraphPage, readRepeatGraphCurrent, type AuthorizeRepeatGraphRead } from './repeatReader.js'

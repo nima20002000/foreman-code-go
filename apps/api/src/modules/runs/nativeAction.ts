@@ -1,4 +1,4 @@
-import type { RunNodeActionKind } from '@graphql/contracts'
+import type { RunNodeActionKind } from '@foreman-code/contracts'
 
 type ObjectValue = Record<string, unknown>
 export const nativeObject = (value: unknown): ObjectValue =>

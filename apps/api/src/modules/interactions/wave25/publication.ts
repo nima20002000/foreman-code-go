@@ -2,10 +2,10 @@ import { readWorkflowClosure } from '../workflowClosure.js'
 import { assertReviewJobTerminalProofLocked } from '../reviewNativeProof.js'
 import { createHash } from 'node:crypto'
 import { approvalAttentionFacts } from './attention.js'
-import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@foreman-code/contracts'
 import {
   GraphInteractionSchema, GraphReviewSchema, type GraphEffect, type GraphEvidence, type GraphFact,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { graphSourceDigest, type RunGraphPublication, type GraphEffectGuard } from '../../run-graph/publication.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { identity, fail, lockInteraction, readContext, type ApprovalContext } from './context.js'

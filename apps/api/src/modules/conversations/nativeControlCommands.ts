@@ -1,8 +1,8 @@
-import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, type ChatResponseAcknowledgment, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
+import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, type ChatResponseAcknowledgment, type AcceptedChatResponseControl } from '@foreman-code/contracts/interaction-activity'
 import type pg from 'pg'
 
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ActivityScope, NativeSessionReference } from '@graphql/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ActivityScope, NativeSessionReference } from '@foreman-code/contracts'
 
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'

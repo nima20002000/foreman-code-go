@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import {
   CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowSaveInputSchema,
   ManualRunStartInputSchema, makeCurrentWorkflowFixture, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema,
@@ -8,7 +8,7 @@ import {
   CurrentWorkflowCreateInputSchema, SavedWorkflowVersionSchema, SavedWorkflowDefinitionSchema,
   CanonicalRunGraphScopeSchema, CurrentEditStageInputSchema, CurrentOperatorToolNameSchema,
   parseRepeatExitResultV1, type CurrentFixtureForm,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { currentWorkflowAvailable, requireCurrentWorkflowAccess } from '../src/modules/workflows/currentWorkflowPolicy.js'
 
 const f = makeCurrentWorkflowFixture('current-contract')

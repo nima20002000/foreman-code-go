@@ -3,10 +3,10 @@ import { z } from 'zod'
 import {
   CancelQueuedAgentChatTurnRequestSchema, RespondAgentChatInteractionRequestSchema,
   AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema,
-} from '@graphql/contracts/agent-chat'
+} from '@foreman-code/contracts/agent-chat'
 import {
   AgentChatReadToolInputSchema, AgentChatReadToolOutputSchema, AgentChatSendToolInputSchema, AgentChatInterruptToolInputSchema,
-} from '@graphql/contracts/selected-run-chat'
+} from '@foreman-code/contracts/selected-run-chat'
 
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'

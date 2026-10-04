@@ -1,4 +1,4 @@
-import type { Message, OperatorActivity } from '@graphql/contracts'
+import type { Message, OperatorActivity } from '@foreman-code/contracts'
 
 /** Keep old activity beside its request, not below every later reply. Public sequence
  * boundaries take precedence; completed-message fallback uses the matching last reply. */

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, applyOperatorChatSettings, OperatorConfigurationVersionSchema, withAdvancedDefaults,
-  type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@graphql/contracts'
+  type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>

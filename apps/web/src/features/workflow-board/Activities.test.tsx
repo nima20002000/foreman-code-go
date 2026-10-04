@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RunActivityPublicSchema, type RepeatGraphScopeV3, type RunActivitiesPage,
-  type RunActivityPublic } from '@graphql/contracts/wave25'
+  type RunActivityPublic } from '@foreman-code/contracts/wave25'
 import { server } from '../../mocks/server'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { Activities } from './Activities'

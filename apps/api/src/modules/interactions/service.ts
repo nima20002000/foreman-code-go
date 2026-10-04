@@ -1,5 +1,5 @@
-import type { DurableInteraction } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { DurableInteraction } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { NativeResponseJournal } from '../harnesses/recovery/responseJournal.js'
 import { hasAction, requireAuthorization } from '../access/policy.js'
 import { projectInteractionActivity, type InteractionActivityEvidence } from './activityProjection.js'

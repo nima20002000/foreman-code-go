@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { CodexHarnessConfiguration, NativeSessionReference } from '@graphql/contracts'
+import type { CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { randomUUID } from 'node:crypto'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema,
-  type CurrentWorkflowSavedSchema, type RepeatGraphScopeV3, type makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+  type CurrentWorkflowSavedSchema, type RepeatGraphScopeV3, type makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { z } from 'zod'
 import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'

@@ -1,4 +1,4 @@
-import type { NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
 
 import { DomainError } from '../../src/modules/errors.js'
 import type { PostgresInteractionCoordinationRepository, WriterFence } from '../../src/modules/interactions/coordination.js'

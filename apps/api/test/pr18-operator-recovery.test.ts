@@ -1,11 +1,11 @@
 import { expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
-import { OperatorConversationStateSchema } from '@graphql/contracts'
+import { OperatorConversationStateSchema } from '@foreman-code/contracts'
 import { OperatorChatCommands } from '../src/modules/conversations/operatorChatCommands.js'
 import type pg from 'pg'
-import { ActivitySnapshotV1Schema } from '@graphql/contracts/activity'
+import { ActivitySnapshotV1Schema } from '@foreman-code/contracts/activity'
 
 function fixture() {
   const principal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: new Date(Date.now() + 600_000).toISOString(),

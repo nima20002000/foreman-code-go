@@ -1,4 +1,4 @@
-import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import type { GraphNode } from '../../features/graph/types'
 /** Agent-only fixture assertion; a Job must never acquire fabricated Agent fields. */
 export function nativeNode<T>(node:T):Exclude<T,{kind:'job'}|{data:{kind:'job'}}> {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue, workflowNodeNames,
-  type GraphEditIntentV3, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
+  type GraphEditIntentV3, type GraphEditReadResultV3 } from '@foreman-code/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'

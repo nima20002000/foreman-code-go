@@ -3,8 +3,8 @@ import type {
   RunExecutionState,
   RunOutcome,
   Timestamp,
-} from '@graphql/contracts'
-import type { AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts'
+import type { AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import type { RepeatRepositoryServices } from './repeatRepositoryHost.js'
 import type { WorkflowNativeProofServices } from './workflowNativeProof.js'
 

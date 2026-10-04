@@ -1,5 +1,5 @@
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { JobRuntimeApprovalSchema,type JobRuntimeApproval } from '@graphql/contracts/job-runtime'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { JobRuntimeApprovalSchema,type JobRuntimeApproval } from '@foreman-code/contracts/job-runtime'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'

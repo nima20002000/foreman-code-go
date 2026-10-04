@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { GraphDraftV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { GraphDraftV3, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { attachAgent, authoringHints, changeApprovalHandler, draftOperations, entryChoices, hasLocalChanges,
   mergeAcknowledgement, putRelationship, relationshipPairs, removeNode, removeRelationship, roleEvidence, sameValue,
   type NextDraftContext } from './model'

@@ -2,13 +2,13 @@ import {
   JobExecutionSchema, JobDefinitionSchema, JobAuthoringChoicesSchema, PreparedJobSpecSchema, isAutoJobSpec,
   type JobAuthoringChoices, type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
   type JobExecution, type PreparedJobSpec,
-} from '@graphql/contracts/jobs'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts/jobs'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobPreparationPort, JobQueueConfiguration } from './ports.js'
 import type pg from 'pg'
-import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { JobOwnership } from './ownership.js'
 import { jobEligibilityReason, releaseClosedJobComputers, releaseUnstartedJobComputer,
   type JobComputerSelection } from './computerSelection.js'

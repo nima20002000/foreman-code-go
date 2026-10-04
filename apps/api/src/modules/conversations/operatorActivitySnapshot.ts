@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivitySourceRevision, type PendingNativeInteraction, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivitySourceRevision, type PendingNativeInteraction, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
 import { readActivityCommands } from './activityCommands.js'
 import { conversationActivityId, conversationActivityKey, publicActivityProvenance } from './activityIdentity.js'
 import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'

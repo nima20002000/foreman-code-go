@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import type { AssignedSkill, ResolvedSkill, WorkspaceSkillReference } from '@graphql/contracts'
+import type { AssignedSkill, ResolvedSkill, WorkspaceSkillReference } from '@foreman-code/contracts'
 import {
   SkillListInputSchema, SkillVersionSchema, SkillVersionSummarySchema,
   type ManagementPrincipal, type SkillArchiveInput, type SkillCreateInput, type SkillListInput, type SkillSummary,
   type SkillUpdateInput, type SkillVersion,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'

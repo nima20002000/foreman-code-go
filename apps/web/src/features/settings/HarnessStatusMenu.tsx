@@ -1,14 +1,14 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useLayoutEffect, useRef } from 'react'
-import { AgentHarnessSchema, type AgentHarness } from '@graphql/contracts'
+import { AgentHarnessSchema, type AgentHarness } from '@foreman-code/contracts'
 import { harnessNames } from './settingsPresentation'
 import { getExecutionReadiness } from '../operator-chat/executionReadiness'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
 import { useAgentDefaultsQuery } from '../../shared/api/query'
-import type { ExecutionReadiness } from '@graphql/contracts/management'
+import type { ExecutionReadiness } from '@foreman-code/contracts/management'
 import './harnessStatusMenu.css'
 
 function HarnessStatus({ harness, scope, revision, enabled }: { harness: AgentHarness; scope: ExecutionReadiness['scope']; revision?: number; enabled: boolean }) {

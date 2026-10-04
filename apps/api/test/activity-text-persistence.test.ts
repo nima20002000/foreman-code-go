@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { appendConversationTextOperation } from '../src/modules/conversations/conversationTextRepository.js'
 

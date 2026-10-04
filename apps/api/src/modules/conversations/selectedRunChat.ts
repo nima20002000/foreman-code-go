@@ -1,11 +1,11 @@
 import type pg from 'pg'
-import type { HarnessExecution } from '@graphql/contracts'
-import type { AgentChatContext } from '@graphql/contracts/agent-chat'
-import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
-import { RunBoardSnapshotSchema } from '@graphql/contracts/run-snapshots'
+import type { HarnessExecution } from '@foreman-code/contracts'
+import type { AgentChatContext } from '@foreman-code/contracts/agent-chat'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
+import { RunBoardSnapshotSchema } from '@foreman-code/contracts/run-snapshots'
 import type {
   ReadSelectedRunChatResponse, SelectedRunChatExecution, SelectedRunChatSelection, SelectedRunChatTarget,
-} from '@graphql/contracts/selected-run-chat'
+} from '@foreman-code/contracts/selected-run-chat'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'

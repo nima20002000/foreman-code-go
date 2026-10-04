@@ -1,8 +1,8 @@
 import { generateKeyPairSync,randomUUID } from 'node:crypto'
 import { describe,expect,it } from 'vitest'
-import { decodeWorkerIdentityRequest,decodeWorkerEnrollmentCode,encodeWorkerEnrollmentCode,DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
-import { workerIdentityRequestCode,verifiedWorkerIdentityRequest,verifiedWorkerEnrollmentCode } from '@graphql/contracts/device-setup-node'
-import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { decodeWorkerIdentityRequest,decodeWorkerEnrollmentCode,encodeWorkerEnrollmentCode,DeviceSetupOptionsSchema } from '@foreman-code/contracts/device-setup'
+import { workerIdentityRequestCode,verifiedWorkerIdentityRequest,verifiedWorkerEnrollmentCode } from '@foreman-code/contracts/device-setup-node'
+import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 function identity(){const keys=generateKeyPairSync('ed25519'),publicKey=keys.publicKey.export({type:'spki',format:'pem'}).toString();return {workerInstallationId:randomUUID(),publicKey,publicKeyFingerprint:publicKeyFingerprint(publicKey)}}
 describe('bounded companion setup code contract',()=>{
   it('publishes a single canonical public identity code with no private key or grant',()=>{

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { TelemetryReadService } from '@graphql/contracts/resource-telemetry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { TelemetryReadService } from '@foreman-code/contracts/resource-telemetry'
 import { requirePrincipal } from '../modules/access/http.js'
 import { readTelemetry, RESOURCE_TELEMETRY_READ_ROUTE, type TelemetryDenialAudit } from '../modules/resource-telemetry/readback/adapters.js'
 /** Register under existing authenticated Operator HTTP hook, never as a worker endpoint. */

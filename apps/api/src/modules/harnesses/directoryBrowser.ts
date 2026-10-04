@@ -1,11 +1,11 @@
 import type pg from 'pg'
 import { mkdir, opendir, readdir, realpath, rename, rmdir, lstat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { WorkspaceFolderUndoInputSchema, type WorkspaceFolderUndoInput, WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, type WorkspaceFolderRenameInput, type WorkspaceFolderCreateInput, type ManagementPrincipal } from '@graphql/contracts/management'
+import { WorkspaceFolderUndoInputSchema, type WorkspaceFolderUndoInput, WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, type WorkspaceFolderRenameInput, type WorkspaceFolderCreateInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
+import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
 
 export function isInside(root: string, path: string): boolean {
   const rel = relative(root, path)

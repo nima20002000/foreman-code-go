@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { access, readFile, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { delimiter, isAbsolute, resolve } from 'node:path'
-import type { CompatibilityHarness } from '@graphql/contracts'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { baselineProfile, forgetQualifiedProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import type { HarnessQualificationRepository } from './repository.js'
 

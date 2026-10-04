@@ -3,11 +3,11 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { JOB_INPUT_DIRECTORY } from '@graphql/contracts/job-inputs'
+import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 import { JOB_INPUT_MANIFEST_CONTAINER_PATH, verifyJobInputDirectory } from './inputs.js'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import type { QualificationNativeOwner, JobQualificationCandidate, JobQualificationAuthority } from './qualification.js'
-import type { JobExecution } from '@graphql/contracts'
+import type { JobExecution } from '@foreman-code/contracts'
 import { jobSupervisorIdentity, type JobLaunchPlan, type JobSupervisor, type QualifiedJobProfile } from './executor.js'
 
 export interface PodmanIsolationInput {

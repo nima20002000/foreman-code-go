@@ -1,4 +1,4 @@
-import type { ManagementGrant } from '@graphql/contracts/management'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
 
 /** A delegated credential may only lose authority when its parent is changed. */
 export function intersectGrants(issued: ManagementGrant[], current: ManagementGrant[]): ManagementGrant[] {

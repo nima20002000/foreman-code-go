@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { type ActivityItem, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { type ActivityItem, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 

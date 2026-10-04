@@ -1,5 +1,5 @@
-import type { ActivitySnapshotV1, InteractionSummary } from '@graphql/contracts/activity'
-import type { NativeInteractionResponseAvailability } from '@graphql/contracts/interaction-activity'
+import type { ActivitySnapshotV1, InteractionSummary } from '@foreman-code/contracts/activity'
+import type { NativeInteractionResponseAvailability } from '@foreman-code/contracts/interaction-activity'
 
 /** Dynamic callback/grant qualification cannot change recorded answer or delivery evidence. */
 export function qualifyChatActivity(snapshot: ActivitySnapshotV1,

@@ -1,5 +1,5 @@
-import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
-import { RemoteJobOperationReceiptSchema, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { RemoteJobOperationReceiptSchema, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
 import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 export interface JobCanonicalOutputVerifier {verifyRequiredOutputs(sql:JobSql,execution:JobExecution):Promise<void>}

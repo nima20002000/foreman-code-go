@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
-import type { RootBinding } from '@graphql/contracts/source-materialization'
+import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
 
 const pauses = vi.hoisted(() => ({ beforeUnlink: null as null | (() => Promise<void>) }))

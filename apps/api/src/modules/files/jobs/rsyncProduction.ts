@@ -1,5 +1,5 @@
-import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema, JobOutputDeviceRequestSchema } from '@graphql/contracts/job-output-transfer'
-import { VerifiedTransferReceiptSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema, JobOutputDeviceRequestSchema } from '@foreman-code/contracts/job-output-transfer'
+import { VerifiedTransferReceiptSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import type { DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { DomainError } from '../../errors.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationChannel.js'

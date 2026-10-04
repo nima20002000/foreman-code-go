@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@foreman-code/contracts'
 import { describe, expect, it } from 'vitest'
 import { readActivityAcknowledgment } from '../src/modules/interactions/activityAcknowledgment.js'
 

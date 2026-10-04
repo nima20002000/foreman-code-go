@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { agentChatFixtures, AgentChatStreamEventSchema } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, AgentChatStreamEventSchema } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../mocks/server'
 import { agentChatFixtureFor, createAgentChatMock } from '../mocks/agentChatHandlers'
 import { agentChatApi } from './agentChat'

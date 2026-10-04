@@ -2,7 +2,7 @@ import { z } from 'zod'
 import {
   AgentFileListInputSchema, FileRevisionSchema, FileScopeSchema,
   type FileScope,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 
 /** Backend transport envelope only. FIL-02 has no upload/finalize HTTP contracts.
  * Do not duplicate file metadata or scope validation; compose the frozen schemas. */

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { it } from 'vitest'
 
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'

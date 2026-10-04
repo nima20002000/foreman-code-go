@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
-import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
+import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@foreman-code/contracts'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 
 // Uses only a connection-local temporary table. No persistent schema or production record is changed.

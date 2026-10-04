@@ -1,5 +1,5 @@
-import type { DurableInteraction, ReviewJob } from '@graphql/contracts'
-import { WorkflowRunV3Schema, type GraphFact } from '@graphql/contracts/wave25'
+import type { DurableInteraction, ReviewJob } from '@foreman-code/contracts'
+import { WorkflowRunV3Schema, type GraphFact } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../../run-graph/currentAttention.js'
 import { publicNodeProjectionDelta, readPublicNodeProjection, type PublicProjectionOverlay } from '../../run-graph/publicProjection.js'

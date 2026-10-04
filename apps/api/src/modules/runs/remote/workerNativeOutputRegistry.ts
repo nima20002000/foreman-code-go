@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open, unlink, type FileHandle } from 'node:fs/promises'
-import { CodexHarnessConfigurationSchema, type CodexHarnessConfiguration } from '@graphql/contracts'
+import { CodexHarnessConfigurationSchema, type CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { AgentFilePublishInputSchema, TemporaryFileScopeSchema, MAX_FILE_BYTES,
-  type TemporaryFileScope, type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
-import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
+  type TemporaryFileScope, type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { WorkerNativeOutputCommandSchema, WorkerNativeOutputReplySchema, MAX_NATIVE_OUTPUT_APPEND_BYTES,
-  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@graphql/contracts/worker-native-output'
+  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@foreman-code/contracts/worker-native-output'
 import { anchored, identity, openPrivateRoot } from '../../sources/privateFilesystem.js'
 import { DomainError } from '../../errors.js'
 import { captureWorkerNativeArtifactCallback, type WorkerNativeArtifactCallback,

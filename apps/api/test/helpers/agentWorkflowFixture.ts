@@ -1,4 +1,4 @@
-import type { WorkflowDefinitionV3, WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3, WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 /** Agent-only fixtures reject Jobs rather than manufacturing Agent identities. */
 export function agentWorkflowNode(node: WorkflowDefinitionV3['nodes'][number] | undefined) {

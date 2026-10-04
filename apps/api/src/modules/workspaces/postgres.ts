@@ -3,12 +3,12 @@ import {
   WorkspaceSchema,
   WorkflowRunSummarySchema,
   type Agent,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { SavedWorkspaceDetailsSchema, type SavedWorkspaceDetails } from '@graphql/contracts/wave25'
+import { SavedWorkspaceDetailsSchema, type SavedWorkspaceDetails } from '@foreman-code/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'

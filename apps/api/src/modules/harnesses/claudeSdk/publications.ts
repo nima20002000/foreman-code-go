@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { bindingIdentity } from '../../files/tools/context.js'
 import type { FileToolContext } from '../../files/tools/types.js'
 import { mergeMessagePins } from '../../conversations/messagePublications.js'

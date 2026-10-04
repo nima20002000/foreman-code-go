@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import type pg from 'pg'
 import { test } from 'vitest'
-import type { ReviewJob } from '@graphql/contracts'
+import type { ReviewJob } from '@foreman-code/contracts'
 
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 

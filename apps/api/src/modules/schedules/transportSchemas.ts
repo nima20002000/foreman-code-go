@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import {
   ScheduleDisableInputSchema, ScheduleGetInputSchema, ScheduleOccurrenceSchema, ScheduleSaveResultSchema,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 
 /** Provisional compositions for omissions in SCH-02; see SCH-03-HANDOFF.md.
  * HTTP and Operator MCP share these. No frozen contract or UI shape is redefined. */

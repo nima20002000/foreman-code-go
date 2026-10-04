@@ -136,7 +136,7 @@ GET /api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/sn
 
 All requests go through the existing authenticated `apiClient.request`; no raw
 fetch, second auth path, mock runtime, or locally redefined HTTP shape is used.
-All response parsing uses `@graphql/contracts/run-snapshots`, which is already
+All response parsing uses `@foreman-code/contracts/run-snapshots`, which is already
 exported at the pinned base. A selected Run is checked through the single-Run
 snapshot endpoint, **not** by searching every history page: absence from a loaded
 page is not proof of a missing Run. 401, 403, and 404 remain distinct short states;
@@ -189,11 +189,11 @@ Use the repository's pinned runtime from the full checkout:
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec vitest run src/features/runs-selector --maxWorkers=4
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec vitest run src/features/runs-selector --maxWorkers=4
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```
 
 These Vitest, project typecheck, lint and build commands were **not run** here.

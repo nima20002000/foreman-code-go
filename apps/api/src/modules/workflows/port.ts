@@ -1,4 +1,4 @@
-import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 /** One current immutable reader for the existing engine and management clients.
  * Publication belongs to authenticated CurrentWorkflowAuthoringService, never a

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import type { NativeSessionReference } from '@graphql/contracts'
-import type { MessageAttachmentRef } from '@graphql/contracts/files'
+import type { NativeSessionReference } from '@foreman-code/contracts'
+import type { MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { productionFileTools } from '../../files/tools/production.js'
 import { prepareCodexFileTurn, type PrepareCodexFileTurnDependencies } from './index.js'
 import type { AcceptedCodexFileTurn, CodexFileServices } from './port.js'

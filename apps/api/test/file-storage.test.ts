@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, it } from 'vitest'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { fileFixtures, fileMetadata, traversalZip, expansionZip } from './helpers/fileFixtures.js'
 

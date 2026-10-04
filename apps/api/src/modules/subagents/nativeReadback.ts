@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 const CursorSchema = z.object({ root: z.string().min(1), target: z.string().min(1), cursor: z.string().nullable(), offset: z.number().int().nonnegative().optional(), children: z.array(z.string().min(1).max(512)).max(128).optional() }).strict()

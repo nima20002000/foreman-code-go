@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { AgentChatHistoryPageSchema } from '@graphql/contracts/agent-chat'
+import type { AgentChatHistoryPageSchema } from '@foreman-code/contracts/agent-chat'
 
 export const CHAT_HISTORY_BATCH_PAGES = 8
 

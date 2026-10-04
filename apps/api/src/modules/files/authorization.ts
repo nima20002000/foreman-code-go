@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { TemporaryFileScopeSchema, type TemporaryFileScope } from '@graphql/contracts/files'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { TemporaryFileScopeSchema, type TemporaryFileScope } from '@foreman-code/contracts/files'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

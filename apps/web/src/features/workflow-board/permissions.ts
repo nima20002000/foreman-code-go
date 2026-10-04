@@ -1,4 +1,4 @@
-import type { ManagementAction, ManagementGrant } from '@graphql/contracts/management'
+import type { ManagementAction, ManagementGrant } from '@foreman-code/contracts/management'
 /** UI affordance only. The shared service rechecks grants and native authority. */
 export function canUseBoardAction(grants: readonly ManagementGrant[], action: ManagementAction,
   scope: { workspaceId: string; workflowId: string; runId?: string }): boolean {

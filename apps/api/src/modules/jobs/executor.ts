@@ -1,12 +1,12 @@
 import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type JobAcceptedInputPort,type VerifiedJobSource } from './inputs.js'
-import type { JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
+import type { JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
 import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
-import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@graphql/contracts'
-import { jobSpecDigests } from '@graphql/contracts/jobs-node'
+import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@foreman-code/contracts'
+import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { componentLogger } from '../../infrastructure/logger.js'
-export { jobSpecDigests } from '@graphql/contracts/jobs-node'
+export { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
 export interface JobLaunchAuthority {

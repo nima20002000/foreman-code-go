@@ -1,11 +1,11 @@
 import { join } from 'node:path'
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { SourceRootSelection } from '@graphql/contracts/source-admission'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { SourceRootSelection } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
 import type { RegisteredSourceRootPort, AuthorizedSourceRoot } from './admissionPorts.js'
 import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
-import type { WorkspaceRootPolicy } from '@graphql/contracts/workspace-root-policies'
+import type { WorkspaceRootPolicy } from '@foreman-code/contracts/workspace-root-policies'
 import type { PostgresWorkspaceRootPolicies } from './rootPolicies.js'
 
 /** Source linkage consumes the ONE generic workspace root authority. */

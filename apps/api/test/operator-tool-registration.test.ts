@@ -1,4 +1,4 @@
-import { CURRENT_WORKFLOW_TOOLS } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS } from '@foreman-code/contracts/wave25'
 import type { McpServer } from '@modelcontextprotocol/server'
 import {
   ManagementActionSchema,
@@ -6,7 +6,7 @@ import {
   type ManagementGrant,
   type ManagementPrincipal,
   type OperatorToolName,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { describe, expect, it } from 'vitest'
 
 import { registerAgentTools } from '../src/mcp/operator/tools/agents.js'

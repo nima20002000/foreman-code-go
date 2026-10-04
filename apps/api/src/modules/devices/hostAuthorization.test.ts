@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { assertDeviceHostInstallation } from './hostAuthorization.js'
 
 const mainId = randomUUID()

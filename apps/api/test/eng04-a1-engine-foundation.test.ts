@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { Command, interrupt } from '@langchain/langgraph'
 import { describe, it } from 'vitest'
-import { validateRepeatSuccessorV1 } from '@graphql/contracts/wave25'
+import { validateRepeatSuccessorV1 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { executeRepeatRuntime, type RepeatRuntimeLifecycle } from '../src/modules/runs/repeatRuntime.js'
 import { currentInitialPrompt, parseCurrentChoiceResult } from '../src/modules/runs/currentRouting.js'

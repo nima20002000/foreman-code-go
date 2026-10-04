@@ -1,16 +1,16 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { GraphSequenceSchema, RunActivitiesInputSchema, RunActivitiesPageSchema,
   RUN_ACTIVITIES_RETAINED, RUN_ACTIVITIES_PAGE_BYTES,
-  canonicalGraphJson, graphJsonBytes, type RunActivitiesPage } from '@graphql/contracts/wave25'
+  canonicalGraphJson, graphJsonBytes, type RunActivitiesPage } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { withCurrentRunRead } from './currentRead.js'
 import { publicRunActivity, type ActivityReadRow } from './activityProjection.js'
 
 /** The original Run audit remains immutable. Activities expose its latest 1000
  * rows and make a cursor outside that bounded window explicitly expire. */
-export { RUN_ACTIVITIES_RETAINED } from '@graphql/contracts/wave25'
+export { RUN_ACTIVITIES_RETAINED } from '@foreman-code/contracts/wave25'
 export const RUN_ACTIVITIES_BOUNDS_SQL = `with recent as materialized (
   select sequence from run_activity where run_id=$1 order by sequence desc limit 1001
 ), retained as (select sequence from recent order by sequence desc limit 1000)

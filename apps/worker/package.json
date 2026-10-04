@@ -1,5 +1,5 @@
 {
-  "name": "@graphql/worker",
+  "name": "@foreman-code/worker",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@graphql/contracts": "workspace:*",
+    "@foreman-code/contracts": "workspace:*",
     "ws": "8.22.0"
   },
   "devDependencies": {

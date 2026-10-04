@@ -9,9 +9,9 @@ import {
   type OperatorAgent,
   type OperatorConfigurationVersion,
   type WorkspaceSkillReference,
-} from '@graphql/contracts'
+} from '@foreman-code/contracts'
 import type pg from 'pg'
-import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'

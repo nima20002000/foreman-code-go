@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
 import { CanonicalRunGraphReadCapabilitiesSchema, CanonicalRunGraphScopeSchema,
-  ManualRunStartInputSchema, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+  ManualRunStartInputSchema, RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
 import { canonicalRunGraphReadApi } from '../src/modules/run-graph/repeatReadService.js'
 

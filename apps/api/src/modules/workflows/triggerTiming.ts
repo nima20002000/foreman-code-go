@@ -1,4 +1,4 @@
-import type { WorkflowTrigger } from '@graphql/contracts/management'
+import type { WorkflowTrigger } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 
 type Schedule = Extract<WorkflowTrigger,{kind:'schedule'}>

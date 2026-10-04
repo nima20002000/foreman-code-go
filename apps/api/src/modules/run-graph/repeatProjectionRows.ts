@@ -7,7 +7,7 @@ import {
   sameCanonicalGraphScope, canonicalGraphJson, qualifyRepeatGraphExecution,
   type RepeatGraphScopeV3, type RepeatGraphExecutionV3, type RepeatGraphBindingV3,
   type RepeatGraphResolutionV3, type RepeatGraphFactV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'

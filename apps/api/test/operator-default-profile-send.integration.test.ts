@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { operatorChatSettings, type OperatorConfigurationVersion } from '@graphql/contracts'
+import { operatorChatSettings, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'

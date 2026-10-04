@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { ClaudeDecodedEvent } from './normalization.js'
 
 /** sequence is the existing adapter transport cursor, not an SDK native sequence.

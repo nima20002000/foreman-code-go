@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { describe, it } from 'vitest'
-import type { OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 
 import { OpenCodeNativeAutoReplies, usesOpenCodeNativeAuto } from '../src/modules/harnesses/opencodeNativeAuto.js'
 

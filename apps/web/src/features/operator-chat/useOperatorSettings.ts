@@ -1,4 +1,4 @@
-import { applyOperatorChatSettings, operatorChatSettings, operatorHarnessDefaults, type AgentDefaults, type HarnessConfiguration, type OperatorChatSettings } from '@graphql/contracts'
+import { applyOperatorChatSettings, operatorChatSettings, operatorHarnessDefaults, type AgentDefaults, type HarnessConfiguration, type OperatorChatSettings } from '@foreman-code/contracts'
 import { useAgentDefaultsQuery, useHarnessDefaultsQuery, useUpdateAgentDefaultsMutation } from '../../shared/api/query'
 import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
 import { useRevisionedForm } from '../settings/revisionedForm'

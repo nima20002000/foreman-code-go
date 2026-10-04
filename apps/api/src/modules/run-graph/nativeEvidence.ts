@@ -1,4 +1,4 @@
-import { canonicalGraphJson, NATIVE_GRAPH_EVIDENCE_MAX_BYTES } from '@graphql/contracts/wave25'
+import { canonicalGraphJson, NATIVE_GRAPH_EVIDENCE_MAX_BYTES } from '@foreman-code/contracts/wave25'
 import { nativeObject } from '../runs/nativeAction.js'
 
 const pick = (value: unknown, keys: readonly string[]): Record<string, unknown> => {

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { RepeatBlockV1, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { RepeatBlockV1, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Button, Checkbox, Select, TextField } from '../../shared/ui/nocturne'
 import { blockOutcomeOptions, localDraftFromPlan, targetLabel, validateRepeatDraft } from './repeatModel'
 import './repeats.css'

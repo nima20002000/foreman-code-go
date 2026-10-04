@@ -1,6 +1,6 @@
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, RunOutcomeSchema,
-  type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
-import { RepeatRunVersionV1Schema } from '@graphql/contracts/wave25'
+  type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
+import { RepeatRunVersionV1Schema } from '@foreman-code/contracts/wave25'
 import { settleRepeatNativeExecutionLocked } from './repeatNativeSettlement.js'
 import { DomainError } from '../errors.js'
 import { readWorkflowClosure } from './workflowClosure.js'

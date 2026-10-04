@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { JobInputRevisionSchema, type JobExecution } from '@graphql/contracts/jobs'
-import { JobInputEntrySchema, JobInputManifestSchema, type JobInputEntry, type JobInputManifest } from '@graphql/contracts/job-inputs'
-import { jobInputSnapshotDigest, jobBuildInputManifestBytes } from '@graphql/contracts/job-inputs-node'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { JobInputRevisionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobInputEntrySchema, JobInputManifestSchema, type JobInputEntry, type JobInputManifest } from '@foreman-code/contracts/job-inputs'
+import { jobInputSnapshotDigest, jobBuildInputManifestBytes } from '@foreman-code/contracts/job-inputs-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { DomainError } from '../../errors.js'
 export const inputHash=(value:unknown)=>commandInputHash(value).slice(7)
 export function recipient(execution:JobExecution) { return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,

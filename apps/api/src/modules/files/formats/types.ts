@@ -1,4 +1,4 @@
-import type { FileMediaType } from "@graphql/contracts/files";
+import type { FileMediaType } from "@foreman-code/contracts/files";
 
 /** Internal byte-helper API, not a transport contract or authorization boundary. */
 export type DocumentFormat = "pdf" | "docx" | "markdown";

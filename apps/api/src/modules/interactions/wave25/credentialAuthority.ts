@@ -1,5 +1,5 @@
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
-import { WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
+import { WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'

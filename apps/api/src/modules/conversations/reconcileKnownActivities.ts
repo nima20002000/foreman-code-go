@@ -1,4 +1,4 @@
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'

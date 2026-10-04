@@ -1,8 +1,8 @@
-import { DeviceSetupApproveInputSchema, DeviceSetupApproveResultSchema, DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
+import { DeviceSetupApproveInputSchema, DeviceSetupApproveResultSchema, DeviceSetupOptionsSchema } from '@foreman-code/contracts/device-setup'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { DeviceListResultSchema, DevicePairingGrantInputSchema, DevicePairingGrantResultSchema,
-  DeviceRegistrationSchema, DeviceRevokeInputSchema, MainDeviceIdentityPublicSchema } from '@graphql/contracts/device-identity'
+  DeviceRegistrationSchema, DeviceRevokeInputSchema, MainDeviceIdentityPublicSchema } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 import { operatorToolAvailable } from '../availability.js'

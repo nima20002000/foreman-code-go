@@ -26,7 +26,7 @@ function load(path) {
     if (name === 'vitest') return { it }
     // Capture modules import only canonicalGraphJson from this barrel. Load its
     // actual leaf implementation, avoiding unrelated unavailable Zod schemas.
-    if (name === '@graphql/contracts/wave25') return load(resolve(root, 'packages/contracts/src/wave25/json.ts'))
+    if (name === '@foreman-code/contracts/wave25') return load(resolve(root, 'packages/contracts/src/wave25/json.ts'))
     if (name.startsWith('node:')) return require(name)
     if (name.startsWith('.')) return load(resolve(dirname(path), name.replace(/\.js$/, '.ts')))
     throw new Error(`Unsupported external import in isolated runner: ${name}`)

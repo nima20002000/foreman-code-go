@@ -1,4 +1,4 @@
-import type { ManagementGrant } from '@graphql/contracts/management'
+import type { ManagementGrant } from '@foreman-code/contracts/management'
 
 /** Text-only handoff access is the native chat's narrowed form of chat read.
  * Use only for a database-bound Operator chat credential, never a general token.

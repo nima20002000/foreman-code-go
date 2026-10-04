@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { JobRuntimeApprovalSchema,JobRuntimeProfileSchema,type JobRuntimeProfile,type JobRuntimeFingerprint,type JobRuntimeApproval,type JobRuntimeNativeAdmission,JobRuntimeFingerprintSchema,JobQualificationCandidateSchema,type JobQualificationCandidate,type InstalledJobRuntimeDescriptor } from '@graphql/contracts/job-runtime'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { JobRuntimeApprovalSchema,JobRuntimeProfileSchema,type JobRuntimeProfile,type JobRuntimeFingerprint,type JobRuntimeApproval,type JobRuntimeNativeAdmission,JobRuntimeFingerprintSchema,JobQualificationCandidateSchema,type JobQualificationCandidate,type InstalledJobRuntimeDescriptor } from '@foreman-code/contracts/job-runtime'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'

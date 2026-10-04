@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
-import type { HarnessExecutionRequest } from '@graphql/contracts'
+import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 import {
   CANONICAL_RUN_GRAPH_MCP_TOOLS, CANONICAL_RUN_GRAPH_ROUTES, CURRENT_WORKFLOW_TOOLS,
   CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema, RunRecordDetailSchema,
   RunStartV3InputSchema, RunStartV3ResultSchema, SavedManagedWorkflowCommandResultSchema,
   type RepeatGraphScopeV3, type WorkflowDefinitionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../../src/app.js'
 import { OperatorInteractionService } from '../../src/modules/interactions/operator.js'

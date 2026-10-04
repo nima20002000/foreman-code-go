@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import { OperatorConfigurationVersionSchema } from '@graphql/contracts'
-import { ExecutionReadinessSchema } from '@graphql/contracts/management'
+import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
+import { ExecutionReadinessSchema } from '@foreman-code/contracts/management'
 import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
 import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'

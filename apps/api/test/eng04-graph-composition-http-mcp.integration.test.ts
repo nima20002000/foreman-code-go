@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphPageV3Schema, RepeatGraphSnapshotV3Schema,
   reduceRepeatGraphPageV3, type CurrentFixtureForm,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {
   graphFixture, graphUrl, graphHeaders, graphRpc, graphRpcValue, changeRunState, privateCanary,

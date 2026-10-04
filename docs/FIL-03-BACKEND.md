@@ -192,7 +192,7 @@ ownership contract change; this lane preserves the existing authorization model.
 **Tools and libraries:** no MCP tools, attachment delivery to harnesses, capability
 claims, UI, or permanent reference routes are installed. The HTTP-only delivery in
 this lane is intentional; FIL-05 owns tool parity and FIL-36 owns library behavior.
-The `@graphql/contracts/files` package export already exists at the pinned base.
+The `@foreman-code/contracts/files` package export already exists at the pinned base.
 
 ## Tests and verification
 
@@ -218,12 +218,12 @@ Expected verification in a full checkout (after migration registration):
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
-corepack pnpm --filter @graphql/api test test/file-storage.test.ts test/file-authorization.test.ts
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
+corepack pnpm --filter @foreman-code/api test test/file-storage.test.ts test/file-authorization.test.ts
 # With an explicit loopback TEST_DATABASE_URL configured:
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/files.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/files.integration.test.ts --no-file-parallelism
 ```
 
 The package-wide integration script can also run a broader selection; an explicit

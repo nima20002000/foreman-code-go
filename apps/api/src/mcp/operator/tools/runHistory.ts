@@ -3,7 +3,7 @@ import { z } from 'zod'
 import {
   RunBoardSnapshotGetInputSchema, RunBoardSnapshotGetResultSchema,
   RunDropdownListInputSchema, RunDropdownPageSchema,
-} from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/run-snapshots'
 import { hasAction } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'

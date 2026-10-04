@@ -125,11 +125,11 @@ Run in a complete checkout with the pinned runtime and release-age policy:
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/web exec vitest run src/features/schedules --maxWorkers=4
-corepack pnpm --filter @graphql/web typecheck
-corepack pnpm --filter @graphql/web lint
-corepack pnpm --filter @graphql/web build
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/web exec vitest run src/features/schedules --maxWorkers=4
+corepack pnpm --filter @foreman-code/web typecheck
+corepack pnpm --filter @foreman-code/web lint
+corepack pnpm --filter @foreman-code/web build
 ```
 
 Follow with repository-wide checks and SCH-03 authenticated HTTP/MCP integration.

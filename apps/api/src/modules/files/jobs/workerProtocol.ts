@@ -1,5 +1,5 @@
-import { TransferContextSchema, type TransferContext } from '@graphql/contracts/byte-transfer'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { TransferContextSchema, type TransferContext } from '@foreman-code/contracts/byte-transfer'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 
 export const JOB_OUTPUT_NAMESPACE = 'byte-transfer-v1'
 /** Preserve the genuine opaque W07 epoch; generation is a separate connection fact. */

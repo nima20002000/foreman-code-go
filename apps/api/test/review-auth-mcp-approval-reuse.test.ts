@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { resolveImmutableApprovalRoute } from '../src/modules/workflows/approvalRoutes.js'
 import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 

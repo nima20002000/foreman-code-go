@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ActivityScope } from '@graphql/contracts'
+import type { ActivityScope } from '@foreman-code/contracts'
 import { projectActivityCommands } from '../src/modules/conversations/activityCommands.js'
 const scope: ActivityScope = { kind: 'agent_chat', conversationId: 'conversation', workspaceId: 'ws', workflowId: 'wf', nodeId: 'node', agentId: 'agent' }
 const control = { schemaVersion: 1, kind: 'respond', conversationId: 'conversation', modelRequestId: 'A', scope,

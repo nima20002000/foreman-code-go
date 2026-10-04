@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import type { JobArtifact } from '@graphql/contracts/jobs'
+import type { JobArtifact } from '@foreman-code/contracts/jobs'
 import { Alert, Button } from '../../shared/ui/nocturne'
 import { downloadJobArtifact } from './client'
 import { jobError } from './model'

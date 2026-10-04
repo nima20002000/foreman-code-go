@@ -1,4 +1,4 @@
-import type { Agent } from '@graphql/contracts'
+import type { Agent } from '@foreman-code/contracts'
 
 export interface AgentIdentityProps {
   agent: Agent

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { NativeConfigurationService } from '../src/modules/harnesses/nativeConfiguration.js'
 import { productionClaudeMetadata } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
 import { discoverClaudeMetadata } from '../src/modules/harnesses/claudeSdk/metadata.js'

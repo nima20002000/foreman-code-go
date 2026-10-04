@@ -1,5 +1,5 @@
 import { DomainError } from '../../errors.js'
-import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteJobExecutionHost } from './jobExecutionHost.js'
 /** Both executors run on the same authenticated execution-v1 carrier and operation journal. */
 export function createRemoteExecutionHandler(workflows: { handle(raw: unknown): Promise<unknown> }, jobs?: RemoteJobExecutionHost) {

@@ -1,4 +1,4 @@
-import type { OperatorChatSetup } from '@graphql/contracts'
+import type { OperatorChatSetup } from '@foreman-code/contracts'
 import { ExecutionReadinessNotice } from './ExecutionReadinessNotice'
 import { Alert, Button } from '../../shared/ui/nocturne'
 

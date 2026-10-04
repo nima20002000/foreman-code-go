@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { AgentHarness } from '@graphql/contracts'
+import type { AgentHarness } from '@foreman-code/contracts'
 import { Alert, Badge, Button, Combobox, Icon } from '../../shared/ui/nocturne'
 import { useManagedWorkspacesQuery, useManagedWorkspaceQuery } from '../../shared/api/query'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'

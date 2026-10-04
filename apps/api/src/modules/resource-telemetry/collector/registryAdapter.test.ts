@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
+import { telemetryOwnedFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
 import { passiveRegistryOwnershipReader, type NativeLaunchObservation, type PassiveNativeRegistry, type TrustedNativeScope, type TrustedNativeScopes } from './registryAdapter.js'
 const scope = (): TrustedNativeScope => ({ nativeOwner: 'execution:accepted-execution', selector: telemetryOwnedFixture,
   leaseId: 'accepted-lease', observedDeviceId: telemetryOwnedFixture.host.deviceId,

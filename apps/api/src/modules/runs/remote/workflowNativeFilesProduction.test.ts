@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
-import type { TransferContext } from '@graphql/contracts/byte-transfer'
+import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import type { RepeatNativeEvidence } from '../repeatNativeRepository.js'

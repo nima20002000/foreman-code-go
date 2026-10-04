@@ -1,6 +1,6 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { describe, expect, it, vi } from 'vitest'
-import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
 import type { NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { assertManagedChange, LINEAR_MCP_ENDPOINT, managedChange, managedEnableChange, managedStatus, nativeConnection, publicMcpList, replacement } from '../src/modules/harnesses/nativeMcpCommon.js'

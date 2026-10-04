@@ -1,5 +1,5 @@
-import { canonicalGraphJson, type GraphEvidence } from '@graphql/contracts/wave25'
-import type { ReviewJob } from '@graphql/contracts'
+import { canonicalGraphJson, type GraphEvidence } from '@foreman-code/contracts/wave25'
+import type { ReviewJob } from '@foreman-code/contracts'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunGraphPublication } from '../run-graph/publication.js'
 import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'

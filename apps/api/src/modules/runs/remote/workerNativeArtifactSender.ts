@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, MAX_FILE_BYTES,
-  type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
+  type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { AcceptedNodePlacementSchema, DispatchIntentSchema,
-  type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
+  type AcceptedNodePlacement, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { BYTE_TRANSFER_POLICY, TransferIntentSchema, VerifiedTransferReceiptSchema,
-  type ByteTransferPort, type TransferIntent } from '@graphql/contracts/byte-transfer'
-import type { WorkflowArtifactTransferInput } from '@graphql/contracts/workflow-artifact-transfer'
-import { workflowArtifactTransferManifestDigest } from '@graphql/contracts/workflow-artifact-transfer-node'
+  type ByteTransferPort, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
+import type { WorkflowArtifactTransferInput } from '@foreman-code/contracts/workflow-artifact-transfer'
+import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
 import { ResumableByteTransferSender, type TransferSenderConnection } from '../../byte-transfer/sender.js'
 import { fileScopeIdentity } from '../../files/requests.js'
 import { DomainError } from '../../errors.js'

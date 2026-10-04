@@ -1,7 +1,7 @@
 import {
   assertNativeGraphProjectionAuthority, canonicalGraphJson, sameGraphScope,
   type GraphFact, type NativeGraphActivityRecord,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { readCurrentNodeAttention } from './currentAttention.js'
 import { poisonGraphTransaction } from './connection.js'
 import { assertRunGraphPublication, type RunGraphPublication } from './publication.js'

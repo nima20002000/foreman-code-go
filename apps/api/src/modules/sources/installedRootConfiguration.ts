@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { ApprovedRootAllowlistSchema } from '@graphql/contracts/workspace-root-policies'
+import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { DomainError } from '../errors.js'
 import { verifyApprovedRootAllowlist } from './rootAttestation.js'
 

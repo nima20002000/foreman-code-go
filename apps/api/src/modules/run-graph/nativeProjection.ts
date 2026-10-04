@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { GraphActivity, NativeGraphCorrelationRecord, NativeGraphProjectionKey } from '@graphql/contracts/wave25'
+import type { GraphActivity, NativeGraphCorrelationRecord, NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
 import { nativeAction, nativeObject, nativeString } from '../runs/nativeAction.js'
 
 /** Internal, bounded checkpoint. It contains protocol identities, never arguments/output/prose. */

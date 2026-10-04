@@ -72,7 +72,7 @@ are not qualification of the laptop. Supported packaging targets are Ubuntu
 x64/arm64 with glibc and an explicitly qualified Node 22 runtime.
 
 ```
-corepack pnpm --filter @graphql/worker build:artifact /approved-target.json /new/artifact-directory
+corepack pnpm --filter @foreman-code/worker build:artifact /approved-target.json /new/artifact-directory
 ```
 
 The fresh output includes the built worker, installer, service template and a

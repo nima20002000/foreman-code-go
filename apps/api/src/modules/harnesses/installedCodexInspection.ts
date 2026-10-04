@@ -1,9 +1,9 @@
 import { isAbsolute } from 'node:path'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
-import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { HarnessRegistryReadbackSchema, type HarnessRegistryReadback, type HostHarnessInstallationDto,
-  type HostHarnessOverride } from '@graphql/contracts/harness-registry'
-import { HarnessQualificationSchema, type HarnessQualification } from '@graphql/contracts/harness-qualification'
+  type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { DomainError } from '../errors.js'
 import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'

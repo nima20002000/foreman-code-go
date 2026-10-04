@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures, type AgentChatState } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { agentChatContextKey } from './model'
 import { providerFixture } from './f7.testSupport'

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { NativeRollout } from '../harnesses/nativeRollout.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'

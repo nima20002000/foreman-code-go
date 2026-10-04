@@ -2,8 +2,8 @@ import { registerOperatorControlTools } from './operatorControls.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
-  GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@graphql/contracts'
-import { OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@graphql/contracts/operator-chat'
+  GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
+import { OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@foreman-code/contracts/operator-chat'
 
 import {
   WorkerExecutionSettingsSchema,
@@ -13,7 +13,7 @@ import {
   ManagedWorkflowDefaultsSchema,
   WorkflowDefaultsUpdateInputSchema,
   WorkflowDefaultsUpdateResultSchema,
-} from '@graphql/contracts/management'
+} from '@foreman-code/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'

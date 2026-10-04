@@ -1,4 +1,4 @@
-import type { RunActivity } from '@graphql/contracts'
+import type { RunActivity } from '@foreman-code/contracts'
 
 /** Native harness events are normalized here before ENG-05 exposes live activity. */
 export interface ActivityRepository {
