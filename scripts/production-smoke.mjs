@@ -85,12 +85,13 @@ try {
   })
   assert.equal(created.status, 201, JSON.stringify(created.body))
   const workspace = created.body.value
-  const workspacePath = `/api/management/workspaces/${encodeURIComponent(workspace.id)}`
+  const workspaceId = workspace.workspace.id
+  const workspacePath = `/api/management/workspaces/${encodeURIComponent(workspaceId)}`
   try {
     for (const suffix of ['root-location', 'root-policies']) {
       const response = await request(`${workspacePath}/${suffix}`)
       assert.equal(response.status, 200, JSON.stringify(response.body))
-      assert.equal(response.body.workspaceId, workspace.id)
+      assert.equal(response.body.workspaceId, workspaceId)
       assert.equal((await request(`${workspacePath}/${suffix}`, {
         headers: { authorization: 'Bearer invalid' },
       })).status, 401)
