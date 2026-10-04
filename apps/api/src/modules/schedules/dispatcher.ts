@@ -1,10 +1,11 @@
 import type { WorkflowSchedule } from '@graphql/contracts/schedules'
+import { DomainError } from '../errors.js'
 
 export interface ScheduleDispatcherPort {
   listDueSchedules(input: { throughUtc: string; limit: number; cursor?: string }): Promise<{
     items: WorkflowSchedule[]; pageInfo: { nextCursor: string | null }
   }>
-  dispatch(schedule: WorkflowSchedule): Promise<void>
+  dispatch(schedule: WorkflowSchedule, signal?: AbortSignal): Promise<void>
 }
 export interface ScheduleDispatcherOptions {
   clock?: () => Date
@@ -13,9 +14,8 @@ export interface ScheduleDispatcherOptions {
   pollIntervalMs?: number
 }
 
-/** API-owned loop, never a browser timer. A process coalesces ticks; correctness
- * across processes belongs to the transaction/unique occurrence in the port.
- * No timer accumulates work while a previous tick or shutdown is pending. */
+/** Polling and bounded admission run independently. Cross-process correctness
+ * belongs to the transaction and unique occurrence in the port. */
 export class WorkflowScheduleDispatcher {
   private readonly clock: () => Date
   private readonly interval: number
@@ -24,6 +24,8 @@ export class WorkflowScheduleDispatcher {
   private running = false
   private closed = false
   private sweep: { throughUtc: string; cursor?: string } | undefined
+  private readonly pending = new Map<string, WorkflowSchedule>()
+  private readonly dispatching = new Map<string, Promise<void>>()
 
   constructor(private readonly port: ScheduleDispatcherPort, private readonly options: ScheduleDispatcherOptions) {
     this.clock = options.clock ?? (() => new Date())
@@ -41,6 +43,8 @@ export class WorkflowScheduleDispatcher {
   }
 
   private async scan(): Promise<void> {
+    this.drain()
+    if (this.pending.size) return
     // Keep the fixed-boundary keyset across bounded passes. A persistently
     // failing first page must not starve later workflows. Wrap at sweep end.
     const sweep = this.sweep ??= { throughUtc: this.clock().toISOString() }
@@ -53,10 +57,33 @@ export class WorkflowScheduleDispatcher {
         if (this.closed || this.options.isReady?.() === false) return
         if (seen.has(schedule.workflowId)) continue
         seen.add(schedule.workflowId)
-        try { await this.port.dispatch(schedule) } catch (error) { this.options.reportError(error) }
+        if (this.dispatching.has(schedule.workflowId) || this.pending.has(schedule.workflowId)) continue
+        this.pending.set(schedule.workflowId, schedule)
+        this.drain()
       }
       if (!batch.pageInfo.nextCursor || batch.pageInfo.nextCursor === cursor) { this.sweep = undefined; return }
       sweep.cursor = batch.pageInfo.nextCursor
+      if (this.pending.size) return
+    }
+  }
+
+  private drain(): void {
+    while (!this.closed && this.options.isReady?.() !== false && this.dispatching.size < 4) {
+      const schedule = this.pending.values().next().value
+      if (!schedule) return
+      this.pending.delete(schedule.workflowId)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(new DomainError(
+        'SCHEDULE_PREPARATION_TIMEOUT', 'Scheduled Start exceeded its preparation deadline.', 504,
+      )), 30_000)
+      const work = Promise.resolve().then(() => this.port.dispatch(schedule, controller.signal))
+        .catch((error: unknown) => { this.options.reportError(error) })
+        .finally(() => {
+          clearTimeout(timer)
+          this.dispatching.delete(schedule.workflowId)
+          this.drain()
+        })
+      this.dispatching.set(schedule.workflowId, work)
     }
   }
 
@@ -75,7 +102,9 @@ export class WorkflowScheduleDispatcher {
 
   async stop(): Promise<void> {
     this.closed = true
+    this.pending.clear()
     if (this.timer) clearTimeout(this.timer)
     await this.active
+    await Promise.all(this.dispatching.values())
   }
 }

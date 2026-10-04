@@ -30,12 +30,17 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly installations: HarnessInstallationRegistry,
     private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
     private readonly workerExecution = new WorkerExecutionPolicy()) {}
-  async prepare(input: RunStartV3Input, principal: ManagementPrincipal): Promise<PreparedRunPlacementAdmission | undefined> {
+  async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
+    signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
+    signal?.throwIfAborted()
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
+      signal?.throwIfAborted()
+      if (signal) beforeGraphCommit(sql, async () => signal.throwIfAborted())
       const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions
         where id=$1 and workspace_id=$2 and workflow_id=$3`, [input.workflowVersionId, input.workspaceId, input.workflowId])).rows[0]
       if (!row) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', 'Exact saved workflow version is required.', 404)
       const version = readImmutableWorkflowVersion(row)
+      signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
       // Unplaced local workflows keep the original path. Mixed placed/unplaced
@@ -43,6 +48,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       if (!nodes.some(node => node.placement)) return undefined
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection }[] = []
       for (const node of nodes) {
+        signal?.throwIfAborted()
         const saved = node.placement
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
@@ -53,9 +59,11 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
         const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId: input.workspaceId, ...saved!.rootBinding!, source: saved!.source! })
+        signal?.throwIfAborted()
         if (requiredLocationAccess([config]) === 'read-write' && root.binding.accessMode !== 'exclusive-write') this.conflict()
         const policy = await this.roots.resolve(sql, principal, { workspaceId: input.workspaceId, hostRef: saved!.hostRef,
           rootPolicyId: saved!.rootPolicyId, rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision })
+        signal?.throwIfAborted()
         if (saved!.projectRoot !== policy.canonicalProjectRoot) this.conflict()
         if (!sameWorkflowValue(root.selection, { hostRef: saved!.hostRef, rootPolicyId: saved!.rootPolicyId,
           rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision }) || !sameWorkflowValue(policy.registration, root.registration)) this.conflict()
@@ -83,6 +91,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       }
       for (const item of prepared) {
         const facts = await readPlacementHarnessFacts(sql, item.pins, this.installations, this.qualificationSuites)
+        signal?.throwIfAborted()
         if (item.pins.payload.kind !== 'agent') this.conflict()
         item.pins.payload.profileProofDigest = placementDigest(facts.profileProof)
         item.pins.payload.qualificationDigest = placementDigest(facts.qualification)

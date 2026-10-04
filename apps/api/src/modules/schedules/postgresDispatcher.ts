@@ -15,6 +15,7 @@ import { readScheduleAuthority } from './authority.js'
 import { decideDueSchedule, planDueSchedule, type DueScheduleStep } from './dispatchPlan.js'
 import { PostgresWorkflowScheduleRepository } from './postgres.js'
 import type { ScheduleStartGuard } from './startGuard.js'
+import type { RepeatStartPreparation } from '../runs/repeatStartAdmission.js'
 
 interface PreparedStart {
   kind: 'start'
@@ -56,19 +57,22 @@ export class PostgresScheduleDispatcher {
   listDueSchedules(input: Parameters<PostgresWorkflowScheduleRepository['listDueSchedules']>[0]) {
     return this.repository.listDueSchedules(input)
   }
-  async dispatch(observed: WorkflowSchedule): Promise<void> {
+  async dispatch(observed: WorkflowSchedule, signal?: AbortSignal): Promise<void> {
     // Re-read once after a disable/version/time race. Persistent failures leave
     // the due cursor intact; the next bounded scan retries from durable state.
     let candidate = observed
+    const preparation: RepeatStartPreparation = {}
     let attempt = 0
     while (attempt < 2) {
+      signal?.throwIfAborted()
       const prepared = await this.prepare(candidate)
+      signal?.throwIfAborted()
       if (!prepared) return
       candidate = prepared.schedule
       if (prepared.kind === 'continue') continue
       attempt++
       try {
-        await this.start(prepared.principal, prepared.input, this.guard(prepared))
+        await this.start(prepared.principal, prepared.input, this.guard(prepared, preparation, signal))
         return
       } catch (error) {
         const reason = scheduleRejectionReason(error)
@@ -224,9 +228,10 @@ export class PostgresScheduleDispatcher {
       expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
       expectedLocationRevision: Number(row.location_revision), input: {} })
   }
-  private guard(prepared: PreparedStart): ScheduleStartGuard {
+  private guard(prepared: PreparedStart, preparation: RepeatStartPreparation, signal?: AbortSignal): ScheduleStartGuard {
     const { schedule, dueAt } = prepared
     const validate = async (sql: GraphTransactionSql, exceptRunId?: string) => {
+      signal?.throwIfAborted()
       const client = sql as unknown as pg.PoolClient // SQL-only helpers on the SAME branded G1 transaction
       const principal = await readScheduleAuthority(client, schedule)
       if (principal.id !== prepared.principal.id) throw retry()
@@ -237,10 +242,13 @@ export class PostgresScheduleDispatcher {
       const overlap = await this.overlapping(client, schedule, exceptRunId)
       // Sample time after the final awaited read, including in beforeGraphCommit.
       const decision = decideDueSchedule(schedule, dueAt, this.clock().toISOString(), true, overlap)
+      signal?.throwIfAborted()
       if (decision.status !== 'eligible') throw retry()
     }
     return {
       occurrenceId: scheduleOccurrenceId(schedule.workflowId, dueAt),
+      preparation,
+      ...(signal ? { signal } : {}),
       beforeAcceptance: (sql) => validate(sql),
       afterAcceptance: async (sql, run) => {
         const client = sql as unknown as pg.PoolClient

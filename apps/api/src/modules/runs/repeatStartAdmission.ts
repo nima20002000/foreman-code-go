@@ -31,6 +31,7 @@ import { repeatDigest } from './repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
+import { prepareRunStart } from './startPreparation.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -53,6 +54,13 @@ export interface RepeatStartOptions {
   schedule?: ScheduleStartGuard
 }
 export interface RepeatStartOutcome { value: AcceptedWorkflowRunV3; replayed: boolean }
+export interface RepeatStartPreparation {
+  value?: {
+    key: string
+    preparedPlacements: PreparedRunPlacementAdmission | undefined
+    prepared: PreparedRepeatStartLocation
+  }
+}
 interface ReceiptRow { input_hash: string; target_key: string; result: unknown }
 const locationColumns = 'id,execution_location,execution_location_identity,location_revision::text,archived_at'
 
@@ -120,14 +128,17 @@ async function readStartReceipt(sql: GraphTransactionSql, principalId: string, i
 }
 
 async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationService,
-  input: RunStartV3Input): Promise<PreparedRepeatStartLocation> {
+  input: RunStartV3Input, signal: AbortSignal): Promise<PreparedRepeatStartLocation> {
+  signal.throwIfAborted()
   const client = await pool.connect()
   try {
+    signal.throwIfAborted()
     const rows = await client.query<ImmutableWorkflowVersionRow>(
       `select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3`,
       [input.workflowVersionId, input.workspaceId, input.workflowId])
     if (!rows.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', 'The pinned workflow version was not found.', 404)
     const version = readImmutableWorkflowVersion(rows.rows[0], { id: input.workflowVersionId, workspaceId: input.workspaceId, workflowId: input.workflowId })
+    signal.throwIfAborted()
     if (!('executionSemanticsVersion' in version) || version.executionSemanticsVersion !== 3) {
       return conflict('EXECUTION_SEMANTICS_UNSUPPORTED', 'The v3 Start contract requires an immutable semantics-3 version.')
     }
@@ -140,6 +151,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     const configurations = configs.rows.map((row) => readImmutableAgentConfiguration(row, {
       workspaceId: input.workspaceId, id: version.agentConfigurationVersionIds[row.agent_id]!, agentId: row.agent_id,
     }))
+    signal.throwIfAborted()
     ExecutableWorkflowV3Schema.parse({ version, configurations })
     for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, version.approval,
       version.approval.handler === 'orchestrator' && configuration.agentId === version.approval.designatedOrchestratorAgentId)
@@ -149,11 +161,35 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     const row = before.rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
     // The lease is idle. No G1 transaction or admission lock spans filesystem I/O.
-    const location = await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations))
+    signal.throwIfAborted()
+    const location = await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision,
+      requiredLocationAccess(configurations), signal)
+    signal.throwIfAborted()
     const after = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
     if (!sameWorkflowValue(row, after.rows[0])) return conflict('LOCATION_REVISION_CONFLICT', 'The location changed during validation.')
+    signal.throwIfAborted()
     return { row, location }
   } finally { client.release() }
+}
+
+async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, input: RunStartV3Input,
+  principal: ManagementPrincipal, publication: RepeatStartPublication, schedule?: ScheduleStartGuard) {
+  const { commandId: _commandId, ...pins } = input
+  const key = commandInputHash({ ...pins, principalId: principal.id })
+  schedule?.signal?.throwIfAborted()
+  const cached = schedule?.preparation.value
+  // Only the occurrence command changes on an eligibility retry. Live row,
+  // placement, authorization and schedule checks still run in each transaction.
+  if (cached?.key === key) return cached
+  const value = await prepareRunStart(async (signal) => {
+    const preparedPlacements = await publication.placementAdmission?.prepare(input, principal, signal)
+    signal.throwIfAborted()
+    const prepared = await prepareLocation(pool, locations, input, signal)
+    signal.throwIfAborted()
+    return { key, preparedPlacements, prepared }
+  }, schedule?.signal)
+  if (schedule) schedule.preparation.value = value
+  return value
 }
 
 /** The v3 INSERT and canonical initialization share the existing Start G1
@@ -237,9 +273,12 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     if (!publication || typeof publication.initializeLocked !== 'function') {
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
     }
-    const preparedPlacements = await publication.placementAdmission?.prepare(input, principal)
-    const prepared = await prepareLocation(pool, locations, input)
+    const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, publication,
+      options.schedule)
+    options.schedule?.signal?.throwIfAborted()
     return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+      options.schedule?.signal?.throwIfAborted()
+      if (options.schedule?.signal) beforeGraphCommit(sql, async () => options.schedule!.signal!.throwIfAborted())
       await commandLock(sql)
       const replayed = await readStartReceipt(sql, principal.id, input, hash, target)
       if (replayed) return { value: replayed, replayed: true }
