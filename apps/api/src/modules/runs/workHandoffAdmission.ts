@@ -228,9 +228,10 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
     const route = node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target
     if (route?.kind === 'edge') return repeatConflict('WORK_UNRESOLVED_ROUTE_EXISTS')
   } else {
-    const selected = result.routing.kind === 'request'
-      ? node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target : undefined
-    if (!relationshipId || selected?.kind !== 'edge' || selected.relationshipId !== relationshipId) {
+    const selected = (await sql.query<{ routes: string[] }>(
+      'select work_saved_routes(repeat_pinned_version($1),$2::jsonb,$3::jsonb) as routes',
+      [scope.runId, canonicalGraphJson(node), canonicalGraphJson(result)])).rows[0]
+    if (!relationshipId || !selected?.routes.includes(relationshipId)) {
       return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
     }
     const activation = (await sql.query<{ lineage_id: string }>(

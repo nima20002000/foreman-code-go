@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { workHandoffNodeAction } from '../../src/modules/runs/workHandoffNode.js'
+import { ExecutionLimiter } from '../../src/modules/runs/limiter.js'
 import { WorkActivationInputSchema, type WorkHandoffResult, type WorkflowVersionV3,
   makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
 import { repeatId } from '../../src/modules/runs/repeatResolution.js'
+import { markWorkNoticeDeliveredLocked } from '../../src/modules/runs/workHandoffNotice.js'
 import { digest, text, transaction } from '../eng04-migration-fixtures.js'
 
 export async function workHandoffFixture(pool: pg.Pool, suffix: string,
@@ -76,12 +79,31 @@ export async function workHandoffFixture(pool: pg.Pool, suffix: string,
         [execution.id, run.id, activationId, text(execution.result), digest(execution.result), fixture.createdAt])
       await sql.query("update run_work_activations set state='completed' where activation_id=$1", [activationId])
     })
+    await owner!.oneShotConnection().transaction((sql) => markWorkNoticeDeliveredLocked({
+      sql, scope: fixture.scope, version, now: fixture.createdAt,
+    }, activationId, execution.id))
     return execution
   }
   async function input(activationId: string) {
     return WorkActivationInputSchema.parse((await queue(activationId)).execution.input)
   }
-  return { version, run, pool, get store() { return store }, restart, queue, accept, input,
+  function route(execution: HarnessExecution) {
+    return workHandoffNodeAction({ version,
+      store: {
+        admitWorkActivation: (id, candidate) => store.admitWorkActivation(id, candidate),
+        acceptWorkTerminal: async () => ({ kind: 'accepted', execution, replayed: true }),
+        admitWorkRequest: (id, relationship) => store.admitWorkRequest(id, relationship),
+        returnWork: (id) => store.returnWork(id),
+        recordWorkUnresolved: (id) => store.recordWorkUnresolved(id),
+        resolveWaitingWorkJoins: () => store.resolveWaitingWorkJoins(),
+      },
+      // The result is already accepted; this port isolates subsequent routing from native execution.
+      driver: { candidate: () => { throw new Error('Accepted routing allocated another native execution') },
+        observe: async () => undefined },
+      limiter: new ExecutionLimiter(1, 30), signal: new AbortController().signal,
+    })
+  }
+  return { version, run, pool, get store() { return store }, restart, queue, accept, input, route,
     close: async () => { await owner!.release() } }
 }
 

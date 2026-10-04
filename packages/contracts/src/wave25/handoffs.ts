@@ -89,7 +89,7 @@ export type WorkLimitDenial = z.infer<typeof WorkLimitDenialSchema>
 export const WorkAlternativeSchema = z.object({
   relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
   destinationAgentId: GraphIdSchema, destinationName: z.string().trim().min(1).max(200),
-  outcomes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)).min(1).max(16),
+  outcomes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)).max(16),
   used: Count, maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647).nullable(),
 }).strict().refine((value) => value.maxWorkHandoffsPerRun === null
   || value.used < value.maxWorkHandoffsPerRun, 'WORK_ALTERNATIVE_EXHAUSTED')

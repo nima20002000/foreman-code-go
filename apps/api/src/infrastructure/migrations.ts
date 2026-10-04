@@ -1,3 +1,4 @@
+import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
 import { workJoinRoundMigration } from './workJoinRoundMigration.js'
 import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
@@ -825,6 +826,7 @@ export const migrations = [
   workflowPresentationMigration,
   workParentRequestMigration,
   workJoinRoundMigration,
+  workExhaustedRouteMigration,
   localHumanMigration,
 ] as const
 

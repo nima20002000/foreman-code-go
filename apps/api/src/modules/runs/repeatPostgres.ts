@@ -1079,7 +1079,8 @@ export class RepeatRunRepository {
         return repeatConflict('WORK_DENIAL_CONTINUATION_UNRESOLVED')
       }
       const unresolved = (await context.sql.query<{ unresolved_id: string; execution_id: string;
-        result_digest: string }>(`select unresolved_id,execution_id,result_digest
+        result_digest: string; reason: 'finish_with_findings' | 'repeated_exhausted_route'
+      }>(`select unresolved_id,execution_id,result_digest,reason
           from run_work_unresolved where run_id=$1 order by unresolved_id`,
       [context.scope.runId])).rows
       const unresolvedByExecution = new Map(unresolved.map((item) => [item.execution_id, item]))
@@ -1121,7 +1122,9 @@ export class RepeatRunRepository {
           const terminalWithFindings = workResult.data.remainingFindings.length > 0
             && (routing.kind === 'finish' || routing.kind === 'return' && routing.outcome === 'accepted')
           if (unresolvedItem.result_digest !== row.result_digest
-            || routing.kind !== 'request' && !terminalWithFindings) {
+            || unresolvedItem.reason === 'finish_with_findings' && !terminalWithFindings
+            || unresolvedItem.reason === 'repeated_exhausted_route'
+              && routing.kind !== 'request' && routing.kind !== 'finish') {
             return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
           }
           unresolvedByExecution.delete(row.execution_id)

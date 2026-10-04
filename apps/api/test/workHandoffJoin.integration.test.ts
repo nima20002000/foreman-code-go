@@ -73,11 +73,13 @@ describe.skipIf(!postgresEnabled)('work join routing and rounds', () => {
         const joined = await t.store.admitWorkRequest(b.id, t.version.definition.edges[2]!.id)
         assert.equal(joined.kind, 'accepted')
         expect(joined.destinationReady).toBe(false)
-        await t.accept(right.request.destinationActivationId, { ...finished(1), routing: { kind: 'finish', outcome: 'skip' } })
+        const closed = await t.accept(right.request.destinationActivationId, {
+          ...finished(1), routing: { kind: 'finish', outcome: 'skip' },
+        })
         if (recover) await t.restart()
-        expect(await t.store.resolveWaitingWorkJoins()).toEqual([joined.request.destinationActivationId])
+        expect(await t.route(closed)(right.request.destinationActivationId)).toEqual([joined.request.destinationActivationId])
         if (recover) await t.restart()
-        expect(await t.store.resolveWaitingWorkJoins()).toEqual([joined.request.destinationActivationId])
+        expect(await t.route(closed)(right.request.destinationActivationId)).toEqual([joined.request.destinationActivationId])
         const input = await t.input(joined.request.destinationActivationId)
         assert.equal(input.work.kind, 'join')
         expect(input.work.sources.map((source) => source.request.requesterExecutionId)).toEqual([b.id])
