@@ -78,13 +78,22 @@ describe('revision-pinned artifact edges', () => {
       { consumer: auth, producer: async () => { throw new DomainError('ACCESS_DENIED', 'denied', 403) } })
     const input = { edgeId: t.b.edgeId, offset: 0, length: 4 }
     try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
       expect((await app.inject({ method: 'POST', url: '/api/artifact-inputs/read', payload: input })).statusCode).toBe(401)
       const http = await app.inject({ method: 'POST', url: '/api/artifact-inputs/read', headers: { authorization: 'Bearer owned' }, payload: input })
       expect(http.json()).toMatchObject({ status: 'ready', revision: { revisionId: t.b.pins.revisionId } })
-      const mcp = await app.inject({ method: 'POST', url: '/mcp/artifact-inputs', headers: { authorization: 'Bearer owned', accept: 'application/json, text/event-stream' },
-        payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'files.read_edge_input', arguments: input } } })
-      const line = mcp.body.split('\n').find(v => v.startsWith('data: '))
-      const result = JSON.parse(line ? line.slice(6) : mcp.body)
+      const call = (token: string) => fetch(new URL('/mcp/artifact-inputs', address), {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
+          accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1,
+          method: 'tools/call', params: { name: 'files.read_edge_input', arguments: input } }),
+      })
+      const denied = await call('foreign')
+      expect(denied.status).toBe(401)
+      await denied.text()
+      const mcp = await call('owned')
+      expect(mcp.status).toBe(200)
+      expect(mcp.headers.get('content-type')).toMatch(/^application\/json/)
+      const result = await mcp.json()
       expect(result.result.structuredContent).toMatchObject({ status: 'ready', revision: { revisionId: t.b.pins.revisionId } })
       expect(t.reads).toHaveLength(2)
     } finally { await app.close() }

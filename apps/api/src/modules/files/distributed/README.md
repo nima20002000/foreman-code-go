@@ -4,6 +4,10 @@
 Main's existing allocation/publication/finalization ledger. It retains the original receipt
 for lost-ACK retries; transfer completion alone is not a published native result.
 
+The artifact MCP endpoints are stateless exchanges with a single JSON reply.
+Each request authenticates the caller and checks the accepted attempt before
+publication or revision-pinned readback; the worker relay reads the complete reply.
+
 `CanonicalNativeArtifactResults.readAccepted(accepted, commandId)` is the Main-only HRT
 result/adoption port. Mount it with the same file service, distributed publication ledger,
 and accepted-attempt authority as publication. Supply the original persisted native

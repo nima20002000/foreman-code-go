@@ -187,7 +187,9 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('original worker-native artifact sender', () => {
-  it('hands an installed producer on one computer to a second computer through authenticated MCP after a lost publication reply', async () => {
+  it('hands an installed producer on one computer to a second computer through authenticated MCP after a lost publication reply', async ({ onTestFailed }) => {
+    let stage = 'fixture'
+    onTestFailed(() => { console.error(`Artifact handoff stopped at: ${stage}`) })
     const t = await fixture()
     const producer = await installedProducer(t)
     const app = Fastify()
@@ -226,14 +228,19 @@ describe('original worker-native artifact sender', () => {
         return { attempt: consumer, authority: receiverGrant }
       },
     })
+    stage = 'listen'
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const requestMcp = async (path: string, body: unknown, token: string) => {
+      stage = `request ${path}`
       const response = await fetch(new URL(path, address), {
         method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
           accept: 'application/json, text/event-stream' }, body: JSON.stringify(body),
       })
+      stage = `response ${path}`
+      const bodyText = await response.text()
+      expect(response.headers.get('content-type')).toMatch(/^application\/json/)
       return { statusCode: response.status, headers: { 'content-type': response.headers.get('content-type') ?? '' },
-        body: await response.text() }
+        body: bodyText }
     }
     const requestMain = vi.mocked(producer.context.requestMain).getMockImplementation()!
     let loseReply = true
@@ -250,27 +257,34 @@ describe('original worker-native artifact sender', () => {
         contentType: reply.headers['content-type']?.startsWith('text/event-stream') ? 'text/event-stream' : 'application/json',
         body: reply.body } }
     })
+    stage = 'prepare'
     const bridge = await producer.prepare()
     cleanups.push(() => bridge.close())
     const signal = new AbortController().signal
+    stage = 'activate'
     await bridge.activate(producer.pin, signal)
     const callback = { ...producer.pin, rpcId: 'rpc', callId: 'original-call' }
+    stage = 'create'
     const created = await bridge.dispatch({ operation: 'create', commandId: randomUUID(),
       filename: 'result.md', mediaType: 'text/markdown' }, callback, signal)
     if (created.operation !== 'create') throw new Error('Expected native output allocation')
+    stage = 'append'
     await bridge.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
       offset: 0, contentBase64: t.body.toString('base64') }, callback, signal)
+    stage = 'seal'
     await bridge.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId: created.artifactId }, callback, signal)
     const commandId = randomUUID()
     const publication = { operation: 'publish' as const, publication: { commandId, artifactId: created.artifactId,
       filename: 'result.md', mediaType: 'text/markdown' as const } }
     const result = { outcome: 'succeeded' as const, output: { text: JSON.stringify({ data: { edits: true },
       artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId }] } }) } }
+    stage = 'publish'
     await expect(bridge.dispatch(publication, callback, signal)).rejects.toThrow('publication ACK lost')
     expect(() => producer.publications.read(result)).toThrow()
     expect(bindings.size).toBe(0)
     expect(t.links.size).toBe(1)
     const original = [...t.links.values()][0]!
+    stage = 'retry publication'
     const published = await bridge.dispatch(publication, callback, signal)
     if (published.operation !== 'publish') throw new Error('Expected publication')
     expect(published.result.replayed).toBe(true)
@@ -286,7 +300,9 @@ describe('original worker-native artifact sender', () => {
       read: async (_attempt, key) => outputs.get(key),
       bind: async (output, authorize) => { await authorize(query); outputs.set(output.outputKey, output); return output },
     }, t.authority, edges)
+    stage = 'accept output'
     await native.acceptOutput(t.accepted, 'report', commandId)
+    stage = 'pin edge'
     const edge = await native.pinEdge(t.accepted, { edgeId: randomUUID(), commandId: randomUUID(),
       producer: t.accepted.attempt, consumer, outputKey: 'report', receiver: receiverGrant,
       sender: { principalId: t.f.principal.id, grantId: 'producer-grant', grantRevision: '1' },
@@ -305,6 +321,7 @@ describe('original worker-native artifact sender', () => {
     receiverAllowed = false
     expect(mcpReply(await read('second-computer-token')).result.isError).toBe(true)
     expect(t.links.size).toBe(1)
+    stage = 'close bridge'
     await bridge.close()
     expect(producer.context.closeNativeOutputWriters).toHaveBeenCalled()
   })

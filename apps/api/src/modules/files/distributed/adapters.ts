@@ -58,7 +58,7 @@ export function registerDistributedArtifacts(app: FastifyInstance, edges: Artifa
     const server = new McpServer({ name: 'graphql-artifact-inputs', version: '1.0.0' }, { instructions:
       'Accepted revision-pinned artifact inputs only. Hashes and edge IDs confer no authority. No reference editing or delegation creation.' })
     actions.registerInputTool(server, request)
-    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     reply.header('cache-control', 'no-store')
     await server.connect(transport); reply.hijack()
@@ -69,7 +69,7 @@ export function registerDistributedArtifacts(app: FastifyInstance, edges: Artifa
     const server = new McpServer({ name: 'graphql-artifact-publications', version: '1.0.0' }, { instructions:
       'Publish verified artifact transfers owned by this accepted sender. Accepted sandbox mutation permission remains required; source packages use a separate class.' })
     actions.registerPublicationTool(server, request)
-    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     reply.header('cache-control', 'no-store')
     await server.connect(transport); reply.hijack()
