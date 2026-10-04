@@ -8,7 +8,7 @@ import { buildComputerTarget } from '../../src/modules/settings/buildComputers.j
 import { jobSpec } from './jobFixture.js'
 
 // Runtime readiness is an inventory fixture; these tests make no physical qualification claim.
-export function buildComputerFixture(mainId: string, workspaceId: string, deviceId = randomUUID()) {
+export function buildComputerFixture(mainId: string, workspaceId: string, deviceId: string = randomUUID()) {
   const spec = jobSpec()
   const registration = DeviceRegistrationSchema.parse({ mainId, deviceId, workerInstallationId: randomUUID(),
     publicKeyFingerprint: '1'.repeat(64), keyRevision: 1, authorizationRevision: 1,

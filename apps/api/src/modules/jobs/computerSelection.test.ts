@@ -40,7 +40,7 @@ describe('build computer ordering', () => {
       { ...f.auto, policy: { ...f.auto.policy, toolchainDigest: '2'.repeat(64) } },
       { ...f.auto, policy: { ...f.auto.policy, network: 'approved-dependency-fetch' as const } },
       { ...f.auto, limits: { ...f.auto.limits, memoryBytes: f.auto.limits.memoryBytes * 2 } },
-      { ...f.auto, outputs: [{ path: 'dist/required.txt', required: true, mediaType: 'text/plain' }] },
+      { ...f.auto, outputs: [{ path: 'dist/required.txt', required: true, mediaType: 'text/plain' as const }] },
     ]) expect(compatibleJobComputer(f.candidate, changed)).toBe(false)
   })
 })
