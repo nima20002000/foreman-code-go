@@ -3,7 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { GetOperatorConversationResponseSchema, OperatorActivityPageSchema,
   CreateOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
-  SendOperatorMessageResponseSchema } from '@graphql/contracts'
+  OperatorChatSetupSchema, SendOperatorMessageResponseSchema } from '@graphql/contracts'
 import { OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
 import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
 import { buildApp } from '../src/app.js'
@@ -311,5 +311,74 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       [owner.principal.id],
     )
     expect(audits.rows).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
+  })
+
+  it('inspects conversation and accepted-message pins after defaults change while retaining owner and configuration checks', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write', 'harnesses:read'])
+    const created = await owner.client.callTool({ name: 'operator_chat_create', arguments: {
+      commandId: randomUUID(), title: 'Keep the original configuration',
+    } })
+    const conversation = CreateOperatorConversationResponseSchema.parse(created.structuredContent).conversation
+    const requestId = randomUUID()
+    await repository.beginTurn(conversation.id, { requestId, content: 'Accepted on the original configuration' }, owner.principal.id)
+    await repository.finish(conversation.id, requestId, { outcome: 'succeeded' })
+    const original = await operators.ensure()
+    const defaults = new PostgresFoundationSettingsRepository(database.pool)
+    const beforeDefaults = await defaults.getAgentDefaults()
+    const harness = { ...original.configuration.harness, model: 'different-setup-model' }
+    const moved = await defaults.updateAgentDefaults({
+      ...beforeDefaults.value, operator: { ...beforeDefaults.value.operator, harness },
+    }, beforeDefaults.revision)
+    const next = await operators.update(harness, original.configuration.id)
+    const inspect = (args: Record<string, unknown>) => owner.client.callTool({ name: 'operator_mcp_setup_get', arguments: args })
+    const publicSetup = await inspect({ harness: 'codex', expectedDefaultsRevision: moved.revision })
+    expect(OperatorChatSetupSchema.parse(publicSetup.structuredContent).configurationVersionId).toBe(next.configuration.id)
+    for (const query of [
+      { conversationId: conversation.id },
+      { configurationVersionId: original.configuration.id },
+      { conversationId: conversation.id, requestId, configurationVersionId: original.configuration.id,
+        harness: 'codex', expectedDefaultsRevision: beforeDefaults.revision },
+    ]) {
+      const result = await inspect(query)
+      expect(result.isError).not.toBe(true)
+      expect(OperatorChatSetupSchema.parse(result.structuredContent)).toMatchObject({
+        configurationVersionId: original.configuration.id, harness: 'codex', status: 'configured',
+      })
+    }
+    const stale = await inspect({ expectedDefaultsRevision: beforeDefaults.revision })
+    expect(stale.isError).toBe(true)
+    expect(JSON.stringify(stale)).toContain('OPERATOR_DEFAULTS_CHANGED')
+    const mismatch = await inspect({ conversationId: conversation.id, configurationVersionId: original.configuration.id,
+      harness: 'opencode' })
+    expect(mismatch.isError).toBe(true)
+    expect(JSON.stringify(mismatch)).toContain('OPERATOR_CONFIGURATION_CONFLICT')
+
+    const another = await issue(['operator_chat:read', 'harnesses:read'])
+    const foreignConversation = await another.client.callTool({ name: 'operator_mcp_setup_get', arguments: {
+      conversationId: conversation.id,
+    } })
+    expect(foreignConversation.isError).toBe(true)
+    expect(JSON.stringify(foreignConversation)).toContain('CONVERSATION_NOT_FOUND')
+    for (const caller of [another, await issue(['harnesses:read'])]) {
+      const privatePin = await caller.client.callTool({ name: 'operator_mcp_setup_get', arguments: {
+        configurationVersionId: original.configuration.id,
+      } })
+      expect(privatePin.isError).toBe(true)
+      expect(JSON.stringify(privatePin)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify(privatePin)).not.toContain('different-setup-model')
+    }
+    const ungranted = await issue(['operator_chat:read'])
+    const scoped = await issue(['harnesses:read'], { workspaceIds: [randomUUID()] })
+    for (const caller of [ungranted, scoped]) {
+      expect((await caller.client.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
+      await denied(caller.client, 'operator_mcp_setup_get', { conversationId: conversation.id })
+    }
+    const readback = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+    expect(GetOperatorConversationResponseSchema.parse(readback.structuredContent).conversation.operatorConfigurationVersionId)
+      .toBe(original.configuration.id)
+    expect((await repository.acceptedConfiguration(conversation.id, requestId))?.id).toBe(original.configuration.id)
+    expect((await operators.ensure()).configuration.id).toBe(next.configuration.id)
+    expect(await defaults.getAgentDefaults()).toEqual(moved)
+    expect(manager.turns).toBe(0)
   })
 })

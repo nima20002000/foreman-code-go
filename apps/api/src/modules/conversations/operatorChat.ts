@@ -185,7 +185,7 @@ export class OperatorChatService {
     const row = input.conversationId ? await this.assertAccess(input.conversationId, principal) : undefined
     const accepted = row && input.requestId ? await this.repository.acceptedConfiguration(row.id, input.requestId) : undefined
     let configuration = accepted ?? (input.configurationVersionId
-      ? await this.repository.configuration(input.configurationVersionId) : undefined)
+      ? await this.repository.configurationForInspection(input.configurationVersionId, principal) : undefined)
     if (input.configurationVersionId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pending command configuration is unavailable.', 409)
     // Legacy pending payloads did not include a pin. Prefer their matching idle
     // conversation configuration, never a different current harness's defaults.

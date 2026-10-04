@@ -29,6 +29,7 @@ import { DomainError } from '../errors.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
+import { authorizeOperatorConfigurationRead } from '../operators/configurationRead.js'
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
@@ -328,6 +329,10 @@ export class PostgresOperatorConversationRepository {
   async configuration(id: string, query: Queryable = this.pool): Promise<OperatorConfigurationVersion | undefined> {
     const result = await query.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
     return result.rows[0] ? OperatorConfigurationVersionSchema.parse(result.rows[0].record) : undefined
+  }
+  async configurationForInspection(id: string, principal: ManagementPrincipal) {
+    await authorizeOperatorConfigurationRead(this.pool, principal, id)
+    return this.configuration(id)
   }
   async hasTurn(id: string, requestId: string): Promise<boolean> {
     return (await this.pool.query('select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, requestId])).rowCount === 1

@@ -2,7 +2,8 @@ import { registerOperatorControlTools } from './operatorControls.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { IdSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema,
-  OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
+  OperatorChatSetupSchema, OperatorChatSetupQuerySchema,
+  CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   ListOperatorConversationsResponseSchema,
   GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
@@ -86,10 +87,11 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ sourceConversationId, before }) => invokeOperatorTool(context, 'operator_handoff_history_get', () => context.services.operatorChat!.handoffHistory(context.principal, sourceConversationId, before)))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_mcp_setup_get')) server.registerTool('operator_mcp_setup_get', {
-    description: 'Check the saved Operator Foreman Code MCP installation, configured endpoint and managed credential arrangement. Claude uses a read-authorized, zero-input SDK inspection on its exact current profile. Native chat-derived callers must have a live submitted owner-bound turn and current parent grants. This checks installation only; it does not install MCP, issue credentials, grant execution authority or prove a per-turn connection.',
-    inputSchema: z.object({}).strict(), outputSchema: OperatorChatSetupSchema,
+    description: 'Check the Operator Foreman Code MCP installation, configured endpoint and managed credential arrangement. Omit selectors to inspect current defaults; supply conversationId to inspect its pinned configuration, and requestId to inspect an accepted message configuration. configurationVersionId, harness and expectedDefaultsRevision retain the shared setup query checks. Conversation selectors require owner-bound operator_chat:read; private configuration pins require owned history or a live authorized chat binding. Requires global harnesses:read. Native chat-derived callers need a live submitted owner-bound turn and current parent grants. Claude uses a read-authorized SDK inspection on the selected profile. This does not install MCP, issue credentials, grant execution authority or prove a per-turn connection.',
+    inputSchema: OperatorChatSetupQuerySchema, outputSchema: OperatorChatSetupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => invokeOperatorTool(context, 'operator_mcp_setup_get', () => context.services.operatorChat!.setup(context.principal)))
+  }, async (input) => invokeOperatorTool(context, 'operator_mcp_setup_get', () =>
+    context.services.operatorChat!.setup(context.principal, input)))
   const settings = context.services.settings
   if (!settings) return
   if (operatorToolAvailable(context, 'agent_defaults_get')) server.registerTool('agent_defaults_get', {
