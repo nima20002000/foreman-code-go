@@ -1591,6 +1591,36 @@ export const RespondToInteractionRequestSchema = z.object({
 }).strict();
 export const RespondToInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema, replayed: z.boolean() }).strict();
 
+/** MCP summaries keep decisions visible; interaction_get retrieves omitted JSON in chunks. */
+export const McpInteractionSummarySchema = DurableInteractionSchema.pick({
+  id: true, revision: true, workspaceId: true, workflowId: true, runId: true,
+  executionId: true, harness: true, status: true, deliveryState: true, approval: true,
+  responseOptions: true,
+}).extend({
+  contentOmitted: z.literal(true),
+  responseOptions: z.array(ApprovalResponseOptionSchema),
+  responseOptionsComplete: z.boolean(),
+  retrieval: z.object({ tool: z.literal('interaction_get'), interactionId: IdSchema }).strict(),
+}).strict();
+export const McpInteractionSchema = z.union([DurableInteractionSchema, McpInteractionSummarySchema]);
+export const AppInteractionGetInputSchema = z.object({
+  interactionId: IdSchema, contentCursor: z.string().min(1).max(1000).optional(),
+}).strict();
+export const AppInteractionGetOutputSchema = z.object({
+  interaction: McpInteractionSchema,
+  activity: InteractionActivityProjectionSchema.optional(),
+  content: z.object({
+    format: z.literal('json'), text: z.string(), totalCharacters: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/), nextCursor: z.string().nullable(),
+  }).strict().optional(),
+}).strict();
+export const AppInteractionListOutputSchema = z.object({
+  items: z.array(McpInteractionSchema), nextCursor: IdSchema.nullable(),
+}).strict();
+export const AppInteractionRespondOutputSchema = z.object({
+  interaction: McpInteractionSchema, replayed: z.boolean(),
+}).strict();
+
 /** Deterministic cross-provider fixtures for contract consumers; exact native payloads stay server-side. */
 export const CODEX_APPROVAL_OPTIONS_FIXTURE = ApprovalResponseOptionSchema.array().parse([
   { optionId: "codex-approve-once", semantic: "approve_once", label: "Approve once", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },

@@ -1,7 +1,8 @@
 import {
   IdSchema,
   ListInteractionsRequestSchema,
-  ListInteractionsResponseSchema,
+  AppInteractionListOutputSchema,
+  AppInteractionRespondOutputSchema,
   DurableInteractionSchema,
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
@@ -22,6 +23,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
 import type { InteractionService } from './service.js'
+import { fitsInteractionMcpResponse, interactionMcpGet, interactionMcpView } from './mcpReadback.js'
 
 const CURSOR_PREFIX = 'interaction:'
 export const AppInteractionListInputSchema = ListInteractionsRequestSchema.pick({ cursor: true, limit: true }).strict()
@@ -54,7 +56,7 @@ export interface AppInteractionService {
   /** The bound Agent's product role and the GraphQL MCP tools enabled for its pinned configuration and node. */
   toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
-  get(principal: ManagementPrincipal, interactionId: string): Promise<unknown>
+  get(principal: ManagementPrincipal, interactionId: string, contentCursor?: string): Promise<unknown>
   respond(principal: ManagementPrincipal, input: unknown): Promise<unknown>
 }
 
@@ -187,20 +189,26 @@ export class PostgresAppInteractionService implements AppInteractionService {
     // Visibility is decided before LIMIT. EXISTS also avoids duplicate page slots
     // when more than one read grant authorizes the same interaction.
     const visible = rows.rows.map((row) => DurableInteractionSchema.parse(row.record))
-    const items = visible.slice(0, parsed.limit)
-    return ListInteractionsResponseSchema.parse({
+    const items: ReturnType<typeof interactionMcpView>[] = []
+    for (const interaction of visible.slice(0, parsed.limit)) {
+      const item = interactionMcpView(interaction)
+      const page = { items: [...items, item], nextCursor: encodeCursor(interaction.id) }
+      if (items.length && !fitsInteractionMcpResponse(page)) break
+      items.push(item)
+    }
+    return AppInteractionListOutputSchema.parse({
       items,
-      nextCursor: visible.length > parsed.limit ? encodeCursor(items.at(-1)!.id) : null,
+      nextCursor: visible.length > items.length ? encodeCursor(items.at(-1)!.id) : null,
     })
   }
 
-  async get(principal: ManagementPrincipal, interactionId: string) {
+  async get(principal: ManagementPrincipal, interactionId: string, contentCursor?: string) {
     const interaction = requireReadableInteraction(principal, await this.interactions.get(interactionId))
     let authorized = false
     try { requireRespondableInteraction(principal, interaction); authorized = await this.canRespond(principal) }
     catch (error) { if (!(error instanceof DomainError)) throw error }
     const activity = await this.orchestration?.readActivity?.(interaction, authorized)
-    return { interaction, ...(activity ? { activity } : {}) }
+    return interactionMcpGet({ interaction, ...(activity ? { activity } : {}) }, contentCursor)
   }
 
   async respond(principal: ManagementPrincipal, input: unknown) {
@@ -216,7 +224,10 @@ export class PostgresAppInteractionService implements AppInteractionService {
           agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
         },
       }, parsed)
-      return RespondToInteractionResponseSchema.parse(result)
+      const response = RespondToInteractionResponseSchema.parse(result)
+      return AppInteractionRespondOutputSchema.parse({
+        interaction: interactionMcpView(response.interaction), replayed: response.replayed,
+      })
     } catch (error) {
       const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)
       if (denied) {

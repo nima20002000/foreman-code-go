@@ -15,13 +15,16 @@ describe('MCP result envelopes', () => {
     })
   })
 
-  it('carries a large result once, in structuredContent only', () => {
-    const value = { input: 'x'.repeat(TEXT_MIRROR_BYTES + 1) }
+  it.each([TEXT_MIRROR_BYTES - 1, TEXT_MIRROR_BYTES, TEXT_MIRROR_BYTES + 1])(
+    'keeps %i-byte JSON readable through text or the OpenCode empty-content fallback', (bytes) => {
+    const value = { input: 'x'.repeat(bytes - JSON.stringify({ input: '' }).length) }
     const result = toolResult(value)
     expect(result.structuredContent).toBe(value)
-    const text = (result.content[0] as { text: string }).text
-    expect(text.length).toBeLessThan(512)
-    expect(JSON.parse(text)).toMatchObject({ bytes: JSON.stringify(value).length })
+    if (bytes <= TEXT_MIRROR_BYTES) {
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(value) }])
+    } else {
+      expect(result.content).toEqual([])
+    }
   })
 
   it.each([undefined, { revision: 2 }])('preserves domain failures and optional details: %j', (details) => {

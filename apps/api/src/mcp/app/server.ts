@@ -36,18 +36,20 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
 
   const canRead = await context.interactions.canRead(context.principal)
   if (canRead) server.registerTool('interaction_list', {
-    description: 'List pending GraphQL interactions visible to this authenticated Agent.',
+    description: 'List pending GraphQL interactions visible to this authenticated Agent within a byte-bounded page. Follow nextCursor for more items; contentOmitted summaries include interaction_get retrieval instructions.',
     inputSchema: AppInteractionListInputSchema,
     outputSchema: ListInteractionsResponseSchema,
     annotations: readAnnotations,
   }, async (input) => invokeAppTool(context, 'interaction_list', () => context.interactions.list(context.principal, input)))
 
   if (canRead) server.registerTool('interaction_get', {
-    description: 'Inspect one authorized GraphQL interaction and its server-generated response options.',
+    description: 'Inspect one authorized GraphQL interaction and its server-generated response options. Large results include content.text containing a JSON fragment; concatenate fragments while calling this tool with content.nextCursor as contentCursor until null. A changed-content error requires restarting the read. Omitted response options are included in the complete JSON.',
     inputSchema: InteractionGetInputSchema,
     outputSchema: InteractionGetOutputSchema,
     annotations: readAnnotations,
-  }, async (input) => invokeAppTool(context, 'interaction_get', () => context.interactions.get(context.principal, input.interactionId)))
+  }, async (input) => invokeAppTool(context, 'interaction_get', () => context.interactions.get(
+    context.principal, input.interactionId, input.contentCursor,
+  )))
 
   if (await context.interactions.canRespond(context.principal)) {
     server.registerTool('interaction_respond', {

@@ -1,13 +1,13 @@
 import {
-  DurableInteractionSchema,
+  AppInteractionGetInputSchema,
+  AppInteractionGetOutputSchema,
+  AppInteractionListOutputSchema,
+  AppInteractionRespondOutputSchema,
   GraphqlAgentToolSchema,
-  ListInteractionsResponseSchema,
   RespondToInteractionRequestSchema,
-  RespondToInteractionResponseSchema,
   IdSchema,
 } from '@graphql/contracts'
 import { z } from 'zod'
-import { InteractionActivityProjectionSchema } from '@graphql/contracts/interaction-activity'
 import { AppInteractionListInputSchema } from '../../modules/interactions/app.js'
 
 export const AppContextSchema = z.object({
@@ -33,8 +33,10 @@ export const AppContextSchema = z.object({
   }).strict(),
 }).strict()
 
-export const InteractionGetInputSchema = z.object({ interactionId: IdSchema }).strict()
-export const InteractionGetOutputSchema = z.object({ interaction: DurableInteractionSchema, activity: InteractionActivityProjectionSchema.optional() }).strict()
+export const InteractionGetInputSchema = AppInteractionGetInputSchema
+export const InteractionGetOutputSchema = AppInteractionGetOutputSchema
+const ListInteractionsResponseSchema = AppInteractionListOutputSchema
+const RespondToInteractionResponseSchema = AppInteractionRespondOutputSchema
 
 export {
   AppInteractionListInputSchema,
