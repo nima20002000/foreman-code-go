@@ -142,7 +142,9 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
             firstCredential.resolve()
             return token
           },
-          authenticate: sessions.authenticate.bind(sessions), revoke: sessions.revoke.bind(sessions),
+          authenticate: sessions.authenticate.bind(sessions),
+          authorizeAccepted: sessions.authorizeAccepted.bind(sessions),
+          revoke: sessions.revoke.bind(sessions),
         },
         artifacts: tools.artifacts, list: tools.list.bind(tools), read: tools.read.bind(tools),
         createWorkingCopy: tools.createWorkingCopy.bind(tools), publish: tools.publish.bind(tools),
@@ -151,6 +153,7 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
       const chatFiles: OpenCodeChatFiles = { async resolve(identity, signal) {
         signal.throwIfAborted()
         const admission = await resolveOpenCodeFileAdmission(pool, id, identity)
+        assert(admission, 'The accepted Agent turn must have a file context.')
         const root = join(database.directory, randomUUID())
         const host = new LocalOpenCodeExecutionFiles({ executionHostId: 'fixture-native', root,
           maxFileBytes: MAX_FILE_BYTES, assertSourceIsolation: async () => undefined })
@@ -177,10 +180,13 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
           getForWorkspace: async () => { throw new Error('This test does not read Runs.') },
           executionPages: () => { throw new Error('This test does not read executions.') },
         }, factory, database.directory)
+      const operatorServices = {
+        agentChat: chat,
+        commands: new PostgresCommandCoordinator(pool),
+      } as unknown as OperatorServices
       const app = buildApp({ readiness: { database: { ping: async () => undefined },
         checkpoints: { ping: async () => undefined } },
-        operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(pool) }
-          as unknown as OperatorServices } })
+        operator: { access, services: operatorServices } })
       const clients: Client[] = []
       const firstId = nativeMessageId(agentChatCorrelation(id, 'A'))
       const secondId = nativeMessageId(agentChatCorrelation(id, 'B'))

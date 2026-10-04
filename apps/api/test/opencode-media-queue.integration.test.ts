@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { it } from 'vitest'
 import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
@@ -21,16 +16,12 @@ import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtoc
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { configuration, FixtureServer } from './opencode-fixtures.js'
 import { eventually } from './helpers/agentChatF5.js'
-import { seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
 
 for (const size of ['multi-image prompt', 'large page'] as const) {
   it(`settles a ${size} and delivers queued input through authenticated MCP and persisted chat recovery`, async () => {
-    const database = `opencode_media_${randomUUID().replaceAll('-', '')}`
-    const admin = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
-    await admin.connect()
-    await admin.query(`create database "${database}"`)
-    const pool = new pg.Pool({ connectionString: `postgresql://graphql:graphql@127.0.0.1:5432/${database}`, max: 8 })
-    const directory = await mkdtemp(join(tmpdir(), 'opencode-media-queue-'))
+    const database = await agent3Database()
+    const { pool, directory } = database
     const clients: Client[] = []
     const managers: OpenCodeNativeSessionManager[] = []
     const provider = new FixtureServer()
@@ -38,7 +29,6 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
     let service: AgentChatService | undefined
     let app: ReturnType<typeof buildApp> | undefined
     try {
-      await applyApplicationMigrations(pool)
       const fixture = makeCurrentWorkflowFixture(`media-${randomUUID()}`, 'single')
       for (const config of fixture.configurations) config.harness = configuration()
       await seedAgent3(pool, directory, fixture, { run: false })
@@ -148,10 +138,7 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
       await Promise.allSettled(clients.map(client => client.close()))
       await app?.close()
       await Promise.allSettled(managers.map(manager => manager.dispose()))
-      await pool.end()
-      await admin.query(`drop database "${database}"`)
-      await admin.end()
-      await rm(directory, { recursive: true, force: true })
+      await database.close()
     }
   }, 60_000)
 }
