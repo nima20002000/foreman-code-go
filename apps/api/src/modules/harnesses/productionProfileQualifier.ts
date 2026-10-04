@@ -33,7 +33,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       }
       const binding = this.registry.pinOverride(value)
       const result = await endpoint.request(value.target.hostRef.deviceId, 'host-harness-check-v1',
-        { checkId: input.checkId, override: value }, { signal: input.signal })
+        { checkId: input.checkId, override: value }, { signal: input.signal, timeoutMs: 240_000 })
       input.signal.throwIfAborted()
       this.registry.installations.assertCurrent(binding)
       const proof = HostHarnessProfileEvidenceSchema.parse(result.payload)

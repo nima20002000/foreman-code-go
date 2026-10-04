@@ -33,6 +33,7 @@ import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
 
 /** Shipped worker domains consume actual protected installation selections and
@@ -79,6 +80,8 @@ export async function createInstalledWorkerDomains(input: {
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = await input.approvedRoots()
+  const profileChecks = approved ? await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
+    configuration: input.configuration, pairing: input.pairing, current, registry }) : null
   let jobOutputRsync: Awaited<ReturnType<typeof createInstalledJobOutputRsync>> | undefined
   let jobInputRsync: ReturnType<typeof createInstalledJobInputRsync> | undefined
   const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
@@ -210,6 +213,7 @@ export async function createInstalledWorkerDomains(input: {
     if (execution) extensions.splice(extensions.indexOf(execution), 1, handler)
     else extensions.push(handler)
   }
+  if (profileChecks) extensions.push(profileChecks.extension)
   const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
     const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
@@ -222,6 +226,7 @@ export async function createInstalledWorkerDomains(input: {
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
+      try { await profileChecks?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }

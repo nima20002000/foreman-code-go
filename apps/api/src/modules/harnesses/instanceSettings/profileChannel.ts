@@ -1,7 +1,7 @@
 import { HARNESS_PROFILE_CHECK_NAMESPACE, HostHarnessProfileCheckRequestSchema, HostHarnessProfileEvidenceSchema } from '@graphql/contracts/harness-registry'
 import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import { harnessConnectionGeneration } from '../hostConnectionGeneration.js'
-import { harnessHostKey } from './repository.js'
+import { isDeepStrictEqual } from 'node:util'
 import type { HostHarnessProfileQualifier } from './profileChecks.js'
 
 type ProfileBinding = Readonly<DeviceConnectionIdentity & { connectionEpoch: string }>
@@ -21,13 +21,13 @@ export function createHostHarnessProfileCheckExtension(options: {
       context.signal.throwIfAborted()
       if (context.binding.mainId !== hostRef.mainId || context.binding.deviceId !== hostRef.deviceId
         || context.binding.workerInstallationId !== applicationInstallationId
-        || harnessHostKey(input.override.target.hostRef) !== harnessHostKey(hostRef)
+        || !isDeepStrictEqual(input.override.target.hostRef, hostRef)
         || input.override.target.applicationInstallationId !== applicationInstallationId) throw new Error('Native profile check host binding mismatch.')
       const expectedConnection = harnessConnectionGeneration(context.binding)
       const proof = HostHarnessProfileEvidenceSchema.parse(await qualifierForBinding(context.binding)
         .qualify(input.override, { checkId: input.checkId, signal: context.signal }))
       context.signal.throwIfAborted()
-      if (proof.connectionGeneration !== expectedConnection || harnessHostKey(proof.target.hostRef) !== harnessHostKey(hostRef)
+      if (proof.connectionGeneration !== expectedConnection || !isDeepStrictEqual(proof.target.hostRef, hostRef)
         || proof.target.applicationInstallationId !== applicationInstallationId || proof.target.harnessInstallationId !== input.override.target.harnessInstallationId
         || proof.target.installationFingerprint !== input.override.target.installationFingerprint
         || proof.instanceRevision !== input.override.instanceRevision || proof.configurationFingerprint !== input.override.configurationFingerprint
