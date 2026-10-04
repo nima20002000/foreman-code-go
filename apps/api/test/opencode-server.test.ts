@@ -592,7 +592,7 @@ it('[F26] requires evidence for every named variant and represents no selection 
   const session = await sessionFor(native, noVariant)
   server.onPrompt = () => { server.complete('no-variant') }
   await collect(native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'no-variant' }))
-  assert(!Object.hasOwn(server.calls.find((call) => call.path.includes('/prompt_async'))!.body!, 'variant'))
+  assert.equal(server.calls.find((call) => call.path.includes('/prompt_async'))!.body!.variant, '')
 })
 
 it('[F27] bounds transient event and identity state while older authoritative history stays pageable', async () => {

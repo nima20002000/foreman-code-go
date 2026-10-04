@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { subagentCapabilities, type RunSubagent, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
-import { FixtureServer, manager, sessionFor } from './opencode-fixtures.js'
+import { configuration, FixtureServer, manager, sessionFor } from './opencode-fixtures.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 
 // Transport fixtures are not live native qualification evidence.
@@ -17,8 +17,11 @@ const receipt = (): RunSubagentCommandReceipt => ({ schemaVersion: 1, id: 'recei
 async function fixture() {
   const server = new FixtureServer(), native = manager(server)
   const session = await sessionFor(native)
-  server.sessionInfos.set('ses_child', { id: 'ses_child', parentID: session.nativeSessionId, directory: '/workspace/project' })
-  server.messages.set('ses_child', [])
+  server.addSession('ses_child', session.nativeSessionId, { ...configuration(), nativeAgent: 'plan', variant: '' })
+  const prompt = server.user('child-start', 'Child task', 'ses_child')
+  prompt.info.agent = 'plan'
+  prompt.info.system = 'Child instructions'
+  server.assistant(String(prompt.info.id), 'Child complete', 'stop', true, 'ses_child')
   const record = child(session.nativeSessionId)
   return { server, native, session, record }
 }
@@ -34,10 +37,84 @@ describe('OpenCode exact-parent child control transport', () => {
       const calls = f.server.calls.filter(call => call.path.includes('prompt_async'))
       expect(calls).toHaveLength(1)
       expect(calls[0]?.path).toContain('/session/ses_child/prompt_async')
-      expect(calls[0]?.body).toEqual({ messageID: 'msg_child_command', parts: [{ type: 'text', text: 'Follow up' }] })
+      expect(calls[0]?.body).toEqual({ messageID: 'msg_child_command', parts: [{ type: 'text', text: 'Follow up' }],
+        agent: 'plan', model: { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
+        variant: '', system: 'Child instructions' })
       await expect(lease.sendInput!(receipt(), 'Follow up')).rejects.toThrow()
       expect(f.server.calls.filter(call => call.path.includes('prompt_async'))).toHaveLength(1)
       expect((await f.native.history(f.session)).nativeTurnId).toBeUndefined()
+    } finally { await f.native.dispose() }
+  })
+  it('retains the child model and named variant across paged history', async () => {
+    const f = await fixture()
+    try {
+      f.server.sessionInfos.get('ses_child')!.model = { providerID: 'child-provider', id: 'child-model', variant: 'high' }
+      for (let index = 0; index < 70; index++) {
+        f.server.assistant('msg_child_start', 'Child output', 'stop', true, 'ses_child')
+      }
+      const lease = f.native.subagentControl({ ...f.record, status: 'completed' }, () => {})!
+      await lease.sendInput!(receipt(), 'Keep working')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body).toMatchObject({
+        agent: 'plan', model: { providerID: 'child-provider', modelID: 'child-model' },
+        variant: 'high', system: 'Child instructions',
+      })
+      expect(f.server.calls.filter(call => call.path.includes('/ses_child/message?'))).toHaveLength(2)
+    } finally { await f.native.dispose() }
+  })
+  it('normalizes the child session default sentinel without inheriting the parent variant', async () => {
+    const f = await fixture()
+    try {
+      f.server.sessionInfos.get('ses_child')!.model = {
+        providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'default',
+      }
+      await f.native.subagentControl(f.record, () => {})!.sendInput!(receipt(), 'Keep working')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body?.variant).toBe('')
+    } finally { await f.native.dispose() }
+  })
+  it('uses a configured idle child even before its first native user message', async () => {
+    const f = await fixture()
+    try {
+      f.server.messages.set('ses_child', [])
+      await f.native.subagentControl(f.record, () => {})!.sendInput!(receipt(), 'Start the child task')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body).toEqual({
+        messageID: 'msg_child_command', parts: [{ type: 'text', text: 'Start the child task' }],
+        agent: 'plan', model: { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' }, variant: '',
+      })
+    } finally { await f.native.dispose() }
+  })
+  it('preserves a named default variant recorded in the child user message', async () => {
+    const f = await fixture()
+    try {
+      f.server.sessionInfos.get('ses_child')!.model = {
+        providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'default',
+      }
+      f.server.messages.get('ses_child')![0]!.info.model = {
+        providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash', variant: 'default',
+      }
+      await f.native.subagentControl(f.record, () => {})!.sendInput!(receipt(), 'Keep working')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body?.variant).toBe('default')
+    } finally { await f.native.dispose() }
+  })
+  it('checks ownership after asynchronous child history reads', async () => {
+    const f = await fixture()
+    try {
+      let owned = true
+      const lease = f.native.subagentControl(f.record, () => { if (!owned) throw new Error('owner lost') })!
+      f.server.beforeRequest = path => {
+        if (path.includes('/ses_child/message?')) owned = false
+        return undefined
+      }
+      await expect(lease.sendInput!(receipt(), 'No')).rejects.toBeInstanceOf(SubagentDispatchRejectedError)
+      expect(f.server.calls.filter(call => call.path.includes('prompt_async'))).toHaveLength(0)
+    } finally { await f.native.dispose() }
+  })
+  it('rejects cross-session history before child input dispatch', async () => {
+    const f = await fixture()
+    try {
+      f.server.messages.get('ses_child')![0]!.info.sessionID = f.session.nativeSessionId
+      const lease = f.native.subagentControl(f.record, () => {})!
+      await expect(lease.sendInput!(receipt(), 'No')).rejects.toBeInstanceOf(SubagentDispatchRejectedError)
+      expect(f.server.calls.filter(call => call.path.includes('prompt_async'))).toHaveLength(0)
     } finally { await f.native.dispose() }
   })
   it('fences a stale generation and changed native ancestry before mutation', async () => {
