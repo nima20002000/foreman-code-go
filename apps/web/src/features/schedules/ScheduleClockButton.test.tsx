@@ -9,6 +9,7 @@ import {
   type ScheduleDisableInput, type ScheduleGetResult, type ScheduleSaveInput, type ScheduleSaveResult, type WorkflowSchedule,
 } from '@graphql/contracts/schedules'
 import { server } from '../../mocks/server'
+import { mockDeviceTimezone } from '../../test/deviceTimezone'
 import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'
 import { ScheduleClockButton } from './ScheduleClockButton'
 import { schedulePath } from './client'
@@ -56,6 +57,8 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  // The saved fixtures and displayed times describe a UTC device.
+  mockDeviceTimezone('UTC')
   persisted = null; saves = []; disables = []; reads = 0
   const receipts = new Map<string, ScheduleSaveResult>()
   server.use(

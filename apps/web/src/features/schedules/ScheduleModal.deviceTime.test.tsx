@@ -5,19 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { nextOccurrences, ScheduleSaveInputSchema, type ScheduleSaveInput, type WorkflowSchedule } from '@graphql/contracts/schedules'
 import { server } from '../../mocks/server'
+import { mockDeviceTimezone } from '../../test/deviceTimezone'
 import { ScheduleClockButton } from './ScheduleClockButton'
 import { schedulePath } from './client'
 
 const scope = { workspaceId: 'device-modal-workspace', workflowId: 'device-modal-workflow' }
 const clients: QueryClient[] = []
-function device(timeZone: string) {
-  const Original = Intl.DateTimeFormat
-  const DeviceDateTimeFormat = new Proxy(Original, {
-    apply: (target, _thisArg, args) => new target(args[0], { timeZone, ...args[1] }),
-    construct: (target, args) => new target(args[0], { timeZone, ...args[1] }),
-  })
-  vi.stubGlobal('Intl', Object.assign(Object.create(Intl), { DateTimeFormat: DeviceDateTimeFormat }))
-}
 function mount(value: WorkflowSchedule | null) {
   let persisted = value
   const saves: ScheduleSaveInput[] = []
@@ -47,7 +40,7 @@ describe('device-local Schedule modal', () => {
     ['Asia/Tokyo', '2099-08-25', '00:30'],
     ['America/Los_Angeles', '2099-08-24', '08:30'],
   ])('shows Once and the persisted Next instant in %s without a timezone selector', async (zone, date, time) => {
-    device(zone)
+    mockDeviceTimezone(zone)
     const next = '2099-08-24T15:30:00.000Z'
     const { user, saves } = mount({ ...scope, mode: 'once', localDate: '2099-08-24', time: '15:30', timezone: 'UTC', enabled: true,
       policy: 'latest_saved', revision: 1, nextOccurrenceAt: next })
@@ -63,7 +56,7 @@ describe('device-local Schedule modal', () => {
     expect(saves[0]?.schedule).toMatchObject({ localDate: '2099-08-24', time: '15:30', timezone: 'UTC' })
   })
   it('discloses foreign weekly calendar intent and the device-calendar consequence of edits', async () => {
-    device('Asia/Tokyo')
+    mockDeviceTimezone('Asia/Tokyo')
     const { user, saves } = mount({ ...scope, mode: 'weekly', weekdays: [1], time: '23:30', timezone: 'America/New_York', enabled: true,
       policy: 'latest_saved', revision: 1, nextOccurrenceAt: '2099-08-25T03:30:00.000Z' })
     await open(user)

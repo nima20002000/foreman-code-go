@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
+import { mockDeviceTimezone } from '../../test/deviceTimezone'
 import { buildScheduleCommand, createDraft, createScheduleEditorStore, draftIdentity } from './editorStore'
 
 const scope = { workspaceId: 'workspace-test', workflowId: 'workflow-test' }
 const now = '2026-09-28T10:00:00.000Z'
 const weekly: ScheduleConfiguration = { mode: 'weekly', weekdays: [1], time: '09:00', timezone: 'UTC', enabled: true, policy: 'latest_saved' }
+// The saved fixtures and displayed times describe a UTC device.
+beforeEach(() => mockDeviceTimezone('UTC'))
+afterEach(() => vi.unstubAllGlobals())
 function editor(value: ScheduleConfiguration | null = weekly, revision = 3) {
   const store = createScheduleEditorStore()
   store.getState().initialize(value, revision)
@@ -66,12 +70,9 @@ describe('schedule form validation and draft ownership', () => {
     expect(buildScheduleCommand(scope, store.getState(), now).errors?.localDate).toBeDefined()
   })
   it('uses the device zone without requiring Intl timezone choices', () => {
-    const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions
     const localZone = 'Asia/Dushanbe'
+    mockDeviceTimezone(localZone)
     vi.stubGlobal('Intl', Object.assign(Object.create(Intl), { supportedValuesOf: undefined }))
-    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (this: Intl.DateTimeFormat) {
-      return { ...resolvedOptions.call(this), timeZone: localZone }
-    })
     try {
       const saved = editor()
       expect(saved.getState().draft?.timezone).toBe(localZone)
