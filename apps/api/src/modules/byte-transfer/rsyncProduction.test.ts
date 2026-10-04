@@ -120,19 +120,33 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
     events.push('execute')
     return execute(command, signal)
   } }
-  const peer = { capture: () => bound ? { binding: bound, request: (request: RsyncControlRequest, options: { signal: AbortSignal }) => worker.handle(request,
-    { binding: bound!, signal: options.signal }) } : undefined }
+  const request = vi.fn((request: RsyncControlRequest, options: { signal: AbortSignal; timeoutMs?: number }) => worker.handle(request,
+    { binding: bound!, signal: options.signal }))
+  const peer = { capture: () => bound ? { binding: bound, request } : undefined }
   const main = createRsyncProductionBackend({ side: 'main', stagingRoot: localRoot, current, accepted,
     quota: options.realQuota ? mainReceiver : quota,
     ...(options.cleanupProof ? { quiescent: (intent: TransferIntent, signal: AbortSignal) => mainOwnership.quiescent(intent, signal) } : {}),
     receiver: mainReceiver, acknowledged: acknowledge, selection: async () => selection, peer, executor, ownership: mainOwnership, writers })
-  return { root, i, original, check, selection, main, worker, quota, source, commands, accepted, localRoot, remoteRoot, mainReceiver, workerReceiver, mainOwnership, workerOwnership, writers, mainStore, workerStore, accesses, events, execute, copy,
+  return { root, i, original, check, selection, main, worker, quota, source, commands, accepted, localRoot, remoteRoot, mainReceiver, workerReceiver, mainOwnership, workerOwnership, writers, mainStore, workerStore, accesses, events, execute, copy, request,
     publish: () => { published = true }, deny: () => { denied = true }, disconnect: () => { bound = undefined },
     changeSelection: (next: RsyncBackendSelection) => { selection = next },
     dispose: async () => { await Promise.allSettled([mainOwnership.drain(AbortSignal.timeout(5000)), workerOwnership.drain(AbortSignal.timeout(5000))]); await mainReceiver.close(); await workerReceiver.close(); await rm(root, { recursive: true, force: true }) } }
 }
 
 describe('production rsync leaf', () => {
+  it.each(['to-main', 'to-worker'] as const)('bounds the %s byte operation by its retained transfer expiry', async direction => {
+    const f = await fixture(direction)
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.i.expiresAt) - 90000)
+    try {
+      await f.main.send(f.i, direction === 'to-worker' ? f.source : undefined)
+      const method = direction === 'to-main' ? 'source-prepare' : 'receiver-verify'
+      expect(f.request).toHaveBeenCalledWith({ kind: 'rsync-stage-v1', method, transferId: f.i.transferId },
+        { signal: expect.any(AbortSignal), timeoutMs: 90000 })
+    } finally {
+      clock.mockRestore()
+      await f.dispose()
+    }
+  })
   it.each(['source-read', 'quota-admission'] as const)('retires an expired %s failure without inventing a staging record', async failure => {
     const f = await fixture('to-worker', { realQuota: true, cleanupProof: true })
     try {

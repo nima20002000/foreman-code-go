@@ -290,7 +290,11 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
     if (!input.peer) throw new Error('Authenticated rsync control channel unavailable')
     const captured = input.peer.capture()
     if (!captured || !isDeepStrictEqual(transferContextForBinding(captured.binding), await current(i))) throw new Error('Rsync control epoch differs')
-    const result = await captured.request({ kind: 'rsync-stage-v1', method, transferId: i.transferId }, { signal })
+    const byteOperation = method === 'source-prepare' || method === 'receiver-verify'
+    const timeoutMs = Math.min(POLICY.maxIdleMs, Date.parse(i.expiresAt) - Date.now())
+    if (timeoutMs <= 0) throw new Error('Original rsync transfer expired')
+    const result = await captured.request({ kind: 'rsync-stage-v1', method, transferId: i.transferId },
+      { signal, ...(byteOperation ? { timeoutMs } : {}) })
     if (!isDeepStrictEqual(input.current(i.deviceId), captured.binding)) throw new Error('Rsync control response epoch changed')
     if (result.bytes?.byteLength) throw new Error('Unexpected rsync control response bytes')
     const payload = RsyncControlResponseSchema.parse(result.payload)
