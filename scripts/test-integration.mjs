@@ -376,7 +376,7 @@ async function main() {
         else unreported++
       }
       if (code === 0 && !summary) { code = 1; error = new Error('Vitest case summary missing') }
-      if (code === 0 && failForSkippedCases(summary, Boolean(startAt || failedFrom))) {
+      if (code === 0 && failForSkippedCases(summary, diagnostic)) {
         code = 1
         error = new Error(`${summary.skipped} skipped cases in an integration run`)
       }
