@@ -3,6 +3,7 @@ import { GraphIdSchema, RunActivityPublicSchema,
 import { repeatId } from './repeatResolution.js'
 import { safeNodeName } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
+import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;
@@ -151,9 +152,12 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     case 'harness_session_started': status = 'running'; summary = 'Native session started'; break
     case 'harness_session_finished': status = 'completed'; summary = 'Native session finished'; break
     case 'harness_output': {
-      const label = toolLabel(native)
+      const claude = claudeConversationActivity({ type: string(native.type) ?? '', payload: {
+        itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
+      } }, runId)
+      const label = claude?.title ?? toolLabel(native)
       kind = label ? 'tool_action' : 'tool_log'
-      status = toolStatus(native)
+      status = claude?.status ?? toolStatus(native)
       const action = status === 'running' ? 'started' : status
       summary = label ? `${label} ${action}` : 'Native activity recorded; details unavailable'
       break

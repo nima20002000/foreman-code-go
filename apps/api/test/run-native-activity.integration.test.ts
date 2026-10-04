@@ -1,11 +1,14 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { AgentConfigurationVersion, NativeHarnessEvent } from '@graphql/contracts'
 import { RunActivitiesPageSchema } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { readNativeActivityFacts, projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
+import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
+import { claudeNativeEvent } from '../src/modules/harnesses/claudeSdk/nativeEvents.js'
+import type { ClaudeDecodedChange } from '../src/modules/harnesses/claudeSdk/normalization.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -15,11 +18,11 @@ const occurredAt = '2026-10-04T10:00:00.000Z'
 const executionId = 'native-activity-execution'
 
 async function activityFixture(work: (pool: pg.Pool, fixture: Awaited<ReturnType<typeof graphFixture>>,
-  app: ReturnType<typeof buildApp>) => Promise<void>) {
+  app: ReturnType<typeof buildApp>) => Promise<void>, options: { harness?: AgentConfigurationVersion['harness'] } = {}) {
   await nim2691TaskDatabase(async (pool, directory) => {
     await applyApplicationMigrations(pool)
     const db = { pool, directory, schema: 'public', close: async () => {} } as Awaited<ReturnType<typeof currentDatabase>>
-    const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
+    const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true, ...options })
     const runs = new RunManagementService(pool, fixture.commands, {} as never, {} as never, {} as never)
     const app = buildApp({
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -109,5 +112,58 @@ describe('persisted native Run activity', () => {
       expect(native.activities.every((item) => 'status' in item && item.status === 'canceled')).toBe(true)
       expect(native.active).toEqual([])
     })
+  }, 120000)
+
+  it('projects persisted Claude normalized tool and task facts through HTTP, MCP and snapshots', async () => {
+    const harness: AgentConfigurationVersion['harness'] = {
+      harness: 'claude', model: 'activity-fixture', authMode: 'subscription', configDirectory: '/fixture/profile',
+      permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'Bash', 'Agent'],
+      permissionRules: [], instructions: '', mcpServers: {},
+    }
+    await activityFixture(async (pool, fixture, app) => {
+      const changes: ClaudeDecodedChange[] = [
+        { kind: 'tool', itemId: 'claude:tool:read', name: 'Read', status: 'running', provisional: true,
+          input: { path: '/private/tool-path' } },
+        { kind: 'tool', itemId: 'claude:tool:read', name: 'Read', status: 'completed', provisional: false,
+          output: 'private tool output' },
+        { kind: 'tool', itemId: 'claude:tool:bash', name: 'Bash', status: 'failed', provisional: false },
+        { kind: 'tool', itemId: 'claude:tool:mcp', name: 'mcp__graphql__context_get', status: 'completed', provisional: false },
+        { kind: 'task', taskId: 'child', status: 'running', description: 'private child description' },
+        { kind: 'task', taskId: 'child', status: 'canceled', summary: 'private child answer' },
+        { kind: 'task', taskId: 'unresolved-child', status: 'unknown' },
+        { kind: 'text', itemId: 'child-answer', operation: 'replace', text: 'private child text', final: true },
+      ]
+      for (const [index, change] of changes.entries()) {
+        const event = claudeNativeEvent({ change, evidence: {
+          owner: { ownerId: executionId, attemptId: '1', generation: 7 }, observedAt: occurredAt,
+          eventId: `sdk-event-${index}`, nativeSessionId: 'native-session', promptUuids: ['private-prompt-uuid'],
+          ...(change.kind === 'tool' ? { toolUseId: change.itemId.slice('claude:tool:'.length) } : {}),
+          ...(change.kind === 'text' ? { parentToolUseId: 'read' } : {}),
+        } }, index + 1)
+        await persistEvent(pool, fixture.run.id, event)
+      }
+      const page = await readBoth(app, fixture)
+      expect(page.items.filter((item) => item.kind === 'tool_action').map((item) => [item.summary, item.status])).toEqual([
+        ['Read file started', 'running'], ['Read file completed', 'completed'], ['Run command failed', 'failed'],
+        ['MCP tool action completed', 'completed'], ['Subagent activity started', 'running'],
+        ['Subagent activity canceled', 'canceled'], ['Subagent activity unknown', 'unknown'],
+      ])
+      const snapshot = await readRunActivitySnapshot(pool, fixture.scope, fixture.version)
+      const native = snapshot.activities.filter((item) => item.source.system === 'harness_native_events')
+      expect(native.map((item) => item.kind === 'tool' || item.kind === 'subagent'
+        ? [item.native?.itemId, item.title, item.status] : null)).toEqual([
+        ['read', 'Read file', 'completed'], ['bash', 'Run command', 'failed'],
+        ['mcp', 'MCP tool action', 'completed'], ['child', 'Subagent activity', 'canceled'],
+        ['unresolved-child', 'Subagent activity', 'unknown'],
+      ])
+      expect(native.every((item) => item.native?.harness === 'claude'
+        && item.native.sessionId === 'native-session' && item.native.generation === '7')).toBe(true)
+      expect(native.every((item) => item.native?.turnId === undefined)).toBe(true)
+      expect(snapshot.active.filter((item) => item.ref.kind === 'tool' || item.ref.kind === 'subagent'))
+        .toMatchObject([{ evidence: 'unknown', native: { itemId: 'unresolved-child' } }])
+      expect(JSON.stringify({ page, snapshot })).not.toMatch(/private (tool|child)|private-prompt|\/private\/tool-path/)
+      expect((await pool.query('select count(*)::integer as count from harness_native_events where execution_id=$1',
+        [executionId])).rows[0]?.count).toBe(changes.length)
+    }, { harness })
   }, 120000)
 })

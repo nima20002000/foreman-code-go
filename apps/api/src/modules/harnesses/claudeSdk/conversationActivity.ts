@@ -3,7 +3,8 @@ import { claudeToolTitle } from './activity.js'
 
 /** Minimal bridge to the existing chat activity repository. Arguments, output
  * bodies, private reasoning and child answer text are not inferred into titles. */
-export function claudeConversationActivity(event: NativeHarnessEvent, requestId: string): Omit<OperatorActivity, 'sequence' | 'revision'> | undefined {
+export function claudeConversationActivity(event: Pick<NativeHarnessEvent, 'type' | 'payload'>,
+  requestId: string): Omit<OperatorActivity, 'sequence' | 'revision'> | undefined {
   const payload = event.payload
   if (event.type === 'claude.task' && typeof payload.taskId === 'string') {
     const status = payload.status

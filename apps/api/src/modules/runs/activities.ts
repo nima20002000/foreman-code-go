@@ -73,7 +73,11 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'itemStatus',left(n.record#>>'{payload,item,status}',48),
     'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false),
     'partTool',left(n.record#>>'{payload,part,tool}',48),
-    'partStatus',left(n.record#>>'{payload,part,state,status}',48))) end as native
+    'partStatus',left(n.record#>>'{payload,part,state,status}',48),
+    'claudeItemId',case when n.record->>'type'='claude.tool' then n.record#>>'{payload,itemId}' end,
+    'claudeTaskId',case when n.record->>'type'='claude.task' then n.record#>>'{payload,taskId}' end,
+    'claudeName',case when n.record->>'type'='claude.tool' then n.record#>>'{payload,name}' end,
+    'claudeStatus',case when n.record->>'type' in ('claude.tool','claude.task') then n.record#>>'{payload,status}' end))) end as native
 from run_activity a
 left join harness_executions e on e.id=a.harness_execution_id and e.run_id=a.run_id
 left join runs r on r.id=a.run_id
