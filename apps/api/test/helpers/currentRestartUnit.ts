@@ -202,8 +202,11 @@ export function currentRestartUnit(reviewer = false) {
       assert.equal(next.nativeSessionId, session.nativeSessionId)
       execution = next
     } }
-  const coordination = { ...nativeLanes(), workflowSession: async () => ({ session, finalized: state.finalized, reviewerActive: false }),
-    hasUnsettledReview: async () => false, finishStoppedReviews: async () => { state.retirementCalls++ } }
+  const coordination = Object.assign(nativeLanes(), {
+    workflowSession: async () => ({ session, finalized: state.finalized, reviewerActive: false }),
+    hasUnsettledReview: async () => false,
+    finishStoppedReviews: async () => { state.retirementCalls++ },
+  })
   const pendingApproval = DurableInteractionSchema.parse({
     id: 'be001-original-pending', revision: 0, workspaceId: f.run.workspaceId, workflowId: f.run.workflowId,
     runId: f.run.id, executionId: execution.id, requestingAgentId: configuration.agentId, ...session,
