@@ -1,4 +1,4 @@
-import { loadEnvFile } from 'node:process'
+import { loadProductEnvFile } from '@foreman-code/contracts/product-environment-node'
 import { mkdir, realpath } from 'node:fs/promises'
 
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
@@ -24,7 +24,7 @@ async function main() {
   // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
   // --env-file-if-exists. Missing local configuration is normal in production.
   try {
-    loadEnvFile(process.env.GRAPHQL_API_ENV_FILE)
+    loadProductEnvFile()
   } catch (error) {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
       throw error

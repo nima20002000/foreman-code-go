@@ -60,6 +60,7 @@ describe('OCI immutable input consumer with command/boundary doubles, no live qu
   it('emits the exact retained input RO submount and fixed manifest environment', async () => {
     const f = await fixture(); const argv = podmanCreateArgv(f.plan)
     expect(argv).toContain(`type=bind,src=${f.inputRoot},dst=/workspace/${JOB_INPUT_DIRECTORY},ro`)
+    expect(argv).toContain('FOREMAN_CODE_JOB_INPUT_MANIFEST=/workspace/.graphql-job-inputs/manifest.json')
     expect(argv).toContain('GRAPHQL_JOB_INPUT_MANIFEST=/workspace/.graphql-job-inputs/manifest.json')
     expect(argv).toContain('--remote=false')
     expect(argv.filter(value=>value.startsWith('type=bind,'))).toHaveLength(4)

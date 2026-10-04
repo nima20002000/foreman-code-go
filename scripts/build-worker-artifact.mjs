@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -15,7 +16,7 @@ import { copySharpPackages, artifactFiles, assertWorkerDependency } from './work
 import { DatabaseSync } from 'node:sqlite';
 const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
 if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs /approved-target.json /new-output-directory [/reviewed-runtime.json]');
-const requestedCommit = process.env.GRAPHQL_WORKER_BUILD_COMMIT;
+const requestedCommit = readProductEnvironment(process.env, 'WORKER_BUILD_COMMIT');
 if (requestedCommit && !/^[a-f0-9]{40}$/.test(requestedCommit)) throw new Error('Invalid captured commit');
 const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedCommit}^{commit}` : 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -37,7 +38,7 @@ function snapshotSource(path) {
 async function requirePinnedSource(path) {
   if (!snapshotSource(path).equals(await readFile(join(root, path)))) throw new Error(`Uncommitted build control input: ${path}`);
 }
-for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
+for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
 const target = JSON.parse(snapshotSource(relative(root, resolve(targetFile))).toString('utf8'));
 if (target.arch !== 'x64') throw new Error('Sharp assets are qualified only for linux-x64');
 if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported build target');

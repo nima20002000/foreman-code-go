@@ -2,9 +2,9 @@ import { strict as assert } from 'node:assert'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
-import { it } from 'vitest'
+import { expect, it } from 'vitest'
 import { runCommand } from '../src/modules/harnesses/process.js'
-import { inheritedAgentEnvironment, nativeAgentEnvironment } from '../src/modules/harnesses/secrets.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, nativeAgentEnvironment } from '../src/modules/harnesses/secrets.js'
 
 it('keeps provider credentials and native login paths while excluding production database credentials', () => {
   const source = {
@@ -42,4 +42,23 @@ it('starts native children with their binary directory first and removes pnpm bi
     assert.ok(paths.includes('/usr/local/bin'))
     assert.ok(paths.every((entry) => !/[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(entry)))
   } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+it('strips both ambient credential namespaces and only aliases an admitted native token', () => {
+  const clean = inheritedAgentEnvironment({ GRAPHQL_MCP_TOKEN: 'ambient-old', FOREMAN_CODE_MCP_TOKEN: 'ambient-new',
+    FOREMAN_CODE_OPERATOR_SECRET: 'operator-secret', FOREMAN_CODE_APP_SECRET: 'app-secret', PATH: '/usr/bin' })
+  expect(clean).toEqual({ PATH: '/usr/bin', NO_COLOR: '1' })
+  expect(appMcpTokenEnvironment({ GRAPHQL_MCP_TOKEN: 'admitted' })).toEqual({ GRAPHQL_MCP_TOKEN: 'admitted', FOREMAN_CODE_MCP_TOKEN: 'admitted' })
+  expect(() => appMcpTokenEnvironment({ GRAPHQL_MCP_TOKEN: 'old', FOREMAN_CODE_MCP_TOKEN: 'new' })).toThrow('conflicts')
+})
+
+it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])('delivers the scoped %s token to installed native entries using either name', async name => {
+  const result = await runCommand(process.execPath,
+    ['-e', 'console.log(JSON.stringify({old:process.env.GRAPHQL_MCP_TOKEN,new:process.env.FOREMAN_CODE_MCP_TOKEN}))'],
+    process.cwd(), AbortSignal.timeout(5_000), {
+      expectedAgentId: 'scoped-agent', beforeSpawn: async () => ({ agentId: 'scoped-agent', variables: { [name]: 'admitted-token' } }),
+    })
+  expect(result.exitCode).toBe(0)
+  // The process helper redacts both delivered spellings from native output.
+  expect(JSON.parse(result.stdout)).toEqual({ old: '[REDACTED]', new: '[REDACTED]' })
 })

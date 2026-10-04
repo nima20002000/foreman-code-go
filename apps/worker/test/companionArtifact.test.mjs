@@ -1,10 +1,11 @@
+import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 for (const [storage, directory, persistent] of [['tmpfs', '/dev/shm', false], ['persistent', '/var/tmp', true]]) {
 test(`packaged GUI serves CSP and keeps doctor read-only on ${storage} storage`, { skip: !artifact }, async (t) => {
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
@@ -23,6 +24,7 @@ test(`packaged GUI serves CSP and keeps doctor read-only on ${storage} storage`,
   t.after(() => { gui.close(); return rm(state, { recursive: true, force: true }); });
   const page = await fetch(gui.origin), html = await page.text();
   assert.equal(page.status, 200);
+  assert.match(html, /<title>Foreman Code Companion<\/title>/);
   assert.equal(html.includes('{{CSP_NONCE}}'), false);
   assert.equal(html.includes(gui.session), false);
   assert.match(html, /\/api\/service-plan/);

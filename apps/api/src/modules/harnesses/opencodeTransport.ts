@@ -1,3 +1,5 @@
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { randomBytes } from 'node:crypto'
@@ -10,7 +12,7 @@ import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import type { ChildProcessEnvironment } from './port.js'
 import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
-import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 
@@ -143,10 +145,13 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The credential does not belong to this OpenCode server owner.')
     }
     const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV
-    if (Object.keys(environment?.variables ?? {}).some((key) => key !== credentialEnvironmentVariable)
-      || (environment && credentialEnvironmentVariable in environment.variables && !environment.variables[credentialEnvironmentVariable])) {
+    const tokenAliases = (APP_MCP_TOKEN_NAMES as readonly string[]).includes(credentialEnvironmentVariable)
+    const entries = Object.entries(environment?.variables ?? {})
+    if (entries.length > 1 || entries.some(([key, value]) => !value || (tokenAliases
+      ? !(APP_MCP_TOKEN_NAMES as readonly string[]).includes(key) : key !== credentialEnvironmentVariable))) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential environment variable is accepted.')
     }
+    if (tokenAliases && environment) readProductEnvironment(environment.variables, 'MCP_TOKEN')
     return environment ? { agentId: environment.agentId, variables: { ...environment.variables } } : undefined
   }
 
@@ -342,6 +347,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       if (this.disabledAppMcpServerName !== undefined) {
         delete environment[this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV]
+        delete environment.GRAPHQL_MCP_TOKEN
+        delete environment.FOREMAN_CODE_MCP_TOKEN
         environment.OPENCODE_CONFIG_CONTENT = buildOpenCodeChatConfigContent(environment.OPENCODE_CONFIG_CONTENT, this.disabledAppMcpServerName)
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
@@ -349,7 +356,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
       const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
-        cwd: this.options.workingDirectory, env: environment,
+        cwd: this.options.workingDirectory, env: appMcpTokenEnvironment(environment),
         ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
       })
       this.child = child
@@ -476,7 +483,7 @@ export function assertOpenCodeChatMcpDisabled(configuration: unknown, status: un
     || chatExcludedAppMcpServerNames(serverName).some((name) =>
       (Object.hasOwn(servers, name) && chatMcpObject(servers[name]).enabled !== false)
       || (Object.hasOwn(statuses, name) && chatMcpObject(statuses[name]).status !== 'disabled'))) {
-    throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'GraphQL workflow or Operator tools are not available in chat; native launch did not confirm their MCP entries were disabled.')
+    throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Foreman Code workflow or Operator tools are not available in chat; native launch did not confirm their MCP entries were disabled.')
   }
 }
 

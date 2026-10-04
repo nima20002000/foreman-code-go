@@ -1,4 +1,4 @@
-import { loadEnvFile } from 'node:process'
+import { loadProductEnvFile } from '@foreman-code/contracts/product-environment-node'
 
 import type { ManagementGrant } from '@foreman-code/contracts/management'
 import { credentialActions } from './credentialAccess.js'
@@ -11,7 +11,7 @@ import { parseCredentialArguments } from './operatorCredentialArguments.js'
 
 async function main() {
   const input = parseCredentialArguments(process.argv.slice(2))
-  try { loadEnvFile(process.env.GRAPHQL_API_ENV_FILE) } catch (error) {
+  try { loadProductEnvFile() } catch (error) {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
   }
   const config = loadConfig(process.env)

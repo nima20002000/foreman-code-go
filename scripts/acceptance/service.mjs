@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../../packages/contracts/src/productEnvironment.mjs'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -88,7 +89,7 @@ async function main() {
       try {
         const apiUrl = `http://127.0.0.1:${config.port}`
         const result = message.type === 'seed'
-          ? await seed({ apiUrl, webUrl: process.env.GRAPHQL_DEV_BROWSER_ORIGIN,
+          ? await seed({ apiUrl, webUrl: readProductEnvironment(process.env, 'DEV_BROWSER_ORIGIN'),
             projectRoot: config.workspaceStorageRoot, codexModel: process.env.ENG07_CODEX_MODEL, schemas })
           : await parity({ apiUrl, workspaceId: message.demo.workspaceId, workflowIds: message.demo.workflowIds,
             runId: message.runId, access: new PostgresAccessService(db.pool), ...sdk })

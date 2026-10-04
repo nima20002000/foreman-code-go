@@ -5,6 +5,9 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./product": { "types": "./dist/product.d.ts", "import": "./dist/product.js" },
+    "./product-environment": { "types": "./dist/productEnvironment.d.mts", "import": "./dist/productEnvironment.mjs" },
+    "./product-environment-node": { "types": "./dist/productEnvironmentNode.d.mts", "import": "./dist/productEnvironmentNode.mjs" },
     "./subagents": { "types": "./dist/subagents.d.ts", "import": "./dist/subagents.js" },
     ".": {
       "types": "./dist/index.d.ts",

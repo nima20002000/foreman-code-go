@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rename, rm, realpath } from 'node:fs/promises';
@@ -6,7 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { generateKeyPairSync, randomUUID, createHash } from 'node:crypto';
 
-const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 async function fixture(t) {
   const { approvedRootExtensions, qualifyApprovedRootAllowlist } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   // Synthetic unit configuration, never an installed host/approved application profile.

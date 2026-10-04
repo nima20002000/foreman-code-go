@@ -4,8 +4,8 @@ import { nativeOutputCollector } from './nativeCommandOutput.js'
 import { nativeProcessExit, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
-import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
-import { APP_MCP_TOKEN } from './appMcpLauncher.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
@@ -87,16 +87,17 @@ async function runOwnedProcess<T>(
       throw new Error('Child process environment belongs to another Agent.')
     }
     const entries = Object.entries(scopedEnvironment.variables)
+    const entry = entries[0]
     // Operator and Worker credentials share one variable; the server resolves the role from the token.
-    if (entries.length !== 1 || entries[0]?.[0] !== APP_MCP_TOKEN || !entries[0][1]) {
-      throw new Error('Only the scoped GraphQL MCP credential may be injected into an Agent process.')
+    if (entries.length !== 1 || !entry || !(APP_MCP_TOKEN_NAMES as readonly string[]).includes(entry[0]) || !entry[1]) {
+      throw new Error('Only the scoped Foreman Code MCP credential may be injected into an Agent process.')
     }
-    childEnvironment[APP_MCP_TOKEN] = entries[0][1]
-    secrets.push(entries[0][1])
+    childEnvironment[entry[0]] = entry[1]
+    secrets.push(entry[1])
   }
   options.signal?.throwIfAborted()
   const child = spawnNativeProcess(options.binary, options.args, {
-    cwd: options.cwd, env: childEnvironment,
+    cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment),
     ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   const closed = new Promise<ProcessExit>((resolve) => {

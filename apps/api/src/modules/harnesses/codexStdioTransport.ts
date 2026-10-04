@@ -94,7 +94,7 @@ export class CodexStdioTransport {
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'graphql', title: 'GraphQL', version: '0.1.0' },
+        clientInfo: { name: 'foreman-code', title: 'Foreman Code', version: '0.1.0' },
         capabilities: { experimentalApi: true },
       }, signal)
       await this.write({ method: 'initialized' })
@@ -247,7 +247,7 @@ export class CodexStdioTransport {
 
   private async receive(line: string): Promise<void> {
     let message: unknown
-    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_MCP_TOKEN ?? '']) } catch {
+    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_MCP_TOKEN ?? '', this.environment.FOREMAN_CODE_MCP_TOKEN ?? '']) } catch {
       this.onNotification('protocol/malformed', { reason: 'invalid_json' }); return
     }
     if (!isObject(message)) { this.onNotification('protocol/malformed', { reason: 'invalid_envelope' }); return }

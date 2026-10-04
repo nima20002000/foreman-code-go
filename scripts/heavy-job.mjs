@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -18,7 +19,7 @@ const active = join(state, 'active')
 const running = join(state, 'running')
 // Deliberately has no PID/token: old cleanup treats this gate as unknown/live.
 const gate = { common, multiSlotGate: true }
-const baseTmp = process.env.GRAPHQL_HEAVY_BASE_TMPDIR || tmpdir()
+const baseTmp = readProductEnvironment(process.env, 'HEAVY_BASE_TMPDIR') || tmpdir()
 const tempRoot = join(baseTmp, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
@@ -44,7 +45,7 @@ const tokenUsed = (token, exceptPid = 0, conservative = false) => {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       if (Number(entry) === exceptPid) continue
-      try { if (readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`GRAPHQL_HEAVY_JOB_TOKEN=${token}\0`))) return true } catch (error) { if (conservative && !gone(error)) return true }
+      try { if (['FOREMAN_CODE_', 'GRAPHQL_'].some(prefix => readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`${prefix}HEAVY_JOB_TOKEN=${token}\0`)))) return true } catch (error) { if (conservative && !gone(error)) return true }
     }
   } catch { return true }
   return false
@@ -182,7 +183,7 @@ if (process.argv[2] === '__hold') {
   // closes it; wait for any token-bearing workers before letting the slot go.
   process.stdin.resume()
   process.stdin.once('end', async () => {
-    while (tokenUsed(process.env.GRAPHQL_HEAVY_JOB_TOKEN, process.pid)) await sleep(200)
+    while (tokenUsed(readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN'), process.pid)) await sleep(200)
     process.exit(0)
   })
 } else {
@@ -264,9 +265,9 @@ async function main() {
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
   const command = process.argv.slice(divider + 1)
-  const inheritedToken = process.env.GRAPHQL_HEAVY_JOB_TOKEN
+  const inheritedToken = readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN')
   const inherited = [readJson(join(active, 'owner.json')), ...(existsSync(running) ? slotRecords() : [])].find((record) => inheritedToken && record?.token === inheritedToken)
-  const nested = inherited?.token && process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited.token
+  const nested = inherited?.token && readProductEnvironment(process.env, 'HEAVY_JOB_COMMON') === common && readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN') === inherited.token
   mkdirSync(state, { recursive: true })
   if (nested) {
     const freshness = buildKind ? freshBuild(buildKind) : null
@@ -307,7 +308,7 @@ async function main() {
     tempPath = join(tempRoot, randomUUID())
     mkdirSync(tempPath)
     writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
-    const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
+    const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, FOREMAN_CODE_HEAVY_BASE_TMPDIR: baseTmp, FOREMAN_CODE_HEAVY_JOB_COMMON: common, FOREMAN_CODE_HEAVY_JOB_TOKEN: token, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
     for (const path of [join(active, 'owner.json'), join(running, ticket), ticketPath, join(tempPath, 'owner.json')]) {

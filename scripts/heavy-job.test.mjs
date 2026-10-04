@@ -16,6 +16,9 @@ const jobEnv = (cwd) => {
   const env = { ...process.env, GRAPHQL_HEAVY_BASE_TMPDIR: dirname(cwd) }
   delete env.GRAPHQL_HEAVY_JOB_COMMON
   delete env.GRAPHQL_HEAVY_JOB_TOKEN
+  delete env.FOREMAN_CODE_HEAVY_JOB_COMMON
+  delete env.FOREMAN_CODE_HEAVY_JOB_TOKEN
+  delete env.FOREMAN_CODE_HEAVY_BASE_TMPDIR
   return env
 }
 const run = (cwd, args) => new Promise((resolve) => {
@@ -36,6 +39,8 @@ function fixture() {
   const first = join(home, 'one')
   mkdirSync(join(first, 'scripts'), { recursive: true })
   copyFileSync(source, join(first, 'scripts/heavy-job.mjs'))
+  mkdirSync(join(first, 'packages/contracts/src'), { recursive: true })
+  copyFileSync(new URL('../packages/contracts/src/productEnvironment.mjs', import.meta.url), join(first, 'packages/contracts/src/productEnvironment.mjs'))
   writeFileSync(join(first, 'package.json'), '{"type":"module"}')
   writeFileSync(join(first, 'source.txt'), 'first')
   writeFileSync(join(first, '.gitignore'), 'count\ndist/\n.logs/\n')

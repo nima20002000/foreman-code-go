@@ -475,7 +475,7 @@ export async function assertJobRuntimeEntryContext(candidate: JobQualificationCa
 
 export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string; containerId?: string; containerHostname?: string|undefined }) {
   const toolchain = probe.toolchain as Record<string, unknown> | undefined
-  const environment=['CI','GRAPHQL_JOB_INPUT_MANIFEST','HOME','LANG','PATH',...Object.keys(JOB_GIT_ENVIRONMENT)]
+  const environment=['CI','FOREMAN_CODE_JOB_INPUT_MANIFEST','GRAPHQL_JOB_INPUT_MANIFEST','HOME','LANG','PATH',...Object.keys(JOB_GIT_ENVIRONMENT)]
   const managedHostname=Array.isArray(probe.environment)&&probe.environment.includes('HOSTNAME')
   if(managedHostname)environment.push('HOSTNAME')
   const hostnameMatches=managedHostname?typeof probe.hostname==='string'&&probe.hostname.length>0&&/^[a-f0-9]{64}$/.test(host.containerId??'')
@@ -524,7 +524,7 @@ export async function prepareQualificationPrivateGit(directory:string,tree:strin
   }
   const blob=await object('blob',Buffer.from('original qualification snapshot'))
   const gitTree=await object('tree',Buffer.concat([Buffer.from('100644 qualification.txt\0'),Buffer.from(blob,'hex')]))
-  const commit=await object('commit',Buffer.from(`tree ${gitTree}\nauthor GraphQL <qualification@graphql.invalid> 0 +0000\ncommitter GraphQL <qualification@graphql.invalid> 0 +0000\n\nPrivate Git mount qualification\n`))
+  const commit=await object('commit',Buffer.from(`tree ${gitTree}\nauthor Foreman Code <qualification@graphql.invalid> 0 +0000\ncommitter Foreman Code <qualification@graphql.invalid> 0 +0000\n\nPrivate Git mount qualification\n`))
   await writeFile(join(directory,'HEAD'),`${commit}\n`,{mode:0o600})
   const index=Buffer.alloc(12);index.write('DIRC');index.writeUInt32BE(2,4)
   await writeFile(join(directory,'index'),Buffer.concat([index,createHash('sha1').update(index).digest()]),{mode:0o600})

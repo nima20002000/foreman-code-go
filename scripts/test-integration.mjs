@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
@@ -137,8 +138,9 @@ export function integrationTimeouts(environment) {
     ['idleTimeoutMs', 'GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS'],
     ['fileTimeoutMs', 'GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS'],
   ]) {
-    if (environment[variable] === undefined) continue
-    const value = Number(environment[variable])
+    const selected = readProductEnvironment(environment, variable.slice('GRAPHQL_'.length))
+    if (selected === undefined) continue
+    const value = Number(selected)
     if (!Number.isSafeInteger(value) || value < 1000 || value > 60 * 60_000) {
       throw new Error(`${variable} must be an integer from 1000 to 3600000 ms`)
     }
@@ -167,8 +169,8 @@ function procStart(pid) {
 }
 
 export function hasActiveHeavyJobToken(environment, common, owner) {
-  return Boolean(owner?.token && environment.GRAPHQL_HEAVY_JOB_COMMON === common
-    && environment.GRAPHQL_HEAVY_JOB_TOKEN === owner.token
+  return Boolean(owner?.token && readProductEnvironment(environment, 'HEAVY_JOB_COMMON') === common
+    && readProductEnvironment(environment, 'HEAVY_JOB_TOKEN') === owner.token
     && owner.pid > 0 && procStart(owner.pid) === owner.start)
 }
 
@@ -215,8 +217,8 @@ export function integrationEnvironment(environment, slot) {
 }
 
 function options(argv) {
-  const startAt = process.env.GRAPHQL_INTEGRATION_START_AT || null
-  const failedFrom = process.env.GRAPHQL_INTEGRATION_FAILED_LOG || null
+  const startAt = readProductEnvironment(process.env, 'INTEGRATION_START_AT') || null
+  const failedFrom = readProductEnvironment(process.env, 'INTEGRATION_FAILED_LOG') || null
   if (!argv.length) {
     if (startAt && failedFrom) throw new Error('Choose either a resume cursor or a failed-file log')
     return { startAt, failedFrom, files: null }
@@ -250,7 +252,7 @@ async function main() {
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
   if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
-  const shardCount = Math.min(integrationShardLimit(process.env.GRAPHQL_INTEGRATION_SHARDS), selected.length)
+  const shardCount = Math.min(integrationShardLimit(readProductEnvironment(process.env, 'INTEGRATION_SHARDS')), selected.length)
   const timeouts = integrationTimeouts(process.env)
   const adminUrl = adminDatabaseUrl(process.env.TEST_DATABASE_URL)
   const admin = new Pool({ connectionString: adminUrl, max: 1,

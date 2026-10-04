@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link, realpath } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 
-const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t) {

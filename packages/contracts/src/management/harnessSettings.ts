@@ -7,7 +7,7 @@ const CommandId = z.string().trim().min(8).max(200)
 const Revision = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const Path = z.string().min(1).max(4096).refine((value) => !value.includes('\0'), 'A path cannot contain NUL.')
 const EnvironmentName = z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/)
-  .refine((name) => !/^(?:GRAPHQL_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PG|LD_|DYLD_|NODE_OPTIONS$|BASH_ENV$|ENV$)/.test(name),
+  .refine((name) => !/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PG|LD_|DYLD_|NODE_OPTIONS$|BASH_ENV$|ENV$)/.test(name),
     'Application credentials and process-control variables cannot be delegated to MCP servers.')
 const Endpoint = z.string().max(2048).url().superRefine((value, ctx) => {
   const url = new URL(value)

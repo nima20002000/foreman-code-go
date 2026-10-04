@@ -445,7 +445,7 @@ export class NativeHarnessFactories {
     const native = this.infrastructure.codex
     const environment = { ...(native?.environment?.(undefined, pin.scopedCredentialVariables) ?? inheritedAgentEnvironment()) }
     for (const name of Object.keys(environment)) {
-      if (/^(?:GRAPHQL_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(name)
+      if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(name)
         || pin.scopedCredentialVariables.includes(name)) delete environment[name]
     }
     this.codexDiagnostics.add(owned)

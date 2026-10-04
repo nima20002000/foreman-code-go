@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const WORKER_EXECUTION_STARTUP_VARIABLE = 'GRAPHQL_LAPTOP_EXECUTION_ENABLED'
+export const WORKER_EXECUTION_STARTUP_VARIABLE = 'FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED'
 
 /** The Main deployment controls execution on connected Worker computers. */
 export const WorkerExecutionSettingsSchema = z.object({

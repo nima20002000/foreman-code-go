@@ -8,7 +8,7 @@ import type { PluginConfiguration } from './codexPluginCatalog.js'
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 export function pluginCommandEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-  for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
+  for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
   return environment
 }
 /** Only config/read and plugin list: do not couple discovery to unrelated MCP connection health. */

@@ -1,15 +1,16 @@
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { createRequire } from 'node:module'
 import { apiIdentityMatches, webIdentityMatches } from './dev-identity.mjs'
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, copyFile, chmod } from 'node:fs/promises'
 import { createConnection } from 'node:net'
-import { loadEnvFile } from 'node:process'
+import { loadProductEnvFile } from '../packages/contracts/src/productEnvironmentNode.mjs'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const customApiEnv = process.env.GRAPHQL_API_ENV_FILE
+const customApiEnv = readProductEnvironment(process.env, 'API_ENV_FILE')
 const apiEnv = customApiEnv ?? join(root, 'apps/api/.env')
 const children = []
 let stopping = false
@@ -81,18 +82,18 @@ async function waitFor(name, url, accepts, child) {
 }
 
 async function main() {
-  if (customApiEnv && !isAbsolute(customApiEnv)) throw new Error('GRAPHQL_API_ENV_FILE must be an absolute path.')
+  if (customApiEnv && !isAbsolute(customApiEnv)) throw new Error('FOREMAN_CODE_API_ENV_FILE must be an absolute path.')
   try {
     await access(apiEnv)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    if (customApiEnv) throw new Error(`GRAPHQL_API_ENV_FILE does not exist: ${apiEnv}`)
+    if (customApiEnv) throw new Error(`FOREMAN_CODE_API_ENV_FILE does not exist: ${apiEnv}`)
     await copyFile(join(root, 'apps/api/.env.example'), apiEnv, constants.COPYFILE_EXCL)
     await chmod(apiEnv, 0o600)
     console.log('Created apps/api/.env from the local example.')
   }
-  process.env.GRAPHQL_API_ENV_FILE = apiEnv
-  loadEnvFile(apiEnv)
+  process.env.FOREMAN_CODE_API_ENV_FILE = apiEnv
+  loadProductEnvFile(apiEnv)
   const port = Number(process.env.PORT ?? 3000)
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.')
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is missing from apps/api/.env.')
@@ -102,7 +103,7 @@ async function main() {
   const { resolveLocalBrowserOrigin } = await import('../packages/contracts/dist/browserOrigin.js')
   const { createRuntimeIdentity } = await import('../packages/contracts/dist/runtimeIdentityNode.js')
   const browser = resolveLocalBrowserOrigin(process.env)
-  process.env.GRAPHQL_BROWSER_ORIGIN = browser.origin
+  process.env.FOREMAN_CODE_BROWSER_ORIGIN = browser.origin
   const webUrl = browser.origin
   const { Client } = createRequire(join(root, 'apps/api/package.json'))('pg')
   async function expectedIdentity() {
@@ -133,17 +134,17 @@ async function main() {
       throw new Error(`Port ${port} is in use by a different or unhealthy service.`)
     }
     if (!await runningApiAcceptsBrowserOrigin(apiUrl, webUrl)) {
-      throw new Error(`The API at ${apiUrl} does not accept local browser access from ${browser.origin}. Restart the intended API with this GRAPHQL_BROWSER_ORIGIN, or choose its existing browser origin.`)
+      throw new Error(`The API at ${apiUrl} does not accept local browser access from ${browser.origin}. Restart the intended API with this FOREMAN_CODE_BROWSER_ORIGIN, or choose its existing browser origin.`)
     }
     if (!await responds(`${apiUrl}/health/identity`, apiIdentityMatches(await expectedIdentity()))) {
       throw new Error(`The API at ${apiUrl} belongs to a different checkout or database installation. Stop the intended process explicitly or choose a different PORT.`)
     }
-    console.log(`Using the GraphQL API already running at ${apiUrl}.`)
+    console.log(`Using the Foreman Code API already running at ${apiUrl}.`)
   } else {
     api = start('API', ['--filter', '@foreman-code/api', 'dev'], {
       // Keep API logs on disk by default (.logs/api.*.log) unless the caller chose a destination.
       env: { ...process.env, ...(!process.env.LOG_DIR && !process.env.LOG_FILE ? { LOG_DIR: join(root, '.logs') } : {}),
-        GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl },
+        FOREMAN_CODE_DEV_BROWSER_ACCESS: '1', FOREMAN_CODE_DEV_BROWSER_ORIGIN: webUrl },
     })
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)
@@ -153,9 +154,9 @@ async function main() {
   let web
   if (await listening(browser.port, browser.host)) {
     if (!await responds(`${webUrl}/__graphql_dev_identity`, webReady)) {
-      throw new Error(`Port ${browser.port} is in use by a different checkout, API target or unhealthy web service. Stop that process explicitly or choose a different GRAPHQL_WEB_PORT.`)
+      throw new Error(`Port ${browser.port} is in use by a different checkout, API target or unhealthy web service. Stop that process explicitly or choose a different FOREMAN_CODE_WEB_PORT.`)
     }
-    console.log(`Using the GraphQL web server already running at ${webUrl}.`)
+    console.log(`Using the Foreman Code web server already running at ${webUrl}.`)
   } else {
     web = start('Web', ['--filter', '@foreman-code/web', 'dev'], {
       env: { ...process.env, VITE_API_URL: apiUrl },
@@ -164,12 +165,12 @@ async function main() {
   await waitFor('Web', `${webUrl}/__graphql_dev_identity`, webReady, web)
 
   if (children.length === 0) {
-    console.log('GraphQL is already running.')
+    console.log('Foreman Code is already running.')
     return
   }
   // dev:api and dev:web already own a contracts watcher when one is reused.
   if (api && web) start('Contracts watcher', ['--filter', '@foreman-code/contracts', 'dev'])
-  console.log(`GraphQL ready: ${webUrl} (API ${apiUrl}).`)
+  console.log(`Foreman Code ready: ${webUrl} (API ${apiUrl}).`)
   console.log('Server ready for browsing. Harness execution eligibility is separate; check Operator chat for rollout and saved-default qualification status.')
   console.log('Local development browser access is active; open the app without signing in.')
   const ended = await Promise.race(children.map(({ exited }) => exited))
@@ -185,7 +186,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   process.on('SIGTERM', stop)
   main().catch((error) => {
     stop()
-    console.error(`GraphQL dev startup failed: ${error.message}`)
+    console.error(`Foreman Code dev startup failed: ${error.message}`)
     process.exitCode = 1
   })
 }

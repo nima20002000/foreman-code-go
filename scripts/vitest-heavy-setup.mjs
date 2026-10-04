@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -12,8 +13,8 @@ const readOwner = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')
 const owner = (matches) => [readOwner(activePath), ...(existsSync(running) ? readdirSync(running).map((name) => readOwner(join(running, name))) : [])].find((record) => record && matches(record))
 
 export default async function setup() {
-  const inherited = owner((record) => record.token && record.token === process.env.GRAPHQL_HEAVY_JOB_TOKEN)
-  if (inherited?.token && process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited.token) return
+  const inherited = owner((record) => record.token && record.token === readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN'))
+  if (inherited?.token && readProductEnvironment(process.env, 'HEAVY_JOB_COMMON') === common && readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN') === inherited.token) return
   const child = spawn(process.execPath, [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, join(root, 'scripts/heavy-job.mjs'), '__hold'], { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] })
   await new Promise((resolveReady, reject) => {
     let output = ''
@@ -37,8 +38,11 @@ export default async function setup() {
     child.stdin.end()
     throw new Error('Heavy-job holder did not publish its owned slot')
   }
-  const previous = Object.fromEntries(['GRAPHQL_HEAVY_JOB_COMMON', 'GRAPHQL_HEAVY_JOB_TOKEN', 'GRAPHQL_HEAVY_BASE_TMPDIR', 'TMPDIR', 'TMP', 'TEMP'].map((key) => [key, process.env[key]]))
+  const previous = Object.fromEntries(['FOREMAN_CODE_HEAVY_JOB_COMMON', 'FOREMAN_CODE_HEAVY_JOB_TOKEN', 'FOREMAN_CODE_HEAVY_BASE_TMPDIR', 'GRAPHQL_HEAVY_JOB_COMMON', 'GRAPHQL_HEAVY_JOB_TOKEN', 'GRAPHQL_HEAVY_BASE_TMPDIR', 'TMPDIR', 'TMP', 'TEMP'].map((key) => [key, process.env[key]]))
   Object.assign(process.env, {
+    FOREMAN_CODE_HEAVY_JOB_COMMON: common,
+    FOREMAN_CODE_HEAVY_JOB_TOKEN: admitted.token,
+    FOREMAN_CODE_HEAVY_BASE_TMPDIR: dirname(dirname(admitted.tempPath)),
     GRAPHQL_HEAVY_JOB_COMMON: common,
     GRAPHQL_HEAVY_JOB_TOKEN: admitted.token,
     GRAPHQL_HEAVY_BASE_TMPDIR: dirname(dirname(admitted.tempPath)),

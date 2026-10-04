@@ -21,7 +21,7 @@ export class CodexMcpConnections implements NativeMcpAdapter {
   constructor(private readonly binary: string, private readonly directory: string, private readonly processRecovery?: NativeProcessRecovery) {}
   private async control<T>(work: (transport: CodexStdioTransport, binary: string, environment: NodeJS.ProcessEnv) => Promise<T>, signal: AbortSignal): Promise<T> {
     const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-    for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
+    for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
     const qualified = await qualifyCodex(this.binary, undefined, this.directory, environment, true, signal)
     await assertCodexUnchanged(qualified)
     const transport = new CodexStdioTransport(qualified.binary, this.directory, environment, qualified.protocol,

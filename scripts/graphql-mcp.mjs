@@ -6,7 +6,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
-const token = process.env.GRAPHQL_MCP_TOKEN
+const token = process.env.FOREMAN_CODE_MCP_TOKEN ?? process.env.GRAPHQL_MCP_TOKEN
+const tokenConflict = process.env.FOREMAN_CODE_MCP_TOKEN !== undefined && process.env.GRAPHQL_MCP_TOKEN !== undefined
+  && process.env.FOREMAN_CODE_MCP_TOKEN !== process.env.GRAPHQL_MCP_TOKEN
 const directory = join(dirname(fileURLToPath(import.meta.url)), 'routes')
 const output = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 let protocolVersion = '2025-03-26'
@@ -52,6 +54,8 @@ function bridgeError(error) {
 async function forward(message, controller) {
   let requestSignal
   try {
+    if (tokenConflict) throw new BridgeFailure('configuration',
+      'FOREMAN_CODE_MCP_TOKEN conflicts with GRAPHQL_MCP_TOKEN. Supply one credential or matching credentials.')
     if (!token) throw new BridgeFailure('authentication', 'The MCP credential is missing. Refresh the owning app credential.')
     const key = createHash('sha256').update(token).digest('hex')
     let route

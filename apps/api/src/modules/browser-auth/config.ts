@@ -24,7 +24,7 @@ export function readBrowserAuthConfig(environment: NodeJS.ProcessEnv): BrowserAu
     || url.username || url.password || (url.pathname !== '/' && url.pathname !== '') || url.search || url.hash) {
     throw new Error('BETTER_AUTH_URL must be the exact loopback browser origin, including its port. Existing Host restrictions remain in effect.')
   }
-  if ((environment.GRAPHQL_BROWSER_ORIGIN !== undefined || environment.GRAPHQL_WEB_PORT !== undefined || environment.GRAPHQL_DEV_BROWSER_ORIGIN !== undefined)
+  if ((environment.FOREMAN_CODE_BROWSER_ORIGIN !== undefined || environment.FOREMAN_CODE_WEB_PORT !== undefined || environment.FOREMAN_CODE_DEV_BROWSER_ORIGIN !== undefined || environment.GRAPHQL_BROWSER_ORIGIN !== undefined || environment.GRAPHQL_WEB_PORT !== undefined || environment.GRAPHQL_DEV_BROWSER_ORIGIN !== undefined)
     && url.origin !== resolveLocalBrowserOrigin(environment).origin) {
     throw new Error('BETTER_AUTH_URL conflicts with the configured browser origin.')
   }

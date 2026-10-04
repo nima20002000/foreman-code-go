@@ -188,7 +188,7 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     expect(result.outcome).toBe('succeeded')
     const plan = vi.mocked(p.supervisor.launch).mock.calls[0]![0]
     expect(plan.argv[2]).toBe('$(touch /escape); &')
-    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',...JOB_GIT_ENVIRONMENT,GRAPHQL_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json' })
+    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',...JOB_GIT_ENVIRONMENT,FOREMAN_CODE_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json',GRAPHQL_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json' })
     expect(plan.stdin).toBe('closed')
     expect(plan.pty).toBe(false)
     const argv = podmanCreateArgv(plan)

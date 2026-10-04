@@ -60,7 +60,7 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     '--mount', `type=bind,src=${input.schedulerDirectory},dst=${JOB_GIT_CONTAINER_DIRECTORY}/graphql-heavy-jobs,rw`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864',
     '--workdir', `/workspace${relative}`, '--unsetenv-all', '--env', 'HOME=/tmp/job-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
-    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', ...Object.entries(JOB_GIT_ENVIRONMENT).flatMap(([key,value])=>['--env',`${key}=${value}`]), '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
+    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', ...Object.entries(JOB_GIT_ENVIRONMENT).flatMap(([key,value])=>['--env',`${key}=${value}`]), '--env', `FOREMAN_CODE_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
     input.profile.imageDigest, ...input.argv.slice(1)]
 }
 

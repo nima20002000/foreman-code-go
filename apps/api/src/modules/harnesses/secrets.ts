@@ -1,19 +1,29 @@
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, dirname, resolve } from 'node:path'
 
 export function isDatabaseCredentialVariable(key: string): boolean {
   return key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD'
-    || key === 'GRAPHQL_PRODUCTION_DB_PASSWORD'
+    || key === 'GRAPHQL_PRODUCTION_DB_PASSWORD' || key === 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'
 }
 
 /** Deliberate application-secret delivery boundary, not a host sandbox. */
 export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...source, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_') || key === 'GRAPHQL_MCP_TOKEN'
+    if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key)
+      || (APP_MCP_TOKEN_NAMES as readonly string[]).includes(key)
       || isDatabaseCredentialVariable(key)) delete environment[key]
   }
   return environment
+}
+
+/** Installed native entries may reference either token spelling; deliver only the admitted token. */
+export function appMcpTokenEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const token = readProductEnvironment(source, 'MCP_TOKEN')
+  if (token === undefined) return source
+  return { ...source, FOREMAN_CODE_MCP_TOKEN: token, GRAPHQL_MCP_TOKEN: token }
 }
 
 /** Keep a native CLI's helper lookups on the same installation as its executable. */

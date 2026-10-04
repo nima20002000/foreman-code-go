@@ -1,3 +1,4 @@
+import { resolveProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { z } from 'zod'
@@ -27,11 +28,11 @@ const EnvironmentSchema = z.object({
   HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
   OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
-  GRAPHQL_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
-  GRAPHQL_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
-  GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: z.enum(['0', '1']).optional(),
-  GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: z.enum(['0', '1']).optional(),
-  GRAPHQL_OPENCODE_PARITY_QUALIFIED: z.enum(['0', '1']).optional(),
+  FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
+  FOREMAN_CODE_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
+  FOREMAN_CODE_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: z.enum(['0', '1']).optional(),
+  FOREMAN_CODE_ENABLE_EXPERIMENTAL_CLAUDE_SDK: z.enum(['0', '1']).optional(),
+  FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: z.enum(['0', '1']).optional(),
 })
 
 export interface ApiConfig {
@@ -63,16 +64,17 @@ export interface ApiConfig {
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
+  environment = resolveProductEnvironment(environment)
   const parsed = EnvironmentSchema.parse(environment)
-  if (parsed.GRAPHQL_LOCAL_PRODUCTION === '1'
+  if (parsed.FOREMAN_CODE_LOCAL_PRODUCTION === '1'
     && (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.HOST)
       || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname))) {
     throw new Error('Local production requires a loopback API and database.')
   }
   const browserAuth = readBrowserAuthConfig(environment)
-  const localDevBrowserAccess = environment.GRAPHQL_DEV_BROWSER_ACCESS === '1'
-  if (environment.GRAPHQL_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.GRAPHQL_DEV_BROWSER_ACCESS)) {
-    throw new Error('GRAPHQL_DEV_BROWSER_ACCESS must be 0 or 1.')
+  const localDevBrowserAccess = environment.FOREMAN_CODE_DEV_BROWSER_ACCESS === '1'
+  if (environment.FOREMAN_CODE_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.FOREMAN_CODE_DEV_BROWSER_ACCESS)) {
+    throw new Error('FOREMAN_CODE_DEV_BROWSER_ACCESS must be 0 or 1.')
   }
   const browserOrigin = localDevBrowserAccess ? resolveLocalBrowserOrigin(environment).origin : undefined
   if (localDevBrowserAccess && (environment.NODE_ENV === 'production' || parsed.HOST !== '127.0.0.1'
@@ -80,13 +82,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
     || (browserAuth && browserAuth.origin !== browserOrigin))) {
     throw new Error('Local development browser access requires a loopback API, database and browser origin outside production.')
   }
-  const localDevBrowserPrincipalId = environment.GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID?.trim()
+  const localDevBrowserPrincipalId = environment.FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID?.trim()
   if (localDevBrowserPrincipalId && localDevBrowserPrincipalId.length > 200) {
-    throw new Error('GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID must be a valid principal ID.')
+    throw new Error('FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID must be a valid principal ID.')
   }
   return {
     workerExecution: {
-      enabled: parsed.GRAPHQL_LAPTOP_EXECUTION_ENABLED === '1',
+      enabled: parsed.FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED === '1',
       managedBy: 'startup',
     },
     ...(browserAuth ? { browserAuth } : {}),

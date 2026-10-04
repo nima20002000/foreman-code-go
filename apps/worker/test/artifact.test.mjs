@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, statfs } from 'node:fs/promises';
@@ -6,14 +7,19 @@ import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 
-const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
+test('packaged worker help identifies Foreman Code without starting runtime services', { skip: !artifact }, () => {
+  const output = execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), '--help'], { encoding: 'utf8', timeout: 5000 });
+  assert.match(output, /^Foreman Code worker\n/);
+  assert.match(output, /Pairing retries reuse the original enrollment file/);
+});
 test('packaged schema checker accepts the actual pinned Codex export', {
-  skip: !artifact || !process.env.GRAPHQL_WORKER_CODEX_BINARY,
+  skip: !artifact || !readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
 }, async (t) => {
   const directory = await mkdtemp('/var/tmp/worker-schema-check-');
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = { PATH: '/usr/bin:/bin', HOME: directory, CODEX_HOME: join(directory, 'codex') };
-  const exported = spawnSync(process.env.GRAPHQL_WORKER_CODEX_BINARY,
+  const exported = spawnSync(readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
     ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')],
     { cwd: directory, env: environment, encoding: 'utf8', timeout: 10000 });
   assert.equal(exported.status, 0, exported.stderr);
