@@ -101,7 +101,7 @@ function handoffContext(previous: string | null, inheritedOmitted: number, messa
 }
 
 export function commandPayload(input: SendOperatorMessageRequest) {
-  return { content: input.content, ...(input.settings ? { settings: input.settings } : {}),
+  return { content: input.content, ...(input.sessionMode ? { sessionMode: input.sessionMode } : {}), ...(input.settings ? { settings: input.settings } : {}),
     ...(input.configurationVersionId === undefined ? {} : { configurationVersionId: input.configurationVersionId }),
     ...(input.defaultsRevision === undefined ? {} : { defaultsRevision: input.defaultsRevision }),
     ...(input.forkExpectedRevision === undefined ? {} : { forkExpectedRevision: input.forkExpectedRevision }),

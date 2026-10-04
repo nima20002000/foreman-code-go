@@ -319,7 +319,7 @@ export class OperatorChatService {
       harness: configuration.harness.harness, providerVersion: row.provider_version ?? 'unknown',
       nativeSessionId: row.native_session_id,
     } : undefined)
-    return { conversationId: id, profileKey: configuration.contentHash,
+    return { conversationId: id, principalId: principal.id, defaultSubject: 'application-operator', profileKey: configuration.contentHash,
       busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
       session, manager: runtime?.manager }
   }
@@ -331,6 +331,7 @@ export class OperatorChatService {
   async changeSessionControls(id: string, input: SessionControlRequest, principal: ManagementPrincipal,
     source: 'http' | 'mcp' = 'http') {
     this.assertOpen()
+    if (input.kind === 'save-default') requireAuthorization(await this.authority.current(principal.id), 'settings:update')
     return this.control(id, () => this.sessionControls().execute(principal, source, input,
       () => this.sessionControlBinding(id, principal, true), this.lifetime.signal))
   }
@@ -487,6 +488,10 @@ export class OperatorChatService {
     }
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
+    if (configuration.harness.harness === 'claude' && !existing) {
+      const preferences = await this.sessionControls().preferences(id)
+      if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)
+    }
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.
     // File turns never acquire the management token, including on an existing
     // native session. Fence an older token before attaching a file-only child.
@@ -568,6 +573,8 @@ export class OperatorChatService {
       const admittedFiles = await this.managers.hasFileInputs?.(id, input.requestId) ?? false
       if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
         'OPERATOR_FILE_DELIVERY_UNAVAILABLE', 'The accepted Operator attachments have no native delivery binding.', 409)
+      await this.sessionControls().read({ conversationId: id, principalId: ownerId,
+        defaultSubject: 'application-operator', profileKey: configuration.contentHash, busyReason: null })
       const runtime = await this.runtime(id, row, configuration, signal, fileInputs)
       const onTerminal = async (observation: NativeTerminalObservation) => {
         submitted = true
@@ -601,6 +608,7 @@ export class OperatorChatService {
           const hint = input.context && Object.values(input.context).some(Boolean)
             ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
+            ...await this.sessionControls().turnSettings(id, input.sessionMode),
             prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`,
             clientCorrelationId: start.correlationId,
             onTerminal,
@@ -665,7 +673,7 @@ export class OperatorChatService {
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
-        ...await this.sessionControls().turnSettings(id),
+        ...await this.sessionControls().turnSettings(id, input.sessionMode),
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {

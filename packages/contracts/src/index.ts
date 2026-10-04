@@ -1560,6 +1560,7 @@ export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
   ...MessageAttachmentFields,
   content: z.string().trim(),
+  sessionMode: z.enum(['regular', 'plan']).optional(),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
   forkExpectedRevision: z.number().int().nonnegative().optional(),

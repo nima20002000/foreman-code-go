@@ -19,7 +19,7 @@ export function codexContextSnapshot(value: unknown, sessionId: string, model: s
   const parsed = UsageSchema.safeParse(value)
   if (!parsed.success || parsed.data.threadId !== sessionId) return null
   return { nativeSessionId: sessionId, model, sequence, observedAt: new Date().toISOString(), source: 'codex',
-    accuracy: 'native', usedTokens: parsed.data.tokenUsage.last.totalTokens,
+    generation: 'native', accuracy: 'native', usedTokens: parsed.data.tokenUsage.last.totalTokens,
     capacityTokens: parsed.data.tokenUsage.modelContextWindow,
     lifetimeTokens: parsed.data.tokenUsage.total.totalTokens, cost: null, stale: false }
 }

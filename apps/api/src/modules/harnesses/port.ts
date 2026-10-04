@@ -70,6 +70,7 @@ export interface NativeCompactInput {
 
 export interface NativeTurnInput {
   sessionMode?: SessionMode
+  onSettingsApplied?(): Promise<void>
   sessionPreferences?: SessionPreferences
   prompt: string
   clientCorrelationId: string
@@ -155,6 +156,7 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly harness: AgentHarness
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  configureSessionPreferences?(preferences: SessionPreferences): Promise<void>
   sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
   compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>
   reconcileCompaction?(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState>

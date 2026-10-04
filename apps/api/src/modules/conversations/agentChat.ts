@@ -511,7 +511,7 @@ export class AgentChatService {
     const session = runtime?.session ?? (row.native_session_id ? {
       harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id,
     } : undefined)
-    return { conversationId: id, profileKey: row.agent_configuration_version_id,
+    return { conversationId: id, principalId: principal.id, defaultSubject: `${workspaceId}:${row.agent_id}`, profileKey: row.agent_configuration_version_id,
       busyReason: row.active_request_id || row.pending_interaction || state.turns.some(turn => turn.delivery === 'queued')
         ? 'Wait for the active and queued turns and their approvals to finish.' : null,
       session, manager: runtime?.manager }
@@ -524,7 +524,10 @@ export class AgentChatService {
   changeSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string,
     input: SessionControlRequest, source: 'http' | 'mcp' = 'http') {
     return this.command(() => this.control(id, () => this.sessionControls.execute(principal, source, input,
-      () => this.sessionControlBinding(principal, workspaceId, id, true), this.lifetime.signal)))
+      async () => {
+        if (input.kind === 'save-default') await this.conversation(workspaceId, id, principal, 'agents:update')
+        return this.sessionControlBinding(principal, workspaceId, id, true)
+      }, this.lifetime.signal)))
   }
 
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
@@ -866,6 +869,10 @@ export class AgentChatService {
     this.assertOpen()
     signal.throwIfAborted()
     const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
+    if (configuration.harness.harness === 'claude' && !existing) {
+      const preferences = await this.sessionControls.preferences(row.id)
+      if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)
+    }
     this.runtimes.set(row.id, runtime)
     if (row.native_session_id && row.provider_version) {
       // Resume the exact stored session. Its startup instructions are already in native history.
@@ -974,6 +981,9 @@ export class AgentChatService {
       if (row.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
+      const principalId = await this.repository.turnPrincipalId(id, turn.requestId)
+      if (principalId) await this.sessionControls.read({ conversationId: id, principalId,
+        defaultSubject: `${row.workspace_id}:${row.agent_id}`, profileKey: row.agent_configuration_version_id, busyReason: null })
       creatingSession = !row.native_session_id
       runtime = await this.runtime(row, configuration, correlationId, signal)
       creatingSession = !runtime.session
@@ -990,6 +1000,7 @@ export class AgentChatService {
         if (!runtime.manager.startInitialTurn || fresh.record.origin.kind !== 'fresh') throw new DomainError('AGENT_INITIAL_TURN_UNAVAILABLE', 'No admitted initial native lifecycle is available.', 409)
         initialOffered = true // A failure after offer is not a definite prompt rejection/create failure.
         initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(this.startInput(fresh, configuration, correlationId, false), {
+          ...await this.sessionControls.turnSettings(id, await this.repository.turnSessionMode(id, turn.requestId)),
           prompt: prompt.text, clientCorrelationId: correlationId,
           onSessionObserved: async (observed) => {
             await this.control(id, async () => {
@@ -1043,7 +1054,7 @@ export class AgentChatService {
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
-        ...await this.sessionControls.turnSettings(id),
+        ...await this.sessionControls.turnSettings(id, await this.repository.turnSessionMode(id, turn.requestId)),
         prompt: prompt.text, clientCorrelationId: correlationId,
         onMessageSubmitted: async (receipt) => {
           submitted = true

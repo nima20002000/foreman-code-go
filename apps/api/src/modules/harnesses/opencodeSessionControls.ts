@@ -29,7 +29,7 @@ export function openCodeContextSnapshot(messages: readonly OpenCodeMessage[], se
   const time = selected.info.time as { created?: number; completed?: number } | undefined
   const sequence = time?.completed ?? time?.created ?? 0
   return { nativeSessionId: sessionId, model, sequence, observedAt: new Date().toISOString(), source: 'opencode',
-    accuracy: 'estimated', usedTokens: tokens.input + tokens.output + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0),
+    generation: 'native', accuracy: 'estimated', usedTokens: tokens.input + tokens.output + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0),
     capacityTokens: capacity, lifetimeTokens: null, cost: null,
     stale: messages.some(message => message.info.summary === true && Number((message.info.time as { created?: number })?.created) > sequence) }
 }

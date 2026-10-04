@@ -25,6 +25,7 @@ export type SessionControlCapabilities = z.infer<typeof SessionControlCapabiliti
 export const ContextSnapshotSchema = z.object({
   nativeSessionId: z.string().min(1),
   model: z.string().nullable(),
+  generation: z.string().min(1),
   sequence: z.number().int().nonnegative(),
   observedAt: z.string().datetime(),
   source: z.enum(['codex', 'claude', 'opencode']),
@@ -52,6 +53,7 @@ export const SessionControlStateSchema = z.object({
   profileKey: z.string(),
   desiredMode: SessionModeSchema,
   appliedMode: SessionModeSchema.nullable(),
+  defaults: SessionPreferencesSchema,
   desired: SessionPreferencesSchema,
   applied: SessionPreferencesSchema.nullable(),
   applicability: z.enum(['applied', 'next-turn', 'safe-resume', 'new-session']),
@@ -66,6 +68,7 @@ export const SessionControlRequestSchema = z.discriminatedUnion('kind', [
   z.object({ ...RequestFields, kind: z.literal('compact') }).strict(),
   z.object({ ...RequestFields, kind: z.literal('mode'), mode: SessionModeSchema }).strict(),
   z.object({ ...RequestFields, kind: z.literal('preferences'), preferences: SessionPreferencesSchema }).strict(),
+  z.object({ ...RequestFields, kind: z.literal('save-default'), preferences: SessionPreferencesSchema }).strict(),
 ])
 export type SessionControlRequest = z.infer<typeof SessionControlRequestSchema>
 

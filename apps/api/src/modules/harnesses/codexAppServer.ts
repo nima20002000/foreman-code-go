@@ -1009,6 +1009,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           throw error
         })
         await this.acceptStartedTurn(runtime, starting, result)
+        await input.onSettingsApplied?.()
         while (!signal?.aborted && !subscriberSignal.aborted) {
           const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
           if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
@@ -2546,7 +2547,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (method === 'thread/tokenUsage/updated') {
       const context = codexContextSnapshot(params, runtime.session.nativeSessionId, runtime.configuration.model, arrivalOrdinal)
-      if (context) runtime.context = context
+      if (context) runtime.context = { ...context, generation: `${runtime.connectionId}:${runtime.generation}` }
     }
     if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)
       && params.threadId === runtime.session.nativeSessionId && ['turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {

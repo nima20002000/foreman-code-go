@@ -201,6 +201,7 @@ export const SendAgentChatMessageRequestSchema = z.object({
   ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
   content: z.string().trim().max(32000),
+  sessionMode: z.enum(['regular', 'plan']).optional(),
   intent: AgentChatIntentSchema.default("next_turn")
     .describe("steer supports text only; send attachments with next_turn or interrupt_and_send"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */

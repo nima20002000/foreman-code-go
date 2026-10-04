@@ -370,7 +370,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const modelCapacity = typeof capacity === 'number' && capacity > 0 ? capacity : null
     const unsupported = { supported: false, reason: 'OpenCode has no qualified session-local context override.' }
     const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
-    state.context = openCodeContextSnapshot(page.messages, session.nativeSessionId, state.configuration.model, modelCapacity) ?? undefined
+    const context = openCodeContextSnapshot(page.messages, session.nativeSessionId, state.configuration.model, modelCapacity)
+    if (context) state.context = { ...context, generation: `${state.connectionId}:${this.generation}` }
     return { compact: { supported: compact, reason: compact ? null : 'Native summarize is unavailable.' },
       plan: { supported: plan, reason: plan ? null : 'No permitted Plan primary agent was discovered.' },
       autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
@@ -432,7 +433,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
-    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input.onSubmitted, input.sessionMode)
+    if (input.sessionMode === 'plan' && !(await this.sessionControlCapabilities(session)).plan.supported) {
+      throw new OpenCodeNativeDeliveryError('OPENCODE_PLAN_UNAVAILABLE', 'No permitted Plan primary agent is available.', 'definite')
+    }
+    const submitted = async (id: string) => { await input.onSubmitted?.(id); await input.onSettingsApplied?.() }
+    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), submitted, input.sessionMode)
   }
 
   /** Explicit nonmutating recovery seam: this method never submits prompt_async. */

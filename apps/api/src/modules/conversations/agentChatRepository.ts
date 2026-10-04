@@ -86,10 +86,11 @@ export function agentChatCorrelation(conversationId: string, requestId: string):
   return `agent-chat:${conversationId}:${requestId}`
 }
 export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context' | 'expectedNativeTurnId'>
-  & Partial<Pick<SendAgentChatMessageRequest, 'requestId' | 'attachments'>>): string {
+  & Partial<Pick<SendAgentChatMessageRequest, 'requestId' | 'attachments' | 'sessionMode'>>): string {
   // Keep untargeted receipt identities stable; a supplied native precondition is part of the command.
   return createHash('sha256').update(JSON.stringify([input.content, input.intent, input.context,
     ...(input.expectedNativeTurnId === undefined ? [] : [input.expectedNativeTurnId]),
+    ...(input.sessionMode ? [{ sessionMode: input.sessionMode }] : []),
     ...(input.attachments?.length ? [{ attachmentIdentity: messageAttachmentIdentity({ requestId: input.requestId!, attachments: input.attachments }) }] : [])])).digest('hex')
 }
 
@@ -195,6 +196,19 @@ export class PostgresAgentChatRepository {
       where conversation_id=$1 and request_id=$2 and intent is not null`, [id, requestId])).rows[0]
     return row ? turn(row) : undefined
   }
+  async turnPrincipalId(id: string, requestId: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ owner: string | null }>(`select payload->>'ownerPrincipalId' as owner
+      from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])
+    return result.rows[0]?.owner ?? undefined
+  }
+
+  async turnSessionMode(id: string, requestId: string): Promise<'regular' | 'plan' | undefined> {
+    const result = await this.pool.query<{ mode: unknown }>(`select payload->>'sessionMode' as mode
+      from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])
+    const mode = result.rows[0]?.mode
+    return mode === 'regular' || mode === 'plan' ? mode : undefined
+  }
+
   async turnContent(id: string, requestId: string): Promise<string | undefined> {
     return (await this.pool.query<{ content: string }>(`select payload->>'content' as content from operator_conversation_turns
       where conversation_id=$1 and request_id=$2`, [id, requestId])).rows[0]?.content
@@ -318,7 +332,7 @@ export class PostgresAgentChatRepository {
       const inserted = (await client.query<TurnRow>(`insert into operator_conversation_turns
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
-      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, requestIdentityVersion: 1,
+      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, ...(input.request.sessionMode ? { sessionMode: input.request.sessionMode } : {}), requestIdentityVersion: 1,
           ...(input.ownerPrincipalId ? { ownerPrincipalId: input.ownerPrincipalId } : {}),
           ...(interruptTarget ? { interruptRequestId: interruptTarget.requestId } : {}) }), hash, input.request.intent,
         input.delivery, message.id, targetNativeTurnId ?? null])).rows[0]!

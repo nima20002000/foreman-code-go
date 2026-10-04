@@ -1,3 +1,4 @@
+import { mergeContextSnapshot } from './context.js'
 import type pg from 'pg'
 import {
   SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
@@ -11,6 +12,8 @@ import { NativeConversationControlCommands } from '../nativeControlCommands.js'
 
 export interface SessionControlBinding {
   conversationId: string
+  principalId: string
+  defaultSubject: string
   profileKey: string
   busyReason: string | null
   session?: NativeSessionReference | undefined
@@ -20,7 +23,7 @@ export interface SessionControlBinding {
 export class SessionControlStore {
   private readonly commands: NativeConversationControlCommands<SessionControlState>
 
-  constructor(private readonly pool: Pick<pg.Pool, 'query'>, role: 'operator' | 'agent') {
+  constructor(private readonly pool: Pick<pg.Pool, 'query'>, private readonly role: 'operator' | 'agent') {
     this.commands = new NativeConversationControlCommands(pool, {
       operation: role === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
       parse: value => SessionControlStateSchema.parse(value), prefix: 'SESSION', label: 'Session controls',
@@ -31,15 +34,20 @@ export class SessionControlStore {
     const { conversationId, manager, session } = binding
     const capabilities = manager?.sessionControlCapabilities && session
       ? await manager.sessionControlCapabilities(session) : unavailableSessionControls(binding.profileKey)
+    const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
+      where principal_id=$1 and role=$2 and subject=$3 and profile_key=$4`,
+    [binding.principalId, this.role, binding.defaultSubject, binding.profileKey])
+    const defaults = SessionPreferencesSchema.parse(defaultsRow.rows[0]?.record ?? {})
     const initial: SessionControlState = {
       conversationId, revision: 0, profileKey: binding.profileKey,
-      desiredMode: 'regular', appliedMode: null, desired: SessionPreferencesSchema.parse({}), applied: null,
+      desiredMode: 'regular', appliedMode: null, defaults, desired: defaults, applied: null,
       applicability: 'next-turn', capabilities, context: null, compaction: null, busyReason: binding.busyReason,
     }
     await this.pool.query(`insert into conversation_session_controls(conversation_id,record)
       values($1,$2::jsonb) on conflict do nothing`, [conversationId, JSON.stringify(initial)])
     const state = await this.saved(conversationId)
-    state.capabilities = capabilities
+    state.defaults = defaults
+    if (manager) state.capabilities = capabilities
     state.busyReason = binding.busyReason
     if (state.profileKey !== binding.profileKey) {
       state.desired = initial.desired
@@ -60,10 +68,12 @@ export class SessionControlStore {
       }
     }
     const context = session ? manager?.contextSnapshot?.(session) : null
-    if (context && context.nativeSessionId === session?.nativeSessionId
-      && (!state.context || context.sequence > state.context.sequence)) {
-      state.context = context
-      await this.save(state)
+    if (context && session) {
+      const merged = mergeContextSnapshot(state.context, context, session.nativeSessionId, state.capabilities.model)
+      if (JSON.stringify(merged) !== JSON.stringify(state.context)) {
+        state.context = merged
+        await this.save(state)
+      }
     }
     if (state.context && (!session || state.context.nativeSessionId !== session.nativeSessionId)) {
       state.context = { ...state.context, stale: true }
@@ -97,8 +107,16 @@ export class SessionControlStore {
           state.applicability = 'next-turn'
         } else {
           this.validatePreferences(state, input)
-          state.desired = input.preferences
-          state.applicability = 'new-session'
+          if (input.kind === 'save-default') {
+            await this.pool.query(`insert into conversation_session_defaults(principal_id,role,subject,profile_key,record)
+              values($1,$2,$3,$4,$5::jsonb) on conflict(principal_id,role,subject,profile_key)
+              do update set record=excluded.record`,
+            [current.principalId, this.role, current.defaultSubject, current.profileKey, JSON.stringify(input.preferences)])
+            state.defaults = input.preferences
+          } else {
+            state.desired = input.preferences
+            state.applicability = current.session ? 'new-session' : 'next-turn'
+          }
         }
         await this.save(state)
         return state
@@ -134,7 +152,7 @@ export class SessionControlStore {
     return state
   }
 
-  private validatePreferences(state: SessionControlState, input: Extract<SessionControlRequest, { kind: 'preferences' }>) {
+  private validatePreferences(state: SessionControlState, input: Extract<SessionControlRequest, { kind: 'preferences' | 'save-default' }>) {
     const preferences = input.preferences
     const capabilities = state.capabilities
     if (preferences.autoCompact !== 'default' && !capabilities.autoCompact.supported
@@ -161,13 +179,42 @@ export class SessionControlStore {
     }
   }
 
-  async turnSettings(conversationId: string) {
+  async preferences(conversationId: string) {
+    const result = await this.pool.query<{ record: unknown }>(
+      'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+    return result.rows[0] ? SessionControlStateSchema.parse(result.rows[0].record).desired : undefined
+  }
+
+  async appliedMode(conversationId: string, mode: SessionControlState['desiredMode']) {
+    const result = await this.pool.query<{ record: unknown }>(
+      'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+    if (!result.rows[0]) return
+    const state = SessionControlStateSchema.parse(result.rows[0].record)
+    state.appliedMode = mode
+    if (state.desiredMode === mode && state.applied && JSON.stringify(state.applied) === JSON.stringify(state.desired)) {
+      state.applicability = 'applied'
+    }
+    await this.save(state)
+  }
+
+  async nativePreferencesApplied(conversationId: string) {
+    const state = await this.saved(conversationId)
+    state.applied = state.desired
+    await this.save(state)
+  }
+
+  async turnSettings(conversationId: string, selectedMode?: SessionControlState['desiredMode']) {
     await this.assertSendAllowed(conversationId)
     const result = await this.pool.query<{ record: unknown }>(
       'select record from conversation_session_controls where conversation_id=$1', [conversationId])
-    if (!result.rows[0]) return {}
+    if (!result.rows[0]) return selectedMode ? { sessionMode: selectedMode } : {}
     const state = SessionControlStateSchema.parse(result.rows[0].record)
-    return { sessionMode: state.desiredMode }
+    const sessionMode = selectedMode ?? state.desiredMode
+    if (selectedMode && state.desiredMode !== selectedMode) {
+      state.desiredMode = selectedMode
+      await this.save(state)
+    }
+    return { sessionMode, onSettingsApplied: () => this.appliedMode(conversationId, sessionMode) }
   }
 
   private async saved(conversationId: string): Promise<SessionControlState> {

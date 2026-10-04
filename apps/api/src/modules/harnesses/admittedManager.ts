@@ -35,6 +35,10 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     harness,
     requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
+    configureSessionPreferences: async preferences => {
+      const current = await actual()
+      if (current.configureSessionPreferences) await current.configureSessionPreferences(preferences)
+    },
     sessionControlCapabilities: async session => {
       const current = await actual()
       return current.sessionControlCapabilities ? current.sessionControlCapabilities(session)
