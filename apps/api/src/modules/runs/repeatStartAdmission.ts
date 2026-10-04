@@ -174,8 +174,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
 
 async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, input: RunStartV3Input,
   principal: ManagementPrincipal, publication: RepeatStartPublication, schedule?: ScheduleStartGuard) {
-  const { commandId: _commandId, ...pins } = input
-  const key = commandInputHash({ ...pins, principalId: principal.id })
+  const key = commandInputHash({ ...input, commandId: null, principalId: principal.id })
   schedule?.signal?.throwIfAborted()
   const cached = schedule?.preparation.value
   // Only the occurrence command changes on an eligibility retry. Live row,
