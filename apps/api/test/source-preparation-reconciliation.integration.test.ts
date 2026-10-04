@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
@@ -105,7 +106,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
         if(pause) {pause.entered();await pause.released}
         throw new DomainError('SOURCE_REPOSITORY_TIMEOUT','Private repository fixture failure',503)
       }},dispatch:{accept:unused,cancelForRunCleanup:unused,cancel:unused,wake:unused},artifacts:{list:async()=>[],read:unused}})
-    app = buildApp({readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}},operator:{access,services:{sources,jobs,commands} as unknown as OperatorServices}})
+    app = buildApp({logger:pino({level:'error'}),readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}},operator:{access,services:{sources,jobs,commands} as unknown as OperatorServices}})
     address = await app.listen({host:'127.0.0.1',port:0})
     const save = await app.inject({method:'POST',url:`/api/management/workspaces/${workspaceId}/jobs/definitions`,headers:{authorization:`Bearer ${writer.token}`},
       payload:{commandId:randomUUID(),expectedRevision:null,name:'Failure before native admission',spec}})
@@ -174,7 +175,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       expect((await sources.preparationGet(reader.principal,'http',{workspaceId,operationId:row.operation_id})).reservationState).toBe('owned')
       release();pause=null;expect((await pending).statusCode).toBe(503)
       const closed=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${writer.token}`},payload:command})
-      expect(closed.statusCode).toBe(200);expect(closed.json().value.reservationState).toBe('retained')
+      expect(closed.statusCode,JSON.stringify(closed.json())).toBe(200);expect(closed.json().value.reservationState).toBe('retained')
     } finally {release();pause=null;await pending}
   },60000)
 })
