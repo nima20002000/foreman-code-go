@@ -916,6 +916,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     const ancestry = async () => {
       let id = target
+      let targetInfo: JsonObject | undefined
       const visited = new Set<string>()
       while (id !== root && visited.size < 32 && !visited.has(id)) {
         current(); visited.add(id)
@@ -923,9 +924,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         current()
         if (info.id !== id || info.directory !== state.directory || typeof info.parentID !== 'string'
           || id === target && info.parentID !== child.native.parentSessionId) break
+        if (id === target) targetInfo = info
         id = info.parentID
       }
       if (id !== root) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'The exact admitted parent does not own this child.')
+      return targetInfo!
     }
     const checkReceipt = (receipt: RunSubagentCommandReceipt) => {
       current()
@@ -944,9 +947,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       },
       assertCurrent: current,
       ...(idle ? { sendInput: (receipt: RunSubagentCommandReceipt, text: string) => this.exclusive(async () => {
+        let settings: JsonObject
         try {
           checkReceipt(receipt); signal.throwIfAborted()
-          await ancestry()
+          const info = await ancestry()
+          settings = await this.childPromptSettings(info, state.directory, signal, current)
           if (await this.sessionStatus(target, state.directory, signal) !== 'idle') throw new SubagentDispatchRejectedError()
           current()
         } catch { throw new SubagentDispatchRejectedError() }
@@ -954,12 +959,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           throw new HarnessExecutionError('SUBAGENT_COMMAND_NOT_REPLAYABLE', 'The command cannot be dispatched again.')
         }
         this.childCommandAttempts.add(receipt.id)
-        // Preserve the child's native agent/model/system defaults. Do not
-        // overwrite them with the parent's configuration or adopt its turn.
         try {
           await this.mutate(withDirectory(`/session/${encodeURIComponent(target)}/prompt_async`, state.directory), {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ messageID: receipt.nativeCorrelationId, parts: [{ type: 'text', text }] }),
+            body: JSON.stringify({ ...settings, messageID: receipt.nativeCorrelationId, parts: [{ type: 'text', text }] }),
           }, signal)
         } catch (error) {
           if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') throw new SubagentDispatchRejectedError()
@@ -973,6 +976,41 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         current()
         return message?.info.role === 'user' ? 'acknowledged' : 'uncertain'
       },
+    }
+  }
+
+  private async childPromptSettings(native: JsonObject, directory: string, signal: AbortSignal,
+    assertCurrent: () => void): Promise<JsonObject> {
+    let cursor: string | undefined
+    const seen = new Set<string>()
+    while (true) {
+      const page = await this.messagePage(String(native.id), directory, cursor, signal)
+      assertCurrent()
+      if (page.messages.some(message => message.info.sessionID !== native.id)) {
+        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history contains another native session.')
+      }
+      const user = [...page.messages].reverse().find(message => message.info.role === 'user')
+      if (user) {
+        const agent = native.agent ?? user.info.agent
+        const persisted = object(native.model)
+        const model = Object.keys(persisted).length ? {
+          providerID: persisted.providerID, modelID: persisted.id,
+          variant: persisted.variant === 'default' ? '' : persisted.variant,
+        } : object(user.info.model)
+        const variant = model.variant ?? ''
+        if (typeof agent !== 'string' || !agent || typeof model.providerID !== 'string' || !model.providerID
+          || typeof model.modelID !== 'string' || !model.modelID || typeof variant !== 'string'
+          || (user.info.system !== undefined && typeof user.info.system !== 'string')) {
+          throw new HarnessExecutionError('SUBAGENT_CONFIGURATION_INVALID', 'The child prompt settings are invalid.')
+        }
+        return { agent, model: { providerID: model.providerID, modelID: model.modelID }, variant,
+          ...(user.info.system !== undefined ? { system: user.info.system } : {}) }
+      }
+      if (!page.nextCursor || seen.has(page.nextCursor)) {
+        throw new HarnessExecutionError('SUBAGENT_CONFIGURATION_INVALID', 'The child prompt settings are missing from native history.')
+      }
+      seen.add(page.nextCursor)
+      cursor = page.nextCursor
     }
   }
 
