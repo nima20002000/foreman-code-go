@@ -135,9 +135,9 @@ it('persists one message admission across later tool rounds and validates each c
       await vi.waitFor(async () => {
         expect((await repository.get(conversation.id))?.pending_interaction?.turn.nativeRequestId).toBe(request)
       })
-      const context = manager.nativeCallbackContext(session.nativeSessionId, toolUseID)!
-      expect(context.nativeMessageId).toBe(current.message.uuid)
-      const identity = { ...context, ownerPrincipalId: writer.principal.id, attemptId: requestId,
+      const callbackContext = manager.nativeCallbackContext(session.nativeSessionId, toolUseID)!
+      expect(callbackContext.nativeMessageId).toBe(current.message.uuid)
+      const identity = { ...callbackContext, ownerPrincipalId: writer.principal.id, attemptId: requestId,
         toolUseId: toolUseID, nativeRequestId: request, nativeRequestType: 'can_use_tool' as const }
       await expect(domain.authority.validate({ ...identity, ownerPrincipalId: reader.principal.id }))
         .rejects.toThrow('no longer matches')
@@ -148,7 +148,7 @@ it('persists one message admission across later tool rounds and validates each c
         scope: { kind: 'agent_chat', conversationId: conversation.id,
           workspaceId: context.workspaceId, workflowId: context.workflowId },
         native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId,
-          messageId: current.message.uuid, generation: context.generation, requestId: request, requestType: 'can_use_tool' },
+          messageId: current.message.uuid, generation: callbackContext.generation, requestId: request, requestType: 'can_use_tool' },
         choice: { optionId: option.optionId, semantic: option.semantic } }
       await db.pool.query(`insert into management_command_receipts
         (principal_id,operation,command_id,target_key,input_hash,result) values ($1,'agent_chat_control',$2,$3,$4,$5::jsonb)`,
