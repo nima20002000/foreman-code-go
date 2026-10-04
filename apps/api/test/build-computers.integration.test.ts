@@ -1,6 +1,7 @@
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { JobSql } from '../src/modules/jobs/repository.js'
 import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
@@ -15,7 +16,7 @@ import { JobService } from '../src/modules/jobs/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { buildComputerFixture } from './helpers/buildComputerFixture.js'
-import type { JobDefinition, ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
 
 // Real settings/command/admission SQL and authenticated transports; runtime/source I/O is a bounded fixture.
 describe.skipIf(!postgresEnabled)('automatic build computer admission and settings parity', () => {
@@ -152,7 +153,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       name: 'MCP automatic build', spec: f.computers[0]!.auto,
     } })
     expect(saved.isError).not.toBe(true)
-    const definition = saved.structuredContent?.definition as JobDefinition
+    const { definition } = z.object({ definition: JobDefinitionSchema }).parse(saved.structuredContent)
     const command = { workspaceId: f.workspaceId, commandId: randomUUID(),
       definitionId: definition.id, expectedRevision: definition.revision }
     const readOnly = await f.connect(reader.token)
@@ -162,7 +163,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(f.accept).not.toHaveBeenCalled()
     const started = await client.callTool({ name: 'job_start', arguments: command })
     expect(started.isError).not.toBe(true)
-    const execution = started.structuredContent?.execution as import('@graphql/contracts/jobs').JobExecution
+    const { execution } = z.object({ execution: JobExecutionSchema }).parse(started.structuredContent)
     expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
     expect((await client.callTool({ name: 'job_start', arguments: command })).structuredContent).toEqual(started.structuredContent)
     expect((await readOnly.callTool({ name: 'job_get', arguments: {
