@@ -267,6 +267,18 @@ export class ReviewerDispatcher {
           message: 'The designated Orchestrator requested native approval during its review. The accepted workflow has no distinct authority for that request. No approval was sent and the handler was not changed.',
         }, pending, requests)
         try {
+          if (!recovering) {
+            if (!await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
+              return await failReview({ code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' })
+            }
+            // Remote preparation requires the assigned writer lane. Observe
+            // the previous turn before binding the lane to this review.
+            await writer.requireIdle(manager, session, job.correlationId, lane, workSignal, workflowCorrelationId)
+            await check()
+            workSignal.throwIfAborted()
+            await this.coordination.bindLaneTurn(lane.fence, job.correlationId)
+            delete lane.providerId
+          }
           await this.nativeRuntime.prepareReviewTurn?.(executionId!, session, job, lane, lane.guard.signal)
           maintenance = await lane.guard.wait(this.nativeRuntime.maintainReviewCredential?.(
             executionId!, session, lane.guard.signal, check,
@@ -275,16 +287,6 @@ export class ReviewerDispatcher {
           await check()
           workSignal.throwIfAborted()
           if (!recovering) {
-            if (!await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
-              await maintenance?.stop()
-              return await failReview({ code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' })
-            }
-            // Refresh native evidence while exclusively owned; never bounce a cached lane status.
-            await writer.requireIdle(manager, session, job.correlationId, lane, workSignal, workflowCorrelationId)
-            await check()
-            workSignal.throwIfAborted()
-            await this.coordination.bindLaneTurn(lane.fence, job.correlationId)
-            delete lane.providerId
             await transition('submitted')
             submitted = true
             lane.observedStatus = 'uncertain'

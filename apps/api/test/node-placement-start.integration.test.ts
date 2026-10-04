@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -17,6 +18,7 @@ import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.j
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './helpers/mixedComputerPlacement.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
 afterEach(() => vi.restoreAllMocks())
@@ -32,8 +34,10 @@ async function fixture() {
   const base = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential') })
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined
+  let directory: string | undefined
   try {
-    const placement = await mixedComputerPlacement(base)
+    directory = await privateFixtureDirectory('mixed-placement-')
+    const placement = await mixedComputerPlacement(base, directory)
     await base.app.close()
     // Start admission and readback are real; this external provider boundary
     // refuses native entry so no remote execution is simulated on Main.
@@ -94,12 +98,14 @@ async function fixture() {
         await Promise.allSettled(clients.map(client => client.close()))
         await app!.close()
         await base.close()
+        await rm(directory!, { recursive: true, force: true })
       },
     }
   } catch (error) {
     await Promise.allSettled(clients.map(client => client.close()))
     await app?.close()
     await base.close()
+    if (directory) await rm(directory, { recursive: true, force: true })
     throw error
   }
 }

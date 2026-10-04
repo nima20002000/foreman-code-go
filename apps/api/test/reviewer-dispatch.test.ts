@@ -328,6 +328,7 @@ async function remoteReviewerFixture() {
     authorizeReview: async (_intent, _placement, review) => {
       await coordination.assertReviewConnection()
       await coordination.assertReviewJobLease(review.jobId, review.leaseToken)
+      assert.equal(coordination.lane.correlationId, review.correlationId)
       assert.equal(review.correlationId, coordination.job!.correlationId)
       assert.equal(review.interactionId, coordination.job!.interactionId)
       assert.equal(review.reviewerAgentId, 'reviewer')

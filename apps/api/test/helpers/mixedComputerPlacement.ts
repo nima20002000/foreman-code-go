@@ -27,11 +27,11 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 /** Persisted source/root/profile fixtures over the real authorization services.
  * Device filesystem and native qualification records are fixture data. No native
  * execution, remote physical qualification or process result is produced here. */
-export async function mixedComputerPlacement(f: Fixture) {
+export async function mixedComputerPlacement(f: Fixture, directory: string) {
   const mainId = (await f.db.pool.query<{ id: string }>(
     'select id from application_installation where singleton=true')).rows[0]!.id
-  const project = join(f.db.directory, 'project')
-  const runtime = join(f.db.directory, 'runtime')
+  const project = join(directory, 'project')
+  const runtime = join(directory, 'runtime')
   await mkdir(project, { mode: 0o700 })
   await mkdir(runtime, { mode: 0o700 })
   const located = await f.services.locations.set(f.writer.principal, 'http', {
@@ -152,7 +152,7 @@ export async function mixedComputerPlacement(f: Fixture) {
   installations.refresh(inventory)
   const unused = async (): Promise<never> => { throw new Error('No native source operation in the admission fixture') }
   const sources = new PostgresSourceService(f.db.pool, f.commands, f.locations,
-    new PrivateSourceSnapshotStore(join(f.db.directory, 'snapshots')), mainId, {} as RegisteredSourceRootPort,
+    new PrivateSourceSnapshotStore(join(directory, 'snapshots')), mainId, {} as RegisteredSourceRootPort,
     { authorize: unused, prepare: unused, verify: unused, verifyWorkingDirectory: unused,
       releaseClaim: unused, authorizeFinal: unused }, { confirmedClosed: unused })
   const producer = new AgentPlacementProducer(f.db.pool, mainId, sources, policies, installations,

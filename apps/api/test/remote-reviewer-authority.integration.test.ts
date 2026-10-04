@@ -31,6 +31,9 @@ describe.skipIf(!postgresEnabled)('reviewer assignment and authenticated decisio
         bindingHash: 'a'.repeat(64), inputDigest: `sha256:${'b'.repeat(64)}` })
       const review = { jobId: job.id, interactionId: job.interactionId, reviewerAgentId: job.reviewerAgentId,
         correlationId: job.correlationId, session: reference, leaseToken: job.leaseToken! }
+      await expect(assertRemoteReviewAssignment(f.db.pool, intent, review))
+        .rejects.toMatchObject({ code: 'REMOTE_REVIEWER_DENIED' })
+      await f.coordination.bindLaneTurn({ id: lane.id, token }, job.correlationId)
       await expect(assertRemoteReviewAssignment(f.db.pool, intent, review)).resolves.toBeUndefined()
       for (const wrong of [
         { ...review, leaseToken: randomUUID() }, { ...review, correlationId: `execution:${f.reviewer.id}` },
