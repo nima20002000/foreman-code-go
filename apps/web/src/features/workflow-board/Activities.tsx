@@ -9,12 +9,20 @@ import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
 import { createChatVisit, type SelectedChatBinding } from '../conversations/agentChat/selectedRunChatModel'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
-import { readRunActivities, readRunActivityFeed, mergeRunActivities,
+import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities,
   runActivitiesKey, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'
 
 type ActivitiesProps = { scope: RepeatGraphScopeV3; selection?: never; chat?: never }
   | { scope?: never; selection: SelectedRunState; chat?: SelectedChatBinding }
+
+type OlderActivityRequest = {
+  cursor: string
+  generation: number
+  controller: AbortController
+  done: Promise<void>
+  finish(): void
+}
 
 /** Callers need not remember a React key. Run, execution and conversation changes
  * reset feed/scroll/older-page requests together, without remounting the Board. */
@@ -50,6 +58,12 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
   useEffect(() => visit.mount(), [visit])
   const list = useRef<HTMLOListElement>(null)
   const lastSequence = useRef<string | undefined>(undefined)
+  const refreshGeneration = useRef(0)
+  const olderRequest = useRef<OlderActivityRequest | undefined>(undefined)
+  useEffect(() => () => {
+    olderRequest.current?.controller.abort()
+    olderRequest.current?.finish()
+  }, [])
   const [newCount, setNewCount] = useState(0)
   const location = useLocation(), router = useRouter()
   const search = RunsSelectorSearchSchema.parse(location.search)
@@ -60,34 +74,60 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     const query = (router.options.stringifySearch ?? defaultStringifySearch)(next)
     void router.navigate({ href: `${router.state.location.pathname}${query}${router.history.location.hash}`, replace: true, resetScroll: false })
   }
+  const older = useMutation({ retry: false,
+    onMutate: () => cache.cancelQueries({ queryKey: key, exact: true }),
+    mutationFn: async (request: OlderActivityRequest) => {
+      const current = visit.capture()
+      if (!current() || request.generation !== refreshGeneration.current) {
+        throw new DOMException('Activities refreshed', 'AbortError')
+      }
+      const page = await readRunActivities(scope, request.cursor, { signal: request.controller.signal })
+      if (!current() || request.generation !== refreshGeneration.current) {
+        throw new DOMException('Activities refreshed', 'AbortError')
+      }
+      return page
+    },
+    onSuccess: (page, request) => {
+      if (!visit.isCurrent() || request.generation !== refreshGeneration.current) return
+      const height = list.current?.scrollHeight ?? 0, top = list.current?.scrollTop ?? 0
+      cache.setQueryData<RunActivityFeed>(key, (current) => current ? mergeOlderRunActivities(current, page) : current)
+      requestAnimationFrame(() => {
+        if (visit.isCurrent() && request.generation === refreshGeneration.current && list.current) {
+          list.current.scrollTop = top + list.current.scrollHeight - height
+        }
+      })
+    },
+    onError: (error, request) => {
+      if (!visit.isCurrent() || request.generation !== refreshGeneration.current
+        || !ApiError.is(error) || error.status !== 410) return
+      cache.setQueryData<RunActivityFeed>(key, (current) => current && current.olderCursor === request.cursor
+        ? { ...current, olderCursor: null } : current)
+    },
+    onSettled: (_page, _error, request) => {
+      request.finish()
+      if (olderRequest.current === request) olderRequest.current = undefined
+    },
+  })
   const feed = useQuery({ queryKey: key,
     queryFn: async ({ signal }) => {
       const current = visit.capture()
-      if (!current()) throw new DOMException('Selection changed', 'AbortError')
+      const generation = refreshGeneration.current
+      // Read the cache only after an older page has finished its cache write.
+      await olderRequest.current?.done
+      signal.throwIfAborted()
+      if (!current() || generation !== refreshGeneration.current) {
+        throw new DOMException('Activities refreshed', 'AbortError')
+      }
       const result = await readRunActivityFeed(scope, cache.getQueryData<RunActivityFeed>(key), { signal })
-      if (!current() || signal.aborted) throw new DOMException('Selection changed', 'AbortError')
+      if (!current() || signal.aborted || generation !== refreshGeneration.current) {
+        throw new DOMException('Activities refreshed', 'AbortError')
+      }
       return result
     },
     retry: false, staleTime: 0, gcTime: address ? 0 : 60_000, refetchOnMount: 'always',
     refetchOnReconnect: true, refetchOnWindowFocus: true,
     refetchInterval: (query) => query.state.error ? false : 3000 })
-  const denied = useProtectedAccessError(feed)
-  const older = useMutation({ retry: false,
-    mutationFn: async (cursor: string) => {
-      const current = visit.capture()
-      if (!current()) throw new DOMException('Selection changed', 'AbortError')
-      const page = await readRunActivities(scope, cursor)
-      if (!current()) throw new DOMException('Selection changed', 'AbortError')
-      return page
-    },
-    onSuccess: (page) => {
-      if (!visit.isCurrent()) return
-      const height = list.current?.scrollHeight ?? 0, top = list.current?.scrollTop ?? 0
-      cache.setQueryData<RunActivityFeed>(key, (current) => current ? { ...current,
-        items: mergeRunActivities(current.items, page.items), olderCursor: page.olderCursor,
-        retainedFrom: page.retainedFrom } : current)
-      requestAnimationFrame(() => { if (visit.isCurrent() && list.current) list.current.scrollTop = top + list.current.scrollHeight - height })
-    } })
+  const denied = useProtectedAccessError(feed, older.error)
   const scopedItems = useMemo(() => chat ? feed.data?.items.filter((item) => item.refs.executionId === chat.selection.executionId
     && (!item.actor && !item.subject || item.actor?.nodeId === chat.selection.workflowNodeId || item.subject?.nodeId === chat.selection.workflowNodeId))
     : feed.data?.items, [feed.data?.items, chat])
@@ -102,16 +142,34 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     }
     lastSequence.current = latest
   }, [latest, scopedItems])
-  const refresh = () => { if (!visit.isCurrent()) return; older.reset(); setNewCount(0); lastSequence.current = undefined
-    void cache.resetQueries({ queryKey: key, exact: true }) }
-  const loadOlder = async () => {
+  const refresh = () => {
+    if (!visit.isCurrent()) return
+    refreshGeneration.current++
+    olderRequest.current?.controller.abort()
+    olderRequest.current?.finish()
+    olderRequest.current = undefined
+    older.reset()
+    setNewCount(0)
+    lastSequence.current = undefined
+    void cache.resetQueries({ queryKey: key, exact: true })
+  }
+  const loadOlder = () => {
     const cursor = feed.data?.olderCursor
-    if (!visit.isCurrent() || !cursor || feed.isFetching || older.isPending) return
-    await cache.cancelQueries({ queryKey: key, exact: true })
-    if (visit.isCurrent()) older.mutate(cursor)
+    if (!visit.isCurrent() || !cursor || cache.getQueryState(key)?.fetchStatus === 'fetching'
+      || olderRequest.current) return
+    let finish!: () => void
+    const done = new Promise<void>((resolve) => { finish = resolve })
+    const request = { cursor, generation: refreshGeneration.current, controller: new AbortController(), done, finish }
+    olderRequest.current = request
+    older.mutate(request)
   }
   const error = feed.isError ? feed.error : older.error
-  const items = visit.isCurrent() && !error && !denied && feed.isFetchedAfterMount ? scopedItems : undefined
+  const retentionGap = ApiError.is(error) && error.status === 410
+  let errorHint: string | undefined
+  if (retentionGap) errorHint = 'Refresh to read the retained history. '
+  else if (!selection) errorHint = 'Loaded Activities are hidden until this Run is read again. '
+  const items = visit.isCurrent() && (!error || retentionGap) && !denied && feed.isFetchedAfterMount
+    ? scopedItems : undefined
   const agents = [...new Map(items?.flatMap((item) => [item.actor, item.subject]
     .filter((agent) => agent !== undefined && 'agentId' in agent).map((agent) => [agent.agentId, agent] as const)) ?? []).values()]
     .sort((a, b) => a.agentName.localeCompare(b.agentName))
@@ -120,12 +178,13 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
       || item.subject && 'agentId' in item.subject && item.subject.agentId === agentId))
   return <section className="board-activities" aria-label="Activities" data-run-id={scope.runId}
     data-execution-id={chat?.selection.executionId} data-conversation-id={chat?.key?.conversationId}>
-    <header><h3>Activities</h3><Button size="sm" variant="ghost" disabled={feed.isFetching}
+    <header><h3>Activities</h3><Button size="sm" variant="ghost" disabled={feed.isFetching && !older.isPending}
       onClick={refresh} aria-label="Refresh Activities">{selection ? 'Refresh' : 'Refresh Activities'}</Button></header>
     {!selection ? <p>Recorded actions for this Run, in server order. Pending approvals stay in the approval inbox.</p> : null}
     {denied ? <Alert tone="warning" title="Activities access was withdrawn." /> : error ?
-      <Alert tone="warning" title={ApiError.is(error) && error.status === 410 ? 'Activity history has a retention gap.' : 'Activities are unavailable.'}>
-        {!selection ? 'Loaded Activities are hidden until this Run is read again. ' : null}<Button size="sm" onClick={refresh}>{selection ? 'Retry' : 'Reload this Run’s Activities'}</Button>
+      <Alert tone="warning" title={retentionGap ? 'Activity history has a retention gap.' : 'Activities are unavailable.'}>
+        {errorHint}
+        <Button size="sm" onClick={refresh}>{selection ? 'Retry' : 'Reload this Run’s Activities'}</Button>
       </Alert> : null}
     {!error && !denied && !items ? <p role="status">{feed.isPaused ? 'Activities refresh is offline or paused.' : 'Loading Activities…'}</p> : null}
     {items ? <>

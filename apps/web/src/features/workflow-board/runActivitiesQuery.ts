@@ -49,6 +49,18 @@ export function mergeRunActivities(previous: readonly RunActivityPublic[], next:
 export type RunActivityFeed = { activitySnapshot?: ActivitySnapshotV1; items: RunActivityPublic[]; olderCursor: string | null;
   nextCursor: string; retainedFrom: string }
 
+export function mergeOlderRunActivities(current: RunActivityFeed, page: RunActivitiesPage): RunActivityFeed {
+  const retainedFrom = BigInt(current.retainedFrom) > BigInt(page.retainedFrom)
+    ? current.retainedFrom : page.retainedFrom
+  return {
+    ...current,
+    items: mergeRunActivities(current.items, page.items)
+      .filter((item) => BigInt(item.sequence) >= BigInt(retainedFrom)),
+    olderCursor: retainedFrom === page.retainedFrom ? page.olderCursor : null,
+    retainedFrom,
+  }
+}
+
 /** A query refetch catches every new page through its frozen high-water mark.
  * A 410 is surfaced to the UI for an explicit resync, never silently skipped. */
 export async function readRunActivityFeed(scope: RunActivityScope, previous?: RunActivityFeed,
@@ -65,7 +77,8 @@ export async function readRunActivityFeed(scope: RunActivityScope, previous?: Ru
     const activitySnapshot = page.activitySnapshot ? reconcileActivitySnapshot(result.activitySnapshot, page.activitySnapshot, result.activitySnapshot?.scope ?? page.activitySnapshot.scope) : result.activitySnapshot
     result = { ...(activitySnapshot ? { activitySnapshot } : {}), items: mergeRunActivities(result.items, page.items)
       .filter((item) => BigInt(item.sequence) >= BigInt(page.retainedFrom)),
-    olderCursor: result.olderCursor, nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
+    olderCursor: BigInt(page.retainedFrom) > BigInt(result.retainedFrom) ? null : result.olderCursor,
+    nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
     cursor = page.nextCursor
     if (!page.hasMore) return result
   }

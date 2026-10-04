@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { RepeatGraphScopeV3, RunActivityPublic } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, RunActivitiesPage, RunActivityPublic } from '@graphql/contracts/wave25'
 import { server } from '../../mocks/server'
-import { mergeRunActivities, readRunActivities, readRunActivityFeed } from './runActivitiesQuery'
+import { mergeOlderRunActivities, mergeRunActivities, readRunActivities, readRunActivityFeed } from './runActivitiesQuery'
 
 const scope: RepeatGraphScopeV3 = { workspaceId: 'workspace-a', workflowId: 'workflow-a',
   workflowVersionId: 'version-a', runId: 'run-a', executionSemanticsVersion: 3 }
@@ -38,6 +38,37 @@ describe('bounded public Run Activities client', () => {
       nextCursor: 'cursor-1', retainedFrom: '1' })
     expect(feed.items.map((event) => event.sequence)).toEqual(['1', '2', '3', '4'])
     expect(feed.nextCursor).toBe('cursor-4')
+  })
+
+  it('retires the older cursor when a newer read advances retention, without losing retained rows', async () => {
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, () =>
+      HttpResponse.json({ scope, items: [item('4')], mode: 'newer', highWater: '4', retainedFrom: '2',
+        nextCursor: 'cursor-4', olderCursor: null, hasMore: false })))
+    const feed = await readRunActivityFeed(scope, { items: [item('1'), item('2'), item('3')],
+      olderCursor: 'older-1', nextCursor: 'cursor-3', retainedFrom: '1' })
+    expect(feed.items.map((event) => event.sequence)).toEqual(['2', '3', '4'])
+    expect(feed).toMatchObject({ olderCursor: null, nextCursor: 'cursor-4', retainedFrom: '2' })
+  })
+
+  it('preserves the older cursor while retention is unchanged', async () => {
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, () =>
+      HttpResponse.json({ scope, items: [], mode: 'newer', highWater: '3', retainedFrom: '1',
+        nextCursor: 'cursor-3', olderCursor: null, hasMore: false })))
+    const feed = await readRunActivityFeed(scope, { items: [item('2'), item('3')], olderCursor: 'older-2',
+      nextCursor: 'cursor-3', retainedFrom: '1' })
+    expect(feed).toMatchObject({ olderCursor: 'older-2', nextCursor: 'cursor-3', retainedFrom: '1' })
+  })
+
+  it.each(['older page', 'newer page'] as const)('keeps retention monotonic when the %s has a later floor', (later) => {
+    const page: RunActivitiesPage = { scope, items: later === 'older page' ? [item('3')] : [item('2'), item('3')],
+      mode: 'older', highWater: '5',
+      retainedFrom: later === 'older page' ? '3' : '1', nextCursor: 'stale-next',
+      olderCursor: 'older-2', hasMore: true }
+    const feed = mergeOlderRunActivities({ items: [item('1'), item('4'), item('5')],
+      olderCursor: 'older-4', nextCursor: 'cursor-5', retainedFrom: later === 'newer page' ? '3' : '1' }, page)
+    expect(feed.items.map((event) => event.sequence)).toEqual(['3', '4', '5'])
+    expect(feed).toMatchObject({ nextCursor: 'cursor-5', retainedFrom: '3',
+      olderCursor: later === 'older page' ? 'older-2' : null })
   })
 })
 it('rejects a cross-Run projection even if the outer page has the selected authorized scope', async () => {
