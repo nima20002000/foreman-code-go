@@ -1,7 +1,8 @@
 import { createStore } from 'zustand/vanilla'
 import { ZodError } from 'zod'
 import {
-  nextOccurrences, parseScheduleSaveInput, scheduleLocalTimeToUtc, scheduleUtcToLocalTime, ScheduleTimeZoneSchema,
+  nextOccurrences, parseScheduleSaveInput, scheduleLocalTimeToUtc, scheduleUtcToLocalTime, ScheduleSaveInputSchema,
+  ScheduleTimeZoneSchema,
   type ScheduleConfiguration, type ScheduleGetInput, type WorkflowSchedule,
 } from '@graphql/contracts/schedules'
 import type { NewScheduleCommand } from './queries'
@@ -116,7 +117,7 @@ export function createScheduleEditorStore() {
 export type ScheduleEditorStore = ReturnType<typeof createScheduleEditorStore>
 
 export function buildScheduleCommand(
-  scope: ScheduleGetInput, state: Pick<EditorState, 'draft' | 'initialSettings' | 'expectedRevision'>,
+  scope: ScheduleGetInput, state: Pick<EditorState, 'draft' | 'initialIdentity' | 'initialSettings' | 'expectedRevision'>,
   nowUtc = new Date().toISOString(),
 ): { command: NewScheduleCommand; errors?: never } | { errors: DraftErrors; command?: never } {
   const { draft, expectedRevision } = state
@@ -148,9 +149,12 @@ export function buildScheduleCommand(
         : { ...common, mode: draft.mode, every, unit: draft.unit, anchorAt: draft.anchorAt ?? new Date(newAnchor).toISOString() }
     // This browser clock is only an early validation hint. The service validates its
     // own clock, after replay lookup. No occurrence preview is presented as server truth.
-    const parsed = parseScheduleSaveInput({
+    const input = {
       ...scope, expectedRevision, commandId: 'schedule-validation', schedule,
-    }, nowUtc)
+    }
+    const unchangedEnabledOnce = expectedRevision > 0 && draft.mode === 'once' && draft.enabled
+      && draftIdentity(draft) === state.initialIdentity
+    const parsed = unchangedEnabledOnce ? ScheduleSaveInputSchema.parse(input) : parseScheduleSaveInput(input, nowUtc)
     return { command: { kind: 'save', input: { ...scope, expectedRevision, schedule: parsed.schedule } } }
   } catch (error) {
     if (!(error instanceof ZodError)) return { errors: { form: 'Check schedule.' } }
