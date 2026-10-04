@@ -28,7 +28,10 @@ async function fixture() {
 describe('built web hosting', () => {
   it('serves the dashboard and deep links without caching HTML', async () => {
     const app = await fixture()
-    for (const url of ['/', '/workspaces', '/workspaces/workspace-1/workflows', '/settings/harnesses']) {
+    for (const url of [
+      '/', '/workspaces', '/workspaces/workspace-1/workflows', '/settings/harnesses',
+      '/account', '/terminal', '/approvals', '/sign-in', '/setup',
+    ]) {
       const response = await app.inject({ url })
       expect(response.statusCode).toBe(200)
       expect(response.headers['content-type']).toContain('text/html')

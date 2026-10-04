@@ -36,13 +36,14 @@ describe('current remote Job contract boundaries', () => {
     expect(ArtifactEdgeReadSchema.safeParse({ edgeId: 'edge', offset: 0, length: MAX_FILE_READ_BYTES }).success).toBe(true)
     expect(ArtifactEdgeReadSchema.safeParse({ edgeId: 'edge', offset: 0, length: MAX_FILE_READ_BYTES + 1 }).success).toBe(false)
   })
-  it('evaluates every remote/source/input/output boundary as a fresh first ESM import', () => {
-    for (const name of ['deviceResources', 'deviceProvisioning', 'deviceProvisioningFixtures', 'remoteJobExecution', 'remoteExecution', 'remoteExecutionRpc', 'workerMcpRelay', 'sourceAdmission',
-      'workspaceRootPolicies', 'workspaceBoundLocation', 'jobInputs', 'jobInputsNode', 'jobOutputTransfer', 'byteTransfer', 'files']) {
-      const url = new URL(`../dist/${name}.js`, import.meta.url).href
-      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`],
-        { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 10_000 })
-      expect(result.status, `${name}: ${result.error?.message ?? result.stderr}`).toBe(0)
-    }
+  it.each([
+    'deviceResources', 'deviceProvisioning', 'deviceProvisioningFixtures', 'remoteJobExecution',
+    'remoteExecution', 'remoteExecutionRpc', 'workerMcpRelay', 'sourceAdmission', 'workspaceRootPolicies',
+    'workspaceBoundLocation', 'jobInputs', 'jobInputsNode', 'jobOutputTransfer', 'byteTransfer', 'files',
+  ])('evaluates %s as a fresh first ESM import', (name) => {
+    const url = new URL(`../dist/${name}.js`, import.meta.url).href
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`],
+      { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 10_000 })
+    expect(result.status, `${name}: ${result.error?.message ?? result.stderr}`).toBe(0)
   })
 })
