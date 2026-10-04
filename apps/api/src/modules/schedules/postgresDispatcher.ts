@@ -40,6 +40,7 @@ export function scheduleRejectionReason(error: unknown): string | undefined {
   if (['WORKFLOW_VERSION_NOT_FOUND', 'SCHEDULE_WORKFLOW_NOT_SAVED'].includes(error.code)) return 'workflow_not_saved'
   if (['WORKFLOW_CONFIGURATION_STALE', 'EXECUTION_SEMANTICS_UNSUPPORTED', 'AGENT_CONFIGURATION_UNAVAILABLE',
     'WORKFLOW_VERSION_RECORD_INVALID', 'WORKFLOW_VERSION_PIN_MISMATCH', 'WORKFLOW_VERSION_HASH_MISMATCH',
+    'PLACEMENT_ADMISSION_CONFLICT', 'PLACEMENT_INVALID_ROOT',
   ].includes(error.code)) return 'workflow_not_executable'
   return undefined
 }
