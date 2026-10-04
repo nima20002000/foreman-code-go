@@ -452,8 +452,13 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(status?.status==='known') {
           const receipt=RemoteOperationReceiptSchema.parse(status.receipt),resident=operation(frame.intent)
           if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
-            if (!resident.relay) unavailable('original_main_lease_required')
-            resident.leaseExpiresAt = await resident.relay!.refresh(signal)
+            if (receipt.stopFence) {
+              await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, 'stop')
+              resident.leaseExpiresAt = new Date(Date.now() + 60_000).toISOString()
+            } else {
+              if (!resident.relay) unavailable('original_main_lease_required')
+              resident.leaseExpiresAt = await resident.relay!.refresh(signal)
+            }
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :value?.history?{type:'history',history:value.history}:{type:'boundary'}
             const history = value?.history ?? (resident.retainedHistory
@@ -469,7 +474,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
             const assertOwnerCurrent = async () => {
               current(context.binding)
-              await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
+              await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,receipt.stopFence?'stop':'read')
               const logged = await(await journal()).status(resident.intent.operationId)
               if(logged.status!=='known'||!isDeepStrictEqual(logged.receipt.intent,resident.intent)
                 ||logged.receipt.native?.sessionId!==resident.session?.nativeSessionId
@@ -481,7 +486,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
                 await assertOwnerCurrent()
                 const approvedRoots=ApprovedRootAllowlistSchema.parse(await input.approvedRoots())
                 await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
-                  authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read');current(context.binding)}})
+                  authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,receipt.stopFence?'stop':'read');current(context.binding)}})
                 if(!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
                 current(context.binding)},
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),

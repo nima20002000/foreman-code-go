@@ -258,6 +258,35 @@ describe('actual worker native-port adapter', () => {
     expect(state.responds).toBe(1)
   })
   it('revocation fences and requests physical cancellation without inventing closure', async () => { const { host, journal, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); state.allowed = false; await host.refreshAuthority(); expect(state.cancels).toBe(1); const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true); expect(status.status === 'known' && status.receipt.phase).toBe('stop_requested') })
+  it.each(['permission revoked', 'source changed', 'root changed', 'harness changed'])('cancels the original turn after %s', async reason => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await f.host.drain()
+    f.ports.authorize = vi.fn(async (_intent, _placement, action) => {
+      if (action !== 'stop' && action !== 'read') throw new Error(reason)
+    })
+    f.ports.settle = vi.fn(async () => f.state.cancels ? {
+      kind: 'cancelled', closureEvidenceDigest: 'c'.repeat(64),
+    } : null)
+    const before = await f.journal.status(f.intent.operationId)
+    if (before.status !== 'known') throw new Error('Missing native receipt')
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-original',
+      operationId: f.intent.operationId, attemptId: f.intent.attemptId, executionId: f.intent.executionId,
+      bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: before.receipt.native,
+      action: { kind: 'stop' } }
+    await expect(f.host.startTurn(f.intent.operationId, 'replacement', 'execution:execution')).rejects.toThrow(reason)
+    await expect(f.host.handle({ method: 'control', intent: f.intent, placement: f.placement, command: {
+      ...command, native: { ...before.receipt.native, sessionId: 'foreign' },
+    } })).rejects.toThrow('native control target')
+    expect(f.state.cancels).toBe(0)
+    expect(await f.host.handle({ method: 'control', intent: f.intent, placement: f.placement, command })).toMatchObject({
+      status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true, terminal: { kind: 'cancelled' } },
+    })
+    expect(f.state.cancels).toBe(1)
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(1)
+  })
   it.each(['/runtime','/runtime/../other','/project/runtime','/another/runtime'])('rejects unbound runtime leaf %s before native work', async runtimeDirectory => { const { host, intent, placement, request, state } = await setup(); await expect(host.prepare({ intent, placement, request: { ...request, runtimeDirectory } })).rejects.toThrow('runtime leaf'); expect(state.starts).toBe(0) })
   it('rejects placement/input drift and revoked authority before native work', async () => { const { host, intent, placement, request, state } = await setup(); await expect(host.prepare({ intent, placement, request: { ...request, input: { edited: true } } })).rejects.toThrow('binding mismatch'); state.allowed = false; await expect(host.prepare({ intent, placement, request })).rejects.toThrow('revoked'); expect(state.starts).toBe(0) })
   it('recovers the surviving original resident after observation uncertainty without native start or attach', async () => {

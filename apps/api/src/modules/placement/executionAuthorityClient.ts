@@ -6,7 +6,7 @@ const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', '
 /** Worker composition supplies the established W07 channel request, not fetch to
  * a public HTTP route. The main's response carries correlation, never a permit. */
 export function workerExecutionAuthorizer(request: (namespace: string, payload: unknown) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
-  return async (intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control') => {
+  return async (intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop') => {
     const input = ExecutionAuthorityRequestSchema.parse({ version: 1, intent, placement, action })
     const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
     if (reply.bytes?.byteLength) denied()

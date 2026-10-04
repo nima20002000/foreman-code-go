@@ -33,14 +33,20 @@ export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
   if (!registration || registration.keyRevision !== pin.registration!.keyRevision
     || registration.authorizationRevision !== pin.registration!.authorizationRevision) denied()
   const row = (await sql.query<{ authorization_principal_id: string; workspace_id: string; workflow_id: string;
-    execution_state: string; stopped: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
-      r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped
+    execution_state: string; stopped: boolean; cleanup: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
+      r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped,
+      exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
     [current!.runId, current!.executionId])).rows[0]
   if (!row) denied()
-  await locations.revalidateRunAuthorization(row!.authorization_principal_id, row!.workspace_id, row!.workflow_id,
-    sql, true)
-  await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id), row!.workspace_id)
+  if (input.action === 'stop' && !row!.cleanup) denied()
+  const cleanup = row!.cleanup && (input.action === 'stop' || input.action === 'read')
+  // Cleanup observes and cancels the admitted owner even when it can no longer launch.
+  if (!cleanup) {
+    await locations.revalidateRunAuthorization(row!.authorization_principal_id, row!.workspace_id, row!.workflow_id,
+      sql, true)
+    await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id), row!.workspace_id)
+  }
   const grant = await sql.query(`select 1 from execution_dispatch_owner_grants
     where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
     [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])

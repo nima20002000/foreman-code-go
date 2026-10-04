@@ -19,7 +19,7 @@ export interface RemoteExecutionHostPorts {
   connection: DeviceConnectionIdentity
   incarnationId: string
   managers: NativeSessionManagerResolver
-  authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
+  authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop'): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
   attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest, executionPlacement?: NativeExecutionPlacement): Promise<RuntimeLeafAttestation>
   preflight(request: HarnessExecutionRequest, applicationAccess?: RemoteApplicationAccess): Promise<ChildProcessEnvironment | void>
@@ -88,7 +88,10 @@ export class RemoteExecutionHost {
       return this.ports.journal.status(frame.intent.operationId)
     }
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
-    await this.ports.authorize(frame.intent, placement, frame.method === 'control' ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
+    let action: 'start' | 'read' | 'control' | 'stop' = 'read'
+    if (frame.method === 'control') action = frame.command.action.kind === 'stop' ? 'stop' : 'control'
+    else if (frame.method === 'prepare' || frame.method === 'start-turn') action = 'start'
+    await this.ports.authorize(frame.intent, placement, action)
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
@@ -316,18 +319,19 @@ export class RemoteExecutionHost {
   }
   async control(raw: unknown, binding?: { intent: DispatchIntent; placement: AcceptedNodePlacement }) {
     const command = RemoteOwnerControlSchema.parse(raw)
+    const action = command.action.kind === 'stop' ? 'stop' : 'control'
     if (binding) {
       const intent = DispatchIntentSchema.parse(binding.intent), placement = readPlacement(binding.placement)
       if (intent.operationId !== command.operationId || intent.bindingHash !== placement.bindingHash
         || placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
         || placement.mainId !== this.ports.connection.mainId) throw new Error('Control placement mismatch')
-      await this.ports.authorize(intent, placement, 'control')
+      await this.ports.authorize(intent, placement, action)
       this.bindings.set(command.operationId, { intent, placement })
       await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
     }
     const owned = this.bindings.get(command.operationId)
     if (!owned) throw new Error('Original control owner requires reconciliation')
-    await this.ports.authorize(owned.intent, owned.placement, 'control')
+    await this.ports.authorize(owned.intent, owned.placement, action)
     const resident = this.residents.get(command.operationId)
     if (!resident) {
       if (command.action.kind !== 'stop') throw new Error('Original native question unavailable')
@@ -347,7 +351,7 @@ export class RemoteExecutionHost {
     }
     const recorded = await this.ports.journal.control(command)
     if (!recorded.dispatch) return this.ports.journal.status(command.operationId)
-    await this.ports.authorize(resident.intent, resident.placement, 'control')
+    await this.ports.authorize(resident.intent, resident.placement, action)
     try {
       if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, recorded.receipt.native?.turnId) }
       else await resident.manager.respond(resident.session, command.action.nativeInteractionId, ApprovalResponseOptionSchema.parse(command.action.response))
