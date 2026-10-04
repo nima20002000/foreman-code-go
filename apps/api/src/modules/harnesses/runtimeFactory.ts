@@ -78,6 +78,7 @@ export class NativeHarnessFactories {
   constructor(private readonly config: {
     codexBinary: string
     openCodeBinary: string
+    openCodeFileStorageRoot?: string
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -244,6 +245,8 @@ export class NativeHarnessFactories {
       const options: ManagedOpenCodeServerOptions = {
         binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
+        ...(input.chatFiles && this.config.openCodeFileStorageRoot
+          ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),

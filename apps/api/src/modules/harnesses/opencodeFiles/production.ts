@@ -10,7 +10,7 @@ import { mountOpenCodeFileMcp, FILE_TOOLS_MCP_PATH } from '../../files/tools/mcp
 import { productionFileTools } from '../../files/tools/production.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 import type { OpenCodeChatFiles } from './chat.js'
-import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from './host.js'
+import { LocalOpenCodeExecutionFiles } from './host.js'
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from './postgres.js'
 import { OpenCodeFileError } from './types.js'
 
@@ -45,9 +45,10 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
     const host = new LocalOpenCodeExecutionFiles({
       executionHostId: 'runner-local', root, maxFileBytes: MAX_FILE_BYTES,
       assertSourceIsolation: async (checkSignal) => {
-        const pid = server.nativePid
-        await assertProtectedSourcePaths(pid ?? 0,
-          [config.fileStorageRoot ?? defaultFileStorageRoot()], checkSignal)
+        if (!server.assertFileSourceIsolation) {
+          throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server has no isolated file host.')
+        }
+        await server.assertFileSourceIsolation(config.fileStorageRoot ?? defaultFileStorageRoot(), checkSignal)
       },
     })
     const pinned = new Set(admission.attachments.map((ref) => `${ref.fileId}/${ref.revisionId}`))

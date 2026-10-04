@@ -494,6 +494,7 @@ export function buildProductionApp(
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
+    openCodeFileStorageRoot: fileStorageRoot,
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
     selectConfiguration: (configuration) => harnessRegistry.pinAccepted({

@@ -14,7 +14,7 @@ const code = (error: unknown) => (error as NodeJS.ErrnoException)?.code
 /** Linux openat-style traversal. Every component is anchored to an already-open descriptor.
  * A user-owned ancestor cannot race a path check and redirect a snapshot into the API byte vault.
  */
-async function openDirectory(path: string): Promise<FileHandle> {
+export async function openDirectory(path: string): Promise<FileHandle> {
   checkFileCondition(process.platform === 'linux' && isAbsolute(path) && normalize(path) === path,
     'FILE_HOST_UNSUPPORTED', 'Registered local file delivery requires a canonical Linux execution-host directory.')
   let fd = await open('/', directoryFlags)
