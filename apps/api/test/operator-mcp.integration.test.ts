@@ -69,7 +69,9 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const reader = await f.connect(readonly.token)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('execution_readiness_get')
-      await expect(reader.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+      const deniedReadiness = await reader.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })
+      expect(deniedReadiness.isError).toBe(true)
+      expect(JSON.stringify(deniedReadiness.content)).toContain('ACCESS_DENIED')
       const input = await f.create()
       expect((await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })).isError).toBe(true)
       const wrong = await f.access.issue({ name: 'Wrong workspace', audience: 'operator', expiresAt: new Date(Date.now() + 600000),

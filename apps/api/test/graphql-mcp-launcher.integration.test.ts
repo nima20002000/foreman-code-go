@@ -74,7 +74,11 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const readback = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
   expect(readback.structuredContent).toMatchObject({ value })
   expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
-  await expect(readerClient.callTool({ name: 'workspace_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value } })).rejects.toThrow('not found')
+  const deniedUpdate = await readerClient.callTool({ name: 'workspace_defaults_update', arguments: {
+    commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
+  } })
+  expect(deniedUpdate.isError).toBe(true)
+  expect(JSON.stringify(deniedUpdate.content)).toContain('ACCESS_DENIED')
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
   await removeOwner()

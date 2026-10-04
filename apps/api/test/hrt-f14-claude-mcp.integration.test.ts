@@ -86,7 +86,9 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     const updateInput = { commandId: randomUUID(), expectedRevision: 1,
       defaults: { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...harness, model: 'changed' } } }
     expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('harness_defaults_update')
-    await expect(denied.callTool({ name: 'harness_defaults_update', arguments: updateInput })).rejects.toThrow('not found')
+    const deniedMcpUpdate = await denied.callTool({ name: 'harness_defaults_update', arguments: updateInput })
+    expect(deniedMcpUpdate.isError).toBe(true)
+    expect(JSON.stringify(deniedMcpUpdate.content)).toContain('ACCESS_DENIED')
     const deniedUpdate = await production.app.inject({ method: 'PUT', url: '/api/management/harnesses/defaults',
       headers: { authorization: `Bearer ${reader.token}` }, payload: updateInput })
     expect(deniedUpdate.statusCode).toBe(403)
