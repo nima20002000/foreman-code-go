@@ -37,7 +37,8 @@ function measuredInstallationMatches(evidence: unknown, installation: HostHarnes
 /** Exact immutable instance revision and binary proof; never today's Agent head
  * or a baseline/ready boolean. Registry provides the current host file identity. */
 export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: Pick<AcceptedNodePlacement, 'payload' | 'hostRef'>,
-  installations: HarnessInstallationRegistry, suites: Readonly<Record<CompatibilityHarness, string>>) {
+  installations: HarnessInstallationRegistry, suites: Readonly<Record<CompatibilityHarness, string>>,
+  options?: { purpose: 'resident' }) {
   if (placement.payload.kind !== 'agent') unavailable()
   const payload = placement.payload as Extract<typeof placement.payload, { kind: 'agent' }>
   const values = await sql.query<{ record: unknown }>(`select record from harness_instance_settings
@@ -52,12 +53,15 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   const installed = installations.list().find(record => record.harnessInstallationId === payload.harnessInstallationId && sameWorkflowValue(record.hostRef, placement.hostRef))
   if (!installed) unavailable()
   const installation = HostHarnessInstallationSchema.parse(installed)
+  // An authenticated surviving process keeps its original qualification across transport reconnection.
+  const qualifiedInstallation = options?.purpose === 'resident'
+    ? { ...installation, connectionGeneration: profileProof.connectionGeneration } : installation
   if (!override.enabled || override.instanceRevision !== payload.instanceRevision || !sameWorkflowValue(override.target.hostRef, placement.hostRef)
     || override.target.harnessInstallationId !== payload.harnessInstallationId || override.target.installationFingerprint !== payload.installationFingerprint
     || !sameWorkflowValue(profileProof.target, override.target) || profileProof.configurationFingerprint !== override.configurationFingerprint
     || profileProof.instanceRevision !== payload.instanceRevision || profileProof.driverId !== payload.driverId
     || profileProof.driverRevision !== payload.driverRevision || profileProof.protocolRevision !== payload.protocolRevision
-    || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== installation.connectionGeneration
+    || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== qualifiedInstallation.connectionGeneration
     || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
     || installation.installationFingerprint !== payload.installationFingerprint || installation.driverId !== payload.driverId
     || installation.driverRevision !== payload.driverRevision || installation.protocolRevision !== payload.protocolRevision
@@ -67,13 +71,13 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint
   if (!binarySha256 || !suites[harness]) unavailable()
   if (!installation.observedVersion) {
-    if (installation.hostRef.kind !== 'main') unavailable()
+    if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable()
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
     const measured = await sql.query<{ version: string; evidence: unknown }>(`select version,evidence from harness_qualifications
       where harness=$1 and binary_sha256=$2 and suite_revision=$3 and status='passed' order by checked_at desc limit 20 for share`,
     [harness, binarySha256, suites[harness]])
-    const matching = measured.rows.filter(row => measuredInstallationMatches(row.evidence, installation, suites[harness]))
+    const matching = measured.rows.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
     if (matching.length !== 1) unavailable()
     installation.observedVersion = matching[0]!.version
   }

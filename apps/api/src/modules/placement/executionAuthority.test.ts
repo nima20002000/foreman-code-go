@@ -44,7 +44,7 @@ function fixture() {
     return { rows: [], rowCount: 1 }
   } } as unknown as GraphTransactionSql
   const locations = { revalidateRunAuthorization: vi.fn(async () => {}) }
-  const pins = vi.fn(async () => {})
+  const pins = vi.fn<AgentPlacementProducer['assertPinsCurrent']>(async () => {})
   const producer = { assertPinsCurrent: pins } as unknown as AgentPlacementProducer
   ports.intent.mockResolvedValue(intent)
   ports.placement.mockResolvedValue(placement)
@@ -93,6 +93,7 @@ describe('authenticated original execution reconnection', () => {
     const replacement = { ...f.connection, connectionGeneration: 2 }
     await expect(f.authorize('read', replacement)).resolves.toBeUndefined()
     await expect(f.authorize('control', replacement)).resolves.toBeUndefined()
+    expect(f.pins.mock.calls.at(-1)?.[4]).toEqual({ purpose: 'resident' })
     f.state.cleanup = true
     await expect(f.authorize('stop', replacement)).resolves.toBeUndefined()
     await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
@@ -105,6 +106,7 @@ describe('authenticated original execution reconnection', () => {
     if (defect === 'owner') f.receipt.intent = { ...f.intent, owner: { grantId: 'other', epoch: '2' } }
     if (defect === 'origin') f.receipt.connection = { ...f.connection, connectionGeneration: 2 }
     const replacement = { ...f.connection, connectionGeneration: 2 }
+    await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 })

@@ -55,9 +55,9 @@ function fixture() {
     instanceId, instanceRevision: '1', harnessInstallationId: installation.harnessInstallationId,
     installationFingerprint: fingerprint, runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [],
   } }
-  const read = () => readPlacementHarnessFacts({ query } as unknown as GraphSqlClient, placement, installations,
-    { codex: suiteRevision, opencode: 'unused' })
-  return { read, installations, records, proof, evidence }
+  const read = (options?: { purpose: 'resident' }) => readPlacementHarnessFacts(
+    { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision, opencode: 'unused' }, options)
+  return { read, installations, records, proof, evidence, override }
 }
 
 it('admits passive inventory only with its exact measured binary and qualified profile', async () => {
@@ -84,3 +84,27 @@ it.each(['payload', 'generation', 'host', 'missing', 'profile', 'suite-check'] a
     await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
   },
 )
+
+it('retains original qualification for a surviving process across transport reconnection only', async () => {
+  const f = fixture()
+  f.installations.refresh(f.installations.list().map(installation => ({
+    ...installation, connectionGeneration: 'replacement-channel',
+  })))
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+  const facts = await f.read({ purpose: 'resident' })
+  expect(facts.installation.connectionGeneration).toBe('replacement-channel')
+  expect(facts.profileProof.connectionGeneration).toBe('connection')
+  expect(facts.qualification.status).toBe('qualified')
+})
+
+it.each(['environment', 'installation', 'payload', 'disabled'])('keeps %s checks for an existing process', async defect => {
+  const f = fixture()
+  const installation = { ...f.installations.list()[0]!, connectionGeneration: 'replacement-channel' }
+  if (defect === 'environment') installation.environmentGeneration = 'changed'
+  if (defect === 'installation') installation.installationFingerprint = 'changed'
+  if (defect === 'payload') installation.launcher = { ...installation.launcher,
+    payloadFingerprints: [{ path: '/installed/codex', fingerprint: 'b'.repeat(64) }] }
+  if (defect === 'disabled') f.override.enabled = false
+  f.installations.refresh([installation])
+  await expect(f.read({ purpose: 'resident' })).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})

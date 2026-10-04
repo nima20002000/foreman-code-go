@@ -114,7 +114,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
   }
   async assertPinsCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
-    principal: ManagementPrincipal, workspaceId: string): Promise<void> {
+    principal: ManagementPrincipal, workspaceId: string, options?: { purpose: 'resident' }): Promise<void> {
     if (!('kind' in pin.source) || pin.source.kind !== 'pending') this.conflict()
     const source = pin.source as Extract<AcceptedNodePlacement['source'], { kind: 'pending' }>
     const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: source.rootId,
@@ -123,9 +123,11 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     await this.roots.resolve(sql, principal, { workspaceId, hostRef: pin.hostRef, rootPolicyId: pin.destination.rootPolicyId,
       rootPolicyRevision: pin.destination.rootPolicyRevision, locationRevision: pin.destination.locationRevision })
     if (pin.payload.kind !== 'agent') this.conflict()
-    const instance = await this.readInstance(sql, pin.payload.instanceId)
-    if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
-    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
+    if (options?.purpose !== 'resident') {
+      const instance = await this.readInstance(sql, pin.payload.instanceId)
+      if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
+    }
+    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
     const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration?.workerInstallationId ?? pin.mainInstallationId)
     if (!sameWorkflowValue(registration === null ? null : { workerInstallationId: registration.workerInstallationId,
       keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, pin.registration)) this.conflict()
