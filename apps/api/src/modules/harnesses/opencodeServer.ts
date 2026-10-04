@@ -982,6 +982,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async childPromptSettings(native: JsonObject, directory: string, signal: AbortSignal,
     assertCurrent: () => void): Promise<JsonObject> {
     let cursor: string | undefined
+    let userInfo: JsonObject = {}
     const seen = new Set<string>()
     while (true) {
       const page = await this.messagePage(String(native.id), directory, cursor, signal)
@@ -991,27 +992,30 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       const user = [...page.messages].reverse().find(message => message.info.role === 'user')
       if (user) {
-        const agent = native.agent ?? user.info.agent
-        const persisted = object(native.model)
-        const model = Object.keys(persisted).length ? {
-          providerID: persisted.providerID, modelID: persisted.id,
-          variant: persisted.variant === 'default' ? '' : persisted.variant,
-        } : object(user.info.model)
-        const variant = model.variant ?? ''
-        if (typeof agent !== 'string' || !agent || typeof model.providerID !== 'string' || !model.providerID
-          || typeof model.modelID !== 'string' || !model.modelID || typeof variant !== 'string'
-          || (user.info.system !== undefined && typeof user.info.system !== 'string')) {
-          throw new HarnessExecutionError('SUBAGENT_CONFIGURATION_INVALID', 'The child prompt settings are invalid.')
-        }
-        return { agent, model: { providerID: model.providerID, modelID: model.modelID }, variant,
-          ...(user.info.system !== undefined ? { system: user.info.system } : {}) }
+        userInfo = user.info
+        break
       }
-      if (!page.nextCursor || seen.has(page.nextCursor)) {
-        throw new HarnessExecutionError('SUBAGENT_CONFIGURATION_INVALID', 'The child prompt settings are missing from native history.')
+      if (!page.nextCursor) break
+      if (seen.has(page.nextCursor)) {
+        throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history repeated its paging cursor.')
       }
       seen.add(page.nextCursor)
       cursor = page.nextCursor
     }
+    const agent = native.agent ?? userInfo.agent
+    const persisted = object(native.model)
+    const model = Object.keys(persisted).length ? {
+      providerID: persisted.providerID, modelID: persisted.id,
+      variant: persisted.variant === 'default' ? '' : persisted.variant,
+    } : object(userInfo.model)
+    const variant = model.variant ?? ''
+    if (typeof agent !== 'string' || !agent || typeof model.providerID !== 'string' || !model.providerID
+      || typeof model.modelID !== 'string' || !model.modelID || typeof variant !== 'string'
+      || (userInfo.system !== undefined && typeof userInfo.system !== 'string')) {
+      throw new HarnessExecutionError('SUBAGENT_CONFIGURATION_INVALID', 'The child prompt settings are invalid.')
+    }
+    return { agent, model: { providerID: model.providerID, modelID: model.modelID }, variant,
+      ...(userInfo.system !== undefined ? { system: userInfo.system } : {}) }
   }
 
   async subagentHistory(session: NativeSessionReference, cursor?: string, signal?: AbortSignal) {

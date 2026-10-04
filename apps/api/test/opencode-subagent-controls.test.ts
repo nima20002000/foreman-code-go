@@ -71,6 +71,17 @@ describe('OpenCode exact-parent child control transport', () => {
       expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body?.variant).toBe('')
     } finally { await f.native.dispose() }
   })
+  it('uses a configured idle child even before its first native user message', async () => {
+    const f = await fixture()
+    try {
+      f.server.messages.set('ses_child', [])
+      await f.native.subagentControl(f.record, () => {})!.sendInput!(receipt(), 'Start the child task')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body).toEqual({
+        messageID: 'msg_child_command', parts: [{ type: 'text', text: 'Start the child task' }],
+        agent: 'plan', model: { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' }, variant: '',
+      })
+    } finally { await f.native.dispose() }
+  })
   it('checks ownership after asynchronous child history reads', async () => {
     const f = await fixture()
     try {
