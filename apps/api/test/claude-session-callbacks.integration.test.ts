@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, type NativeHarnessEvent, type NativeSessionReference } from '@graphql/contracts'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresOperatorConversationRepository, nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
+import { PostgresAgentChatRepository, agentChatCorrelation, agentChatKey } from '../src/modules/conversations/agentChatRepository.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
 import { claudeNativeEvent } from '../src/modules/harnesses/claudeSdk/nativeEvents.js'
@@ -15,8 +16,7 @@ import { createClaudeSdkCallbacks } from '../src/modules/harnesses/claudeSdk/sdk
 import {
   createClaudeNativeSessionManager, type ClaudeMessageTurnInput, type ClaudeNativeSessionManager,
 } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
-import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
-import { agent3Database } from './helpers/wave25Agent3.js'
+import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
 
 async function drain(events: AsyncIterable<NativeHarnessEvent>) {
   const values: NativeHarnessEvent[] = []
@@ -30,20 +30,33 @@ it('persists one message admission across later tool rounds and validates each c
   try {
     const access = new PostgresAccessService(db.pool)
     const writer = await access.issue({ name: 'Session callback writer', audience: 'operator',
-      grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:respond'], scope: {} }],
+      grants: [{ actions: ['agent_chat:read', 'agent_chat:write', 'agent_chat:respond'], scope: {} }],
       expiresAt: new Date(Date.now() + 600_000) })
     const reader = await access.issue({ name: 'Session callback reader', audience: 'operator',
-      grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+      grants: [{ actions: ['agent_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const harness: ClaudeHarnessConfiguration = {
       harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: db.directory,
       permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read'], permissionRules: [],
       instructions: '', mcpServers: {},
     }
-    const operators = new PostgresOperatorRepository(db.pool)
-    const original = await operators.ensure()
-    const configured = await operators.update(harness, original.configuration.id)
-    const repository = new PostgresOperatorConversationRepository(db.pool)
-    const conversation = await repository.create(configured.operator.id, configured.configuration, writer.principal.id)
+    const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
+    fixture.configurations = fixture.configurations.map(configuration =>
+      AgentConfigurationVersionSchema.parse({ ...configuration, harness }))
+    const seeded = await seedAgent3(db.pool, db.directory, fixture, { run: false })
+    const node = seeded.version.definition.nodes[0]!
+    const configuration = seeded.configurations.find(value => value.agentId === node.agentId)!
+    const context = { workspaceId: seeded.scope.workspaceId, workflowId: seeded.scope.workflowId,
+      workflowNodeId: node.id, agentId: node.agentId }
+    const repository = new PostgresAgentChatRepository(db.pool)
+    const oldId = randomUUID()
+    const admit = (requestId: string, expectedConversationId: string | null) => repository.admit({
+      key: agentChatKey(context), context, ownerPrincipalId: writer.principal.id, delivery: 'queued',
+      request: { requestId, content: 'Read the files', intent: 'next_turn', expectedConversationId,
+        context: { workflowId: context.workflowId, workflowNodeId: node.id, agentId: node.agentId } },
+      create: { context, agentConfigurationVersionId: configuration.id, harness: 'claude',
+        origin: { kind: 'fresh' }, workingDirectory: db.directory, runtimeDirectory: db.directory },
+    })
+    const conversation = { id: (await admit(oldId, null)).conversationId }
     const session: NativeSessionReference = { harness: 'claude', providerVersion: '2.1.284', nativeSessionId: randomUUID() }
     const frames = new ClaudeBoundedQueue<unknown>(32)
     let messages!: AsyncIterator<ClaudeSdkUserMessage>
@@ -57,16 +70,16 @@ it('persists one message admission across later tool rounds and validates each c
       getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'unused' }),
     }
     const domain = createPostgresClaudeInteractionBridge({ database: db.pool, configuration: harness,
-      binding: { kind: 'operator', conversationId: conversation.id, repository },
+      binding: { kind: 'agent', conversationId: conversation.id, workspaceId: context.workspaceId, repository },
       manager: { nativeCallbackContext: (nativeSessionId, toolUseId) =>
         manager!.nativeCallbackContext(nativeSessionId, toolUseId) } })
     const callbacks = createClaudeSdkCallbacks({ manager: () => manager!, bridge: domain.bridge })
     manager = createClaudeNativeSessionManager({ runner: createClaudeSdkRunner({ loadClient: async () => sdk }),
-      scope: { deviceId: 'main', profilePath: db.directory, configRevision: configured.configuration.id, cwd: db.directory },
+      scope: { deviceId: 'main', profilePath: db.directory, configRevision: configuration.id, cwd: db.directory },
       sdkOptions: callbacks, qualification: { sdkVersion: sdk.sdkVersion, cliVersion: session.providerVersion,
         basicTurns: true, resume: true, fork: false, history: true, interactions: true },
       interactionPort: domain.interactionPort, liveCallbacks: domain.bridge,
-      cancelPendingRequests: () => domain.bridge.close(),
+      cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
       pendingInteractions: value => domain.bridge.pendingInteractions(value),
       decodeFactory() {
         const normalizer = createClaudeEventNormalizer({
@@ -76,18 +89,21 @@ it('persists one message admission across later tool rounds and validates each c
         return raw => normalizer.ingest(raw).map(event => claudeNativeEvent(event, 0))
       },
     })
-    const start: NativeSessionStart = { kind: 'operator', correlationId: 'attach',
-      configuration: configured.configuration, workingDirectory: db.directory }
+    const start: NativeSessionStart = { kind: 'workflow', correlationId: 'attach', request: {
+      executionId: `agent-chat:${conversation.id}`, runId: `agent-chat:${conversation.id}`,
+      workspaceId: context.workspaceId, workflowNodeId: node.id, configuration, input: {},
+      workingDirectory: db.directory, runtimeDirectory: db.directory,
+    } }
     await manager.attachSession(session, start)
+    await repository.bindSession(conversation.id, session.providerVersion, session.nativeSessionId)
     const begin = async (requestId: string) => {
-      await repository.beginTurn(conversation.id, { requestId, content: 'Read the files' }, writer.principal.id)
-      await repository.bind(conversation.id, requestId, session.providerVersion, session.nativeSessionId)
-      expect(await repository.phase(conversation.id, requestId, 'submitting')).toBe(true)
+      if (requestId !== oldId) await admit(requestId, conversation.id)
+      expect(await repository.claim(conversation.id, requestId)).toBe(true)
       const admission = await domain.callbackAdmission()
       const input: ClaudeMessageTurnInput = { prompt: 'Read the files',
-        clientCorrelationId: nativeCorrelation(conversation.id, requestId), callbackAuthority: admission,
+        clientCorrelationId: agentChatCorrelation(conversation.id, requestId), callbackAuthority: admission,
         onMessageSubmitted: async receipt => {
-          expect(await repository.submittedMessage(conversation.id, requestId, receipt)).toBe(true)
+          expect(await repository.acceptedMessage(conversation.id, requestId, receipt)).toBe(true)
         } }
       const output = drain(manager!.startTurn(session, input))
       return { output, message: (await messages.next()).value! }
@@ -99,7 +115,6 @@ it('persists one message admission across later tool rounds and validates each c
     const result = (promptUuid: string) => frames.offer({ type: 'result', session_id: session.nativeSessionId,
       uuid: `result-${promptUuid}`, user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done' })
 
-    const oldId = randomUUID()
     const old = await begin(oldId)
     void assistant('older', [{ type: 'text', text: 'older response' }], old.message.uuid)
     void result(old.message.uuid)
@@ -118,7 +133,7 @@ it('persists one message admission across later tool rounds and validates each c
       void assistant(messageId, [{ type: 'tool_use', id: toolUseID, name: 'Read', input: {} }],
         index === 0 ? current.message.uuid : undefined)
       await vi.waitFor(async () => {
-        expect((await repository.get(conversation.id))?.pendingInteraction?.turn.nativeRequestId).toBe(request)
+        expect((await repository.get(conversation.id))?.pending_interaction?.turn.nativeRequestId).toBe(request)
       })
       const context = manager.nativeCallbackContext(session.nativeSessionId, toolUseID)!
       expect(context.nativeMessageId).toBe(current.message.uuid)
@@ -130,15 +145,15 @@ it('persists one message admission across later tool rounds and validates each c
       const option = domain.bridge.pendingInteractions(session)[0]!.responseOptions
         .find(value => value.semantic === 'approve_once')!
       const control = { schemaVersion: 1, kind: 'respond', modelRequestId: requestId, conversationId: conversation.id,
-        scope: { kind: 'operator_chat', conversationId: conversation.id },
+        scope: { kind: 'agent_chat', conversationId: conversation.id,
+          workspaceId: context.workspaceId, workflowId: context.workflowId },
         native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId,
           messageId: current.message.uuid, generation: context.generation, requestId: request, requestType: 'can_use_tool' },
         choice: { optionId: option.optionId, semantic: option.semantic } }
       await db.pool.query(`insert into management_command_receipts
-        (principal_id,operation,command_id,target_key,input_hash,result) values ($1,'operator_chat_control',$2,$3,$4,$5::jsonb)`,
+        (principal_id,operation,command_id,target_key,input_hash,result) values ($1,'agent_chat_control',$2,$3,$4,$5::jsonb)`,
       [writer.principal.id, randomUUID(), conversation.id, `claim-${index}`,
         JSON.stringify({ status: 'pending', acceptedControl: control })])
-      expect(await repository.claimResponse(conversation.id, requestId, request)).toBe(true)
       await manager.respond(session, request, option)
       expect(await decision).toMatchObject({ behavior: 'allow' })
       void frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: `tool-result-${index}`,
@@ -150,9 +165,9 @@ it('persists one message admission across later tool rounds and validates each c
     const output = await current.output
     expect(output.some(event => event.payload.text === 'late older response')).toBe(false)
     expect(output.find(event => event.payload.text === 'final response')?.payload.clientCorrelationId)
-      .toBe(nativeCorrelation(conversation.id, requestId))
-    expect(await repository.submittedMessageId(conversation.id, requestId)).toBe(current.message.uuid)
-    expect((await manager.reconcile(session, nativeCorrelation(conversation.id, requestId))).terminalResult)
+      .toBe(agentChatCorrelation(conversation.id, requestId))
+    expect((await repository.turn(conversation.id, requestId))?.nativeSubmission?.nativeMessageId).toBe(current.message.uuid)
+    expect((await manager.reconcile(session, agentChatCorrelation(conversation.id, requestId))).terminalResult)
       .toEqual({ outcome: 'succeeded', output: 'done' })
     expect(query).toHaveBeenCalledTimes(1)
   } finally {

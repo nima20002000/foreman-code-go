@@ -123,6 +123,13 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
           toolUseID: 'read-tool', requestId: 'permission-request', signal: controller.signal,
         }).then(decision => { responses++; return decision })
         await vi.waitFor(async () => expect((await repository.get(id))?.pendingInteraction).toBeDefined())
+        const admitted = await graphRpc(app, owner.token, 'tools/call', {
+          name: 'operator_chat_get', arguments: { conversationId: id },
+        })
+        expect(admitted.result?.isError).not.toBe(true)
+        expect(graphRpcValue(admitted.result)).toMatchObject({ activeRequestId: 'model-request',
+          nativeSubmission: { kind: 'message', nativeSessionId: session.nativeSessionId,
+            nativeMessageId: message.uuid, clientCorrelationId: `operator:${id}:model-request` } })
         const input = { commandId: 'response-command', requestId: 'model-request', nativeRequestId: 'permission-request', optionId: 'allow_once' }
         const deniedResponse = await graphRpc(app, denied.token, 'tools/call', { name: 'operator_chat_respond', arguments: { conversationId: id, request: input } })
         expect(deniedResponse.error || deniedResponse.result?.isError).toBeTruthy()

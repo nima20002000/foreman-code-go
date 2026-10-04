@@ -1272,7 +1272,9 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
 
     await chat.send(conversation.id, { requestId: 'claude-after-stop', content: 'next' }, owner)
     await waitFor(async () => Boolean(await repository.submittedMessageId(conversation.id, 'claude-after-stop')))
-    await Promise.allSettled(claude.managers.map(manager => manager.dispose?.()))
+    await chat.cancel(conversation.id, 'claude-after-stop', owner)
+    await waitFor(async () => { await chat.reconcileActive(); return !(await chat.get(conversation.id, owner)).activeRequestId })
+    expect(claude.interrupts).toHaveLength(3)
   }, 60_000)
 })
 
@@ -1288,8 +1290,8 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
     let resume!: () => void
     const paused = new Promise<void>(resolve => { resume = resolve })
     let blocked = false
-    const save = repository.appendAssistantMessage.bind(repository)
-    const storage = vi.spyOn(repository, 'appendAssistantMessage').mockImplementation(async (...args) => {
+    const save = repository.appendAssistantTextOperation.bind(repository)
+    const storage = vi.spyOn(repository, 'appendAssistantTextOperation').mockImplementation(async (...args) => {
       if (!blocked) {
         blocked = true
         await paused
@@ -1329,8 +1331,13 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       await producer
       await vi.waitFor(async () => expect((await chat.get(conversation.id, owner)).turnState).toBe('idle'),
         { timeout: 30000 })
-      const state = await chat.get(conversation.id, owner)
-      expect(state.messages.some(item => item.role === 'assistant' && item.content === prefix)).toBe(true)
+      let page = await chat.history(conversation.id, owner, { limit: 100 })
+      const messages = page.entries.map(entry => entry.message)
+      while (page.nextCursor) {
+        page = await chat.history(conversation.id, owner, { limit: 100, before: page.nextCursor })
+        messages.push(...page.entries.map(entry => entry.message))
+      }
+      expect(messages.some(item => item.role === 'assistant' && item.content === prefix)).toBe(true)
       const result = await pool.query('select result,payload from operator_conversation_turns where conversation_id=$1 and request_id=$2',
         [conversation.id, 'bounded-stream'])
       expect(result.rows[0]?.result).toEqual({ outcome: 'succeeded', output: 'done' })
