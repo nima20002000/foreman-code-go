@@ -4,6 +4,7 @@ import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
 import { PostgresScheduleDispatcher } from '../src/modules/schedules/postgresDispatcher.js'
+import type { ScheduleDispatchContext } from '../src/modules/schedules/dispatchErrors.js'
 import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11ClockCases, sch11Minute, sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'
 import { sch11DomainState, sch11Fixture, sch11Pool, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
@@ -189,13 +190,14 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
       throw new Error('Temporary admission unavailability')
     }, clock)
     let scans = 0
+    const failures: Array<{ error: unknown; context: ScheduleDispatchContext | undefined }> = []
     const loop = new WorkflowScheduleDispatcher({
       listDueSchedules: async (input) => {
         scans++
         return port.listDueSchedules(input)
       },
-      dispatch: (schedule) => port.dispatch(schedule),
-    }, { clock, reportError: () => {}, pollIntervalMs: 60_000 })
+      dispatch: (...args) => port.dispatch(...args),
+    }, { clock, reportError: (error, context) => { failures.push({ error, context }) }, pollIntervalMs: 60_000 })
     loop.start()
     try {
       await considered.promise
@@ -203,6 +205,9 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
       expect(scans).toBe(1)
       expect(attemptedDue).toBeTruthy()
       const cursor = (await f.current())!.nextOccurrenceAt!
+      expect(failures).toEqual([expect.objectContaining({ context: {
+        workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, dueAt: cursor,
+      } })])
       expect(Date.parse(cursor)).toBeGreaterThanOrEqual(resumedAt)
       expect(Date.parse(clock().toISOString()) - Date.parse(cursor)).toBeLessThan(1_000)
       const counts = (await database.pool.query<{ count: string; latest: Date }>(

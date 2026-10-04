@@ -58,18 +58,21 @@ export class PostgresScheduleDispatcher {
   listDueSchedules(input: Parameters<PostgresWorkflowScheduleRepository['listDueSchedules']>[0]) {
     return this.repository.listDueSchedules(input)
   }
-  async dispatch(observed: WorkflowSchedule, signal?: AbortSignal): Promise<void> {
+  async dispatch(observed: WorkflowSchedule, signal?: AbortSignal,
+    onCandidate?: (candidate: WorkflowSchedule) => void): Promise<void> {
     // Re-read once after a disable/version/time race. Persistent failures leave
     // the due cursor intact; the next bounded scan retries from durable state.
     let candidate = observed
     const preparation: RepeatStartPreparation = {}
     let attempt = 0
     while (attempt < 2) {
+      onCandidate?.(candidate)
       signal?.throwIfAborted()
       const prepared = await this.prepare(candidate)
       signal?.throwIfAborted()
       if (!prepared) return
       candidate = prepared.schedule
+      onCandidate?.(candidate)
       if (prepared.kind === 'continue') continue
       attempt++
       try {
