@@ -147,8 +147,18 @@ async function fixture(items: HarnessExecution[], cold = false) {
     recordActivity: async () => undefined,
     appendNativeEvent: async () => undefined,
   }
+  const coordination = nativeLanes()
+  for (const item of items) {
+    if (!item.nativeSessionId) continue
+    await coordination.ensureLane({
+      id: `lane-${item.id}`, harness: 'codex', nativeSessionId: item.nativeSessionId,
+      ownerAgentId: item.agentId, observedStatus: 'busy', connectionGeneration: 0,
+      correlationId: `execution:${item.id}`, currentTurnOrMessageId: 'turn-1',
+      observedAt: item.createdAt, revision: 1,
+    })
+  }
   const interactions = {
-    coordination: nativeLanes(),
+    coordination,
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     getForExecution: async (id: string) => pending.get(id),
     getNativeRequest: async (id: string) => pending.get(id),

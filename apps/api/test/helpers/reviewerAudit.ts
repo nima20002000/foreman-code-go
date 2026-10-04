@@ -151,7 +151,11 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   await coordination.bindWorkflowSession(execution.id, session)
   await coordination.finalizeWorkflowSession(execution.id)
   await coordination.ensureLane({ id: 'review-lane', harness: session.harness, nativeSessionId: session.nativeSessionId,
-    ownerAgentId: execution.agentId, observedStatus: 'idle', connectionGeneration: 0, observedAt: now, revision: 0 })
+    ownerAgentId: execution.agentId, observedStatus: options.recovering || options.workflow ? 'busy' : 'idle',
+    connectionGeneration: 0, observedAt: now, revision: 0,
+    ...(options.recovering ? { correlationId } : {}),
+    ...(options.workflow ? { correlationId: `execution:${execution.id}`, currentTurnOrMessageId: providerId } : {}),
+  })
   const assertJob = async (id: string, token: string) => {
     if (hooks.lostJob || id !== job.id || token !== job.leaseToken || Date.parse(job.leaseExpiresAt ?? '') <= Date.now()) {
       throw new DomainError('REVIEW_JOB_LEASE_LOST', 'Lost job owner.', 409)

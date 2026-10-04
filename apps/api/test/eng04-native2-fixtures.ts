@@ -113,6 +113,12 @@ export function native2Fixture(completed = true) {
     finalizeWorkflowSession: forbidden('unqualified-finalize'),
     bindWorkflowSession: async () => undefined,
     hasUnsettledReview: async () => false,
+    acknowledgeLaneTurn: async (fence: { id: string; token: string }, correlationId: string, providerId: string) => {
+      assertOwned()
+      assert.deepEqual(fence, { id: 'lane-native2-exact', token: 'lease-native2-exact' })
+      assert.equal(correlationId, `execution:${execution.id}`)
+      assert.equal(providerId, 'turn-native2-exact')
+    },
     getReviewJobContext: async () => ({ executionId: execution.id,
       workingDirectory: execution.workingDirectory!, providerVersion: session.providerVersion }),
     findReviewJob: async (): Promise<ReviewJob | undefined> => undefined,
@@ -156,6 +162,10 @@ export function native2Fixture(completed = true) {
     capabilities: forbidden('capabilities'), createSession: forbidden('createSession'),
     attachSession: forbidden('attachSession'), startTurn: forbidden('startTurn'), respond: forbidden('respond'), cancel: forbidden('cancel'),
     history: async () => history(), reconcile: async () => history(),
+    observeBoundary: async (reference: NativeSessionReference) => {
+      assertOwned()
+      assert.deepEqual(reference, session)
+    },
     isActive: () => false,
     currentProjectionLease: () => ({ id: 'lane-native2-exact', token: 'lease-native2-exact', providerId: 'turn-native2-exact', live: true }),
     withLane: async (_reference: NativeSessionReference, correlation: string, _signal: AbortSignal | undefined,

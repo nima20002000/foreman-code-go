@@ -266,6 +266,12 @@ export function currentRestartUnit(reviewer = false) {
       assert.equal(originalSetupClaimed, false, 'only the original fixture lifetime may be observed')
       originalSetupClaimed = true
       if (reviewer) return coordinator.attachOwnedSession(context(), session)
+      await coordination.ensureLane({
+        id: `lane-${execution.id}`, harness: session.harness, nativeSessionId: session.nativeSessionId,
+        ownerAgentId: execution.agentId, observedStatus: 'busy', connectionGeneration: 0,
+        correlationId: `execution:${execution.id}`, currentTurnOrMessageId: 'be001-turn',
+        observedAt: f.createdAt, revision: 1,
+      })
       manager.reconcile = async (_session, correlationId) => ({ events: [], correlationId, nativeTurnId: 'be001-turn',
         pendingInteractions: [{ session, turn: { nativeTurnId: 'be001-turn', nativeRequestId: pendingApproval.nativeRequestId },
           nativeRequestType: pendingApproval.nativeRequestType, request: pendingApproval.request, responseOptions: pendingApproval.responseOptions }] })

@@ -151,6 +151,12 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   // control/renewal. This runs the real coordinator, writer and lease checks;
   // a saved nativeSessionId alone must never be used as a residence fixture.
   const observeRequester = async () => {
+    await interactions.coordination.ensureLane({
+      id: `lane-${execution.id}`, harness, nativeSessionId: session.nativeSessionId,
+      ownerAgentId: execution.agentId, observedStatus: 'busy', connectionGeneration: 0,
+      correlationId: `execution:${execution.id}`, currentTurnOrMessageId: 'workflow-turn',
+      observedAt: createdAt, revision: 1,
+    })
     resolver.resolve(context)
     const raw = managers[0]!
     raw.reconcile.mockResolvedValueOnce({ events: [], correlationId: `execution:${execution.id}`, nativeTurnId: 'workflow-turn',
