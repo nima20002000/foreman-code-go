@@ -172,7 +172,8 @@ export async function qualifyInstalledNativeOutputSandbox(input: {
   } catch (error) {
     const cleanupErrors = await cleanup()
     if (cleanupErrors.length) {
-      throw new AggregateError([error, ...cleanupErrors], 'Native output qualification and cleanup failed.')
+      throw new AggregateError([error, ...cleanupErrors],
+        'Native output qualification and cleanup failed.', { cause: error })
     }
     throw error
   }

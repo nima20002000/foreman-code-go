@@ -108,6 +108,7 @@ describe('installed native output diagnostic wiring', () => {
       expect.objectContaining({ message: 'Native sandbox probe failed' }),
       expect.objectContaining({ code: 'CODEX_NATIVE_OUTPUT_UNQUALIFIED' }),
     ])
+    expect(error.cause).toBe(error.errors[0])
     expect(f.closeOwner).toHaveBeenCalledOnce()
   })
 
