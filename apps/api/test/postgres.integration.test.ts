@@ -1,4 +1,4 @@
-import { dropFixtureSchema } from './helpers/testResources.js'
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint'
@@ -75,6 +75,7 @@ describe('PostgreSQL infrastructure', () => {
     })
     const app = buildApp({ readiness: { database, checkpoints }, readinessTimeoutMs: 1000 })
     try {
+      await createFixtureSchema(admin, schema)
       await checkpoints.setup()
       await checkpoints.saver.getTuple({ configurable: { thread_id: '__pool_test__' } })
       expect((await app.inject('/health/ready')).statusCode).toBe(200)
@@ -111,6 +112,7 @@ describe('PostgreSQL infrastructure', () => {
     const blocker = await admin.connect()
     let locked = false
     try {
+      await createFixtureSchema(admin, schema)
       await checkpoints.setup()
       expect((await app.inject('/health/ready')).statusCode).toBe(200)
       await blocker.query('begin')

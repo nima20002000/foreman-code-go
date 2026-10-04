@@ -268,7 +268,7 @@ test('database gates and storage paths use the current owned slot, overriding in
       assert.equal(environment[name], slot.databaseUrl)
     }
     assert.equal(environment.NIM2691_POSTGRES, '1')
-    assert.equal(environment.TMPDIR, slot.directory)
+    assert.equal(environment.TMPDIR, join(slot.directory, 'tmp'))
     assert.ok(environment.HOME.startsWith(slot.directory + '/'))
     assert.ok(environment.CODEX_HOME.startsWith(slot.directory + '/'))
     assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')

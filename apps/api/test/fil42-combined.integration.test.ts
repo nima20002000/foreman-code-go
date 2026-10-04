@@ -18,7 +18,9 @@ import { absent, allocate, fil14Database, historical, owner, reread, save, sweep
   type Fil14Database, type Runtime } from './helpers/fil14Lifecycle.js'
 
 const enabled = Boolean(process.env.TEST_DATABASE_URL)
-vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => process.cwd() }))
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()), homedir: () => process.env.HOME!,
+}))
 const at = '2026-09-28T01:00:00.000Z'
 const created = '2026-09-28T00:00:00.000Z'
 

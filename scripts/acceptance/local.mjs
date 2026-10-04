@@ -157,7 +157,7 @@ async function main() {
   dropDatabase = dropTestDatabase
   removeRoot = removeTestRoot
   admin = await testAdminPool()
-  resources = createTestRoot('/tmp', 'eng07-')
+  resources = createTestRoot(undefined, 'eng07-')
   state = resources.directory
   owner = randomUUID()
   await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })

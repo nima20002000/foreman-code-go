@@ -1,6 +1,6 @@
 import { createServer } from 'node:net'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 export const BASE = '16b33373b3b2962dd0d0c57ad0b2f2c93198c400'
 export const HELP = `ENG07-C isolated local acceptance (PostgreSQL 17; non-root Linux; macOS setup smoke only)
@@ -42,7 +42,7 @@ export function options(args) {
 // Deliberately do not spread process.env. No ambient PG*, DATABASE_URL, .env,
 // NODE_OPTIONS, proxy, dev principal, rollout flag or Vite configuration survives.
 export function environment(source) {
-  const keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM',
+  const keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TMP', 'TEMP',
     'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
     'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'OPENCODE_BINARY', 'CODEX_BINARY',
     'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR', 'COREPACK_HOME',
@@ -58,7 +58,7 @@ export async function freePort(port) {
   })
 }
 export async function assertOwned(state, owner) {
-  if (!/^\/(?:private\/)?tmp\/eng07-[A-Za-z0-9]+$/.test(state)) throw new Error('Unsafe state path.')
+  if (!isAbsolute(state) || !/^eng07-[A-Za-z0-9]+$/.test(basename(state))) throw new Error('Unsafe state path.')
   const stat = await lstat(state)
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
     || stat.uid !== process.getuid() || await realpath(state) !== state) throw new Error('State ownership changed.')

@@ -61,6 +61,8 @@ describe('disposable test resources', () => {
       expect(environment.PGHOST).toBeUndefined()
       expect(environment.GRAPHQL_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
+      expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
+      expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
       expect(environment.OPENAI_API_KEY).toBe('test-key')
       const nested = testEnvironment(environment, { ...resource, name: 'graphql_test_unit',
         databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })

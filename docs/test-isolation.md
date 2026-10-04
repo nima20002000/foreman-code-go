@@ -21,6 +21,9 @@ XDG directories, logs, and acceptance evidence. Cleanup checks filesystem and
 PostgreSQL ownership markers before deletion. Uncertain process or cleanup
 settlement retains resources. Integration logs are retained in an owned directory
 under ignored `.logs/test-integration/`.
+Invocation roots live under the private `~/.cache/graphql-disposable-tests`
+directory. Temporary files use a separate `tmp` child so application file storage
+does not overlap temporary directories or require a weaker storage policy.
 
 For focused verification, use `corepack pnpm test:files scripts|unit|integration|acceptance`
 followed by explicit repository-relative test file paths. Empty lists and unknown

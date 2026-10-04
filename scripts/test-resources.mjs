@@ -24,7 +24,12 @@ export function requireTestServerUrl(value) {
   return url
 }
 
-export function createTestRoot(parent = realpathSync('/tmp'), prefix = 'graphql-test-') {
+export function createTestRoot(parent, prefix = 'graphql-test-') {
+  if (parent === undefined) {
+    parent = join(homedir(), '.cache', 'graphql-disposable-tests')
+    mkdirSync(parent, { recursive: true, mode: 0o700 })
+    parent = realpathSync(parent)
+  }
   const directory = mkdtempSync(join(parent, prefix))
   const token = randomUUID()
   writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token }), { mode: 0o600, flag: 'wx' })
@@ -68,6 +73,7 @@ export function testEnvironment(environment, resource) {
     XDG_CACHE_HOME: 'home/.cache', XDG_STATE_HOME: 'home/.local/state', XDG_RUNTIME_DIR: 'xdg-runtime',
     OPENCODE_CONFIG_DIR: 'home/.config/opencode', FILE_STORAGE_ROOT: 'app/files',
     HARNESS_WORKSPACE_ROOT: 'app/workspaces', LOG_DIR: 'logs', ENG03_A_EVIDENCE_DIR: 'evidence',
+    TMPDIR: 'tmp', TMP: 'tmp', TEMP: 'tmp',
   }
   for (const [key, suffix] of Object.entries(paths)) {
     clean[key] = join(resource.directory, suffix)
@@ -94,7 +100,7 @@ export function testEnvironment(environment, resource) {
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
   return { ...clean, GRAPHQL_TEST_ROOT: resource.directory, GRAPHQL_TEST_OWNER: resource.token,
-    NIM2691_POSTGRES: '1', TMPDIR: resource.directory, TMP: resource.directory, TEMP: resource.directory }
+    NIM2691_POSTGRES: '1' }
 }
 
 export async function testAdminPool() {
