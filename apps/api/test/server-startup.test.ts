@@ -9,7 +9,11 @@ const state = vi.hoisted(() => ({
   listeners: new Map<string, () => void>(),
 }))
 vi.mock('@foreman-code/contracts/product-environment-node', () => ({ loadProductEnvFile: () => undefined }))
-vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined, realpath: async (path: string) => path }))
+vi.mock('node:fs/promises', async original => ({
+  ...(await original<typeof import('node:fs/promises')>()),
+  mkdir: async () => undefined,
+  realpath: async (path: string) => path,
+}))
 vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: '/fixture' }, host: '127.0.0.1', port: 0 }) }))
 vi.mock('../src/modules/byte-transfer/installedEntrypoints.js', () => ({ readMainRsyncEntrypoint: async () => ({ kind: 'unavailable', reason: 'Startup lifecycle fixture has no installed rsync selection.' }) }))
 vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
