@@ -189,6 +189,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
+import { createInstalledCodexQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
@@ -564,7 +565,21 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution))
+      } }, workerExecution), selectedSuites ? createInstalledCodexQualificationRetention({
+      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
+      currentBinding: deviceId => deviceRuntime.endpointForDomains().currentBinding(deviceId, 'host-harness-check-v1') ?? null,
+      currentInstallation: value => harnessRegistry.pinOverride(value).installation,
+      async refreshInstallation(value, signal) {
+        if (value.target.hostRef.kind !== 'device') return
+        const captured = deviceRuntime.endpointForDomains().captureRequest(value.target.hostRef.deviceId, 'harness-discovery-v1')
+        if (!captured) throw new DomainError('HARNESS_INVENTORY_STALE', 'The qualified Worker connection is unavailable.', 409)
+        const bounded = AbortSignal.any([signal, AbortSignal.timeout(30000)])
+        const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
+        bounded.throwIfAborted()
+        await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+      },
+    }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
     requireClaudeProductionCredentialDelivery(value.configuration)
     const proof = await harnessRegistry.profileEvidence(value, client)

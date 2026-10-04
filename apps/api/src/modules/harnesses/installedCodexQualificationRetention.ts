@@ -12,6 +12,7 @@ export interface NativeQualificationRetention {
   /** Returns the final live-channel fence to run after the profile insert and before commit. */
   retain(client: pg.PoolClient, value: HostHarnessOverride, proof: HostHarnessProfileEvidence,
     checkId: string, signal: AbortSignal): Promise<() => Promise<void>>
+  refresh(value: HostHarnessOverride, signal: AbortSignal): Promise<void>
 }
 const same = (a: unknown, b: unknown) => commandInputHash(a) === commandInputHash(b)
 const denied = (): never => { throw new DomainError('HARNESS_PROFILE_EVIDENCE_MISMATCH', 'Completed native qualification must match the current authorized host, check and installed bytes.', 409) }
@@ -23,8 +24,9 @@ export function createInstalledCodexQualificationRetention(input: {
   currentBinding(deviceId: string): Readonly<DeviceSessionBinding> | null
   currentInstallation(value: HostHarnessOverride): HostHarnessInstallationDto | null
   suiteRevision: string
+  refreshInstallation(value: HostHarnessOverride, signal: AbortSignal): Promise<void>
 }): NativeQualificationRetention {
-  return { async retain(client, value, proof, checkId, signal) {
+  return { refresh: input.refreshInstallation, async retain(client, value, proof, checkId, signal) {
     const receipt = CompletedNativeQualificationSchema.parse(proof.completedNativeQualification)
     const assertCurrent = async () => {
       signal.throwIfAborted()

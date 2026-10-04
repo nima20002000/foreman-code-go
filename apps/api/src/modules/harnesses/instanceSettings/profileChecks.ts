@@ -31,7 +31,14 @@ export class HostHarnessInstanceProfileChecks {
   check(principal: ManagementPrincipal, source: 'http' | 'mcp', input: HostHarnessInstanceCheckInput) {
     if (this.stopping.signal.aborted) return Promise.reject(new DomainError('HARNESS_CHECK_SHUTTING_DOWN', 'Host profile checks are stopping.', 503))
     if (this.flights.size >= 16) return Promise.reject(new DomainError('HARNESS_PROFILE_CHECK_BUSY', 'Host profile checks are busy; retry the same command.', 429))
-    const flight = this.perform(principal, source, input)
+    const flight = this.perform(principal, source, input).then(async result => {
+      if (result.value.proof.completedNativeQualification) {
+        if (!this.nativeRetention) throw new DomainError('HARNESS_NATIVE_RETENTION_UNAVAILABLE',
+          'Completed native qualification requires the Main transaction retention service.', 503)
+        await this.nativeRetention.refresh(result.value.override, this.stopping.signal)
+      }
+      return result
+    })
     this.flights.add(flight)
     void flight.finally(() => this.flights.delete(flight)).catch(() => undefined)
     return flight

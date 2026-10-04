@@ -168,8 +168,9 @@ async function mainFixture() {
   const query = vi.fn<(sql: string, parameters?: unknown[]) => Promise<{ rows: unknown[] }>>(async () => ({ rows: [] }))
   const client = { query } as unknown as pg.PoolClient, poolQuery = vi.fn()
   const repository = new HarnessQualificationRepository({ query: poolQuery } as unknown as pg.Pool)
+  const refreshInstallation = vi.fn(async () => {})
   const retention = createInstalledCodexQualificationRetention({ repository, currentBinding: () => binding,
-    currentInstallation: () => f.installation.installation, suiteRevision: 'codex-live-4+identity-v1' })
+    currentInstallation: () => f.installation.installation, suiteRevision: 'codex-live-4+identity-v1', refreshInstallation })
   const transactions: string[] = []
   const settings = { latest: async () => selected, lockRevision: async () => undefined,
     readAuthorized: async (work: (sql: pg.PoolClient) => Promise<unknown>) => {
@@ -186,11 +187,26 @@ async function mainFixture() {
   const qualify = vi.fn(async () => proof), authority = { authorize: vi.fn(async () => undefined) }
   const checks = new HostHarnessInstanceProfileChecks(settings, proofs, commands, authority, { qualify }, retention)
   const input = { commandId, instanceId: f.value.instanceId, expectedRevision: 1, target: f.value.target }
-  return { ...f, principal, proof, query, client, poolQuery, append, qualify, checks, input, transactions,
+  return { ...f, principal, proof, query, client, poolQuery, append, qualify, checks, input, transactions, refreshInstallation,
     replaceBinding: () => { binding = { ...binding, connectionEpoch: randomUUID() } },
     changeRevision: () => { selected = { ...selected, revision: 2, instanceRevision: '2' } } }
 }
 describe('Main retention through existing authorized idempotent profile check', () => {
+  it('refreshes a committed qualification on retry without repeating native checks', async () => {
+    const f = await mainFixture()
+    try {
+      f.refreshInstallation.mockRejectedValueOnce(new Error('Inventory refresh interrupted'))
+      await expect(f.checks.check(f.principal, 'mcp', f.input)).rejects.toThrow('Inventory refresh interrupted')
+      expect(f.transactions).toContain('commit')
+      await f.checks.check(f.principal, 'mcp', f.input)
+      expect(f.qualify).toHaveBeenCalledOnce()
+      expect(f.append).toHaveBeenCalledOnce()
+      expect(f.refreshInstallation).toHaveBeenCalledTimes(2)
+    } finally {
+      await f.checks.close()
+      await release(f)
+    }
+  })
   it('saves the exact completed qualification and profile with one authorized SQL client and replays without native repetition', async () => {
     const f = await mainFixture()
     try {
@@ -202,6 +218,7 @@ describe('Main retention through existing authorized idempotent profile check', 
       await f.checks.check(f.principal, 'http', f.input)
       expect(f.qualify).toHaveBeenCalledOnce()
       expect(f.query.mock.calls.filter(([sql]) => String(sql).includes('insert into harness_qualifications'))).toHaveLength(1)
+      expect(f.refreshInstallation).toHaveBeenCalledTimes(2)
     } finally { await f.checks.close(); await release(f) }
   })
   it('denies a read-only MCP caller before native checks or persistence', async () => {
