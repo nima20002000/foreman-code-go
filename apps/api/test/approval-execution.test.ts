@@ -344,6 +344,15 @@ it('captures complete native history only when needed for a pending request or t
 
 it('commits complete exact terminal history while its original stream still has queued transcript', async () => {
   const f = fixture()
+  const update = f.runs.updateExecution.bind(f.runs)
+  f.runs.updateExecution = async (...args) => {
+    if (args[0].state === 'completed') {
+      const lane = await f.interactions.coordination.getLane('codex', f.manager.session.nativeSessionId)
+      assert.equal(lane?.currentTurnOrMessageId, 'workflow-turn')
+      assert.ok(lane?.leaseToken)
+    }
+    return update(...args)
+  }
   let consumed = 0
   const events = Array.from({ length: 8 }, (_, sequence) => ({ sequence, type: 'native.notification',
     occurredAt: now, payload: { original: `queued-${sequence}` } }))
@@ -475,6 +484,12 @@ it('rejects a different native session before touching a healthy resident manage
 it('reconstructs cold attachment from the ensured durable execution rather than a fresh candidate', async () => {
   const f = fixture()
   f.executions.set(f.candidate.id, { ...f.candidate, state: 'running', nativeSessionId: f.manager.session.nativeSessionId })
+  await f.interactions.coordination.ensureLane({
+    id: 'saved-workflow-lane', harness: 'codex', nativeSessionId: f.manager.session.nativeSessionId,
+    ownerAgentId: f.candidate.agentId, correlationId: `execution:${f.candidate.id}`,
+    currentTurnOrMessageId: 'workflow-turn', observedStatus: 'disconnected',
+    revision: 0, connectionGeneration: 0, observedAt: now,
+  })
   f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
   await assert.rejects(f.coordinator.observeExact({ ...f.input,
     execution: { ...f.candidate, id: 'fresh-candidate', input: { wrong: true } },

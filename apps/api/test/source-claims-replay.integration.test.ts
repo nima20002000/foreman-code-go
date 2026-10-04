@@ -15,6 +15,7 @@ import type { WorkspaceLocationService } from '../src/modules/workspaces/locatio
 import type { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
 import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
+import { closeCompletedWorkflowSources } from '../src/modules/sources/workflowCleanup.js'
 
 // Owned closure-only SQL fixture. This exercises the unchanged confirmClosed
 // transaction and retention accounting; it does not qualify native closure proof.
@@ -26,7 +27,10 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
   const url = new URL(adminUrl); url.pathname = `/${database}`
   const pool = new pg.Pool({ connectionString: url.toString() }), root = await mkdtemp('/tmp/source-claims-db-')
   try {
-    await pool.query(`create table source_execution_materializations (materialization_id uuid primary key, record jsonb not null, state text not null);
+    await pool.query(`create table source_execution_materializations (materialization_id uuid primary key, record jsonb not null,
+      state text not null, execution_id text not null, reservation_id uuid not null);
+      create table runs (id text primary key, execution_state text not null);
+      create table harness_executions (id text primary key, run_id text not null, record jsonb not null);
       create table source_storage_reservations (reservation_id uuid primary key, scope_id text not null, owner_kind text not null,
       owner_id text not null, state text not null, reserved_bytes bigint not null, record jsonb not null)`)
     const bytes = Buffer.from('retained original bytes\n')
@@ -42,7 +46,11 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     const reservation = { reservationId: randomUUID(), scopeId: `main:${filesystem.device}:${filesystem.mountId}`, ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: reservation.ownerId,
       reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
-    await pool.query(`insert into source_execution_materializations values ($1,$2,'prepared')`, [receipt.materializationId, record])
+    await pool.query(`insert into source_execution_materializations values ($1,$2,'prepared',$3,$4)`,
+      [receipt.materializationId, record, receipt.executionId, record.reservationId])
+    await pool.query(`insert into runs values ('ongoing-workflow','running')`)
+    await pool.query(`insert into harness_executions values ($1,'ongoing-workflow',$2)`,
+      [receipt.executionId, { state: 'running' }])
     await pool.query(`insert into source_storage_reservations values ($1,$2,$3,$4,'owned',$5,$6)`, [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId, reservation.reservedBytes, reservation])
     const makeService = (releaseClaim: SourceExecutionHostPort['releaseClaim']) => new PostgresSourceService(pool,
       {} as PostgresCommandCoordinator, {} as WorkspaceLocationService, {} as PrivateSourceSnapshotStore,
@@ -67,7 +75,12 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
         JSON.stringify(original.receipt)])
       return measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
     })
-    await recovered.confirmClosed(record)
+    const report = (error: unknown): never => { throw error }
+    await closeCompletedWorkflowSources(pool, recovered, report)
+    expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
+    await pool.query(`update harness_executions set record=$1`, [{ state: 'completed' }])
+    await closeCompletedWorkflowSources(pool, recovered, report)
+    expect((await pool.query('select execution_state from runs')).rows[0].execution_state).toBe('running')
     await recovered.confirmClosed(record)
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('closed')
     const retainedBytes = await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem) + 16 * 1024

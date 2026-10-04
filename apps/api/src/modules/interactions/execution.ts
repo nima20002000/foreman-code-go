@@ -1443,6 +1443,9 @@ export class ApprovalExecutionCoordinator {
                 const lane = manager.capturedLease(session!)
                 if (!lane || lane.providerId && lane.providerId !== terminal.providerId) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH',
                   'The terminal differs from the original streaming writer.', 409)
+                await this.interactions.coordination.acknowledgeLaneTurn(
+                  lane.fence, terminal.correlationId, terminal.providerId,
+                )
                 lane.providerId = terminal.providerId
                 const captured = this.captureNative(input.owner, execution,
                   { type: 'history', history: safeValue(observed) }, 'live', lane)

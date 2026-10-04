@@ -5,6 +5,7 @@ import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '
 import { readReconciledDispatchIntent, readRemoteReceipts } from '../runs/remote/persistence.js'
 import { readNativeExecutionBinding } from '../placement/executionBinding.js'
 import { sourceMaterializationDigest } from './bindingHash.js'
+import { remoteWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -155,11 +156,13 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       }
       const receipts = (await readRemoteReceipts(sql, intent.runId, intent.nodeId)).filter(value => value.intent.operationId === record.operationId)
       const receipt = receipts.length === 1 ? receipts[0] : undefined
-      if (!receipt || parent.hostRef.kind !== 'device' || !parent.registration) return false
-      return sameWorkflowValue(receipt.intent, intent) && receipt.phase === 'confirmed_terminal' && Boolean(receipt.terminal)
+      if (parent.hostRef.kind !== 'device' || !parent.registration) return false
+      const nativeClosed = receipt && sameWorkflowValue(receipt.intent, intent)
+        && receipt.phase === 'confirmed_terminal' && Boolean(receipt.terminal)
         && receipt.connection.mainId === record.receipt.binding.mainId && receipt.connection.deviceId === record.receipt.binding.deviceId
         && receipt.connection.workerInstallationId === parent.registration.workerInstallationId
         && receipt.connection.keyRevision === parent.registration.keyRevision && receipt.connection.authorizationRevision === parent.registration.authorizationRevision
+      return Boolean(nativeClosed) || await remoteWorkflowPreparationClosed(sql, intent.executionId)
     }
 
     const execution = await new JobRepository().execution(sql, record.receipt.binding.workspaceId, record.receipt.executionId)
