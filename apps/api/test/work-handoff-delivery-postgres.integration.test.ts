@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type ExecutionResult } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@graphql/contracts'
 import {
   WorkReturnSchema, WorkNoticeSchema, WorkHandoffResultSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
   canonicalGraphJson, type WorkHandoffResult,
 } from '@graphql/contracts/wave25'
+import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
@@ -93,6 +94,35 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
   return { fixture, version, run, host, request, executions }
 }
 
+async function pendingRequester(pool: pg.Pool, t: Awaited<ReturnType<typeof acceptedReview>>,
+  output: WorkHandoffResult) {
+  const activationId = 'requester-next-activation'
+  const execution = HarnessExecutionSchema.parse({ ...t.executions[0], id: 'requester-next-execution',
+    result: { outcome: 'succeeded', output } })
+  const activation = { scope: t.fixture.scope, activationId, workflowNodeId: execution.workflowNodeId,
+    lineageId: t.run.id, cause: { kind: 'dependency', resolutionId: 'completed-review' } }
+  await pool.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
+    cause_kind,cause_id,state,record) values($1,$2,$3,$4,'dependency','completed-review','queued',$5::jsonb)`,
+    [activationId, t.run.id, t.version.id, execution.workflowNodeId, text(activation)])
+  await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
+    values($1,$2,$3,$4,1,false,$5::jsonb,$6)`, [execution.id, t.run.id, execution.workflowNodeId,
+    execution.agentId, text(execution), activationId])
+  return { activationId, execution }
+}
+
+async function acceptPreparedResult(sql: GraphTransactionSql,
+  t: Awaited<ReturnType<typeof acceptedReview>>, activationId: string,
+  execution: HarnessExecution, output: WorkHandoffResult) {
+  await sql.query('select id from runs where id=$1 for update', [t.run.id])
+  await assertWorkHandoffDeliveryLocked({ sql, scope: t.fixture.scope, version: t.version,
+    now: t.fixture.createdAt }, execution, activationId, output)
+  await sql.query('update harness_executions set record=$2::jsonb,accepted=true where id=$1', [execution.id, text(execution)])
+  await sql.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+    values($1,$2,$3,$4,$5,$6)`, [execution.id, t.run.id, activationId,
+    text(execution.result), repeatDigest(execution.result), t.fixture.createdAt])
+  await sql.query("update run_work_activations set state='completed' where activation_id=$1 and run_id=$2", [activationId, t.run.id])
+}
+
 function returnPreview(t: Awaited<ReturnType<typeof acceptedReview>>, output: WorkHandoffResult) {
   assert.equal(output.routing.kind, 'return')
   if (output.routing.kind !== 'return') throw new Error('Return fixture required')
@@ -161,15 +191,8 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
       assert.ok(owner)
       try {
-        await owner.oneShotConnection().transaction(async (sql) => {
-          await assertWorkHandoffDeliveryLocked({ sql, scope: t.fixture.scope, version: t.version,
-            now: t.fixture.createdAt }, candidate, t.request.destinationActivationId, output)
-          await sql.query('update harness_executions set record=$2::jsonb,accepted=true where id=$1',
-            [candidate.id, text(candidate)])
-          await sql.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
-            values($1,$2,$3,$4,$5,$6)`, [candidate.id, t.run.id, t.request.destinationActivationId,
-            text(candidate.result), repeatDigest(candidate.result), t.fixture.createdAt])
-        })
+        await owner.oneShotConnection().transaction((sql) =>
+          acceptPreparedResult(sql, t, t.request.destinationActivationId, candidate, output))
         if (restart) {
           await owner.release()
           owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
@@ -187,6 +210,69 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
         expect((await store.returnWork(candidate.id)).replayed).toBe(true)
         expect((await pool.query('select record from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(1)
         expect((await pool.query('select return_id from run_work_returns where run_id=$1', [t.run.id])).rowCount).toBe(1)
+      } finally { await owner.release() }
+    })
+  }, 120000)
+
+  it.each([false, true])('delivers a boundary-sized exhausted-route denial notice (restart=%s)', async (restart) => {
+    await taskDatabase(async (pool) => {
+      await applyApplicationMigrations(pool)
+      const t = await acceptedReview(pool, { routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
+        data: { latestDeliverable: { revision: 1 }, remainingFindings: [] } })
+      const output: WorkHandoffResult = { routing: { kind: 'request', outcome: 'review' },
+        data: { latestDeliverable: '', remainingFindings: [] } }
+      const next = await pendingRequester(pool, t, output)
+      const requestId = repeatId('work-request', t.run.id, next.execution.id, t.request.relationshipId)
+      const denialId = repeatId('work-denial', requestId)
+      const notice = createWorkLimitNotice({ scope: t.fixture.scope, version: t.version, now: t.fixture.createdAt }, {
+        cause: { kind: 'limit_denial', denialId }, requesterActivationId: next.activationId,
+        requesterNodeId: t.request.requesterNodeId, continuationActivationId: repeatId('work-activation', denialId),
+        relationshipId: t.request.relationshipId, destinationNodeId: t.request.destinationNodeId,
+        used: 1, maximum: 1, latestDeliverable: '', remainingFindings: [],
+      }, [])
+      output.data.latestDeliverable = 'x'.repeat(65536 - Buffer.byteLength(canonicalGraphJson({ ...notice,
+        delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8'))
+      const candidate = HarnessExecutionSchema.parse({ ...next.execution, result: { outcome: 'succeeded', output } })
+      let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+      assert.ok(owner)
+      try {
+        await owner.oneShotConnection().transaction((sql) => acceptPreparedResult(sql, t, next.activationId, candidate, output))
+        if (restart) {
+          await owner.release()
+          owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+          assert.ok(owner)
+        }
+        const store = new RepeatRunRepository(owner, t.host, t.version)
+        const denied = await store.admitWorkRequest(candidate.id)
+        assert.equal(denied.kind, 'limit_reached')
+        expect(denied.notice.latestDeliverable).toEqual(output.data.latestDeliverable)
+        expect(denied.notice.cause).toEqual({ kind: 'limit_denial', denialId })
+        expect((await store.admitWorkRequest(candidate.id)).replayed).toBe(true)
+        expect((await pool.query('select 1 from run_work_denials where run_id=$1', [t.run.id])).rowCount).toBe(1)
+        expect((await pool.query('select 1 from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(1)
+      } finally { await owner.release() }
+    })
+  }, 120000)
+
+  it('rejects an undeliverable denial notice before accepting the requester result', async () => {
+    await taskDatabase(async (pool) => {
+      await applyApplicationMigrations(pool)
+      const t = await acceptedReview(pool, { routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
+        data: { latestDeliverable: { revision: 1 }, remainingFindings: [] } })
+      const output: WorkHandoffResult = { routing: { kind: 'request', outcome: 'review' },
+        data: { latestDeliverable: 'x'.repeat(65000), remainingFindings: [] } }
+      WorkHandoffResultSchema.parse(output)
+      const next = await pendingRequester(pool, t, output)
+      const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+      assert.ok(owner)
+      try {
+        await expect(owner.oneShotConnection().transaction((sql) =>
+          acceptPreparedResult(sql, t, next.activationId, next.execution, output)))
+          .rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+        expect((await pool.query('select accepted from harness_executions where id=$1', [next.execution.id])).rows[0]?.accepted)
+          .toBe(false)
+        expect((await pool.query('select 1 from run_work_results where execution_id=$1', [next.execution.id])).rowCount).toBe(0)
+        expect((await pool.query('select 1 from run_work_denials where run_id=$1', [t.run.id])).rowCount).toBe(0)
       } finally { await owner.release() }
     })
   }, 120000)
