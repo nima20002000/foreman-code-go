@@ -154,7 +154,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
   if (name.startsWith('agent_chat_') && name !== 'agent_chat_read') result.push({action:'agent_chat:read',scope:'resource'})
-  if (['operator_chat_cancel', 'operator_chat_respond'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
+  if (['operator_chat_send', 'operator_chat_cancel', 'operator_chat_respond'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
   if (name === 'skill_archive') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})

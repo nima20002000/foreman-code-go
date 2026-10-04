@@ -359,7 +359,9 @@ export class OperatorChatService {
   }
   private async accept(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal, controller: AbortController) {
     const input = SendOperatorMessageRequestSchema.parse(value)
+    requireAuthorization(principal, 'operator_chat:read')
     const row = await this.assertAccess(id, principal, 'operator_chat:write')
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
     // Resolve receipts before reading mutable defaults or validating a native
     // installation. A recovered receipt is not a request for a new native turn.
     const sourceReceipt = await this.repository.hasTurn(id, input.requestId)
@@ -372,7 +374,14 @@ export class OperatorChatService {
       if (!receiptId) throw new DomainError('OPERATOR_RECEIPT_NOT_FOUND', 'No receipt is currently visible for this command.', 404)
       // This branch cannot call validate, setup, prepare, or runTurn, even for
       // a retryable receipt. A missing receipt is not evidence of non-delivery.
-      return this.control(receiptId, () => this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true))
+      return this.control(receiptId, async () => {
+        const current = await this.authority.current(principal.id)
+        requireAuthorization(current, 'operator_chat:write')
+        requireAuthorization(current, 'operator_chat:read')
+        const begun = await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true)
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+        return begun
+      })
     }
     if (publicOperatorConversation(row.record).status === 'archived') {
       throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
@@ -383,7 +392,9 @@ export class OperatorChatService {
     const fork = Boolean(harness && harness.harness !== row.harness && await this.repository.hasMessages(id))
     const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
-      requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
+      const current = await this.authority.current(row.owner_principal_id!)
+      requireAuthorization(current, 'operator_chat:write')
+      requireAuthorization(current, 'operator_chat:read')
       const begun = receiptId
         ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, false,
             (accepted) => this.validate(accepted))
@@ -392,6 +403,7 @@ export class OperatorChatService {
               (accepted) => this.validate(accepted))
           : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
               configuration!.id, false, (accepted) => this.validate(accepted))
+      requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
       if (begun.replayed) return begun
       const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
