@@ -100,10 +100,14 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
       : { kind: 'agent', conversationId: surface, workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) }
   const start: NativeSessionStart = kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
     : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } }
-  const frames = new ClaudeBoundedQueue<unknown>(64), ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
+  const queries: { frames: ClaudeBoundedQueue<unknown>; messages: AsyncIterator<ClaudeSdkUserMessage> }[] = []
+  const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
   const setMcpServers = vi.fn(async () => ({ added: ['graphql'], removed: [], errors: {} }))
   const sdkQuery = vi.fn<ClaudeSdkClient['query']>(options => {
-    ready.resolve(options.prompt[Symbol.asyncIterator]())
+    const frames = new ClaudeBoundedQueue<unknown>(64)
+    const messages = options.prompt[Symbol.asyncIterator]()
+    queries.push({ frames, messages })
+    ready.resolve(messages)
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close: () => frames.close(), interrupt: async () => undefined,
       initializationResult: async () => ({}), setMcpServers,
       mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql.url }, tools: [] }] }
@@ -130,7 +134,8 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
       choice: { optionId: 'allow_once', semantic: 'approve_once' },
     } } }]
   }
-  return { ...result, row, claim, start, profiles, proof, ready, frames, sdkQuery, loadClient, query, factories, setMcpServers, harness, binding, installations, launcher }
+  return { ...result, row, claim, start, profiles, proof, ready, queries, get frames() { return queries.at(-1)!.frames },
+    sdkQuery, loadClient, query, factories, setMcpServers, harness, binding, installations, launcher }
 }
 
 export async function managementEndpoint() {

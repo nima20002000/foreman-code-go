@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 import { productionClaudeFixture, managementEndpoint, deferred } from './support/claudeProduction.js'
 
 async function replay(f: ReturnType<typeof productionClaudeFixture>) {
@@ -21,6 +22,48 @@ async function replay(f: ReturnType<typeof productionClaudeFixture>) {
 }
 
 describe('common admitted production Claude four-surface replay', () => {
+  it('resumes a full production chat before the next message without replaying previous inputs', async () => {
+    const f = productionClaudeFixture('agent')
+    let session: NativeSessionReference | undefined
+    const offered = new Set<string>()
+    try {
+      for (let index = 1; index <= 257; index++) {
+        f.row.active_request_id = `request-${index}`
+        const correlationId = `agent:request-${index}`
+        const input = { prompt: `Message ${index}`, clientCorrelationId: correlationId,
+          onMessageSubmitted: async (receipt: NonNullable<typeof f.row.payload.nativeSubmission>) => {
+            f.row.payload.nativeSubmission = receipt
+          } }
+        const events: NativeHarnessEvent[] = []
+        const stream = session ? f.manager.startTurn(session, input)
+          : f.manager.startInitialTurn(f.start, { ...input, onSessionObserved: async observed => {
+            session = observed
+            f.row.native_session_id = observed.nativeSessionId
+            f.row.provider_version = observed.providerVersion
+          } })
+        const output = (async () => { for await (const event of stream) events.push(event) })()
+        await vi.waitFor(() => expect(f.queries).toHaveLength(index > 256 ? 2 : 1))
+        const message = (await f.queries.at(-1)!.messages.next()).value!
+        expect(offered.has(message.uuid)).toBe(false)
+        offered.add(message.uuid)
+        expect(message.message.content).toBe(input.prompt)
+        if (index === 1) await f.frames.offer({ type: 'system', subtype: 'init', session_id: 'recorded-session',
+          claude_code_version: '2.1.284', cwd: '/recorded/work' })
+        await f.frames.offer({ type: 'assistant', uuid: `reply-${index}`, session_id: 'recorded-session',
+          user_message_uuid: message.uuid, message: { id: `message-${index}`, content: [{ type: 'text', text: 'answer' }] } })
+        await f.frames.offer({ type: 'result', uuid: `result-${index}`, session_id: 'recorded-session',
+          user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'answer' })
+        await output
+        expect(events.at(-1)?.payload.result).toEqual({ outcome: 'succeeded', output: 'answer' })
+      }
+      expect(offered.size).toBe(257)
+      expect(f.sdkQuery.mock.calls[1]![0].options.resume).toBe(session!.nativeSessionId)
+      expect((await f.manager.reconcile(session!, 'agent:request-1')).terminalResult?.outcome).toBe('succeeded')
+      const replay = f.manager.startTurn(session!, { prompt: 'Message 1', clientCorrelationId: 'agent:request-1' })
+      await expect(replay[Symbol.asyncIterator]().next()).rejects.toThrow('already offered')
+    } finally { await f.manager.dispose?.() }
+  }, 30_000)
+
   it.each(['workflow', 'operator', 'agent', 'selected-run'] as const)('loads exact profile and existing %s domain before observed native message', async surface => {
     const f = productionClaudeFixture(surface)
     expect(f.loadClient).not.toHaveBeenCalled(); expect(f.query).not.toHaveBeenCalled()
