@@ -225,7 +225,7 @@ export function intersectNativeToolFilters(
 
 export class WorkerLaunchCredentialService implements ExecutionCredentialProvider {
   constructor(
-    private readonly detection: McpDetectionService,
+    private readonly detection: Pick<McpDetectionService, 'preflight'>,
     private readonly credentials: WorkerCredentialService,
     private readonly runnerId: string,
     maximumExecutionMs = 300_000,

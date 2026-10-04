@@ -13,6 +13,7 @@ import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
 import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
+import { remoteMcpPreflight } from './modules/placement/remoteMcpPreflight.js'
 import { closeCompletedWorkflowSources } from './modules/sources/workflowCleanup.js'
 import { placedContinuationValidator } from './modules/placement/continuation.js'
 import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
@@ -715,7 +716,9 @@ export function buildProductionApp(
       }
       const preparedContext = await remoteWorkflow.prepareContext(context)
       const { manager } = managers.resolve(preparedContext)
-      const detection = new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint)
+      const detection = remoteWorkflow.isRemote(input.executionId)
+        ? remoteMcpPreflight(manager, preparedContext)
+        : new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint)
       if (input.harness === 'claude') {
         const claude = claudeLaunches.get(manager)
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)

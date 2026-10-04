@@ -58,6 +58,7 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     inspectMcp: async () => { throw new Error('Not part of this fixture') },
     createSession: async (input: NativeSessionStart) => {
       assert.equal(input.environment?.variables.GRAPHQL_MCP_TOKEN, secret)
+      assert.equal(input.correlationId, `execution:${candidate.id}`)
       creates += 1
       return session
     },

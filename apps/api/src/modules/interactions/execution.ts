@@ -1360,7 +1360,7 @@ export class ApprovalExecutionCoordinator {
         signal.throwIfAborted()
         input.owner.assertOwned()
         await assertBoundary()
-        const start = { request, ...(environment ? { environment } : {}) }
+        const start = { request, correlationId: `execution:${execution.id}`, ...(environment ? { environment } : {}) }
         const persistObservedSession = async (observed: NativeSessionReference, setupLane?: SessionWriteLease) => {
           if (observed.harness !== context!.harness) throw new Error('The observed native session has the wrong harness.')
           session = observed
