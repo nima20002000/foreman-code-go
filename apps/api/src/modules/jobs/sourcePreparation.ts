@@ -78,15 +78,33 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
     )).rows.map(row => JobRuntimeProfileSchema.parse(row.record))
     const candidates: JobComputerCandidate[] = []
+    if (!isAutoJobSpec(spec)) {
+      const fixedTarget = spec.target
+      const root = roots.find(root => root.selection.rootPolicyId === fixedTarget.destination.rootPolicyId)
+      if (!root || canonical(root.source) !== canonical({ approvedSourceId: spec.source.approvedSourceId,
+        snapshotId: spec.source.snapshotId, manifestDigest: spec.source.manifestDigest })) {
+        throw new DomainError('JOB_ROOT_PIN_CONFLICT', 'The saved build root or source binding changed.', 409)
+      }
+      if (!profiles.some(profile => canonical(profile.policy) === canonical(spec.policy))) {
+        throw new DomainError('JOB_RUNTIME_UNQUALIFIED', 'The saved runtime policy is no longer qualified.', 409)
+      }
+    }
     for (const root of roots) {
       if (root.binding.accessMode !== 'exclusive-write' || root.source.snapshotId !== spec.source.snapshotId
         || root.source.manifestDigest !== spec.source.manifestDigest || root.source.approvedSourceId !== spec.source.approvedSourceId) continue
       let target: ResolvedJobDefinitionSpec['target']
       try { target = await this.target(sql, principal, root) } catch (error) {
+        const fixedRoot = !isAutoJobSpec(spec) && root.selection.rootPolicyId === spec.target.destination.rootPolicyId
+        if (fixedRoot) throw error
         if (error instanceof DeviceAccessError || error instanceof DomainError && error.status === 409) continue
         throw error
       }
-      if (!isAutoJobSpec(spec) && canonical(target) !== canonical(spec.target)) continue
+      if (!isAutoJobSpec(spec) && canonical(target) !== canonical(spec.target)) {
+        if (root.selection.rootPolicyId === spec.target.destination.rootPolicyId) {
+          throw new DomainError('JOB_ROOT_PIN_CONFLICT', 'The saved build root or computer identity changed.', 409)
+        }
+        continue
+      }
       for (const profile of profiles) {
         if (canonical(profile.root.selection.hostRef) !== canonical(root.selection.hostRef)
           || profile.root.selection.rootPolicyId !== root.selection.rootPolicyId) continue
@@ -105,7 +123,10 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
             + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 } }
         if (profile.status !== 'qualified' || !profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) {
           candidate.ready = false
-          candidate.reasons = ['runtime_setup_required']
+          if (profile.status === 'revoked') candidate.reasons = ['authorization_revoked']
+          else if (profile.measurement && Date.parse(profile.measurement.expiresAt) <= Date.now()) {
+            candidate.reasons = ['qualification_expired']
+          } else candidate.reasons = ['runtime_setup_required']
           candidates.push(candidate)
           continue
         }

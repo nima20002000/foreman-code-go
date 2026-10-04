@@ -12,6 +12,7 @@ import type { SourceAttemptAuthority } from '../sources/executionHosts.js'
 import type { MaterializationAttempt } from '../sources/ports.js'
 import { sourceBindingHash } from '../sources/bindingHash.js'
 import { DomainError } from '../errors.js'
+import { JobQueueTicketSchema } from '@graphql/contracts/job-admission'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import { WorkflowJobPreparationSchema } from './workflowPreparation.js'
 import { IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
@@ -27,9 +28,31 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
       requireAuthorization(actor,'jobs:start',{workspaceId:manual.workspace_id})
       const definition=JobDefinitionSchema.parse(manual.definition)
       if(definition.workspaceId!==manual.workspace_id)throw new DomainError('JOB_PREPARATION_PIN_CONFLICT','The saved job preparation scope changed.',409)
+      const queued = (await sql.query<{ record: unknown; owner_id: string | null; owner_fence: string | null }>(
+        'select record,owner_id,owner_fence from job_admission_queue where execution_id=$1 for share',
+        [executionId])).rows[0]
+      if (queued) {
+        const ticket = JobQueueTicketSchema.parse(queued.record)
+        if (ticket.attemptId !== attemptId || ticket.operationId !== operationId
+          || ticket.definition.versionId !== definition.versionId || ticket.principalId !== actor.id) {
+          throw new DomainError('JOB_PREPARATION_PIN_CONFLICT', 'The queue belongs to another source attempt.', 409)
+        }
+        if (ticket.state !== 'accepted') {
+          if (ticket.state !== 'claimed' || ticket.cancelRequestedAt) {
+            throw new DomainError('JOB_PREPARATION_CLOSED', 'This queued source preparation is closed.', 409)
+          }
+          const owner = (await sql.query(`select 1 from pg_stat_activity a where a.pid::text=$1
+            and (extract(epoch from a.backend_start)*1000000)::bigint::text=$2
+            and exists(select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory'
+              and l.classid=810038::oid and l.objid=(hashtext($3)::bigint & 4294967295)::oid
+              and l.objsubid=2 and l.mode='ExclusiveLock' and l.granted)`,
+          [queued.owner_id, queued.owner_fence, executionId])).rowCount
+          if (!owner) throw new DomainError('JOB_OWNERSHIP_LOST', 'The queued source owner disconnected.', 409)
+        }
+      }
       const current=(await sql.query<{version_id:string}>('select version_id from job_definitions where workspace_id=$1 and id=$2 for share',[manual.workspace_id,definition.id])).rows[0]
       const accepted=(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length>0
-      if(!accepted&&current?.version_id!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The saved job changed before admission.',409)
+      if(!queued&&!accepted&&current?.version_id!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The saved job changed before admission.',409)
       if(!accepted&&Date.now()-manual.created_at.getTime()>definition.spec.policy.preparationTimeoutMs)throw new DomainError('JOB_PREPARATION_TIMEOUT','The actual job preparation exceeded its accepted budget.',409)
       return {principal:actor,workspaceId:manual.workspace_id,spec:isAutoJobSpec(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
     }

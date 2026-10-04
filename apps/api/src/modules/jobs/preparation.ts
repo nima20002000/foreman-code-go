@@ -1,8 +1,22 @@
-import { JobAuthoringChoicesSchema, PreparedJobSpecSchema, type JobAuthoringChoices, isAutoJobSpec, type JobDefinitionSpec, type ResolvedJobDefinitionSpec, type JobExecution, type PreparedJobSpec } from '@graphql/contracts/jobs'
+import {
+  JobExecutionSchema, JobDefinitionSchema, JobAuthoringChoicesSchema, PreparedJobSpecSchema, isAutoJobSpec,
+  type JobAuthoringChoices, type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
+  type JobExecution, type PreparedJobSpec,
+} from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
-import { canonical, type JobSql } from './repository.js'
-import type { JobPreparationPort } from './ports.js'
+import { canonical, JobRepository, type JobSql } from './repository.js'
+import type { JobPreparationPort, JobQueueConfiguration } from './ports.js'
+import type pg from 'pg'
+import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobOwnership } from './ownership.js'
+import { jobEligibilityReason, releaseUnstartedJobComputer, type JobComputerSelection } from './computerSelection.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../access/policy.js'
+import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import { lockActiveWorkspace } from '../workspaces/admission.js'
+import { requireJobPreparationDeadline } from './preparationDeadline.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 export interface JobPreparationSources {
   revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   /** Actual W12 computer/root, W09 scoped snapshot and CI-A qualified profile readbacks. No probes/install side effects. */
@@ -10,6 +24,215 @@ export interface JobPreparationSources {
   choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string):Promise<JobAuthoringChoices>
   /** Real W09 verified private repository materialization, bound to this genuine job/attempt. */
   materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<PreparedJobSpec>
+}
+
+interface QueuePreparationPorts {
+  configuration: JobQueueConfiguration
+  placement: JobComputerSelection
+  prepare(principal: ManagementPrincipal, definition: JobDefinition, ticket: JobQueueTicket): Promise<PreparedJobSpec>
+  admit(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
+    prepared: PreparedJobSpec, ticket: JobQueueTicket): Promise<JobExecution>
+  wake(execution: JobExecution): Promise<void>
+}
+
+/** Claims capacity in queue order, then prepares on the original attempt outside SQL locks. */
+export class JobQueuePreparation {
+  private readonly repository = new JobRepository()
+  constructor(private readonly pool: pg.Pool, private readonly ports: QueuePreparationPorts,
+    private readonly clock: () => Date) {}
+
+  async wake(): Promise<void> {
+    const order = await JobOwnership.acquire(this.pool, 'job-admission-order', () => {})
+    if (!order) return
+    const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
+    let recoveries: JobExecution[] = []
+    const barriers: { id: string; hosts: string[]; claims: number }[] = []
+    try {
+      const pending = await this.repository.pendingQueue(order.connection)
+      const accepted = await order.connection.query<{ record: unknown }>(`select e.record
+        from job_admission_queue q join job_executions e on e.id=q.execution_id and e.workspace_id=q.workspace_id
+        where q.record->>'state'='accepted' and
+          (e.record #>> '{process,phase}'<>'terminal' or e.record->>'publication' in ('pending','collecting'))`)
+      recoveries = accepted.rows.map(row => JobExecutionSchema.parse(row.record))
+      for (const pendingTicket of pending) {
+        order.assertOwned()
+        const owner = await JobOwnership.acquire(this.pool, pendingTicket.executionId, () => {})
+        if (!owner) continue
+        let retained = false
+        try {
+          const ticket = await owner.connection.transaction(async sql => {
+            beforeGraphCommit(sql, async () => { order.assertOwned() })
+            const ticket = await this.repository.queueTicket(sql, pendingTicket.workspaceId, pendingTicket.id, true)
+            if (ticket.state === 'accepted' || ticket.state === 'terminal') return null
+            if (ticket.cancelRequestedAt) {
+              await this.finish(sql, ticket, 'cancelled')
+              return null
+            }
+            let principal: ManagementPrincipal
+            try {
+              principal = await this.principal(sql, ticket)
+            } catch (error) {
+              if (!(error instanceof DomainError) || error.status !== 403) throw error
+              await this.finish(sql, ticket, 'authorization_revoked', [error.code])
+              return null
+            }
+            if (ticket.state === 'claimed') {
+              await this.fence(sql, owner, ticket)
+              return ticket
+            }
+            if (this.clock().getTime() >= Date.parse(ticket.deadlineAt)) {
+              await this.finish(sql, ticket, 'timed_out')
+              return null
+            }
+            return this.claim(sql, principal, ticket, owner, barriers)
+          })
+          if (ticket) {
+            claimed.push({ ticket, owner })
+            retained = true
+          }
+        } finally {
+          if (!retained) await owner.release()
+        }
+      }
+    } catch (error) {
+      await Promise.allSettled(claimed.map(({ owner }) => owner.release()))
+      throw error
+    } finally {
+      await order.release()
+    }
+    const results = await Promise.allSettled([
+      ...claimed.map(({ ticket, owner }) => this.prepare(ticket, owner)),
+      ...recoveries.map(execution => this.ports.wake(execution)),
+    ])
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  }
+
+  private async principal(sql: JobSql, ticket: JobQueueTicket): Promise<ManagementPrincipal> {
+    const principal = await readLiveManagementPrincipal(sql, ticket.principalId)
+    requireAuthorization(principal, 'jobs:start', { workspaceId: ticket.workspaceId })
+    return principal
+  }
+
+  private async fence(sql: GraphTransactionSql,
+    owner: JobOwnership, ticket: JobQueueTicket): Promise<void> {
+    const fence = await owner.readFence(sql)
+    await sql.query('update job_admission_queue set owner_id=$2,owner_fence=$3 where id=$1',
+      [ticket.id, fence.ownerId, fence.fence])
+    beforeGraphCommit(sql, async () => { owner.assertOwned() })
+  }
+
+  private async claim(sql: GraphTransactionSql,
+    principal: ManagementPrincipal, ticket: JobQueueTicket, owner: JobOwnership,
+    barriers: { id: string; hosts: string[]; claims: number }[]): Promise<JobQueueTicket | null> {
+    const excluded = new Set(barriers.filter(barrier => barrier.claims >= this.ports.configuration.limits.maxBackfillClaims)
+      .flatMap(barrier => barrier.hosts))
+    let claim
+    try {
+      claim = await this.ports.placement.claim(sql, principal, JobDefinitionSchema.parse(ticket.definition), ticket, excluded)
+    } catch (error) {
+      if (!(error instanceof DomainError)) throw error
+      const reason = jobEligibilityReason(error.code)
+      if (error.status === 403 || reason === 'authorization_revoked') {
+        await this.finish(sql, ticket, 'authorization_revoked', [error.code])
+        return null
+      }
+      await this.repository.putQueueTicket(sql, { ...ticket, state: 'blocked', waitingReasons: [reason],
+        compatibleTargetCount: 0 })
+      await sql.query('update job_admission_queue set diagnostic_codes=$2::jsonb where id=$1',
+        [ticket.id, JSON.stringify([error.code])])
+      return null
+    }
+    if (claim.exceedsMaximum || claim.reasons.includes('authorization_revoked')) {
+      await this.finish(sql, ticket, claim.exceedsMaximum ? 'request_exceeds_maximum' : 'authorization_revoked',
+        claim.diagnosticCodes)
+      return null
+    }
+    if (!claim.spec) {
+      const blocked = claim.reasons.some(reason => reason !== 'busy' && reason !== 'offline')
+      await this.repository.putQueueTicket(sql, { ...ticket, state: blocked ? 'blocked' : 'waiting',
+        waitingReasons: claim.reasons, compatibleTargetCount: claim.compatibleTargetCount })
+      await sql.query('update job_admission_queue set diagnostic_codes=$2::jsonb where id=$1',
+        [ticket.id, JSON.stringify(claim.diagnosticCodes)])
+      const row = (await sql.query<{ backfill_claims: number }>(
+        'select backfill_claims from job_admission_queue where id=$1', [ticket.id])).rows[0]!
+      barriers.push({ id: ticket.id, hosts: claim.waitingHosts, claims: row.backfill_claims })
+      return null
+    }
+    const selection = (await sql.query<{ limits: unknown }>(
+      'select limits from job_computer_selections where execution_id=$1', [ticket.executionId])).rows[0]!
+    if (canonical(selection.limits) !== canonical(ticket.resources.limits)) {
+      throw new DomainError('JOB_RESOURCE_REQUEST_CONFLICT', 'The reviewed build envelope differs from the runtime limits.', 409)
+    }
+    for (const barrier of barriers.filter(barrier => claim.selectedHost && barrier.hosts.includes(claim.selectedHost))) {
+      barrier.claims++
+      await sql.query('update job_admission_queue set backfill_claims=backfill_claims+1 where id=$1', [barrier.id])
+    }
+    await sql.query(`insert into job_preparations
+      (execution_id,attempt_id,operation_id,workspace_id,definition_version_id,principal_id,command_id,definition,created_at)
+      values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) on conflict(execution_id) do nothing`,
+    [ticket.executionId, ticket.attemptId, ticket.operationId, ticket.workspaceId, ticket.definition.versionId,
+      ticket.principalId, ticket.commandId, JSON.stringify(ticket.definition), this.clock().toISOString()])
+    await this.fence(sql, owner, ticket)
+    return this.repository.putQueueTicket(sql, { ...ticket, state: 'claimed', reservationId: ticket.id,
+      waitingReasons: [], queuePosition: null, compatibleTargetCount: claim.compatibleTargetCount })
+  }
+
+  private async finish(sql: JobSql, ticket: JobQueueTicket,
+    reason: NonNullable<JobQueueTicket['terminalReason']>, diagnosticCodes: string[] = []): Promise<void> {
+    await this.repository.finishQueueTicket(sql, ticket, reason, this.clock().toISOString())
+    await sql.query('update job_admission_queue set diagnostic_codes=$2::jsonb where id=$1',
+      [ticket.id, JSON.stringify(diagnosticCodes)])
+    if (ticket.reservationId) await releaseUnstartedJobComputer(sql, ticket)
+  }
+
+  private async prepare(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
+    let executionToWake: JobExecution | null = null
+    try {
+      const principal = await owner.connection.transaction(sql => this.principal(sql, original))
+      await owner.connection.transaction(sql => requireJobPreparationDeadline(sql, 'manual', original.executionId,
+        original.definition.spec.policy.preparationTimeoutMs, this.clock().getTime()))
+      const prepared = await this.ports.prepare(principal, JobDefinitionSchema.parse(original.definition), original)
+      owner.assertOwned()
+      executionToWake = await owner.connection.transaction(async sql => {
+        await lockActiveWorkspace(sql, original.workspaceId)
+        const ticket = await this.repository.queueTicket(sql, original.workspaceId, original.id, true)
+        if (ticket.state === 'terminal') return null
+        if (ticket.cancelRequestedAt) {
+          await this.finish(sql, ticket, 'cancelled')
+          return null
+        }
+        const live = await this.principal(sql, ticket)
+        await requireJobPreparationDeadline(sql, 'manual', ticket.executionId,
+          ticket.definition.spec.policy.preparationTimeoutMs, this.clock().getTime())
+        await this.fence(sql, owner, ticket)
+        const execution = await this.ports.admit(sql, live, JobDefinitionSchema.parse(ticket.definition), prepared, ticket)
+        await this.repository.putQueueTicket(sql, { ...ticket, state: 'accepted', waitingReasons: [] })
+        return execution
+      })
+    } catch (error) {
+      if (error instanceof DomainError && error.code !== 'JOB_OWNERSHIP_LOST') {
+        owner.assertOwned()
+        await owner.connection.transaction(async sql => {
+          const ticket = await this.repository.queueTicket(sql, original.workspaceId, original.id, true)
+          if (ticket.state !== 'claimed') return
+          if (error.status === 403) await this.finish(sql, ticket, 'authorization_revoked', [error.code])
+          else if (error.code === 'JOB_PREPARATION_TIMEOUT') await this.finish(sql, ticket, 'timed_out', [error.code])
+          else {
+            await this.repository.putQueueTicket(sql, { ...ticket, waitingReasons: [jobEligibilityReason(error.code)] })
+            await sql.query('update job_admission_queue set diagnostic_codes=$2::jsonb where id=$1',
+              [ticket.id, JSON.stringify([error.code])])
+          }
+        })
+      }
+      componentLogger('jobs').error({ err: error, ticketId: original.id }, 'Queued Job preparation or dispatch failed')
+      throw error
+    } finally {
+      await owner.release()
+    }
+    // Dispatch takes over the same session-lock identity after preparation releases it.
+    if (executionToWake) await this.ports.wake(executionToWake)
+  }
 }
 /** Source/target/profile authority is drawn from current inventory, never trusted caller attestations. */
 export class JobPreparationService implements JobPreparationPort {

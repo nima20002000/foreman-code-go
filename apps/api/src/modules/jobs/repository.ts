@@ -1,9 +1,54 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, type JobDefinition, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
 import { DomainError } from '../errors.js'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
 export type JobSql = GraphSqlClient
 
 export class JobRepository {
+  async queueTicket(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobQueueTicket> {
+    const row = (await sql.query<{ record: unknown }>(
+      `select record from job_admission_queue where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`,
+      [workspaceId, id],
+    )).rows[0]
+    if (!row) throw new DomainError('JOB_QUEUE_NOT_FOUND', 'The queued Job was not found in this workspace.', 404)
+    const ticket = JobQueueTicketSchema.parse(row.record)
+    if (ticket.workspaceId !== workspaceId || ticket.id !== id) {
+      throw new DomainError('JOB_SCOPE_CONFLICT', 'The queued Job scope conflicts with persistence.', 409)
+    }
+    return ticket
+  }
+  async putQueueTicket(sql: JobSql, ticket: JobQueueTicket): Promise<JobQueueTicket> {
+    const current = await this.queueTicket(sql, ticket.workspaceId, ticket.id, true)
+    if (current.revision !== ticket.revision) {
+      throw new DomainError('REVISION_CONFLICT', 'The queued Job changed since it was read.', 409)
+    }
+    if (canonical(current) === canonical(ticket)) return current
+    const value = JobQueueTicketSchema.parse({ ...ticket, revision: ticket.revision + 1 })
+    const result = await sql.query(`update job_admission_queue set record=$3::jsonb
+      where workspace_id=$1 and id=$2 and (record->>'revision')::bigint=$4`,
+    [value.workspaceId, value.id, JSON.stringify(value), ticket.revision])
+    if (result.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The queued Job changed since it was read.', 409)
+    return value
+  }
+  async queuePosition(sql: JobSql, ticket: JobQueueTicket): Promise<JobQueueTicket> {
+    if (!['waiting', 'blocked'].includes(ticket.state)) return { ...ticket, queuePosition: null }
+    const row = (await sql.query<{ position: string }>(`select count(*)::text as position
+      from job_admission_queue where workspace_id=$1 and enqueue_sequence<=$2::bigint
+      and record->>'state' in ('waiting','blocked')`, [ticket.workspaceId, ticket.enqueueSequence])).rows[0]!
+    return JobQueueTicketSchema.parse({ ...ticket, queuePosition: Number(row.position) })
+  }
+  async pendingQueue(sql: JobSql, workspaceId?: string): Promise<JobQueueTicket[]> {
+    const rows = await sql.query<{ record: unknown }>(`select record from job_admission_queue
+      where record->>'state' in ('waiting','blocked','claimed')
+      ${workspaceId ? 'and workspace_id=$1' : ''} order by enqueue_sequence`,
+    workspaceId ? [workspaceId] : [])
+    return rows.rows.map(row => JobQueueTicketSchema.parse(row.record))
+  }
+  async finishQueueTicket(sql: JobSql, ticket: JobQueueTicket,
+    reason: NonNullable<JobQueueTicket['terminalReason']>, now: string): Promise<JobQueueTicket> {
+    return this.putQueueTicket(sql, { ...ticket, state: 'terminal', terminalReason: reason,
+      finishedAt: now, waitingReasons: [], queuePosition: null, estimatedStartAt: null })
+  }
   async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinition> {
     const row = (await sql.query<{ record: unknown }>(`select record from job_definitions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_DEFINITION_NOT_FOUND', 'The job definition was not found in this workspace.', 404)

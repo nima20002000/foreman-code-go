@@ -25,6 +25,8 @@ export interface JobDispatchHost {
   authorizeLaunch?(sql:JobSql,execution:JobExecution):Promise<void>
   observe(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<void>
   settleSource?(executionId: string): Promise<void>
+  capacityChanged?(): void
+  prepareWaiting?(executionId: string): Promise<void>
 }
 /** Durable job intent is consumed by the same W08 carrier/journal, never a new scheduler. */
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
@@ -81,6 +83,15 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
   /** Only trusted carrier receipt ingress uses this. No file write/read capability. */
   async requireEvidence(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {return this.requireControl(sql,execution,fence)}
   async wake(executionId:string):Promise<void> {
+    if (this.host.prepareWaiting) {
+      const waiting = (await this.pool.query(`select 1 from job_admission_queue q where execution_id=$1
+        and q.record->>'state' in ('waiting','blocked','claimed')
+        and not exists(select 1 from job_executions e where e.id=q.execution_id)`, [executionId])).rowCount
+      if (waiting) {
+        await this.host.prepareWaiting(executionId)
+        return
+      }
+    }
     let active=this.owners.get(executionId)
     if(!active) {
       const abort=new AbortController(),owner=await JobOwnership.acquire(this.pool,executionId,()=>abort.abort())
@@ -266,6 +277,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     }
     await this.host.settleSource?.(executionId)
     await this.release(executionId)
+    this.host.capacityChanged?.()
   }
   private async release(executionId:string) {const active=this.owners.get(executionId);if(!active)return;this.owners.delete(executionId);await active.owner.release()}
   async close():Promise<void> {await Promise.allSettled([...this.owners.keys()].map(id=>this.release(id)))}

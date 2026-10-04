@@ -2,8 +2,22 @@ import type { JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import type { JobSql } from './repository.js'
-import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, ResolvedJobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec } from '@graphql/contracts/jobs'
+import type {
+  AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinition, JobDefinitionSpec,
+  ResolvedJobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec,
+} from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { JobQueueLimitsSchema } from '@graphql/contracts/job-admission'
+import type { JobResourceRequest } from '@graphql/contracts/job-verification-policy'
+import type { z } from 'zod'
+
+/** Resource envelopes and queue limits come from reviewed application configuration. */
+export interface JobQueueConfiguration {
+  revision: number
+  review: { reviewedByPrincipalId: string; reviewedAt: string; decisionDigest: string }
+  limits: z.infer<typeof JobQueueLimitsSchema>
+  resources(sql: JobSql, definition: JobDefinition): Promise<JobResourceRequest>
+}
 
 /** W08 adapter owns durable dispatch and owner/cancel identity. No job scheduler. */
 export interface JobDispatchPort {

@@ -13,6 +13,7 @@ import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
+import { JobComputerEligibilityReasonSchema, type JobComputerEligibility } from '@graphql/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
 export interface JobComputerCandidate {
@@ -27,6 +28,29 @@ export interface JobComputerInventory {
     spec: JobDefinitionSpec): Promise<JobComputerCandidate[]>
 }
 type EnrolledCandidate = JobComputerCandidate & { preference: BuildComputerPreference }
+export interface JobComputerClaim {
+  spec: ResolvedJobDefinitionSpec | null
+  compatibleTargetCount: number
+  reasons: JobComputerEligibility['reasons']
+  diagnosticCodes: string[]
+  waitingHosts: string[]
+  selectedHost: string | null
+  exceedsMaximum: boolean
+}
+export function jobEligibilityReason(code: string): JobComputerEligibility['reasons'][number] {
+  const known = JobComputerEligibilityReasonSchema.safeParse(code)
+  if (known.success) return known.data
+  if (['AUTH_REVOKED', 'AUTH_INVALID', 'revoked', 'unauthorized', 'forbidden', 'ACCESS_DENIED'].includes(code)) {
+    return 'authorization_revoked'
+  }
+  if (code === 'BUILD_COMPUTER_DISABLED') return 'disabled'
+  if (code === 'WORKER_EXECUTION_DISABLED') return 'remote_execution_disabled'
+  if (code === 'JOB_ROOT_PIN_CONFLICT' || code === 'SOURCE_ROOT_NOT_FOUND') return 'root_changed'
+  if (code === 'JOB_SOURCE_PIN_CONFLICT') return 'source_unavailable'
+  if (code === 'JOB_RUNTIME_UNQUALIFIED') return 'runtime_unqualified'
+  if (code === 'JOB_RUNTIME_CONTEXT_CHANGED') return 'runtime_unqualified'
+  return 'eligibility_check_failed'
+}
 export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpec): boolean {
   const common = (spec: JobDefinitionSpec) => ({ source: spec.source, argv: spec.argv,
     inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null })
@@ -95,8 +119,21 @@ export class JobComputerSelection {
 
   async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
     identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+    const claim = await this.claim(sql, principal, definition, identity)
+    if (claim.spec) return claim.spec
+    const code = isAutoJobSpec(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
+    throw new DomainError(code, 'No eligible build computer. Enable builds and check connection, runtime setup and capacity.',
+      409, { reasons: claim.reasons, diagnosticCodes: claim.diagnosticCodes })
+  }
+
+  async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
+    identity: JobPreparationIdentity, excludedHosts: ReadonlySet<string> = new Set()): Promise<JobComputerClaim> {
     const prior = (await sql.query('select 1 from job_computer_selections where execution_id=$1', [identity.executionId])).rowCount
-    if (prior) return readJobComputerSelection(sql, definition, identity)
+    if (prior) {
+      const spec = await readJobComputerSelection(sql, definition, identity)
+      return { spec, compatibleTargetCount: 1, reasons: [], diagnosticCodes: [], waitingHosts: [],
+        selectedHost: buildComputerKey(buildComputerTarget(spec.target)), exceedsMaximum: false }
+    }
     const candidates = await this.inventory.candidates(sql, principal, definition.workspaceId, definition.spec)
     const enrolled: EnrolledCandidate[] = []
     const reasons: string[] = []
@@ -110,7 +147,15 @@ export class JobComputerSelection {
       if (!preference.buildEnabled) reasons.push('disabled')
       reasons.push(...candidate.reasons)
     }
+    const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
+    const maximumCandidates = enrolled.filter(candidate => this.fitsEmptyComputer(candidate))
+    const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
+    const waitingHosts: string[] = []
     for (const candidate of orderBuildComputers(enrolled)) {
+      if (!this.fitsEmptyComputer(candidate)) {
+        reasons.push('request_exceeds_maximum')
+        continue
+      }
       try { this.workerExecution.requireEnabled(candidate.spec.target.hostRef) } catch (error) {
         if (!(error instanceof DomainError) || error.code !== 'WORKER_EXECUTION_DISABLED') throw error
         reasons.push('remote_execution_disabled')
@@ -118,6 +163,11 @@ export class JobComputerSelection {
       }
       const preference = await this.settings.requireEnabled(sql, buildComputerTarget(candidate.spec.target))
       const hostKey = buildComputerKey(preference.target)
+      waitingHosts.push(hostKey)
+      if (excludedHosts.has(hostKey)) {
+        reasons.push('busy')
+        continue
+      }
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`job-capacity:${hostKey}`])
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${candidate.sourceReservation.scopeId}`])
       await releaseClosedJobComputers(sql)
@@ -133,11 +183,20 @@ export class JobComputerSelection {
       [identity.executionId, definition.workspaceId, definition.versionId, identity.attemptId, identity.operationId,
         hostKey, JSON.stringify(candidate.spec), JSON.stringify(candidate.profile.limits), JSON.stringify(selection),
         candidate.sourceReservation.scopeId, candidate.sourceReservation.reservedBytes])
-      return candidate.spec
+      return { spec: candidate.spec, compatibleTargetCount, reasons: [], diagnosticCodes: [], waitingHosts: [],
+        selectedHost: hostKey, exceedsMaximum: false }
     }
-    const code = isAutoJobSpec(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
-    throw new DomainError(code, 'No eligible build computer. Enable builds and check connection, runtime setup and capacity.',
-      409, { reasons: [...new Set(reasons.length ? reasons : ['setup_required'])] })
+    const diagnosticCodes = [...new Set(reasons.length ? reasons : ['setup_required'])]
+    const normalized = diagnosticCodes.map(jobEligibilityReason)
+      .filter(reason => reason !== 'request_exceeds_maximum' || exceedsMaximum)
+    return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
+      selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
+  }
+  private fitsEmptyComputer(candidate: JobComputerCandidate): boolean {
+    const capacity = jobComputerCapacity(candidate.profile)
+    if (candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes) return false
+    return (Object.keys(capacity) as (keyof typeof capacity)[])
+      .every(field => candidate.profile.limits[field] <= capacity[field])
   }
   private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<boolean> {
     const storage = (await sql.query<{ bytes: string; materializations: string }>(`select coalesce(sum(bytes),0)::text as bytes,
@@ -195,6 +254,8 @@ export async function jobComputerHasCapacity(sql: JobSql,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile)
+  // Build qualification starts with one heavy slot; storage stays charged through publication and cleanup.
+  if (rows.length >= 1) return false
   return (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
     rows.reduce((total, row) => total + row.limits[field], profile.limits[field]) <= capacity[field])
 }

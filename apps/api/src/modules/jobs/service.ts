@@ -18,6 +18,11 @@ import { DomainError } from '../errors.js'
 import { releaseUnstartedJobComputer, type JobComputerSelection, type JobPreparationIdentity } from './computerSelection.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
+import type { JobQueueConfiguration } from './ports.js'
+import { JobQueuePreparation } from './preparation.js'
+import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
+  JobAdmissionResultSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobResourceRequestSchema } from '@graphql/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import type { JobCancellationRecoveryApply } from '@graphql/contracts/job-cancellation-recovery'
@@ -31,6 +36,11 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 export class JobService {
   readonly repository = new JobRepository()
   private readonly workerExecution: WorkerExecutionPolicy
+  private readonly queuePreparation: JobQueuePreparation | undefined
+  private queueTimer: ReturnType<typeof setInterval> | undefined
+  private queueWake: Promise<void> | undefined
+  private queueRescanRequested = false
+  private queueClosing = false
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly ports: {
       placement?: JobComputerSelection
@@ -39,9 +49,25 @@ export class JobService {
       artifacts: JobArtifactPort
       workerExecution?: WorkerExecutionPolicy
       cancellationRecovery?: PostgresJobCancellationRecovery
+      queue?: JobQueueConfiguration
     },
     private readonly clock: () => Date = () => new Date()) {
     this.workerExecution = ports.workerExecution ?? new WorkerExecutionPolicy()
+    if (ports.queue && ports.placement) {
+      this.queuePreparation = new JobQueuePreparation(pool, {
+        configuration: ports.queue,
+        placement: ports.placement,
+        prepare: (principal, definition, ticket) => this.prepareDefinition(pool, principal, definition, ticket),
+        admit: async (sql, principal, definition, prepared, ticket) => {
+          const ready = await ports.preparation.validate(sql, principal, definition.workspaceId,
+            await this.resolvedDefinition(sql, definition, ticket))
+          if (!ready.valid) throw new DomainError('JOB_NOT_READY', 'Job authority changed during preparation.',
+            409, { reasons: ready.reasons })
+          return this.admitPrepared(sql, principal, definition, null, null, prepared, ticket)
+        },
+        wake: execution => this.wakeAccepted(execution),
+      }, clock)
+    }
   }
   private async wakeAccepted(execution:JobExecution):Promise<void> {
     try {await this.ports.dispatch.wake(execution.id)} catch(error) {
@@ -149,10 +175,181 @@ export class JobService {
     try {await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
     catch(error) {await sql.query('rollback');throw error} finally {sql.release()}
   }
+  private queueConfiguration(): JobQueueConfiguration {
+    const configuration = this.ports.queue
+    if (!configuration || !this.queuePreparation) {
+      throw new DomainError('JOB_QUEUE_UNAVAILABLE', 'Queued build admission is not configured.', 503)
+    }
+    const review = z.object({ reviewedByPrincipalId: z.string().min(1), reviewedAt: z.iso.datetime(),
+      decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+    if (!Number.isSafeInteger(configuration.revision) || configuration.revision < 1
+      || !review.safeParse(configuration.review).success) {
+      throw new DomainError('JOB_QUEUE_REVIEW_REQUIRED', 'The queue configuration requires owner review.', 409)
+    }
+    JobQueueLimitsSchema.parse(configuration.limits)
+    return configuration
+  }
+  async enqueue(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {
+    const input = parse(JobQueuedStartSchema, raw)
+    const configuration = this.queueConfiguration()
+    const result = await this.command(principal, source, workspaceId, 'jobs:start', input.commandId,
+      'job.enqueue', input, async (sql, live) => {
+        await sql.query('select pg_advisory_xact_lock(810038,hashtext($1))', ['job-admission-order'])
+        const original = (await sql.query<{ execution_id: string }>(
+          'select execution_id from job_preparations where principal_id=$1 and command_id=$2',
+          [live.id, input.commandId])).rows[0]
+        if (original) {
+          throw new DomainError('COMMAND_ID_CONFLICT', 'This command already owns a build preparation.', 409,
+            { executionId: original.execution_id })
+        }
+        const definition = await this.repository.definition(sql, workspaceId, input.definitionId, true)
+        if (definition.revision !== input.expectedRevision) {
+          throw new DomainError('REVISION_CONFLICT', 'The job definition changed since it was read.', 409)
+        }
+        const counts = (await sql.query<{ principal: string; workspace: string }>(`select
+          count(*) filter(where principal_id=$1)::text as principal,
+          count(*) filter(where workspace_id=$2)::text as workspace from job_admission_queue
+          where record->>'state' in ('waiting','blocked','claimed')`, [live.id, workspaceId])).rows[0]!
+        if (Number(counts.principal) >= configuration.limits.maxPendingPerPrincipal
+          || Number(counts.workspace) >= configuration.limits.maxPendingPerWorkspace) {
+          throw new DomainError('JOB_QUEUE_LIMIT', 'The pending Job limit has been reached. Wait or cancel a queued Job.', 409)
+        }
+        const resources = JobResourceRequestSchema.parse(await configuration.resources(sql, definition))
+        const sequence = (await sql.query<{ sequence: string }>(
+          "select nextval('job_admission_queue_sequence')::text as sequence")).rows[0]!.sequence
+        const now = this.clock()
+        const placementOverride = input.placementOverride ?? null
+        const placement = placementOverride ?? (isAutoJobSpec(definition.spec)
+          ? { kind: 'auto' as const } : { kind: 'explicit' as const, target: definition.spec.target })
+        // Overrides require the selector to resolve against the saved security requirements.
+        if (placementOverride) {
+          throw new DomainError('JOB_PLACEMENT_OVERRIDE_UNAVAILABLE', 'Start placement overrides are not enabled for build Jobs.', 409)
+        }
+        const ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId,
+          revision: 1, commandId: input.commandId, commandDigest: jobDigest(input), principalId: live.id,
+          definition, executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),
+          workflow: null, gateId: null, placement, placementOverride, resources, enqueueSequence: sequence,
+          enqueuedAt: now.toISOString(), deadlineAt: new Date(now.getTime() + definition.spec.policy.queueTimeoutMs).toISOString(),
+          state: 'waiting', waitingReasons: [], compatibleTargetCount: 0, queuePosition: 1, estimatedStartAt: null,
+          reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
+        await sql.query(`insert into job_admission_queue
+          (id,workspace_id,principal_id,command_id,execution_id,enqueue_sequence,record)
+          values($1,$2,$3,$4,$5,$6::bigint,$7::jsonb)`,
+        [ticket.id, workspaceId, live.id, input.commandId, ticket.executionId, sequence, JSON.stringify(ticket)])
+        return { ticketId: ticket.id }
+      })
+    this.requestQueueWake()
+    return this.read(principal, workspaceId, 'jobs:start', async sql => this.admissionResult(
+      await this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, result.ticketId))), source)
+  }
+  getQueueTicket(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
+    return this.read(principal, workspaceId, 'jobs:read', async sql =>
+      this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id)), source)
+  }
+  getAdmission(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
+    return this.read(principal, workspaceId, 'jobs:read', async sql => {
+      const ticket = await this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id))
+      return this.admissionResult(ticket)
+    }, source)
+  }
+  private admissionResult(ticket: JobQueueTicket) {
+    if (ticket.state === 'accepted') return JobAdmissionResultSchema.parse({ kind: 'accepted',
+      ticketId: ticket.id, executionId: ticket.executionId })
+    return JobAdmissionResultSchema.parse({ kind: 'pending-admission', ticket })
+  }
+  listQueue(principal: ManagementPrincipal, workspaceId: string, source: 'http' | 'mcp' = 'http') {
+    return this.read(principal, workspaceId, 'jobs:read', async sql => {
+      const rows = (await sql.query<{ record: unknown }>(`select record from job_admission_queue
+        where workspace_id=$1 order by enqueue_sequence desc limit 100`, [workspaceId])).rows
+      const tickets: JobQueueTicket[] = []
+      for (const row of rows) tickets.push(await this.repository.queuePosition(sql, JobQueueTicketSchema.parse(row.record)))
+      return tickets
+    }, source)
+  }
+  async cancelQueued(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {
+    const input = parse(JobQueueCancelSchema, raw)
+    await this.command(principal, source, workspaceId, 'jobs:cancel', input.commandId, 'job.queue.cancel', input,
+      async (sql, live) => {
+        const ticket = await this.repository.queueTicket(sql, workspaceId, input.ticketId, true)
+        if (ticket.revision !== input.expectedRevision) {
+          throw new DomainError('REVISION_CONFLICT', 'The queued Job changed since it was read.', 409)
+        }
+        if (ticket.state === 'terminal') return { ticketId: ticket.id }
+        ticket.cancelRequestedAt ??= this.clock().toISOString()
+        if (['waiting', 'blocked'].includes(ticket.state)) {
+          await this.repository.finishQueueTicket(sql, ticket, 'cancelled', this.clock().toISOString())
+        } else {
+          if (ticket.state === 'accepted') {
+            const execution = await this.repository.execution(sql, workspaceId, ticket.executionId, true)
+            if (execution.process.phase !== 'terminal') {
+              await this.ports.dispatch.cancel(sql, execution, input.commandId, live)
+              execution.cancelRequestedAt ??= ticket.cancelRequestedAt
+              execution.updatedAt = this.clock().toISOString()
+              await this.repository.putExecution(sql, execution)
+            }
+          }
+          await this.repository.putQueueTicket(sql, ticket)
+        }
+        return { ticketId: ticket.id }
+      })
+    const readTicket = () => this.read(principal, workspaceId, 'jobs:cancel', async sql =>
+      this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, input.ticketId)), source)
+    const ticket = await readTicket()
+    if (ticket.state === 'accepted') {
+      await this.wakeAccepted(await this.read(principal, workspaceId, 'jobs:cancel',
+        sql => this.repository.execution(sql, workspaceId, ticket.executionId), source))
+    }
+    return readTicket()
+  }
+  wakeQueue(): Promise<void> {
+    if (!this.queuePreparation) return Promise.resolve()
+    this.queueConfiguration()
+    if (this.queueWake) {
+      this.queueRescanRequested = true
+      return this.queueWake
+    }
+    const preparation = this.queuePreparation
+    this.queueWake = (async () => {
+      do {
+        this.queueRescanRequested = false
+        await preparation.wake()
+      } while (this.queueRescanRequested && !this.queueClosing)
+    })().finally(() => { this.queueWake = undefined })
+    return this.queueWake
+  }
+  requestQueueWake(): void {
+    if (this.queueClosing) return
+    void this.wakeQueue().catch(error => componentLogger('jobs').error({ err: error }, 'Job queue rescan failed'))
+  }
+  startQueueRecovery(): void {
+    this.queueConfiguration()
+    if (this.queueTimer) return
+    this.queueClosing = false
+    const rescan = () => this.requestQueueWake()
+    this.queueTimer = setInterval(rescan, 1000)
+    this.queueTimer.unref()
+    rescan()
+  }
+  async closeQueue(): Promise<void> {
+    if (this.queueTimer) clearInterval(this.queueTimer)
+    this.queueTimer = undefined
+    this.queueClosing = true
+    await this.queueWake
+  }
   async start(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobStart) {
     const input=parse(JobStartSchema,raw)
     try {requireAuthorization(principal,'jobs:start',{workspaceId})} catch(error) {
       await this.commands.recordDenied(principal.id,source,'job.start',workspaceId);throw error
+    }
+    const existingStart = await this.read(principal, workspaceId, 'jobs:start', async sql => {
+      const row = (await sql.query<{ queued: boolean; preparing: boolean }>(`select
+        exists(select 1 from job_admission_queue where principal_id=$1 and command_id=$2) as queued,
+        exists(select 1 from job_preparations where principal_id=$1 and command_id=$2) as preparing`,
+      [principal.id, input.commandId])).rows[0]!
+      return row
+    }, source)
+    if (existingStart.queued || this.ports.queue && !existingStart.preparing) {
+      throw new DomainError('JOB_QUEUE_START_REQUIRED', 'Use queued admission to start build Jobs.', 409)
     }
     let allocatedIdentity: JobPreparationIdentity | undefined
     let admission:{kind:'existing';execution:JobExecution}|{kind:'prepared';definition:JobDefinition;spec:PreparedJobSpec;identity:{executionId:string;attemptId:string;operationId:string}}|undefined

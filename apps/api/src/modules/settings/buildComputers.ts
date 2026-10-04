@@ -36,7 +36,8 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
 export class BuildComputerSettings {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget) => Promise<
-      Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>) {}
+      Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>,
+    private readonly changed?: () => void) {}
 
   async preference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
     const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number }>(
@@ -91,7 +92,7 @@ export class BuildComputerSettings {
       await this.commands.recordDenied(principal.id, source, 'build.computer.update', buildComputerKey(input.target))
       throw error
     }
-    return (await this.commands.execute({ principal, source, commandId: input.commandId,
+    const result = await this.commands.execute({ principal, source, commandId: input.commandId,
       operation: 'build.computer.update', targetKey: buildComputerKey(input.target), payload: input,
       authorize: async sql => {
         await this.authorize(sql, principal, 'settings:update')
@@ -111,6 +112,8 @@ export class BuildComputerSettings {
         [buildComputerKey(input.target), JSON.stringify(input.target), old.revision + 1,
           input.buildEnabled, input.buildPriority, principal.id])
         return this.status(sql, input.target)
-      } })).value
+      } })
+    this.changed?.()
+    return result.value
   }
 }
