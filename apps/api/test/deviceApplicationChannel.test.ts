@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEVICE_APPLICATION_CHUNK_WINDOW, negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
+import { deriveDispatch, freezePlacement } from '../src/modules/placement/binding.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -18,7 +19,43 @@ class Socket extends EventEmitter {
   }
   close() { if (this.closed) return; this.closed = true; this.emit('close'); this.peer?.close() }
 }
-const binding = { mainId: 'main', deviceId: 'device', workerInstallationId: 'installation', keyRevision: 1, authorizationRevision: 1, bootId: 'boot', connectionEpoch: 'epoch', connectionGeneration: 1 }
+const binding = {
+  mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222',
+  workerInstallationId: '33333333-3333-4333-8333-333333333333', keyRevision: 1, authorizationRevision: 1,
+  bootId: 'boot', connectionEpoch: 'epoch', connectionGeneration: 1,
+}
+function stopRequest() {
+  const digest = 'a'.repeat(64)
+  const placement = freezePlacement({
+    schemaVersion: 1, mainId: binding.mainId, runId: 'run', nodeId: 'node',
+    hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+    registration: { workerInstallationId: binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    mainInstallationId: 'main-installation',
+    destination: {
+      canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/runtime',
+      directoryIdentityHash: digest, rootPolicyId: 'root', rootPolicyRevision: '1', locationRevision: '1',
+      attestationId: 'attestation', attestationHash: digest,
+    },
+    source: { revisionId: 'source', manifestDigest: digest, materializationId: 'materialization', materializationDigest: digest },
+    payload: {
+      kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'codex',
+      driverRevision: '1', instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'harness',
+      installationFingerprint: digest, runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [],
+    },
+  })
+  const intent = deriveDispatch(placement, {
+    executionId: 'execution', occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1,
+    attemptId: 'attempt', operationId: 'operation', inputDigest: `sha256:${digest}`,
+    owner: { grantId: 'grant', epoch: '1' },
+  })
+  const command = {
+    schemaVersion: 1 as const, protocolVersion: 1 as const, commandId: 'stop', operationId: intent.operationId,
+    attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner,
+    native: { sessionId: 'native-session', turnId: 'native-turn', processIdentityDigest: digest },
+    action: { kind: 'stop' as const },
+  }
+  return { method: 'control' as const, intent, placement, command }
+}
 const flush = async () => { for (let i = 0; i < 160; i++) await Promise.resolve() }
 function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limits = { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, heartbeatMs = 1000, mainHandler?: NonNullable<DeviceExtensionRegistration['handle']>) {
   const rawMain = new Socket(), rawWorker = new Socket(); rawMain.peer = rawWorker; rawWorker.peer = rawMain
@@ -184,6 +221,145 @@ describe('authenticated namespace carrier mechanics', () => {
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {})); for (const request of requests) void request.catch(() => {})
     await flush(); await expect(pair.main.request('execution-v1', {})).rejects.toThrow('backpressure'); await pair.close(); await Promise.allSettled(requests)
   })
+  it('delivers exact-owner Stop with all ordinary outgoing slots occupied', async () => {
+    const releases: Array<() => void> = []
+    const stopped = vi.fn()
+    const pair = setup(async payload => {
+      if (payload === 'slow') {
+        await new Promise<void>(resolve => { releases.push(resolve) })
+        return { payload: 'released' }
+      }
+      stopped(payload)
+      return { payload: 'stopped' }
+    })
+    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'slow'))
+    for (const request of requests) void request.catch(() => {})
+    try {
+      await flush()
+      expect(releases).toHaveLength(8)
+      await expect(pair.main.request('execution-v1', 'ordinary')).rejects.toThrow('backpressure')
+      const stop = stopRequest()
+      await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
+      expect(stopped).toHaveBeenCalledExactlyOnceWith(stop)
+      expect(pair.rawMain.closed).toBe(false)
+      for (const release of releases) release()
+      await Promise.all(requests)
+    } finally { for (const release of releases) release(); await pair.close(); await Promise.allSettled(requests) }
+  })
+  it('times out noncooperative handlers then delivers Stop without closing the channel or admitting more work', async () => {
+    vi.useFakeTimers()
+    const signals: AbortSignal[] = []
+    const releases: Array<() => void> = []
+    const entered = vi.fn()
+    const pair = setup(async (payload, context) => {
+      entered(payload)
+      if (payload !== 'slow') return { payload: 'stopped' }
+      signals.push(context.signal)
+      await new Promise<void>(resolve => { releases.push(resolve) })
+      return { payload: 'late' }
+    })
+    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'slow', { timeoutMs: 20 }))
+    for (const request of requests) void request.catch(() => {})
+    try {
+      await flush()
+      expect(signals).toHaveLength(8)
+      const abandonedIds = new Set(pair.rawMain.frames.map(frame => JSON.parse(frame) as { type: string; id?: string })
+        .filter(frame => frame.type === 'application-open').map(frame => frame.id))
+      await vi.advanceTimersByTimeAsync(21)
+      for (const request of requests) await expect(request).rejects.toThrow('timeout')
+      expect(signals.every(signal => signal.aborted)).toBe(true)
+      await expect(pair.main.request('execution-v1', 'ordinary')).rejects.toThrow('backpressure')
+      await expect(pair.main.request('execution-v1', stopRequest())).resolves.toEqual({ payload: 'stopped' })
+      expect(entered).toHaveBeenCalledTimes(9)
+      expect(pair.rawMain.closed).toBe(false)
+      for (const release of releases) release()
+      await flush()
+      await expect(pair.main.request('execution-v1', 'fresh')).resolves.toEqual({ payload: 'stopped' })
+      const lateReplies = pair.rawWorker.frames.map(frame => JSON.parse(frame) as { type: string; id?: string })
+        .filter(frame => frame.type === 'application-open' && abandonedIds.has(frame.id))
+      expect(lateReplies).toHaveLength(0)
+    } finally { for (const release of releases) release(); await pair.close(); expect(vi.getTimerCount()).toBe(0) }
+  })
+  it('keeps Stop admission bounded and applies the domain grant and native-owner checks', async () => {
+    let release!: () => void
+    const delivered = vi.fn()
+    const pair = setup(async payload => {
+      const frame = payload as ReturnType<typeof stopRequest>
+      if (frame.command.owner.grantId !== 'grant' || frame.command.native.sessionId !== 'native-session') {
+        throw { code: 'forbidden' }
+      }
+      delivered()
+      await new Promise<void>(resolve => { release = resolve })
+      return { payload: 'stopped' }
+    })
+    try {
+      const stop = stopRequest()
+      const denied = { ...stop, intent: { ...stop.intent, owner: { grantId: 'revoked', epoch: '1' } },
+        command: { ...stop.command, owner: { grantId: 'revoked', epoch: '1' } } }
+      await expect(pair.main.request('execution-v1', denied)).rejects.toThrow('forbidden')
+      await flush()
+      await expect(pair.main.request('execution-v1', { ...stop,
+        command: { ...stop.command, native: { ...stop.command.native, sessionId: 'foreign-session' } } })).rejects.toThrow('forbidden')
+      await flush()
+      expect(delivered).not.toHaveBeenCalled()
+      const pending = pair.main.request('execution-v1', stop)
+      await flush()
+      await expect(pair.main.request('execution-v1', stop)).rejects.toThrow('backpressure')
+      expect(delivered).toHaveBeenCalledOnce()
+      release()
+      await expect(pending).resolves.toEqual({ payload: 'stopped' })
+    } finally { release?.(); await pair.close() }
+  })
+  it('refuses to reserve Stop capacity for a mismatched command owner', async () => {
+    const pair = setup(async () => new Promise(() => {}))
+    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {}))
+    for (const request of requests) void request.catch(() => {})
+    try {
+      await flush()
+      const stop = stopRequest()
+      await expect(pair.main.request('execution-v1', { ...stop,
+        command: { ...stop.command, owner: { ...stop.command.owner, epoch: '2' } } })).rejects.toThrow('backpressure')
+    } finally { await pair.close(); await Promise.allSettled(requests) }
+  })
+  it('revalidates the Stop envelope before invoking a handler for a claimed reserved slot', async () => {
+    const handler = vi.fn(async () => ({ payload: null }))
+    const pair = setup(handler)
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const stop = stopRequest()
+    const bytes = Buffer.from(JSON.stringify({ ...stop,
+      command: { ...stop.command, executionId: 'foreign-execution' } }))
+    try {
+      pair.rawMain.send(JSON.stringify({ type: 'application-open', id, namespace: 'execution-v1',
+        version: 1, kind: 'request', jsonBytes: bytes.byteLength, binaryBytes: 0, admission: 'stop' }))
+      await flush()
+      pair.rawMain.send(JSON.stringify({ type: 'application-chunk', id, offset: 0, data: bytes.toString('base64') }))
+      await flush()
+      expect(handler).not.toHaveBeenCalled()
+      expect(pair.rawMain.closed).toBe(false)
+    } finally { await pair.close() }
+  })
+  it('delivers Stop while the ordinary chunk window is waiting for receipts', async () => {
+    const pair = setup(async payload => ({ payload: typeof payload === 'object' ? 'stopped' : 'uploaded' }))
+    const send = pair.rawWorker.send.bind(pair.rawWorker)
+    const ordinaryIds = new Set<string>()
+    const sendMain = pair.rawMain.send.bind(pair.rawMain)
+    pair.rawMain.send = text => {
+      const frame = JSON.parse(text) as { type: string; id: string; admission?: string }
+      if (frame.type === 'application-open' && frame.admission !== 'stop') ordinaryIds.add(frame.id)
+      sendMain(text)
+    }
+    pair.rawWorker.send = text => {
+      const frame = JSON.parse(text) as { type: string; id: string; offset?: number }
+      if (frame.type !== 'application-ack' || frame.offset === 0 || !ordinaryIds.has(frame.id)) send(text)
+    }
+    const upload = pair.main.request('execution-v1', 'x'.repeat(65_536))
+    void upload.catch(() => {})
+    try {
+      await flush()
+      await expect(pair.main.request('execution-v1', stopRequest())).resolves.toEqual({ payload: 'stopped' })
+      expect(pair.rawMain.closed).toBe(false)
+    } finally { await pair.close(); await Promise.allSettled([upload]) }
+  })
   it.each(['main', 'worker'] as const)('delivers duplex replies on %s with all inbound request slots occupied', async (side) => {
     const entered = vi.fn(), releases: Array<() => void> = []
     const slow: NonNullable<DeviceExtensionRegistration['handle']> = async () => {
@@ -209,7 +385,7 @@ describe('authenticated namespace carrier mechanics', () => {
   })
   it.each([
     ['request slots', 8, 2, 0],
-    ['total bytes', 2, 1_048_576, 1_048_576],
+    ['total bytes', 1, 1_048_576, 1_048_576],
   ] as const)('retains the inbound %s limit before acknowledging another packet', async (_name, admitted, jsonBytes, binaryBytes) => {
     const handler = vi.fn(async () => ({ payload: null })), pair = setup(handler)
     const open = (index: number) => pair.rawMain.send(JSON.stringify({ type: 'application-open', id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`, namespace: 'execution-v1', version: 1, kind: 'request', jsonBytes, binaryBytes }))
@@ -217,8 +393,10 @@ describe('authenticated namespace carrier mechanics', () => {
       for (let index = 0; index < admitted; index++) open(index)
       await flush(); expect(pair.rawWorker.closed).toBe(false)
       expect(pair.rawWorker.frames.filter((frame) => JSON.parse(frame).type === 'application-ack')).toHaveLength(admitted)
-      open(admitted); await flush(); expect(pair.rawWorker.closed).toBe(true)
+      open(admitted); await flush(); expect(pair.rawWorker.closed).toBe(false)
       expect(pair.rawWorker.frames.filter((frame) => JSON.parse(frame).type === 'application-ack')).toHaveLength(admitted)
+      expect(pair.rawWorker.frames.map(frame => JSON.parse(frame)).filter(frame => frame.type === 'application-reject'))
+        .toEqual([{ type: 'application-reject', id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(admitted).padStart(12, '0')}`, code: 'backpressure' }])
       expect(handler).not.toHaveBeenCalled()
     } finally { await pair.close() }
   })
