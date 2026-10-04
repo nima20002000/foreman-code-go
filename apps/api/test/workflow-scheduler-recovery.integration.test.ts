@@ -3,6 +3,7 @@ import { nextOccurrences, scheduleOccurrenceId } from '@foreman-code/contracts/s
 import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
+import { PostgresScheduleDispatcher } from '../src/modules/schedules/postgresDispatcher.js'
 import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11ClockCases, sch11Minute, sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'
 import { sch11DomainState, sch11Fixture, sch11Pool, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
@@ -159,24 +160,10 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     } finally { await child.close() }
   }, 60_000)
 
-  it('catches up after 25 hours in bounded passes, never backfills an earlier Run', async () => {
+  it('catches up after 25 hours in one dispatch, never backfills an earlier Run', async () => {
     await f.save(sch11Minute)
     f.time.now = '2030-01-08T10:01:30.000Z' // 1,501 due instants; well beyond one 100-row batch.
-    let previousCount = 0, passes = 0
-    while ((await f.current())!.nextOccurrenceAt! <= f.time.now) {
-      expect(passes).toBeLessThan(16)
-      // Fresh objects on every pass: only the persisted cursor can retain progress.
-      await f.dispatcher().dispatch((await f.current())!)
-      const facts = await f.history()
-      expect(facts.length - previousCount).toBeGreaterThan(0)
-      expect(facts.length - previousCount).toBeLessThanOrEqual(100)
-      previousCount = facts.length; passes++
-      if ((await f.current())!.nextOccurrenceAt! <= f.time.now) {
-        expect(await f.countRuns()).toBe(0)
-        expect(facts.every((fact) => fact.status === 'missed')).toBe(true)
-      }
-    }
-    expect(passes).toBe(16)
+    await f.dispatcher().dispatch((await f.current())!)
     const facts = await f.history()
     expect(facts).toHaveLength(1_501)
     expect(new Set(facts.map((fact) => fact.id)).size).toBe(1_501)
@@ -188,6 +175,44 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     expect(await f.current()).toMatchObject({ revision: 1, anchorAt: sch11Minute.anchorAt,
       nextOccurrenceAt: '2030-01-08T10:02:00.000Z' })
   }, 90_000)
+
+  it('considers a day-old seconds cursor during the first poll while the clock advances', async () => {
+    const saved = await f.save({ ...sch11Minute, unit: 'second' })
+    const resumedAt = Date.parse(saved.nextOccurrenceAt!) + 86_400_000
+    let clockReads = 0
+    const clock = () => new Date(resumedAt + clockReads++ * 2)
+    const considered = deferred()
+    let attemptedDue: string | undefined
+    const port = new PostgresScheduleDispatcher(database.pool, async (_principal, input) => {
+      attemptedDue = input.commandId
+      considered.resolve()
+      throw new Error('Temporary admission unavailability')
+    }, clock)
+    let scans = 0
+    const loop = new WorkflowScheduleDispatcher({
+      listDueSchedules: async (input) => {
+        scans++
+        return port.listDueSchedules(input)
+      },
+      dispatch: (schedule) => port.dispatch(schedule),
+    }, { clock, reportError: () => {}, pollIntervalMs: 60_000 })
+    loop.start()
+    try {
+      await considered.promise
+      await loop.stop()
+      expect(scans).toBe(1)
+      expect(attemptedDue).toBeTruthy()
+      const cursor = (await f.current())!.nextOccurrenceAt!
+      expect(Date.parse(cursor)).toBeGreaterThanOrEqual(resumedAt)
+      expect(Date.parse(clock().toISOString()) - Date.parse(cursor)).toBeLessThan(1_000)
+      const counts = (await database.pool.query<{ count: string; latest: Date }>(
+        `select count(*)::text as count,max(due_at) as latest from workflow_schedule_occurrences where workflow_id=$1`,
+        [f.scope.workflowId])).rows[0]!
+      expect(Number(counts.count)).toBeGreaterThanOrEqual(86_400)
+      expect(counts.latest.toISOString()).toBe(new Date(Date.parse(cursor) - 1_000).toISOString())
+      expect(await f.countRuns()).toBe(0)
+    } finally { await loop.stop() }
+  }, 30_000)
 
   it('clean shutdown drains an open real Start transaction and never admits the next queued candidate', async () => {
     const saved = await f.save(); f.time.now = saved.nextOccurrenceAt!

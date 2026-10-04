@@ -103,7 +103,7 @@ describe('SCH-11 deterministic schedule clock / preview-dispatch contract', () =
     const decisions: ReturnType<typeof planDueSchedule> = []
     const now = '2030-01-07T13:11:30.000Z' // 251 occurrences, three bounded passes.
     for (let pass = 0; pass < 3; pass++) {
-      const batch = planDueSchedule(saved, now)
+      const batch = planDueSchedule(saved, now, 100)
       expect(batch.length).toBeLessThanOrEqual(100)
       if (pass < 2) expect(batch.every((step) => step.decision.status === 'missed')).toBe(true)
       decisions.push(...batch)

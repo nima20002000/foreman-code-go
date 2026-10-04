@@ -25,7 +25,7 @@ describe('elapsed seconds scheduler', () => {
       revision: 1, nextOccurrenceAt: '2026-10-02T12:00:01.250Z' })
     const steps: ReturnType<typeof planDueSchedule> = []
     for (let pass = 0; pass < 3; pass++) {
-      const batch = planDueSchedule(saved, '2026-10-02T12:04:11.900Z')
+      const batch = planDueSchedule(saved, '2026-10-02T12:04:11.900Z', 100)
       steps.push(...batch)
       saved = { ...saved, nextOccurrenceAt: batch.at(-1)!.nextDueAt }
     }
