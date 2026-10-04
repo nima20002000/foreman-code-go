@@ -134,6 +134,16 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
 }
 
 describe('production rsync leaf', () => {
+  it('copies a sealed local output in one bounded read and still verifies its canonical digest', async () => {
+    const f = await fixture('to-main')
+    try {
+      const receipt = await f.main.send(f.i)
+      expect(receipt).toMatchObject({ sha256: f.i.sha256, byteSize: f.i.byteSize })
+      expect(f.source.read).toHaveBeenCalledExactlyOnceWith(f.i, 0, f.i.byteSize, expect.any(AbortSignal))
+    } finally {
+      await f.dispose()
+    }
+  })
   it.each(['to-main', 'to-worker'] as const)('bounds the %s byte operation by its retained transfer expiry', async direction => {
     const f = await fixture(direction)
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.i.expiresAt) - 90000)

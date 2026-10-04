@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
-import { TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY, TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import type { JobExecution } from '@graphql/contracts/jobs'
 import type { ImmutableTransferSource } from '../../byte-transfer/sender.js'
 import { DomainError } from '../../errors.js'
@@ -68,7 +68,7 @@ export class JobOutputRsyncSource {
     return {read:async(accepted,offset,length,bounded)=>{
       bounded?.throwIfAborted()
       if(!isDeepStrictEqual(accepted,intent)||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)
-        ||length<1||length>8192||offset+length>intent.byteSize)throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Sealed output range differs from its original admission.',403)
+        ||length<1||length>BYTE_TRANSFER_POLICY.maxChunkBytes||offset+length>intent.byteSize)throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Sealed output range differs from its original admission.',403)
       await this.closed(record)
       const bytes=await source.read(accepted,offset,length,bounded)
       if(bytes.length!==length)throw new DomainError('JOB_OUTPUT_HASH_CONFLICT','Retained sealed output range is incomplete.',410)

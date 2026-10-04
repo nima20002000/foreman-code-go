@@ -174,9 +174,11 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
         try {
           const handle = await open(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
           access.attach(handle)
+          // Sealed Worker outputs are local reads, outside the metadata channel's frame limit.
+          const chunkBytes = i.direction === 'to-main' ? POLICY.maxChunkBytes : i.chunkBytes
           for (let offset = 0; offset < i.byteSize;) {
             await authorize(i, 'read', bounded)
-            const length = Math.min(i.chunkBytes, i.byteSize - offset), bytes = await reader.read(i, offset, length, bounded)
+            const length = Math.min(chunkBytes, i.byteSize - offset), bytes = await reader.read(i, offset, length, bounded)
             if (bytes.byteLength !== length) throw new Error('Immutable rsync source extent changed')
             let written = 0
             while (written < length) {

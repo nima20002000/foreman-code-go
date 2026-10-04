@@ -7,8 +7,9 @@ import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { RemoteOperationJournal } from './operationJournal.js'
-function fixture() {
-  const execution=jobExecution(),mainId=randomUUID(),deviceId=randomUUID(),workerInstallationId=randomUUID(),bytes=Buffer.from('{}')
+function fixture(bytes = Buffer.from('{}')) {
+  const execution=jobExecution(),mainId=randomUUID(),deviceId=randomUUID(),workerInstallationId=randomUUID()
+  execution.acceptedSpec.policy.maxOutputBytes = Math.max(execution.acceptedSpec.policy.maxOutputBytes, bytes.length)
   execution.id=randomUUID();execution.attemptId=randomUUID();execution.operationId=randomUUID();execution.owner={grantId:randomUUID(),epoch:'1'}
   execution.acceptedSpec.target={...execution.acceptedSpec.target,mainId,hostRef:{kind:'device',mainId,deviceId},registration:{workerInstallationId,keyRevision:1,authorizationRevision:1}}
   const finishedAt = new Date().toISOString()
@@ -28,6 +29,16 @@ function fixture() {
   return {execution,input,intent,bytes,status,journal,store,retained,source:new JobOutputRsyncSource(journal,store)}
 }
 describe('closed Job rsync immutable source correlation',()=>{
+  it('reads a bounded local output block without inheriting the network frame limit', async () => {
+    const f = fixture(Buffer.alloc(1024 * 1024, 7))
+    const signal = AbortSignal.timeout(5000)
+    await f.source.register(f.execution, f.input, f.intent, f.bytes, signal)
+    const reader = await f.source.resolveSource(f.intent, signal)
+    expect(await reader.read(f.intent, 0, f.bytes.length, signal)).toEqual(f.bytes)
+    await expect(reader.read(f.intent, 0, f.bytes.length + 1, signal)).rejects.toMatchObject({ code: 'JOB_OUTPUT_TRANSFER_CONFLICT' })
+    await expect(reader.read({ ...f.intent, attemptId: randomUUID() }, 0, 1, signal))
+      .rejects.toMatchObject({ code: 'JOB_OUTPUT_TRANSFER_CONFLICT' })
+  })
   it('serves outputs from a real terminal journal while preserving the queued acceptance snapshot', async () => {
     const f = fixture()
     const directory = await mkdtemp('/tmp/graphql-output-journal-')
