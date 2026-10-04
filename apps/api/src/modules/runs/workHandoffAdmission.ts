@@ -9,6 +9,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RepeatLockedHooks } from './repeatPostgres.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 import { frozenWorkNotice, persistWorkLimitNoticeLocked, readWorkLimitNoticeLocked } from './workHandoffNotice.js'
+import { assertWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 
 async function assertAcceptedWorkResult(sql: GraphTransactionSql, scope: RepeatScope,
   execution: ReturnType<typeof HarnessExecutionSchema.parse>, activationId: string): Promise<void> {
@@ -224,6 +225,7 @@ export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<
     return activationId
   }
   context.assertActive()
+  await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
   const value = WorkActivationIdentitySchema.parse({ scope, activationId,
     workflowNodeId: version.entryNodeId, lineageId: scope.runId, cause: { kind: 'entry' } })
   await sql.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
@@ -354,6 +356,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     [denial.denialId, scope.runId, requestId, scope.workflowVersionId, relationship.id,
       activation.activationId, sourceExecutionId, payloadDigest, canonicalGraphJson(denial), context.now])
     const continuationActivationId = repeatId('work-activation', denial.denialId)
+    await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
     const continuation = WorkActivationIdentitySchema.parse({ scope, activationId: continuationActivationId,
       workflowNodeId: node.id, lineageId: activation.lineageId,
       cause: { kind: 'limit_denial', denialId: denial.denialId } })
@@ -391,16 +394,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       return repeatConflict('WORK_JOIN_ACTIVATION_CONFLICT')
     }
   }
-  const reservedBudget = (await sql.query<{ total: string }>(`select (
-      (select count(*) from harness_executions where run_id=$1)
-      + (select count(*) from run_work_activations a where a.run_id=$1 and not exists (
-          select 1 from harness_executions e where e.run_id=a.run_id and e.work_activation_id=a.activation_id
-        ))
-    )::text as total`, [scope.runId])).rows[0]
-  if (!reservedBudget || !existingActivation
-    && BigInt(reservedBudget.total) >= BigInt(version.definition.executionPolicy!.maxNodeExecutions)) {
-    return repeatConflict('WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
-  }
+  if (!existingActivation) await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
   const reserved = (await sql.query<{ used: number }>(`update run_work_connection_usage set used=used+1
     where run_id=$1 and workflow_version_id=$2 and relationship_id=$3
       and (maximum is null or used<maximum) returning used`,
@@ -510,6 +504,7 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
     latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings,
     returnedAt: context.now })
   if (continuationActivationId) {
+    await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
     const requester = (await sql.query<{ record: unknown }>(
       'select record from run_work_activations where run_id=$1 and activation_id=$2 for share',
       [scope.runId, request.requesterActivationId])).rows[0]

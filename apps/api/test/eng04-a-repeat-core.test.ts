@@ -255,6 +255,9 @@ function postgresShape(cap = 3, artifacts: false | 'enabled' | 'missing' = false
     else if (q === 'commit') { saved = undefined; if (lostCommit) { lostCommit = false; throw new Error('COMMIT reply lost') } }
     else if (q === 'rollback') { if (saved) state = saved; saved = undefined }
     else if (q.includes('from runs r join workflow_versions')) rows = [{ run: state.run, version: f.version, stopped: state.stopped, state: state.run.executionState, now: at }]
+    else if (q.startsWith('select ( (select count(*) from harness_executions')) {
+      rows = [{ total: String([...state.executions.values()].filter((item) => item.record.runId === v[0]).length) }]
+    }
     else if (q.startsWith('select record,input_json,input_digest')) { const row = state.occurrences.get(v[0]!); if (row) rows = [row] }
     else if (q.startsWith('select occurrence_id from run_repeat_occurrences')) {
       const list = [...state.occurrences.values()].filter((x) => x.record.identity.blockId === v[1]
