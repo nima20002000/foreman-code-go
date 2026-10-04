@@ -10,6 +10,7 @@ import type pg from 'pg'
 import { assertBudget, fail, lockInteraction, readContext, transact } from './context.js'
 import { lockPrincipal } from './principal.js'
 import { decisionDigest, interactionFact, nextInteraction, publishInteraction } from './publication.js'
+import { assertInteractionResponseActive } from '../cancellation.js'
 
 function requestIdentity(interaction: DurableInteraction): unknown {
   const { id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
@@ -68,7 +69,8 @@ async function audit(sql: GraphSqlClient, principal: ManagementPrincipal, intera
     `interaction:${interaction.id}`, JSON.stringify({ replayed, optionId: interaction.selectedOptionId })])
 }
 export async function decide(pool: pg.Pool, runId: string, input: {
-  id: string; optionId: string; expectedRevision: number; principal: ManagementPrincipal; nativeResponse: unknown
+  id: string; optionId: string; expectedRevision: number; principal: ManagementPrincipal; nativeResponse: unknown;
+  signal?: AbortSignal
 }) {
   return transact(pool, runId, async (publication) => {
     const sql = publication.sql
@@ -96,6 +98,7 @@ export async function decide(pool: pg.Pool, runId: string, input: {
       return { interaction: current, replayed: true }
     }
     if (current.revision !== input.expectedRevision) return fail('REVISION_CONFLICT')
+    assertInteractionResponseActive(input.signal)
     await assertBudget(sql, current)
     const next = nextInteraction(current, { status: 'delivery_pending', deliveryState: 'pending', selectedOptionId: option.optionId,
       selectedSemantic: option.semantic, nativeResponse: response, auditReference: principal.id, decidedAt: new Date().toISOString() })
@@ -112,6 +115,7 @@ export async function decide(pool: pg.Pool, runId: string, input: {
           connectionGeneration: null, ownership: 'held', access: 'effect', security: 'valid',
           effectClosed: actual.status !== 'pending', submission: 'not_submitted' }
       } }, mutate: async (transaction) => audit(transaction, principal, next, false) })
+    beforeGraphCommit(sql, async () => assertInteractionResponseActive(input.signal))
     return { interaction: next, replayed: false }
   })
 }

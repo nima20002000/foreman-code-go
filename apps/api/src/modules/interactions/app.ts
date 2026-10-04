@@ -24,6 +24,7 @@ import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
 import type { InteractionService } from './service.js'
 import { fitsInteractionMcpResponse, interactionMcpGet, interactionMcpView } from './mcpReadback.js'
+import type { InteractionResponseOptions } from './cancellation.js'
 
 const CURSOR_PREFIX = 'interaction:'
 export const AppInteractionListInputSchema = ListInteractionsRequestSchema.pick({ cursor: true, limit: true }).strict()
@@ -57,7 +58,7 @@ export interface AppInteractionService {
   toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
   get(principal: ManagementPrincipal, interactionId: string, contentCursor?: string): Promise<unknown>
-  respond(principal: ManagementPrincipal, input: unknown): Promise<unknown>
+  respond(principal: ManagementPrincipal, input: unknown, options?: InteractionResponseOptions): Promise<unknown>
 }
 
 export class PostgresAppInteractionService implements AppInteractionService {
@@ -211,7 +212,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     return interactionMcpGet({ interaction, ...(activity ? { activity } : {}) }, contentCursor)
   }
 
-  async respond(principal: ManagementPrincipal, input: unknown) {
+  async respond(principal: ManagementPrincipal, input: unknown, options: InteractionResponseOptions = {}) {
     const parsed = RespondToInteractionRequestSchema.parse(input)
     let current: ReturnType<typeof DurableInteractionSchema.parse> | undefined
     try {
@@ -223,7 +224,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
         authority: {
           agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
         },
-      }, parsed)
+      }, parsed, options)
       const response = RespondToInteractionResponseSchema.parse(result)
       return AppInteractionRespondOutputSchema.parse({
         interaction: interactionMcpView(response.interaction), replayed: response.replayed,

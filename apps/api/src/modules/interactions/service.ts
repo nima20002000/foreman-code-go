@@ -8,6 +8,7 @@ import type { WorkerInteractionAuthority } from './authorization.js'
 import type { PostgresApprovalBudgetRepository } from './budget.js'
 import type { InteractionNativeRuntime } from './runtimePorts.js'
 import { Wave25InteractionRepository } from './wave25/repository.js'
+import type { InteractionResponseOptions } from './cancellation.js'
 import { deliverApproval, respondToApproval, resumeApproval,
   type ApprovalRuntimeDependencies, type AtomicApprovalResumeConsumer } from './wave25/service.js'
 
@@ -114,8 +115,9 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null, ...counts }
   }
 
-  respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
-    return respondToApproval(this.approvalDependencies(), responder, input)
+  respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string },
+    options: InteractionResponseOptions = {}) {
+    return respondToApproval(this.approvalDependencies(), responder, input, options)
   }
 
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {

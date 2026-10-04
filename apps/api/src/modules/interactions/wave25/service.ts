@@ -11,6 +11,7 @@ import { fail } from './context.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
 import { canUserInteract } from '../../access/userPolicy.js'
 import { requireRespondableInteraction } from '../../access/appPolicy.js'
+import { assertInteractionResponseActive, type InteractionResponseOptions } from '../cancellation.js'
 
 /** Consumer must call consumeApprovalGraphResume in the existing Run/checkpoint
  * transaction. A callback that starts native work or returns void without that
@@ -105,7 +106,7 @@ export async function resumeApproval(deps: ApprovalRuntimeDependencies, interact
   await deps.repository.delivery.finishGraphResume(claim, error)
 }
 export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,
-  input: { interactionId: string; optionId: string; expectedRevision: number }) {
+  input: { interactionId: string; optionId: string; expectedRevision: number }, options: InteractionResponseOptions = {}) {
   const current = await read(deps, input.interactionId)
   if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind === 'user')) return fail('INTERACTION_ACCESS_DENIED')
   if (responder.kind === 'orchestrator') {
@@ -120,10 +121,18 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
       if (!canUserInteract(responder.principal, 'interactions:respond', current)) return fail('INTERACTION_ACCESS_DENIED')
     } else requireRespondableInteraction(responder.principal, current)
     if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
-    await deps.nativeRuntime.validateInteraction(current)
+    assertInteractionResponseActive(options.signal)
+    try {
+      await deps.nativeRuntime.validateInteraction(current, options.signal)
+    } catch (error) {
+      assertInteractionResponseActive(options.signal)
+      throw error
+    }
+    assertInteractionResponseActive(options.signal)
   }
   const decided = await deps.repository.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
-    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic } })
+    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+    ...(options.signal ? { signal: options.signal } : {}) })
   const delivered = await deliverApproval(deps, current.id)
   await resumeApproval(deps, delivered)
   return { interaction: await read(deps, current.id), replayed: decided.replayed }

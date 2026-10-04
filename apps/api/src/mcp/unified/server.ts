@@ -17,6 +17,7 @@ export interface GraphqlMcpContext {
   interactions?: AppInteractionService
   /** Worker roles only: the tools enabled for this Agent's configuration and workflow node. */
   tools?: readonly string[]
+  signal?: AbortSignal
 }
 
 interface ToolDefinition { name: string; description: string }
@@ -92,7 +93,8 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promis
       const value: unknown = Reflect.get(target, key, target)
       return typeof value === 'function' ? value.bind(target) : value
     } }) : server
-    await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions })
+    await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions,
+      ...(context.signal ? { signal: context.signal } : {}) })
   }
   return server
 }

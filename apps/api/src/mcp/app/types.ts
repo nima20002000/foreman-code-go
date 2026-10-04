@@ -11,4 +11,5 @@ export interface AppMcpServices {
 export interface AppRequestContext {
   principal: ManagementPrincipal
   interactions: AppInteractionService
+  signal?: AbortSignal
 }

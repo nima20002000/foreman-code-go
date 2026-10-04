@@ -11,6 +11,7 @@ import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { ManagementAudience, ManagementPrincipal } from '@graphql/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
+import { z } from 'zod'
 
 import { requireLocalRequest } from '../../modules/access/http.js'
 import { bearerToken, type PostgresAccessService } from '../../modules/access/postgres.js'
@@ -26,8 +27,17 @@ import { unavailableRunHistoryToolCall } from '../operator/tools/runHistory.js'
 import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
+import { McpRequestCancellation } from '../shared/cancellation.js'
 
 export const GRAPHQL_MCP_PATH = '/mcp'
+const RpcIdSchema = z.union([z.string(), z.number().int()])
+const CancellableRequestSchema = z.object({
+  jsonrpc: z.literal('2.0'), id: RpcIdSchema, method: z.literal('tools/call'),
+}).passthrough()
+const CancellationSchema = z.object({
+  jsonrpc: z.literal('2.0'), method: z.literal('notifications/cancelled'),
+  params: z.object({ requestId: RpcIdSchema }).passthrough(),
+}).strict()
 
 /** Closed artifact group: separate native context authority, never graph-tool grants. */
 export interface WorkerArtifactMcpExtension {
@@ -46,6 +56,7 @@ export interface GraphqlMcpServices {
 
 /** The single, stateless GraphQL MCP endpoint. The bearer credential decides the role. */
 export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpServices): void {
+  const cancellations = new McpRequestCancellation()
   // FIL-03 is composed after buildProductionApp. Bind the same service before any MCP request,
   // rather than constructing another storage/auth boundary or changing server startup ownership.
   app.addHook('onReady', async () => {
@@ -65,6 +76,18 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
   }, async (request, reply) => {
     requireLocalRequest(request)
     const principal = await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
+    const cancelled = CancellationSchema.safeParse(request.body)
+    if (cancelled.success) {
+      cancellations.cancel(principal.id, cancelled.data.params.requestId)
+      return reply.code(202).send()
+    }
+    const call = CancellableRequestSchema.safeParse(request.body)
+    const operation = call.success ? cancellations.track(principal.id, call.data.id) : undefined
+    reply.raw.once('finish', () => operation?.finish())
+    reply.raw.once('close', () => {
+      if (!reply.raw.writableFinished) operation?.cancel()
+      operation?.finish()
+    })
     const access = principal.audience === 'operator' ? undefined : await services.interactions!.toolAccess(principal)
     const role: McpRole = access?.role ?? 'operator'
     if (role === 'operator' && services.operator) {
@@ -89,6 +112,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       if (unavailable) return reply.send(unavailable)
     }
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),
+      ...(operation ? { signal: operation.signal } : {}),
       ...(services.operator ? { operator: services.operator } : {}),
       ...(services.interactions ? { interactions: services.interactions } : {}) }
     const denied = await roleDeniedToolCall(context, request.body)

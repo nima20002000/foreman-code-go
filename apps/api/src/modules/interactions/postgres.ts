@@ -204,6 +204,7 @@ export class PostgresInteractionRepository {
   async decide(input: {
     id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string
     principal?: ManagementPrincipal
+    signal?: AbortSignal
     beforeCommit?(client: pg.PoolClient, result: DecisionResult): Promise<void>
   }): Promise<DecisionResult> {
     const response = DurableInteractionSchema.shape.nativeResponse.unwrap().parse(input.nativeResponse)

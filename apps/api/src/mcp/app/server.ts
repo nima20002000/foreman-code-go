@@ -53,7 +53,7 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
 
   if (await context.interactions.canRespond(context.principal)) {
     server.registerTool('interaction_respond', {
-      description: 'Respond using a server-generated option only as the designated Orchestrator directly connected to the exact requesting node in the Run’s immutable workflow version. A transitive path or shared Agent ID is insufficient. Your own native automatic review only authorizes this App MCP call; it does not decide the Worker request.',
+      description: 'Respond using a server-generated option only as the designated Orchestrator directly connected to the exact requesting node in the Run’s immutable workflow version. A transitive path or shared Agent ID is insufficient. Your own native automatic review only authorizes this App MCP call; it does not decide the Worker request. Cancellation stops an uncommitted decision. After commit, read interaction_get to confirm the recorded decision and delivery state.',
       inputSchema: RespondToInteractionRequestSchema,
       outputSchema: RespondToInteractionResponseSchema,
       annotations: {
@@ -62,6 +62,8 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
         idempotentHint: false,
         openWorldHint: true,
       },
-    }, async (input) => invokeAppTool(context, 'interaction_respond', () => context.interactions.respond(context.principal, input)))
+    }, async (input, extra) => invokeAppTool(context, 'interaction_respond', () => context.interactions.respond(
+      context.principal, input, { signal: context.signal ? AbortSignal.any([context.signal, extra.signal]) : extra.signal },
+    )))
   }
 }
