@@ -11,23 +11,73 @@ const directory = join(dirname(fileURLToPath(import.meta.url)), 'routes')
 const output = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 let protocolVersion = '2025-03-26'
 const pending = new Map()
+
+class BridgeFailure extends Error {
+  constructor(kind, message, status) {
+    super(message)
+    this.kind = kind
+    this.status = status
+  }
+}
+
+function httpFailure(status) {
+  if (status === 401) return new BridgeFailure('authentication',
+    'MCP authentication expired or was revoked. Refresh the owning app credential before retrying.', status)
+  if (status === 403) return new BridgeFailure('forbidden',
+    'MCP access was denied. Ask the owning app operator to check this credential’s grants and scope.', status)
+  if (status === 413) return new BridgeFailure('request_too_large',
+    'The MCP request is too large. Reduce the request payload before retrying.', status)
+  if (status === 429 || status >= 500) return new BridgeFailure('service_unavailable',
+    'The owning app MCP service is temporarily unavailable. Retry later; read back any decision before retrying a write.', status)
+  return new BridgeFailure('http_error',
+    `The owning app rejected the MCP request (HTTP ${status}). Check the request before retrying.`, status)
+}
+
+function bridgeError(error) {
+  if (error instanceof BridgeFailure) return {
+    code: -32000, message: error.message,
+    data: { kind: error.kind, ...(error.status ? { httpStatus: error.status } : {}) },
+  }
+  if (error?.name === 'TimeoutError') return { code: -32000,
+    message: 'The MCP request timed out. Read back any decision before retrying; the owning app may have committed it.',
+    data: { kind: 'timeout' } }
+  if (error instanceof SyntaxError) return { code: -32000,
+    message: 'The owning app returned an invalid MCP response. Check the app service before retrying.',
+    data: { kind: 'invalid_response' } }
+  return { code: -32000,
+    message: 'MCP could not connect to its owning app. Check that the owning app is running and retry.',
+    data: { kind: 'transport' } }
+}
+
 async function forward(message, controller) {
+  let requestSignal
   try {
-    if (!token) throw new Error('missing credential')
+    if (!token) throw new BridgeFailure('authentication', 'The MCP credential is missing. Refresh the owning app credential.')
     const key = createHash('sha256').update(token).digest('hex')
-    const route = JSON.parse(await readFile(join(directory, `${key}.json`), 'utf8'))
+    let route
+    try {
+      route = JSON.parse(await readFile(join(directory, `${key}.json`), 'utf8'))
+    } catch {
+      throw new BridgeFailure('route_unavailable',
+        'The owning app MCP route is unavailable. Open the owning app to refresh this credential’s connection.')
+    }
     const url = new URL(route.endpoint)
     if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
       || url.pathname !== '/mcp' || url.username || url.password || url.search || url.hash
       || !Number.isInteger(route.pid) || route.pid <= 0 || Date.parse(route.expiresAt) <= Date.now()
-      || !Number.isFinite(Date.parse(route.expiresAt))) throw new Error('invalid route')
+      || !Number.isFinite(Date.parse(route.expiresAt))) throw new BridgeFailure('route_unavailable',
+        'The owning app MCP route is invalid or expired. Open the owning app to refresh this credential’s connection.')
     process.kill(route.pid, 0)
+    requestSignal = controller ? AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000)
     const response = await fetch(url, { method: 'POST', redirect: 'error',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': protocolVersion },
-      body: JSON.stringify(message), signal: controller
-        ? AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000) })
-    if (!response.ok) throw new Error('endpoint rejected request')
+      body: JSON.stringify(message), signal: requestSignal })
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw httpFailure(response.status)
+    }
     if (response.status === 202 || response.status === 204) return
     const publish = (value) => {
       if (controller?.signal.aborted) return
@@ -49,10 +99,10 @@ async function forward(message, controller) {
         }
       }
     }
-  } catch {
+  } catch (error) {
     if (controller?.signal.aborted) return
     if (Object.hasOwn(message, 'id')) output({ jsonrpc: '2.0', id: message.id,
-      error: { code: -32000, message: 'GraphQL MCP could not connect to its owning app. Restart the conversation or execution to refresh its connection.' } })
+      error: bridgeError(requestSignal?.aborted ? requestSignal.reason : error) })
   } finally {
     if (controller && pending.get(message.id) === controller) pending.delete(message.id)
   }

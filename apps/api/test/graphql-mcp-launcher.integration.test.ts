@@ -86,9 +86,9 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
     expect(text).not.toContain(reader.token)
   }
   await access.revoke(reader.principal.id)
-  await expect(readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).rejects.toThrow('could not connect')
+  await expect(readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).rejects.toThrow('authentication expired or was revoked')
   await removeOwner()
-  await expect(ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).rejects.toThrow('could not connect')
+  await expect(ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).rejects.toThrow('route is unavailable')
   await removeReader()
   const restarted = new AppMcpRoutes(database.pool, second.endpoint, launcher)
   cleanup.push(() => restarted.close())
