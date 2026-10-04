@@ -569,19 +569,24 @@ export class RsyncWriterOwnership {
   }
   assertLock(input: TransferIntent) {
     const i = this.original(input), actual = certificate(join(this.root, `${i.transferId}.lock`))
+    // Retirement fences every writer. Its latest captured lock supersedes earlier
+    // ownership records, including records whose removed inode was reused.
+    for (const row of this.cleanupClaims(i).reverse()) {
+      const raw = readRecord(`${this.cleanupPath(row)}.lock`)
+      if (raw === undefined) continue
+      const lock = CleanupLock.parse(raw)
+      if (!isDeepStrictEqual(lock, { version: 1, transferId: i.transferId, sequence: row.sequence,
+        ownerDigest: digest(row), root: this.rootIdentity, lock: actual })) {
+        throw new Error('Rsync cleanup lock owner conflicts')
+      }
+      return
+    }
     let matches = 0
     for (const ref of this.references(i)) {
       const { path } = this.read(ref), raw = readRecord(`${path}.lock`)
       if (raw === undefined) continue
       const lock = Lock.parse(raw)
       if (lock.transferId !== ref.transferId || lock.ownerId !== ref.ownerId || lock.ownerDigest !== ref.ownerDigest || !isDeepStrictEqual(lock.root, this.rootIdentity)) throw new Error('Rsync writer lock owner conflicts')
-      if (isDeepStrictEqual(lock.lock, actual)) matches++
-    }
-    for (const row of this.cleanupClaims(i)) {
-      const raw = readRecord(`${this.cleanupPath(row)}.lock`)
-      if (raw === undefined) continue
-      const lock = CleanupLock.parse(raw)
-      if (!isDeepStrictEqual(lock, { version: 1, transferId: i.transferId, sequence: row.sequence, ownerDigest: digest(row), root: this.rootIdentity, lock: lock.lock })) throw new Error('Rsync cleanup lock owner conflicts')
       if (isDeepStrictEqual(lock.lock, actual)) matches++
     }
     if (matches !== 1) throw new Error('Exact rsync writer lock ownership unavailable')

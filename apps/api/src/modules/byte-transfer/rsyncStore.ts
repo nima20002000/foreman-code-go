@@ -140,7 +140,14 @@ export class RsyncPrivateStore {
         } finally { await access.close() }
       }
       return {
-        interrupt: async () => { if (closed) return; closed = true; await unlock() },
+        interrupt: async () => {
+          if (closed) return
+          // A revoked lease has closed its handles. Trusted retirement retains
+          // responsibility for its captured lock and partial bytes.
+          if (access.signal.aborted) await access.close()
+          else await unlock()
+          closed = true
+        },
         verify: async bounded => {
           if (closed) throw new Error('Receiver lease closed')
           bounded.throwIfAborted()
