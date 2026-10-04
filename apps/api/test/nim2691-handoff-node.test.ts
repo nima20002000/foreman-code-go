@@ -123,6 +123,7 @@ describe('NIM-2691 workflow activation routing', () => {
       })
       let accepted = false
       const store = {
+        resolveWaitingWorkJoins: async () => [],
         admitWorkActivation: async () => ({ execution, reused: true }),
         acceptWorkTerminal: async () => {
           const replayed = accepted

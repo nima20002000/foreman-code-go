@@ -23,7 +23,7 @@ import { graphHeaders } from '../eng04-graph-composition-fixture.js'
 export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof currentDatabase>>,
   configure: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3, form: CurrentFixtureForm = 'sequential') {
   const writer = await writerFixture(db, form)
-  let owner: RunOwnership | null = null
+  let owner: RunOwnership | undefined
   try {
     const graph = configure(writer.input.graph)
     const configurations = writer.configurations.filter((configuration) =>

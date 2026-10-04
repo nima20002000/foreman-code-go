@@ -29,6 +29,7 @@ function fixture(code: string) {
     admit: unavailable, acceptTerminal: unavailable, enterBlock: unavailable, readOccurrence: unavailable,
     transition: unavailable, resolveExcluded: unavailable, completeRun: unavailable,
     admitWorkRequest: unavailable, returnWork: unavailable, recordWorkUnresolved: unavailable,
+    resolveWaitingWorkJoins: async () => [],
     completeWorkRun: unavailable,
   }
   const lifecycle: RepeatRuntimeLifecycle = {

@@ -331,7 +331,7 @@ export async function executeRepeatRuntime(input: {
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
-    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'completeWorkRun'>
+    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
   configuredParallelism?: number

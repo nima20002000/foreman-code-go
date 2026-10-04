@@ -219,6 +219,7 @@ function runtimeFixture(names = ['entry', 'approval', 'sibling'], edges: Array<[
     ensureWorkEntry: unsupportedWork, admitWorkActivation: unsupportedWork, acceptWorkTerminal: unsupportedWork,
     admitWorkRequest: unsupportedWork, returnWork: unsupportedWork, recordWorkUnresolved: unsupportedWork,
     completeWorkRun: unsupportedWork,
+    resolveWaitingWorkJoins: unsupportedWork,
     resolveExcluded: async () => undefined, // All nodes in these fixtures are reachable.
     completeRun: async () => {
       assert.equal(f.resolutions.size, names.length)

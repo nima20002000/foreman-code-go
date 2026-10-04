@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@graphql/contracts'
+import { ExecutionResultSchema, HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@graphql/contracts'
 import {
   WorkReturnSchema, WorkNoticeSchema, WorkHandoffResultSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
   canonicalGraphJson, type WorkHandoffResult,
@@ -14,16 +14,23 @@ import { assertWorkHandoffDeliveryLocked } from '../src/modules/runs/workHandoff
 import { createWorkLimitNotice } from '../src/modules/runs/workHandoffNotice.js'
 import { repeatDigest, repeatId } from '../src/modules/runs/repeatResolution.js'
 import { nim2691TaskDatabase as taskDatabase } from './helpers/nim2691Database.js'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 
 const text = (value: unknown) => canonicalGraphJson(value, 4 * 1024 * 1024)
+
+async function acquireOwner(pool: pg.Pool, runId: string): Promise<RunOwnership> {
+  const owner = await RunOwnership.acquire(pool, runId, () => undefined)
+  assert.ok(owner)
+  return owner
+}
 
 // Start at the committed terminal-acceptance boundary. Native settlement and
 // publication are fixture ports; return correlation and persistence use real SQL.
 async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
   options: { reviewAccepted: boolean } = { reviewAccepted: true }) {
   const fixture = makeCurrentWorkflowFixture('review-delivery')
-  const [source, reviewer] = fixture.version.definition.nodes
-  assert.ok(source && reviewer && source.kind !== 'job' && reviewer.kind !== 'job')
+  const source = agentWorkflowNode(fixture.version.definition.nodes[0])
+  const reviewer = agentWorkflowNode(fixture.version.definition.nodes[1])
   const edge = fixture.version.definition.edges[0]!
   const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
     ...fixture.version.definition, handoffs: { contractVersion: 1 },
@@ -64,7 +71,7 @@ async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
     await pool.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
       cause_kind,cause_id,state,record) values($1,$2,$3,$4,$5,$6,'completed',$7::jsonb)`,
       [activationId, run.id, version.id, node.id, cause.kind, index ? requestId : run.id, text(activation)])
-    const result: ExecutionResult = index ? { outcome: 'succeeded', output } : sourceResult
+    const result = index ? ExecutionResultSchema.parse({ outcome: 'succeeded', output }) : sourceResult
     const execution = HarnessExecutionSchema.parse({ id: executionId, runId: run.id, workflowNodeId: node.id,
       agentId: node.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
       attempt: 1, input: {}, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
@@ -145,13 +152,11 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       const output: WorkHandoffResult = { routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
         data: { latestDeliverable: { revision: 1 }, remainingFindings: [{ id: 'remaining-finding' }] } }
       const t = await acceptedReview(pool, output)
-      let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-      assert.ok(owner)
+      let owner = await acquireOwner(pool, t.run.id)
       try {
         if (restart) {
           await owner.release()
-          owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-          assert.ok(owner)
+          owner = await acquireOwner(pool, t.run.id)
         }
         const store = new RepeatRunRepository(owner, t.host, t.version)
         const returned = await store.returnWork('review-execution')
@@ -190,15 +195,13 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       output.data.latestDeliverable = prefix + 'x'.repeat(65536 - metadataBytes - prefixBytes)
       const candidate = HarnessExecutionSchema.parse({ ...t.executions[1], result: { outcome: 'succeeded', output } })
       WorkHandoffResultSchema.parse(output)
-      let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-      assert.ok(owner)
+      let owner = await acquireOwner(pool, t.run.id)
       try {
         await owner.oneShotConnection().transaction((sql) =>
           acceptPreparedResult(sql, t, t.request.destinationActivationId, candidate, output))
         if (restart) {
           await owner.release()
-          owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-          assert.ok(owner)
+          owner = await acquireOwner(pool, t.run.id)
         }
         const store = new RepeatRunRepository(owner, t.host, t.version)
         const delivered = await store.returnWork(candidate.id)
@@ -235,14 +238,12 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       output.data.latestDeliverable = 'x'.repeat(65536 - Buffer.byteLength(canonicalGraphJson({ ...notice,
         delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8'))
       const candidate = HarnessExecutionSchema.parse({ ...next.execution, result: { outcome: 'succeeded', output } })
-      let owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-      assert.ok(owner)
+      let owner = await acquireOwner(pool, t.run.id)
       try {
         await owner.oneShotConnection().transaction((sql) => acceptPreparedResult(sql, t, next.activationId, candidate, output))
         if (restart) {
           await owner.release()
-          owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-          assert.ok(owner)
+          owner = await acquireOwner(pool, t.run.id)
         }
         const store = new RepeatRunRepository(owner, t.host, t.version)
         const denied = await store.admitWorkRequest(candidate.id)
