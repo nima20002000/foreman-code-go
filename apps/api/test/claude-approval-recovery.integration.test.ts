@@ -15,7 +15,6 @@ import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/
 import { createClaudeSdkCallbacks } from '../src/modules/harnesses/claudeSdk/sdkCallbacks.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
-import type { ClaudeNativeSessionManager } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -24,7 +23,6 @@ import { deferred } from './support/claudeProduction.js'
 /** Native transport frames are doubled; runner, normalizer, manager, callback authority, caller and PostgreSQL are real. */
 function runtime(pool: pg.Pool, repository: PostgresOperatorConversationRepository, configuration: OperatorConfigurationVersion,
   conversationId: string, directory: string, nativeHistory: unknown[], offers: string[]) {
-  let manager!: ClaudeNativeSessionManager
   const domain = createPostgresClaudeInteractionBridge({ database: pool, configuration: configuration.harness as ClaudeHarnessConfiguration,
     binding: { kind: 'operator', conversationId, repository },
     manager: { nativeCallbackContext: (sessionId, toolId) => manager.nativeCallbackContext(sessionId, toolId) } })
@@ -51,7 +49,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
     session.offer = (message, signal) => { offers.push(message.promptUuid); return offer(message, signal) }
     return session
   }
-  manager = allocateClaudeNativeHarness({ harness: 'claude', role: 'operator', ownerAgentId: conversationId,
+  const manager = allocateClaudeNativeHarness({ harness: 'claude', role: 'operator', ownerAgentId: conversationId,
     workingDirectory: directory, appMcpAccess: 'none', scope: { deviceId: 'test-host', profilePath: '/test-profile', configRevision: '1', cwd: directory },
     runner, sdkOptions: createClaudeSdkCallbacks({ manager: () => manager, bridge: domain.bridge }),
     qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: false, history: true, interactions: true },
@@ -113,8 +111,8 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const message = (await (await owned.ready.promise).next()).value!
         nativeHistory.push({ type: 'user', uuid: message.uuid, session_id: session.nativeSessionId,
           parent_tool_use_id: null, message: { role: 'user', content: 'Read an admitted file' } })
-        owned.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: directory })
-        owned.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+        void owned.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: directory })
+        void owned.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
           parent_tool_use_id: null, message: { id: 'tool-message', content: [{ type: 'tool_use', id: 'read-tool', name: 'Read', input: { file_path: '/test-file' } }] } })
         const hook = { session_id: session.nativeSessionId, transcript_path: '/test-transcript', cwd: directory,
           tool_use_id: 'read-tool', tool_name: 'Read', tool_input: { file_path: '/test-file' } }

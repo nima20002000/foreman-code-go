@@ -118,10 +118,10 @@ function queries(f: ReturnType<typeof fixture>, resumeHealth = 'connected', ackn
     void (async () => {
       for await (const message of input.prompt) {
         query.messages.push(message)
-        frames.offer({ type: 'system', subtype: 'init', session_id: 'recorded-session', claude_code_version: '2.1.284', cwd: '/recorded/work' })
-        frames.offer({ type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'recorded-session', user_message_uuid: message.uuid,
+        void frames.offer({ type: 'system', subtype: 'init', session_id: 'recorded-session', claude_code_version: '2.1.284', cwd: '/recorded/work' })
+        void frames.offer({ type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'recorded-session', user_message_uuid: message.uuid,
           parent_tool_use_id: null, message: { id: `api:${message.uuid}`, content: [{ type: 'text', text: 'Recorded reply' }] } })
-        frames.offer({ type: 'result', uuid: `result:${message.uuid}`, session_id: 'recorded-session', user_message_uuid: message.uuid,
+        void frames.offer({ type: 'result', uuid: `result:${message.uuid}`, session_id: 'recorded-session', user_message_uuid: message.uuid,
           subtype: 'success', is_error: false, result: 'Recorded reply' })
       }
     })()

@@ -13,10 +13,10 @@ async function replay(f: ReturnType<typeof productionClaudeFixture>) {
     })) observed.push(event.type)
   })()
   const message = (await (await f.ready.promise).next()).value!
-  f.frames.offer({ type: 'system', subtype: 'init', session_id: 'recorded-session', claude_code_version: '2.1.284', cwd: '/recorded/work' })
-  f.frames.offer({ type: 'assistant', uuid: 'recorded-reply', session_id: 'recorded-session', user_message_uuid: message.uuid,
+  void f.frames.offer({ type: 'system', subtype: 'init', session_id: 'recorded-session', claude_code_version: '2.1.284', cwd: '/recorded/work' })
+  void f.frames.offer({ type: 'assistant', uuid: 'recorded-reply', session_id: 'recorded-session', user_message_uuid: message.uuid,
     parent_tool_use_id: null, message: { id: 'recorded-api-message', content: [{ type: 'text', text: 'Recorded reply' }] } })
-  f.frames.offer({ type: 'result', uuid: 'recorded-result', session_id: 'recorded-session', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'Recorded reply' })
+  void f.frames.offer({ type: 'result', uuid: 'recorded-result', session_id: 'recorded-session', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'Recorded reply' })
   await output
   return observed
 }
