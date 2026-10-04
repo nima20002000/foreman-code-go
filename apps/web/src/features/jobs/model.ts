@@ -34,5 +34,6 @@ export function queueLabel(ticket: JobQueueTicket) {
 }
 
 export function jobWriteUncertain(error: unknown) {
+  if (ApiError.is(error) && error.code === 'JOB_QUEUE_UNAVAILABLE') return false
   return Boolean(error) && !(ApiError.is(error) && error.status >= 400 && error.status < 500)
 }

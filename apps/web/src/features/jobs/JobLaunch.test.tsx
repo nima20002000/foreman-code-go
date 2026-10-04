@@ -11,6 +11,24 @@ import { definition, execution, queueTicket } from './fixtures'
 import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 
+it('shows the owner-review requirement and permits closing when no queue request was admitted', async () => {
+  const close = vi.fn()
+  server.use(
+    http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+    http.post(`${root}/executions`, () => HttpResponse.json({ error: {
+      code: 'JOB_QUEUE_UNAVAILABLE', message: 'Starting build Jobs requires owner-reviewed queue configuration on Main.',
+    } }, { status: 503 })),
+  )
+  render(<QueryClientProvider client={new QueryClient()}><JobLaunch workspaceId={definition.workspaceId}
+    definition={definition} onClose={close} onAccepted={vi.fn()} /></QueryClientProvider>)
+  await screen.findByText('Ready to start')
+  await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
+  await screen.findByText('Starting build Jobs requires owner-reviewed queue configuration on Main.')
+  expect(screen.queryByText('Start not confirmed')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(close).toHaveBeenCalledOnce()
+})
+
 it('opens a retained pre-queue execution after an authenticated same-command retry without inventing a ticket', async () => {
   const accepted = vi.fn()
   const queueReads = vi.fn()

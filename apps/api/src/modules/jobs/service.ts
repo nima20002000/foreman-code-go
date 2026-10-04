@@ -178,7 +178,7 @@ export class JobService {
   private queueConfiguration(): JobQueueConfiguration {
     const configuration = this.ports.queue
     if (!configuration || !this.queuePreparation) {
-      throw new DomainError('JOB_QUEUE_UNAVAILABLE', 'Queued build admission is not configured.', 503)
+      throw new DomainError('JOB_QUEUE_UNAVAILABLE', 'Starting build Jobs requires owner-reviewed queue configuration on Main.', 503)
     }
     const review = z.object({ reviewedByPrincipalId: z.string().min(1), reviewedAt: z.iso.datetime(),
       decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()

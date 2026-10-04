@@ -1,6 +1,13 @@
 import { it, expect } from 'vitest'
-import { loadedChunks, plainLog, processLabel } from './model'
+import { loadedChunks, plainLog, processLabel, jobWriteUncertain } from './model'
+import { ApiError } from '../../shared/api/client'
 import { execution, logPage } from './fixtures'
+
+it('keeps missing owner configuration actionable while retaining unknown network and server acknowledgments', () => {
+  expect(jobWriteUncertain(new ApiError({ code: 'JOB_QUEUE_UNAVAILABLE', message: 'Owner review required' }, 503))).toBe(false)
+  expect(jobWriteUncertain(new ApiError({ code: 'NETWORK_ERROR', message: 'Disconnected' }))).toBe(true)
+  expect(jobWriteUncertain(new ApiError({ code: 'INTERNAL_ERROR', message: 'Unknown acknowledgment' }, 503))).toBe(true)
+})
 
 it('deduplicates reconnect chunks while retaining Unicode and stream labels', () => {
   expect(loadedChunks([logPage, logPage])).toEqual(logPage.chunks)
