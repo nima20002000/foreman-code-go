@@ -14,7 +14,7 @@ export function createScheduleDispatcher(pool: pg.Pool, locations: WorkspaceLoca
   const port = new PostgresScheduleDispatcher(pool, async (principal, input, schedule) => {
     production.assertStartReady()
     const result = await admitRepeatRun(pool, locations, principal, 'schedule', input, {
-      ...(production.startPublication.placementAdmission ? { placementAdmission: production.startPublication.placementAdmission } : {}),
+      ...production.startPublication,
       initializeLocked: (...args) => {
         production.assertStartReady()
         return production.startPublication.initializeLocked(...args)

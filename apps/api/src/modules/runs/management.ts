@@ -136,7 +136,7 @@ export class RunManagementService {
     // The unchanged admission layer verifies exact SQL receipts BEFORE trying a
     // new publication. Replay neither invokes the native owner nor dispatches.
     // New Run initialization always calls A's REAL publisher on this same G1.
-    const publication = production ? { ...(production.startPublication.placementAdmission ? { placementAdmission: production.startPublication.placementAdmission } : {}), initializeLocked: async (...args: Parameters<typeof production.startPublication.initializeLocked>) => {
+    const publication = production ? { ...production.startPublication, initializeLocked: async (...args: Parameters<typeof production.startPublication.initializeLocked>) => {
       production.assertStartReady()
       return production.startPublication.initializeLocked(...args)
     } } : undefined
