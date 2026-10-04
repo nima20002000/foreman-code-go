@@ -7,7 +7,6 @@ import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,12 +60,17 @@ import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
-const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url))
-const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode'
+const configuredBinaries = harnessBinaries({
+  CODEX_BINARY: process.env.ENG03_A_CODEX_BINARY ?? process.env.CODEX_BINARY,
+  OPENCODE_BINARY: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY,
+})
+const codexBinary = configuredBinaries.codexBinary
+const openCodeBinary = configuredBinaries.openCodeBinary
 
 export interface Eng03NativeRuntime {
   engine: LangGraphWorkflowEngine

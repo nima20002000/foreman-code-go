@@ -17,6 +17,7 @@ import { HarnessQualificationService } from '../../src/modules/harnesses/qualifi
 import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualificationOwnership,
   NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
 import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
@@ -72,8 +73,11 @@ export async function qualifyEng03OpenCode() {
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
-    const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? 'codex',
-      opencode: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode' }
+    const configuredBinaries = harnessBinaries({
+      CODEX_BINARY: process.env.ENG03_A_CODEX_BINARY ?? process.env.CODEX_BINARY,
+      OPENCODE_BINARY: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY,
+    })
+    const binaries = { codex: configuredBinaries.codexBinary, opencode: configuredBinaries.openCodeBinary }
     const metadata = new ManagedOpenCodeServer({ binary: binaries.opencode, workingDirectory: directory,
       ownerAgentId: 'qualification-metadata', appMcpAccess: 'none',
       processRecovery: processes.scope(`qualification-metadata:${randomUUID()}`) })
