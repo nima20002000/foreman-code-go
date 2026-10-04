@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
@@ -52,6 +52,23 @@ it('reads a stable manifest once while verifying every file in repeated source t
     }
   }
   expect(reads.manifest).toBe(1)
+})
+
+it('measures retained capture files without changing or deleting them', async () => {
+  const f = await fixture()
+  const before = await f.store.manifest(f.manifest.snapshotId)
+  const bytes = await f.store.retainedCaptureBytes(f.manifest.snapshotId)
+  expect(bytes).toBeGreaterThanOrEqual(40 * 4096)
+  expect(bytes).toBeLessThan(1024 * 1024)
+  expect(await f.store.manifest(f.manifest.snapshotId)).toEqual(before)
+  expect(await f.store.read(f.manifest, f.manifest.entries[0]!, f.signal)).toEqual(f.bytes)
+  expect(await f.store.retainedCaptureBytes(randomUUID())).toBe(0)
+})
+
+it('refuses to follow a link while measuring quarantined capture bytes', async () => {
+  const f = await fixture()
+  await symlink('/etc/passwd', join(f.directory, f.manifest.snapshotId, 'external'))
+  await expect(f.store.retainedCaptureBytes(f.manifest.snapshotId)).rejects.toThrow()
 })
 
 it.each(['replace', 'overwrite'] as const)('rejects a changed manifest after %s even when its size and modification time match', async method => {

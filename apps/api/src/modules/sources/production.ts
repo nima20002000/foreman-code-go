@@ -39,6 +39,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
+import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -196,5 +197,6 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     await input.transferAcknowledged!(intent)
   } : undefined, preparationClosed: input.transferPreparationClosed, closed: input.transferMaterializationClosed })
   return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
+    reconcileFailedCaptures: (report: (error: unknown) => void) => reconcileFailedCaptures(input.pool, snapshots, report),
     sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle) }
 }

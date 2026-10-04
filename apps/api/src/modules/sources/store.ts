@@ -1,9 +1,9 @@
 import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
-import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
+import { mkdir, open, readdir, rename, type FileHandle } from 'node:fs/promises'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@graphql/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
-import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
+import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import type { SourceSnapshotSink } from './capture.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
 
@@ -112,6 +112,49 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
   async storageIdentity(): Promise<RootBinding['filesystem']> {
     const root = await openPrivateRoot(this.canonicalRoot)
     try { return await identity(root) } finally { await root.close() }
+  }
+
+  /** Call only after holding the failed capture's command lock. Files remain quarantined. */
+  async retainedCaptureBytes(snapshotId: string): Promise<number> {
+    SourceManifestSchema.shape.snapshotId.parse(snapshotId)
+    const root = await openPrivateRoot(this.canonicalRoot)
+    let snapshot: FileHandle
+    try {
+      snapshot = await openChildDirectory(root, snapshotId)
+    } catch (error) {
+      await root.close()
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+      throw error
+    }
+    let entries = 0
+    const measure = async (directory: FileHandle, depth: number): Promise<number> => {
+      if (depth > 34) throw new SourceError('SOURCE_CAPACITY', 'Retained source directory depth exceeds its bound.')
+      let bytes = Math.max(4096, Number((await directory.stat()).blocks) * 512)
+      for (const name of await readdir(anchored(directory))) {
+        entries += 1
+        if (entries > SOURCE_LIMITS.entries * 34 + 16) {
+          throw new SourceError('SOURCE_CAPACITY', 'Retained source entry count exceeds its bound.')
+        }
+        const handle = await open(anchored(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        try {
+          const stat = await handle.stat()
+          if (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0) {
+            throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
+          }
+          if (stat.isDirectory()) {
+            const child = await openChildDirectory(directory, name)
+            try { bytes += await measure(child, depth + 1) } finally { await child.close() }
+          } else {
+            if (!stat.isFile() || stat.nlink !== 1) {
+              throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source contains an unsupported file.')
+            }
+            bytes += Math.max(4096, stat.size, stat.blocks * 512)
+          }
+        } finally { await handle.close() }
+      }
+      return bytes
+    }
+    try { return await measure(snapshot, 0) } finally { await snapshot.close(); await root.close() }
   }
 
   private async readManifest(snapshot: FileHandle, snapshotId: string) {
