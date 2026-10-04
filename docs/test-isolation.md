@@ -7,6 +7,8 @@ The application Compose file and its database are independent. `db:down` checks
 test ownership labels before removing only this test project and its volume.
 
 Root and API package test commands provision UUID databases on that instance.
+The root unit command also runs the integration-runner and acceptance safety
+script tests before the workspace suites.
 API Vitest global setup also provisions resources for direct `pnpm exec vitest`
 invocations. Ambient database selectors (including DB-gated unit-test selectors)
 are replaced with the disposable URL. Real `pg` connections outside the test
