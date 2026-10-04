@@ -79,9 +79,10 @@ describe('exclusive graph transaction port (unit, not PostgreSQL proof)', () => 
   })
   it('finalizes publication before commit and retires an uncertain commit connection', async () => {
     const trace: string[] = []
+    const failure = new Error('commit response lost')
     const connection = new ExclusiveGraphConnection(client(async (text) => {
       trace.push(text)
-      if (text === 'commit') throw new Error('commit response lost')
+      if (text === 'commit') throw failure
       return { rows: [], rowCount: 0 }
     }), () => undefined)
     const work = vi.fn(async (sql: GraphTransactionSql) => {
@@ -93,6 +94,7 @@ describe('exclusive graph transaction port (unit, not PostgreSQL proof)', () => 
       expect(trace).toEqual(['begin isolation level read committed', 'select domain_mutation', 'select publication', 'commit', 'rollback'])
       expect(connection.unusable).toBe(true)
       await expect(connection.query('select again')).rejects.toThrow('GRAPH_TRANSACTION_FAILED')
+      await expect(connection.query('select diagnostic')).rejects.toMatchObject({ cause: failure })
       expect(work).toHaveBeenCalledTimes(1)
     } finally { await connection.close() }
   })

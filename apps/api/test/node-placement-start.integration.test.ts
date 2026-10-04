@@ -46,7 +46,7 @@ async function fixture() {
       createSession: async () => { throw new DomainError('NATIVE_EXECUTION_UNAVAILABLE', 'Admission-only fixture', 503) },
     }))
     const binding = createCurrentNativeProductionFactory({ isRuntimeOpen: () => true,
-      reportDispatchFailure: (_id, code) => base.dispatchErrors.push(code),
+      reportDispatchFailure: (_id, _code, error) => base.dispatchErrors.push(error),
     })({ primaryPool: base.db.pool, commands: base.commands, runs: base.runs, workflows: base.workflows,
       locations: base.locations, engine: base.engine, nativeExecutions: base.native,
       interactions: base.service, checkpointer: base.checkpointer })
@@ -130,8 +130,10 @@ async function advanceMainSourceBinding(f: Fixture) {
 }
 
 describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
-  it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async via => {
+  it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async (via, { onTestFailed }) => {
     const f = await fixture()
+    let stage = 'save'
+    onTestFailed(() => { console.error(`Placement test failed at ${stage}:`, f.base.dispatchErrors) })
     try {
       const saved = await f.save(via)
       const local = agentWorkflowNode(saved.version.definition.nodes[0])
@@ -139,11 +141,13 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       expect(local.placement).toBeUndefined()
       expect(remote.placement).toEqual(f.placement.remote)
       const input = startInput(f, saved)
+      stage = 'start'
       const accepted = await f.start(via, input)
       expect(accepted.accepted).toBe(true)
       expect(accepted.replayed).toBe(false)
       expect(await f.start(via === 'http' ? 'mcp' : 'http', input)).toEqual({ ...accepted, replayed: true })
       const expected = [f.placement.local, f.placement.remote]
+      stage = 'placement readback'
       const readbacks: AcceptedNodePlacement[] = []
       for (const [index, node] of [local, remote].entries()) {
         const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id, nodeId: node.id }
@@ -169,6 +173,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       expect((await f.base.db.pool.query('select record from run_node_placements where run_id=$1 order by node_id',
         [accepted.run.id])).rows.map(row => row.record)).toEqual([...readbacks].sort((a, b) => a.nodeId.localeCompare(b.nodeId)))
       await advanceMainSourceBinding(f)
+      stage = 'retained readback and retry'
       const retained = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
         workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id, nodeId: local.id,
       } })
@@ -179,6 +184,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['runs:read', 'workspace_locations:read'],
           scope: { workspaceIds: [input.workspaceId], workflowIds: ['another-workflow'] } }] })
       const denied = await f.connect(reader.token)
+      stage = 'denied caller'
       expect(toolError(await denied.callTool({ name: 'run_start', arguments: { ...input, commandId: randomUUID() } })))
         .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       expect(toolError(await denied.callTool({ name: 'run_node_placement_get', arguments: {
@@ -198,6 +204,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       } })
       expect(CurrentWorkflowReadResultSchema.parse(read.structuredContent).version).toEqual(saved.version)
       expect(f.base.provider.counts.sessions).toBe(0)
+      stage = 'close'
     } finally { await f.close() }
   }, 120_000)
 

@@ -3,8 +3,8 @@ import type { RunGraphErrorCode } from '@foreman-code/contracts/wave25'
 /** Never forward database errors, native bodies, paths or caller-supplied messages. */
 export class RunGraphError extends Error {
   readonly code: RunGraphErrorCode
-  constructor(code: RunGraphErrorCode) {
-    super(code)
+  constructor(code: RunGraphErrorCode, options?: ErrorOptions) {
+    super(code, options)
     this.name = 'RunGraphError'
     this.code = code
   }
