@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { managementEndpoint } from './support/claudeProduction.js'
 import type pg from 'pg'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
@@ -22,6 +23,9 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const createdAt = '2026-10-01T00:00:00.000Z'
+let endpoint: Awaited<ReturnType<typeof managementEndpoint>>
+beforeAll(async () => { endpoint = await managementEndpoint('second-turn-token') })
+afterAll(async () => { await endpoint.app.close() })
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
 function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories) {
@@ -30,7 +34,8 @@ function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sh
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
     configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
-    tools: [], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: 'http://127.0.0.1:3000/mcp' } } }
+    tools: [], permissionRules: [], instructions: 'Pinned fixture instructions',
+    mcpServers: { graphql: { type: 'http' as const, url: endpoint.url } } }
   const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: 'profile-1', revision: 1,
     target, presetId: 'recorded', enabled: true, driverId: 'claude', configuration: harness, configurationFingerprint: 'recorded-config', qualification: 'qualified' }
   const pin = { sdkVersion: '0.3.284', sdkIntegrity: 'recorded-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64),
