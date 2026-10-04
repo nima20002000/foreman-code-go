@@ -82,7 +82,7 @@ export async function qualifyClaudeNativeProfile(input: {
   const scope = { deviceId: input.value.target.applicationInstallationId, profilePath: configuration.configDirectory,
     configRevision: input.pin.configRevision, cwd }
   const sdkOptions: Record<string, unknown> = { ...compiled, ...callbacks, includePartialMessages: true,
-    // Qualification cannot connect ambient or application MCP endpoints.
+    // Built-in policy is qualified here; MCP tools require the owner's authenticated server manifest.
     mcpServers: {} }
   delete sdkOptions.configuration
   const open = async (resume?: string) => {
@@ -101,7 +101,9 @@ export async function qualifyClaudeNativeProfile(input: {
       const frame = object(next.value.raw)
       frames.push(frame)
       if (frame.type === 'system' && frame.subtype === 'init') {
-        observedTools = Array.isArray(frame.tools) ? frame.tools.filter((tool): tool is string => typeof tool === 'string') : []
+        observedTools = Array.isArray(frame.tools)
+          ? frame.tools.filter((tool): tool is string => typeof tool === 'string' && !tool.startsWith('mcp__'))
+          : []
         if (frame.cwd === cwd) passed.add('workingDirectory')
       }
       if (frame.type === 'result') { result = frame; break }
@@ -198,7 +200,9 @@ export async function qualifyClaudeNativeProfile(input: {
     checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check, passed.has(check)
       ? { state: 'passed', source: 'native_scenario', evidenceId, evidenceSha256 } : { state: 'unverified' }])) }
   const capabilities = claudeQualificationCapabilities(claudeProof)
-  const qualified = capabilities.basicTurns && capabilities.resume && capabilities.history && capabilities.policy.settingsIsolation && capabilities.policy.backgroundTasksDisabled
+  const builtinToolsObserved = compiled.tools.every(tool => observedTools.includes(tool))
+  const qualified = builtinToolsObserved && capabilities.basicTurns && capabilities.resume && capabilities.history
+    && capabilities.policy.settingsIsolation && capabilities.policy.backgroundTasksDisabled
     && capabilities.policy.alwaysAppliedToolHook && configuration.sandbox === 'danger-full-access' && capabilities.policy.fullAccessPolicy
   return HostHarnessProfileEvidenceSchema.parse({ target: input.value.target, instanceRevision: input.value.instanceRevision,
     configurationFingerprint: input.value.configurationFingerprint, driverId: 'claude', driverRevision: input.binding.installation.driverRevision,

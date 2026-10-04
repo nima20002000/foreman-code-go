@@ -39,10 +39,10 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
   const port = createPostgresClaudeInteractionBridge({ database, configuration, manager,
     binding: kind === 'operator' ? { kind, conversationId: 'conversation', repository: operator }
       : { kind, conversationId: 'conversation', workspaceId: 'workspace', repository: agent } })
-  const claim = async (optionId = 'allow_once', generation = identity.generation) => {
-    if (kind === 'operator') expect(await operator.claimResponse('conversation', 'model-request', identity.nativeRequestId)).toBe(true)
+  const claim = async (optionId = 'allow_once', generation = identity.generation, callback = identity) => {
+    if (kind === 'operator') expect(await operator.claimResponse('conversation', 'model-request', callback.nativeRequestId)).toBe(true)
     // Existing NativeConversationControlCommands persisted reservation fixture, including actual observed generation.
-    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: identity.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
+    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: callback.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
   }
   return { ...port, row, principals, query, claim, manager }
 }
@@ -65,6 +65,44 @@ it.each(['operator', 'agent'] as const)('derives actual %s sender/attempt and pe
   expect(observed.responseDeliveries).toEqual([]); expect(observed.interactionDeliveries).toEqual([{ nativeRequestId: identity.nativeRequestId, state: 'submitted', selectedOptionId: 'allow_once' }])
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow()
 })
+it('retains compact consumed decisions without granting a second callback or resending a response', async () => {
+  const f = fixture(), offer = await offered(f)
+  await f.claim()
+  await f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)
+  await offer.pending
+  expect(await f.interactionPort.pending(session)).toBeUndefined()
+  expect(f.bridge.inspectCallbackAvailability({ ...identity, nativeRequestType: identity.nativeRequestType })).toMatchObject({
+    state: 'unavailable', reason: 'request_consumed',
+  })
+  expect(await f.bridge.canUseTool(identity, 'Read', { path: 'scope-owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+  await expect(f.bridge.canUseTool(identity, 'Read', { path: 'changed' }, new AbortController().signal)).rejects.toThrow('different input')
+  await f.bridge.observeToolResult(identity, 'Read', 'executed')
+  const observation = await f.interactionPort.reconcileResponse(session, { nativeRequestId: identity.nativeRequestId,
+    option: offer.descriptor.responseOptions[0]! })
+  expect(observation.responseDeliveries).toMatchObject([{ nativeIdentity: {
+    kind: 'message', nativeMessageId: identity.nativeMessageId, generation: identity.generation,
+  }, optionId: 'allow_once' }])
+  await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow()
+})
+
+it('bounds consumed permission records and rejects overflow without replaying an earlier callback', async () => {
+  const f = fixture()
+  for (let index = 0; index < 256; index += 1) {
+    const callback = { ...identity, toolUseId: `tool-${index}`, nativeRequestId: `permission-${index}` }
+    const decision = f.bridge.canUseTool(callback, 'Read', { path: 'owned' }, new AbortController().signal)
+    await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: callback.nativeRequestId } }))
+    const pending = (await f.interactionPort.pending(session))!
+    await f.claim('allow_once', identity.generation, callback)
+    await f.interactionPort.respond(session, callback.nativeRequestId, pending.responseOptions[0]!)
+    expect(await decision).toMatchObject({ behavior: 'allow' })
+  }
+  const extra = { ...identity, toolUseId: 'overflow-tool', nativeRequestId: 'overflow-permission' }
+  expect(await f.bridge.canUseTool(extra, 'Read', { path: 'owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+  expect(await f.interactionPort.pending(session)).toBeUndefined()
+  const first = { ...identity, toolUseId: 'tool-0', nativeRequestId: 'permission-0' }
+  expect(await f.bridge.canUseTool(first, 'Read', { path: 'owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+}, 30_000)
+
 it('does not resolve the SDK permission without an existing exact response receipt/claim', async () => {
   const f = fixture(), offer = await offered(f)
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow('no longer matches')

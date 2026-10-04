@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import type { ActivityScope, ActivitySourceRevision, InteractionSummary } from '@foreman-code/contracts'
-import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema } from '@foreman-code/contracts/interaction-activity'
+import { AcceptedChatResponseControlSchema, matchingChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 
 interface Receipt { principal_id: string; operation: string; command_id: string; revision: string; status: string; control: unknown; acknowledgment?: unknown }
 export function projectActivityCommands(conversationId: string, scope: ActivityScope, rows: readonly Receipt[], scopeRevision: string) {
@@ -13,12 +13,7 @@ export function projectActivityCommands(conversationId: string, scope: ActivityS
     if (!parsed.success) continue // Legacy receipts carry no accepted native-response identity.
     const control = parsed.data
     if (control.conversationId !== conversationId || JSON.stringify(control.scope) !== JSON.stringify(scope)) continue
-    const evidence = ChatResponseAcknowledgmentSchema.safeParse(row.acknowledgment)
-    const acknowledged = evidence.success && control.native.providerVersion !== undefined
-      && evidence.data.providerVersion === control.native.providerVersion && evidence.data.harness === control.native.harness
-      && evidence.data.nativeSessionId === control.native.sessionId && evidence.data.nativeRequestId === control.native.requestId
-      && evidence.data.nativeRequestType === control.native.requestType && evidence.data.optionId === control.choice.optionId
-      && evidence.data.semantic === control.choice.semantic
+    const acknowledged = Boolean(matchingChatResponseAcknowledgment(control, row.acknowledgment))
     const id = JSON.stringify(['chat-interaction', conversationId, control.modelRequestId, control.native.requestId])
     const previous = summaries.get(id)
     const delivery = acknowledged ? 'delivered' : row.status === 'uncertain' ? 'uncertain' : row.status === 'rejected' ? 'failed' : 'answer_recorded'

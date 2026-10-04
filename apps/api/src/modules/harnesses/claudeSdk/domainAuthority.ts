@@ -171,7 +171,8 @@ export function createPostgresClaudeInteractionBridge(input: {
       respond: (session: NativeSessionReference, requestId: string, option: ApprovalResponseOption, signal?: AbortSignal) => bridge.respond(session, requestId, option, signal),
       async reconcileResponse(session: NativeSessionReference, response: { nativeRequestId: string; option: ApprovalResponseOption }, signal?: AbortSignal) {
         const observation = await bridge.observeResponse(session, response.nativeRequestId, response.option, signal)
-        return { events: [], pendingInteractions: bridge.pendingInteractions(session), interactionDeliveries: [observation], responseDeliveries: [] }
+        return { events: [], pendingInteractions: bridge.pendingInteractions(session), interactionDeliveries: [observation],
+          responseDeliveries: bridge.deliveryEvidence(session).filter(proof => proof.nativeRequestId === response.nativeRequestId) }
       },
       stopAutomaticResponses() { bridge.close() },
     } }

@@ -2,6 +2,9 @@ import { PendingNativeInteractionSchema, type PendingNativeInteraction, type Nat
 import type { ClaudeLiveCallbackQuery, ClaudeResponseAvailability } from './callbackAvailability.js'
 import { ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { isDeepStrictEqual } from 'node:util'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
+import type { ClaudeMcpToolManifest } from './mcpPolicy.js'
 import { HarnessExecutionError } from '../errors.js'
 
 export interface ClaudeCallbackIdentity {
@@ -19,6 +22,7 @@ export interface ClaudeCallbackIdentity {
   nativeRequestId?: string
   agentId?: string
   parentToolUseId?: string
+  mcpServer?: { name: string; source: string }
 }
 export interface ClaudePendingNotification {
   nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string; generation: string
@@ -43,12 +47,58 @@ export class ClaudeInteractionBridge {
     stage: 'pending' | 'response_in_flight' | 'consumed'
     response?: { promise: Promise<ClaudeInteractionAnswer>; resolve(answer: ClaudeInteractionAnswer): void; selected?: ClaudeInteractionAnswer }
   }>()
+  private readonly consumed = new Map<string, {
+    identity: ClaudeCallbackIdentity
+    inputHash: string
+    toolName: string
+    selectedOptionId?: string
+    state: 'submitted' | 'uncertain'
+    acknowledged: boolean
+  }>()
+  private mcpManifests: readonly ClaudeMcpToolManifest[] = []
   private readonly controller = new AbortController()
   private readonly listeners = new Set<(notification: ClaudePendingNotification) => void>()
   constructor(configuration: ClaudeHarnessConfiguration, private readonly authority: ClaudeInteractionAuthority) {
     this.configuration = structuredClone(configuration)
   }
-  close(): void { this.controller.abort() }
+  close(): void {
+    this.controller.abort()
+    this.mcpManifests = []
+  }
+  bindMcpTools(manifests: readonly ClaudeMcpToolManifest[]): void {
+    if (this.controller.signal.aborted) throw new HarnessExecutionError('CLAUDE_CALLBACK_CLOSED', 'The callback owner is closed.')
+    if (manifests.some(manifest => manifest.source.kind === 'http'
+      ? manifest.serverName !== 'graphql' || this.configuration.mcpServers.graphql?.url !== manifest.source.url
+      : manifest.serverName !== manifest.source.name)) {
+      throw new HarnessExecutionError('CLAUDE_MCP_MANIFEST_SCOPE_CONFLICT', 'The tool manifest differs from the accepted MCP server.')
+    }
+    this.mcpManifests = structuredClone(manifests)
+  }
+  private toolAllowed(toolName: string, identity: ClaudeCallbackIdentity): boolean {
+    if (!toolName.startsWith('mcp__')) return this.configuration.tools.includes(toolName)
+    return this.mcpManifests.some(manifest => identity.mcpServer?.name === manifest.serverName
+      && identity.mcpServer.source === (manifest.source.kind === 'sdk' ? 'sdk' : 'dynamic')
+      && manifest.tools.some(tool => toolName === `mcp__${manifest.serverName}__${tool}`))
+  }
+  async observeToolResult(identity: ClaudeCallbackIdentity, toolName: string, outcome: 'executed' | 'permission_denied'): Promise<void> {
+    const matches = (candidate: ClaudeCallbackIdentity) => candidate.nativeSessionId === identity.nativeSessionId
+      && candidate.nativeMessageId === identity.nativeMessageId && candidate.generation === identity.generation
+      && candidate.toolUseId === identity.toolUseId && candidate.ownerPrincipalId === identity.ownerPrincipalId
+      && candidate.attemptId === identity.attemptId && isDeepStrictEqual(candidate.mcpServer, identity.mcpServer)
+    const live = [...this.requests.values()].find(entry => matches(entry.identity))
+    if (live) await live.promise
+    const record = [...this.consumed.values()].find(entry => matches(entry.identity))
+    if (record?.toolName === toolName && record.state === 'submitted' && record.selectedOptionId === (outcome === 'executed' ? 'allow_once' : 'deny')) {
+      record.acknowledged = true
+    }
+  }
+  deliveryEvidence(session: NativeSessionReference): NativeResponseDeliveryEvidence[] {
+    return [...this.consumed.values()].filter(record => record.acknowledged && record.identity.nativeSessionId === session.nativeSessionId)
+      .map((record): NativeResponseDeliveryEvidence => ({ source: 'provider_history', harness: 'claude', providerVersion: session.providerVersion,
+        nativeSessionId: session.nativeSessionId, nativeRequestId: record.identity.nativeRequestId!, nativeRequestType: 'can_use_tool',
+        optionId: record.selectedOptionId!, semantic: record.selectedOptionId === 'allow_once' ? 'approve_once' : 'reject', nativeIdentity: { kind: 'message',
+          nativeMessageId: record.identity.nativeMessageId!, generation: record.identity.generation! } }))
+  }
   subscribePending(listener: (notification: ClaudePendingNotification) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private changed(identity: ClaudeCallbackIdentity): void {
     if (!identity.nativeMessageId || !identity.clientCorrelationId || !identity.generation || !identity.nativeRequestId || identity.nativeRequestType !== 'can_use_tool') return
@@ -65,13 +115,14 @@ export class ClaudeInteractionBridge {
     if (query.expectedNativeMessageId !== undefined && query.expectedNativeMessageId !== query.nativeMessageId
       || query.expectedGeneration !== undefined && query.expectedGeneration !== query.generation) return unavailable('identity_mismatch')
     if (!query.nativeSessionId || !query.nativeMessageId || !query.generation || query.nativeRequestType !== 'can_use_tool') return unavailable('identity_mismatch')
-    const candidates = [...this.requests.values()].filter((entry) => entry.identity.nativeRequestId === query.nativeRequestId)
+    const candidates = [...this.requests.values(), ...this.consumed.values()].filter((entry) => entry.identity.nativeRequestId === query.nativeRequestId)
     const matches = candidates.filter(({ identity }) => identity.nativeSessionId === query.nativeSessionId
       && identity.nativeMessageId === query.nativeMessageId && identity.generation === query.generation
       && identity.nativeRequestType === query.nativeRequestType
       && (query.expectedNativeTurnId === undefined || identity.nativeTurnId === query.expectedNativeTurnId))
     if (matches.length !== 1) return unavailable(candidates.length ? 'identity_mismatch' : 'callback_lost')
     const request = matches[0]!
+    if (!('signal' in request)) return unavailable('request_consumed')
     if (request.signal.aborted) return unavailable('callback_lost')
     if (request.stage === 'consumed') return unavailable('request_consumed')
     if (request.stage === 'response_in_flight') return unavailable('response_in_flight')
@@ -130,11 +181,24 @@ export class ClaudeInteractionBridge {
     void this.waitForResponse(entry.identity)
     entry.response!.selected = answer
     entry.response!.resolve(answer)
-    await entry.promise
+    const decision = await entry.promise
+    if (entry.signal.aborted || this.controller.signal.aborted || signal?.aborted
+      || option.optionId === 'allow_once' && decision.behavior !== 'allow'
+      || option.optionId !== 'allow_once' && decision.behavior !== 'deny') {
+      throw new HarnessExecutionError('NATIVE_RESPONSE_UNCERTAIN', 'The selected response was canceled before callback completion.')
+    }
   }
 
   /** Join only this SDK map's existing response listener. Never resubmit a permission reply. */
   async observeResponse(session: NativeSessionReference, requestId: string, option: ApprovalResponseOption, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const records = [...this.consumed.values()].filter(entry => entry.identity.nativeSessionId === session.nativeSessionId
+      && entry.identity.nativeRequestId === requestId)
+    if (records.length === 1) {
+      const record = records[0]!
+      if (record.selectedOptionId !== option.optionId) return { nativeRequestId: requestId, state: 'uncertain' as const }
+      return { nativeRequestId: requestId, state: record.state, selectedOptionId: record.selectedOptionId }
+    }
     const entries = [...this.requests.values()].filter((entry) => entry.identity.nativeSessionId === session.nativeSessionId && entry.identity.nativeRequestId === requestId)
     if (entries.length !== 1 || this.controller.signal.aborted) return { nativeRequestId: requestId, state: 'uncertain' as const }
     const entry = entries[0]!
@@ -160,14 +224,14 @@ export class ClaudeInteractionBridge {
     if (![identity.ownerPrincipalId, identity.nativeSessionId, identity.nativeTurnId ?? identity.nativeMessageId, identity.attemptId, identity.toolUseId].every(Boolean)) {
       return { permissionDecision: 'deny', permissionDecisionReason: 'The callback requires exact admitted native identity.' }
     }
-    if (this.controller.signal.aborted || (identity.parentToolUseId || identity.agentId) || !this.configuration.tools.includes(toolName)
+    if (this.controller.signal.aborted || (identity.parentToolUseId || identity.agentId) || !this.toolAllowed(toolName, identity)
       || this.configuration.permissionRules.some((rule) => rule.tool === toolName && rule.effect === 'deny')) {
       return { permissionDecision: 'deny', permissionDecisionReason: 'The accepted Claude policy does not authorize this tool call.' }
     }
     try { await this.authority.validate(identity, toolName, input) }
     catch { return { permissionDecision: 'deny', permissionDecisionReason: 'The current app authority does not authorize this tool call.' } }
     if (this.controller.signal.aborted) return { permissionDecision: 'deny', permissionDecisionReason: 'The native callback was aborted.' }
-    return toolName === 'AskUserQuestion' || this.configuration.permissionRules.some((rule) => rule.tool === toolName && rule.effect === 'ask')
+    return toolName.startsWith('mcp__') || toolName === 'AskUserQuestion' || this.configuration.permissionRules.some((rule) => rule.tool === toolName && rule.effect === 'ask')
       ? { permissionDecision: 'ask', permissionDecisionReason: 'The accepted configuration routes this interaction through the app.' } : {}
   }
 
@@ -181,16 +245,22 @@ export class ClaudeInteractionBridge {
     if (identity.nativeRequestType !== 'can_use_tool') throw new HarnessExecutionError('CLAUDE_CALLBACK_IDENTITY_REQUIRED', 'The callback requires the actual native permission request type.')
     await this.authority.validate(identity, toolName, input)
     if (signal.aborted || this.controller.signal.aborted) return { behavior: 'deny', message: 'The native callback was aborted.', interrupt: true }
-    if (!this.configuration.tools.includes(toolName)) return { behavior: 'deny', message: 'The tool is not available in the accepted configuration.' }
+    if (!this.toolAllowed(toolName, identity)) return { behavior: 'deny', message: 'The tool is not available in the accepted configuration.' }
     if (this.configuration.permissionRules.some((rule) => rule.tool === toolName && rule.effect === 'deny')) return { behavior: 'deny', message: 'The accepted policy denies this tool.' }
-    const key = JSON.stringify([identity.ownerPrincipalId, identity.nativeSessionId, identity.nativeTurnId ?? null,
-      identity.nativeMessageId ?? null, identity.attemptId, identity.toolUseId, identity.nativeRequestId,
-      identity.parentToolUseId ?? null, identity.agentId ?? null, identity.generation, identity.nativeRequestType])
+    const key = commandInputHash(identity)
     const value = { toolName, input: structuredClone(input) }
+    const consumed = this.consumed.get(key)
+    if (consumed) {
+      if (consumed.inputHash !== commandInputHash(value)) throw new HarnessExecutionError('CLAUDE_CALLBACK_CONFLICT', 'The consumed request was reused with different input.')
+      return { behavior: 'deny', message: 'The permission callback was already consumed.' }
+    }
     const previous = this.requests.get(key)
     if (previous) {
       if (!isDeepStrictEqual(previous.input, value)) throw new HarnessExecutionError('CLAUDE_CALLBACK_CONFLICT', 'The native request identity was reused with different input.')
       return previous.promise
+    }
+    if (this.requests.size + this.consumed.size >= 256) {
+      return { behavior: 'deny', message: 'The retained permission record limit was reached. Close this owner before admitting more callbacks.' }
     }
     const combined = AbortSignal.any([signal, this.controller.signal])
     let onAbort: (() => void) | undefined
@@ -208,7 +278,16 @@ export class ClaudeInteractionBridge {
     const entry = { input: value, promise, identity: structuredClone(identity), signal: combined, stage: 'pending' as 'pending' | 'response_in_flight' | 'consumed' }
     this.requests.set(key, entry)
     if (toolName !== 'AskUserQuestion') this.changed(identity)
-    void promise.then(() => { entry.stage = 'consumed' }, () => { entry.stage = 'consumed' })
+    const retire = (decision?: ClaudeToolDecision) => {
+      entry.stage = 'consumed'
+      const selectedOptionId = entry.response?.selected?.outcome
+      const submitted = !combined.aborted && Boolean(selectedOptionId) && Boolean(decision)
+        && (selectedOptionId === 'allow_once' ? decision?.behavior === 'allow' : decision?.behavior === 'deny')
+      this.consumed.set(key, { identity: entry.identity, toolName, inputHash: commandInputHash(value),
+        ...(selectedOptionId ? { selectedOptionId } : {}), state: submitted ? 'submitted' : 'uncertain', acknowledged: false })
+      this.requests.delete(key)
+    }
+    void promise.then(retire, () => retire())
     return promise
   }
 

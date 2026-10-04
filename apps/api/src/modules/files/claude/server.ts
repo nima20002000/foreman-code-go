@@ -11,6 +11,7 @@ import type { ClaudeCallbackIdentity } from '../../harnesses/claudeSdk/interacti
 import type { AgentFileToolService } from '../tools/service.js'
 import { isMutation } from '../tools/context.js'
 import type { FileToolOperation } from '../tools/types.js'
+import type { ClaudeMcpToolManifest } from '../../harnesses/claudeSdk/mcpPolicy.js'
 
 export type ClaudeFileSdk = { createSdkMcpServer: typeof createSdkMcpServer; tool: typeof tool }
 /** Resolves evidence captured by the native owner, never fields from tool arguments.
@@ -30,8 +31,8 @@ export function createClaudeFileMcpServer(input: {
   admission: ClaudeFileAdmission
   calls: ClaudeFileCallResolver
   allowMutation: boolean
-}): { server: McpSdkServerConfigWithInstance; close(): Promise<void> } {
-  const bridges = new Map<string, ClaudeFileBridge>()
+}): { server: McpSdkServerConfigWithInstance; manifest: ClaudeMcpToolManifest; close(): Promise<void> } {
+  const bridges = new Set<ClaudeFileBridge>()
   let closed = false
   const invoke = async (operation: FileToolOperation, args: unknown, extra: unknown): Promise<CallToolResult> => {
     try {
@@ -46,14 +47,15 @@ export function createClaudeFileMcpServer(input: {
       }
       // The resolver binds each call; the bridge re-fetches admission and the
       // existing file service re-fetches the principal/grants for every effect.
-      const key = JSON.stringify([identity.ownerPrincipalId, identity.nativeSessionId, identity.nativeMessageId,
-        identity.clientCorrelationId, identity.attemptId, identity.generation, identity.toolUseId])
-      let bridge = bridges.get(key)
-      if (!bridge) {
-        bridge = new ClaudeFileBridge(identity, input.admission, input.service)
-        bridges.set(key, bridge)
+      const bridge = new ClaudeFileBridge(identity, input.admission, input.service)
+      bridges.add(bridge)
+      let result: ReturnType<typeof toolResult>
+      try {
+        result = toolResult(await bridge.call(operation, args))
+      } finally {
+        await bridge.close()
+        bridges.delete(bridge)
       }
-      const result = toolResult(await bridge.call(operation, args))
       // The app uses MCP 2; the official Claude SDK uses MCP 1. Project only
       // shared text/structured result fields, without casting server protocols.
       return { content: result.content.filter(value => value.type === 'text').map(value => ({ type: 'text', text: value.text })),
@@ -84,9 +86,12 @@ export function createClaudeFileMcpServer(input: {
   ]
   const server = sdk.createSdkMcpServer({ name: 'graphql-files', version: '1.0.0', tools: definitions,
     instructions: 'File-only admitted native message tools. Scope fields assert the admitted conversation; they cannot select another owner. Permanent references are read-only.' })
-  return { server, close: async () => {
+  const manifest: ClaudeMcpToolManifest = { serverName: 'graphql-files',
+    source: { kind: 'sdk', name: 'graphql-files', version: '1.0.0' },
+    tools: definitions.map(definition => definition.name) }
+  return { server, manifest, close: async () => {
     closed = true
-    await Promise.all([...bridges.values()].map(bridge => bridge.close()))
+    await Promise.all([...bridges].map(bridge => bridge.close()))
     bridges.clear()
     await server.instance.close()
   } }
