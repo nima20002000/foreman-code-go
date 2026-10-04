@@ -69,6 +69,8 @@ function SnapshotAgents({ selection, snapshot, workflowNodeId }: { selection: Se
 // owns transcript/capabilities/turns and re-reads the exact resolved execution.
 type SelectedIdentity = Pick<Extract<ReadSelectedRunChatResponse, { kind: 'selected' }>, 'kind' | 'selection' | 'key'> & { context: AgentChatContext }
 type Lookup = SelectedIdentity | Exclude<ReadSelectedRunChatResponse, { kind: 'selected' }>
+const executionDiscoveryReadLimit = 20
+const executionDiscoveryIntervalMs = 3000
 
 function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecution }: {
   selection: SelectedRunState; node: Exclude<RunBoardNodeSnapshot, { kind: 'job' }>; executionId?: string; isCurrent(): boolean; onExecution(id?: string): void
@@ -83,6 +85,9 @@ function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecut
   const lookupKey = useMemo(() => ['agent-chat', generation, 'selected-identity', visitId, request] as const, [generation, visitId, request])
   const lookup = useQuery<Lookup>({ queryKey: lookupKey, retry: false, staleTime: Infinity, gcTime: 0,
     refetchOnWindowFocus: false, refetchOnReconnect: false,
+    refetchInterval: (query) => !query.state.error && visit.isCurrent()
+      && query.state.data?.kind === 'unavailable' && query.state.data.reason === 'execution_missing'
+      && query.state.dataUpdateCount < executionDiscoveryReadLimit ? executionDiscoveryIntervalMs : false,
     queryFn: async ({ signal }) => {
       const current = visit.capture()
       if (!current()) throw new DOMException('Selection changed', 'AbortError')
@@ -126,7 +131,12 @@ function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecut
     if (visit.isCurrent()) void lookup.refetch()
   }}>Retry</Button></p>
   if (!lookup.data) return <p role="status">Loading…</p>
-  if (lookup.data.kind === 'unavailable') return <p role="status">{lookup.data.reason === 'legacy_run' ? 'Snapshot unavailable' : 'Execution unavailable'}</p>
+  if (lookup.data.kind === 'unavailable') return <p role="status">
+    {lookup.data.reason === 'legacy_run' ? 'Snapshot unavailable' : 'Execution unavailable'}
+    {lookup.data.reason === 'execution_missing' ? <Button size="sm" disabled={lookup.isFetching} onClick={() => {
+      if (visit.isCurrent()) void lookup.refetch()
+    }}>Refresh execution</Button> : null}
+  </p>
   if (lookup.data.kind === 'execution_selection_required') return <div className="selected-chat-execution">
     <Select label="Execution" value="" options={[{ value: '', label: 'Select execution' }, ...lookup.data.executions.map((item) => ({
       value: item.executionId, label: `Attempt ${item.attempt} · ${item.executionId.slice(-8)}`,
