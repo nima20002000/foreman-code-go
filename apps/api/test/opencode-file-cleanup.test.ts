@@ -115,6 +115,7 @@ describe('OpenCode owned file cleanup', () => {
     }
     try {
       await turn.prepareInputs(admission, backend.readAccepted(admission.context), fileSignal())
+      await turn.connectTools(fileSignal())
       turn.submissionAttempted()
       await turn.acknowledge(fileSignal())
       const token = backend.token
