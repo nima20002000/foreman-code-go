@@ -1,3 +1,4 @@
+import { ClaudeInputNotDeliveredError } from './port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { isDeepStrictEqual } from 'node:util'
 import type {
@@ -198,13 +199,19 @@ export function createClaudeSdkRunner(input: {
     const session: ClaudeSdkSession = {
       output: outputQueue,
       get nativeSessionId() { return nativeSessionId },
+      assertInputCapacity() {
+        if (offered.size >= (input.receiptCapacity ?? 256)) {
+          throw new ClaudeInputNotDeliveredError('Claude receipt window exhausted; resume the completed session before offering input.')
+        }
+      },
       async offer(message, signal) {
         signal?.throwIfAborted()
         abort.signal.throwIfAborted()
         if (!message.promptUuid || offered.has(message.promptUuid)) throw new Error('Claude prompt identity missing or already offered; never replay uncertain input')
-        if (offered.size >= (input.receiptCapacity ?? 256)) throw new Error('Claude receipt window exhausted')
-        inputQueue.offer({ type: 'user', message: { role: 'user', content: message.content }, parent_tool_use_id: null, uuid: message.promptUuid })
+        session.assertInputCapacity()
         offered.add(message.promptUuid)
+        await inputQueue.offer({ type: 'user', message: { role: 'user', content: message.content }, parent_tool_use_id: null, uuid: message.promptUuid }, signal)
+        abort.signal.throwIfAborted()
         return { state: 'queue-offered', promptUuid: message.promptUuid }
       },
       async interrupt() {
@@ -289,7 +296,7 @@ export function createClaudeSdkRunner(input: {
                 }
               }
             }
-            outputQueue.offer({ raw, ...(observation ? { observation } : {}) })
+            await outputQueue.offer({ raw, ...(observation ? { observation } : {}) })
           }
           outputQueue.close()
         } catch (error) {

@@ -10,6 +10,7 @@ import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../responseAvailability.js'
 import { claudeMcpDetection, decodeClaudeMcpControl, type ClaudeMcpInspection } from './mcpInspection.js'
 import type { ClaudeResponseAvailabilityQuery, ClaudeLiveCallbackReader, ClaudeNativeCallbackContext, ClaudeCallbackAuthority, ClaudePendingNotification } from './callbackAvailability.js'
+import { ClaudeInputNotDeliveredError } from './port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import type { ClaudeNativeObservation, ClaudeSdkRunner, ClaudeSdkSession, ClaudeSessionScope } from './port.js'
 
@@ -137,6 +138,8 @@ export function createClaudeNativeSessionManager(options: {
   const forks = new Map<string, { identity: string; promise: Promise<NativeSessionReference> }>()
   const initialTurns = new Map<string, { identity: string; turn: Turn; opening: Promise<NativeSessionReference> }>()
   let prepared: { identity: string; opening: Promise<Runtime> } | undefined
+  const rolloverSources = new Map<string, Runtime>()
+  const rollovers = new Map<string, Promise<NativeSessionReference>>()
   let disposed = false
   const now = options.now ?? (() => new Date().toISOString())
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
@@ -147,11 +150,11 @@ export function createClaudeNativeSessionManager(options: {
     if (!runtime || session.harness !== harness || session.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_SESSION_UNAVAILABLE', 'The exact owned Claude session is not resident.')
     return runtime
   }
-  function record(runtime: Runtime, type: string, payload: Record<string, unknown>, turn?: Turn): NativeHarnessEvent {
+  async function record(runtime: Runtime, type: string, payload: Record<string, unknown>, turn?: Turn): Promise<NativeHarnessEvent> {
     const event = { type, payload: turn ? { ...payload, clientCorrelationId: turn.correlationId } : payload, sequence: runtime.nextSequence++, occurredAt: now() }
     runtime.events.push(event)
     if (runtime.events.length > 256) runtime.events.shift()
-    if (turn?.observing) turn.events.offer(event)
+    if (turn?.observing) await turn.events.offer(event)
     return event
   }
   function rememberOwner(map: Map<string, Turn>, id: string, turn: Turn): void {
@@ -171,7 +174,7 @@ export function createClaudeNativeSessionManager(options: {
       await turn.input.onMessageSubmitted?.(identity)
       turn.submitted = true
       turn.nativeMessageId = turn.promptUuid
-      record(runtime, 'message.submitted', { nativeSessionId: observation.nativeSessionId, nativeMessageId: turn.promptUuid, clientCorrelationId: turn.correlationId,
+      await record(runtime, 'message.submitted', { nativeSessionId: observation.nativeSessionId, nativeMessageId: turn.promptUuid, clientCorrelationId: turn.correlationId,
         ...(observation.providerMessageId ? { source: { eventId: observation.providerMessageId } } : {}) }, turn)
     }
   }
@@ -339,7 +342,8 @@ export function createClaudeNativeSessionManager(options: {
     if (previous?.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
     if (previous?.closed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
     if (resume && previous && (previous.session || previous.turns.size)) throw new HarnessExecutionError('CLAUDE_INSPECTION_ALREADY_STARTED', 'Resume cannot replace a query that already owns native input.')
-    const credentialServers = resume ? previous?.credentialServers : undefined
+    const retained = resume ? rolloverSources.get(resume.nativeSessionId) : undefined
+    const credentialServers = resume ? previous?.credentialServers ?? retained?.credentialServers : undefined
     if (resume && previous) {
       // Session selection is immutable in the SDK. Retire only the unused
       // inspection query; it has no message callbacks to cancel in this owner.
@@ -351,6 +355,13 @@ export function createClaudeNativeSessionManager(options: {
       all.delete(previous)
     }
     const runtime = !resume && previous ? previous : makeRuntime(start)
+    if (retained) {
+      runtime.replacingForResume = true
+      runtime.turns = new Map(retained.turns)
+      runtime.restoredReceipts = new Map(retained.restoredReceipts)
+      runtime.events = retained.events
+      runtime.nextSequence = retained.nextSequence
+    }
     if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
     if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
     if (initial) {
@@ -392,7 +403,14 @@ export function createClaudeNativeSessionManager(options: {
       }
       if (initial) await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)
       const timer = setTimeout(() => runtime.rejectInit(new HarnessExecutionError('CLAUDE_INIT_TIMEOUT', 'Claude initialization did not provide an exact native session.')), options.initializationTimeoutMs ?? 10_000)
-      try { return await runtime.initialized } finally { clearTimeout(timer); startup.release() }
+      try {
+        const session = await runtime.initialized
+        if (retained) runtime.replacingForResume = false
+        return session
+      } finally {
+        clearTimeout(timer)
+        startup.release()
+      }
     } catch (error) {
       startup.release()
       runtime.rejectInit(error)
@@ -418,7 +436,7 @@ export function createClaudeNativeSessionManager(options: {
           if (resident.has(frame.session_id)) throw new Error('Claude native session is already leased to another runtime')
           resident.set(frame.session_id, runtime)
           await runtime.onSessionObserved?.(runtime.session)
-          record(runtime, 'session.idle', { nativeSessionId: frame.session_id })
+          await record(runtime, 'session.idle', { nativeSessionId: frame.session_id })
           runtime.resolveInit(runtime.session)
         }
         const patch = frame.patch && typeof frame.patch === 'object' ? frame.patch as Record<string, unknown> : {}
@@ -426,7 +444,7 @@ export function createClaudeNativeSessionManager(options: {
           || frame.subtype === 'task_updated' && patch.is_backgrounded === true
           || frame.subtype === 'background_tasks_changed' && Array.isArray(frame.tasks) && frame.tasks.length > 0)
           || frame.type === 'result' && (frame.deferred_tool_use != null || ['tool_deferred', 'background_requested'].includes(String(frame.terminal_reason)))) {
-          record(runtime, 'claude.background.unsupported', { nativeSessionId: frame.session_id,
+          await record(runtime, 'claude.background.unsupported', { nativeSessionId: frame.session_id,
             ...(typeof frame.task_id === 'string' ? { nativeTaskId: frame.task_id } : {}) })
           throw new HarnessExecutionError('CLAUDE_BACKGROUND_UNQUALIFIED', 'Native background work was observed despite the qualified disabled policy; parent results cannot settle this work.')
         }
@@ -462,7 +480,7 @@ export function createClaudeNativeSessionManager(options: {
         const decoded = runtime.decode?.(output.raw) ?? []
         if (frame.type === 'result' && !terminalAdmissible) {
           // Native consumption is a receipt, not proof that a queued wake's result answers this request.
-          record(runtime, 'claude.result.unattributed', { nativeSessionId: frame.session_id, nativeResult: output.raw }, matched)
+          await record(runtime, 'claude.result.unattributed', { nativeSessionId: frame.session_id, nativeResult: output.raw }, matched)
         } else {
           for (const event of decoded) {
             const parentId = typeof event.payload.parentToolUseId === 'string' ? event.payload.parentToolUseId : undefined
@@ -475,7 +493,7 @@ export function createClaudeNativeSessionManager(options: {
               rememberOwner(runtime.toolOwners, toolId, eventOwner)
               resolveCallbackWaiters()
             }
-            record(runtime, event.type, event.payload, frame.type === 'result' ? matched : eventOwner?.submitted ? eventOwner : undefined)
+            await record(runtime, event.type, event.payload, frame.type === 'result' ? matched : eventOwner?.submitted ? eventOwner : undefined)
           }
         }
         if (matched && !matched.terminal && terminalAdmissible && frame.type === 'result') {
@@ -496,7 +514,7 @@ export function createClaudeNativeSessionManager(options: {
             persistenceFailure = { error }
             matched.observing = false
           }
-          record(runtime, 'turn.completed', { nativeSessionId: frame.session_id, nativeMessageId: matched.nativeMessageId, clientCorrelationId: matched.correlationId, result: matched.terminal,
+          await record(runtime, 'turn.completed', { nativeSessionId: frame.session_id, nativeMessageId: matched.nativeMessageId, clientCorrelationId: matched.correlationId, result: matched.terminal,
             ...(typeof frame.uuid === 'string' ? { source: { eventId: frame.uuid } } : {}) }, matched)
           matched.events.close(persistenceFailure?.error)
           matched.observing = false
@@ -544,9 +562,20 @@ export function createClaudeNativeSessionManager(options: {
       waiter.reject(new HarnessExecutionError('CLAUDE_CALLBACK_CONTEXT_CLOSED', 'The owned native callback context closed.'))
     }
   }
+  function coalesceText(prior: NativeHarnessEvent, next: NativeHarnessEvent): NativeHarnessEvent | undefined {
+    if (prior.type !== 'claude.text' || next.type !== 'claude.text'
+      || prior.payload.itemId !== next.payload.itemId
+      || prior.payload.clientCorrelationId !== next.payload.clientCorrelationId) return undefined
+    if (next.payload.operation === 'replace') return next
+    if (next.payload.operation !== 'append'
+      || !['append', 'replace'].includes(String(prior.payload.operation))) return undefined
+    if (typeof prior.payload.text !== 'string' || typeof next.payload.text !== 'string') return undefined
+    return { ...next, payload: { ...next.payload, operation: prior.payload.operation,
+      text: prior.payload.text + next.payload.text } }
+  }
   function createTurn(input: ClaudeMessageTurnInput): Turn {
     return { correlationId: input.clientCorrelationId, promptUuid: claudePromptUuid(input.clientCorrelationId), input,
-      submitted: false, observing: true, replyObserved: false, resultBeforeReply: false, events: new ClaudeBoundedQueue(256),
+      submitted: false, observing: true, replyObserved: false, resultBeforeReply: false, events: new ClaudeBoundedQueue(256, coalesceText),
       ...(input.callbackAuthority ? { authority: { ...input.callbackAuthority } } : {}) }
   }
   function subscribe(turn: Turn, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
@@ -563,6 +592,7 @@ export function createClaudeNativeSessionManager(options: {
             if (turn.observerLease !== lease) return
             delete turn.observerLease
             turn.observing = false
+            turn.events.discard()
             void iterator.return?.()
           }
           const aborted = () => detach()
@@ -599,14 +629,14 @@ export function createClaudeNativeSessionManager(options: {
     observeSubagentHook(sessionId, agentId, agentType, status) {
       const runtime = resident.get(sessionId)
       if (!runtime?.session || !agentId || agentId.length > 512 || runtime.closed || disposed) return
-      record(runtime, 'claude.subagent', { nativeSessionId: sessionId, agentId, agentType: agentType.slice(0, 512), status }, runtime.active)
+      void record(runtime, 'claude.subagent', { nativeSessionId: sessionId, agentId, agentType: agentType.slice(0, 512), status }, runtime.active)
     },
     notifyPendingChanged(notification) {
       const runtime = resident.get(notification.nativeSessionId)
       const turn = runtime?.turns.get(notification.clientCorrelationId)
       if (!runtime || runtime.closed || runtime.generation !== notification.generation || !turn?.submitted
         || turn.nativeMessageId !== notification.nativeMessageId || turn.terminal) return
-      record(runtime, 'interaction.pending', { nativeSessionId: notification.nativeSessionId,
+      void record(runtime, 'interaction.pending', { nativeSessionId: notification.nativeSessionId,
         nativeMessageId: notification.nativeMessageId, nativeRequestId: notification.nativeRequestId,
         nativeRequestType: notification.nativeRequestType, generation: notification.generation }, turn)
     },
@@ -738,17 +768,46 @@ export function createClaudeNativeSessionManager(options: {
     async attachSession(session, start, signal) {
       signal?.throwIfAborted()
       if (session.harness !== harness || session.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_SESSION_MISMATCH', 'Persisted Claude installation identity differs.')
-      const existing = resident.get(session.nativeSessionId)
+      if (disposed) throw new HarnessExecutionError('CLAUDE_MANAGER_DISPOSED', 'Claude manager is disposed.')
+      const existing = resident.get(session.nativeSessionId) ?? rolloverSources.get(session.nativeSessionId)
       if (!existing) return open(start, session, signal)
       if (!isDeepStrictEqual(sessionContext(existing.context), sessionContext(start))) {
         throw new HarnessExecutionError('CLAUDE_SESSION_CONTEXT_CONFLICT',
           'The resident Claude session has another accepted configuration or environment.')
       }
-      if (disposed || !all.has(existing) || existing.closed || existing.failure) {
+      const pending = rollovers.get(session.nativeSessionId)
+      if (pending) return pending
+      const rolloverSource = rolloverSources.get(session.nativeSessionId) === existing
+      if (!rolloverSource && (!all.has(existing) || existing.closed || existing.failure)) {
         throw new HarnessExecutionError('CLAUDE_SESSION_UNAVAILABLE',
           'The resident Claude query ended; attach with a fresh manager. Prior receipts remain available for reconciliation.')
       }
-      return existing.session!
+      try {
+        existing.sdk.assertInputCapacity()
+        return existing.session!
+      } catch (error) {
+        if (!(error instanceof ClaudeInputNotDeliveredError)) throw error
+      }
+      if (existing.active || existing.controlPending) {
+        throw new HarnessExecutionError('CLAUDE_TURN_ACTIVE', 'Finish the owned input before resuming a full session.')
+      }
+      qualified('resume')
+      rolloverSources.set(session.nativeSessionId, existing)
+      const rollover = (async () => {
+        // Completed inputs have no live callbacks; keep the owner bridge usable on resume.
+        existing.replacingForResume = true
+        await manager.close(session)
+        if (prepared && (await prepared.opening) === existing) prepared = undefined
+        const resumed = await open(start, session, signal)
+        rolloverSources.delete(session.nativeSessionId)
+        return resumed
+      })()
+      rollovers.set(session.nativeSessionId, rollover)
+      try {
+        return await rollover
+      } finally {
+        rollovers.delete(session.nativeSessionId)
+      }
     },
     startTurn(session, rawInput, signal) {
       qualified('basicTurns')
@@ -761,6 +820,7 @@ export function createClaudeNativeSessionManager(options: {
       if (runtime.turns.has(rawInput.clientCorrelationId) || runtime.restoredReceipts.has(rawInput.clientCorrelationId)) throw new HarnessExecutionError('CLAUDE_PROMPT_REPLAY_FORBIDDEN', 'This correlation was already offered; use read-only reconciliation.')
       const input = rawInput as ClaudeMessageTurnInput
       if (input.onSubmitted && !input.onMessageSubmitted) throw new HarnessExecutionError('CLAUDE_MESSAGE_RECEIPT_REQUIRED', 'Claude has native message receipts; this caller requires a native-turn receipt.')
+      runtime.sdk.assertInputCapacity()
       const turn = createTurn(input)
       runtime.turns.set(turn.correlationId, turn)
       runtime.active = turn
@@ -896,6 +956,10 @@ export function createClaudeNativeSessionManager(options: {
       runtime.closed = true
       delete runtime.httpCredentialAcknowledgement
       if ([...resident.values()].every((entry) => entry.closed)) rejectCallbackWaiters()
+      if (runtime.active) {
+        runtime.active.observing = false
+        runtime.active.events.close(undefined, true)
+      }
       await runtime.sdk.close()
       await runtime.pumping
       resident.delete(session.nativeSessionId)
@@ -905,10 +969,18 @@ export function createClaudeNativeSessionManager(options: {
     async dispose() {
       disposed = true
       rejectCallbackWaiters()
-      for (const runtime of all) { runtime.closed = true; delete runtime.httpCredentialAcknowledgement }
+      for (const runtime of all) {
+        runtime.closed = true
+        delete runtime.httpCredentialAcknowledgement
+        if (runtime.active) {
+          runtime.active.observing = false
+          runtime.active.events.close(undefined, true)
+        }
+      }
       await options.runner.dispose()
       await Promise.all([...all].map((runtime) => runtime.pumping))
       resident.clear()
+      rolloverSources.clear()
       all.clear()
     },
   }

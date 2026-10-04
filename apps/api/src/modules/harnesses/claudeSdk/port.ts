@@ -1,3 +1,5 @@
+import { HarnessExecutionError } from '../errors.js'
+
 /** Narrow injectable boundary for the pinned official streaming SDK. */
 export interface ClaudeSdkUserMessage {
   type: 'user'
@@ -63,9 +65,20 @@ export interface ClaudeSdkOpenInput {
   cancelPendingRequests?(): void
 }
 
+export class ClaudeInputNotDeliveredError extends HarnessExecutionError {
+  readonly code = 'CLAUDE_INPUT_NOT_DELIVERED'
+  readonly deliveryState = 'not-delivered'
+
+  constructor(message: string) {
+    super('CLAUDE_INPUT_NOT_DELIVERED', message, true)
+    this.name = 'ClaudeInputNotDeliveredError'
+  }
+}
+
 export interface ClaudeSdkSession {
   readonly output: AsyncIterable<ClaudeSdkOutput>
   readonly nativeSessionId: string | undefined
+  assertInputCapacity(): void
   offer(input: { promptUuid: string; content: string }, signal?: AbortSignal): Promise<{ state: 'queue-offered'; promptUuid: string }>
   interrupt(): Promise<unknown>
   initializationResult?(): Promise<unknown>
