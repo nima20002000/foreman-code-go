@@ -98,16 +98,16 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
       {uncertain ? 'Start acknowledgment is unknown. Retrying sends the same commandId and saved revision; it does not request another execution.' : jobError(start.error)}
       {start.variables && <> Request <code>{start.variables.commandId}</code></>}
     </Alert>}
-    {ticketId && !ticket && !queue.error && <p role="status">Request saved. Loading queue status…</p>}
-    {queue.error && <Alert title="Queue status unavailable" tone="warning">{jobError(queue.error)}
+    {ticketId && !ticket && !queue.isError && <p role="status">Request saved. Loading queue status…</p>}
+    {queue.isError && <Alert title="Queue status unavailable" tone="warning">{jobError(queue.error)}
       <Button onClick={() => { void queue.refetch() }}>Refresh queue status</Button>
     </Alert>}
     {ticket && !ticketMatches && <Alert title="Queue request mismatch" tone="danger">
       The response belongs to another saved job or start request.
     </Alert>}
     {ticket && ticketMatches && <JobQueueFacts ticket={ticket} />}
-    {executionId && !result.data && !result.error && <p role="status">Accepted. Loading the original execution…</p>}
-    {result.error && <Alert title="Accepted result unavailable" tone="warning">{jobError(result.error)}
+    {executionId && !result.data && !result.isError && <p role="status">Accepted. Loading the original execution…</p>}
+    {result.isError && <Alert title="Accepted result unavailable" tone="warning">{jobError(result.error)}
       <Button onClick={() => { void result.refetch() }}>Retry result read</Button>
     </Alert>}
     {rerun && <Alert title="New execution" tone="neutral">

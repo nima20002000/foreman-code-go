@@ -26,7 +26,7 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
     <section aria-label="Job queue"><h2>Job queue</h2>
       <p>Up to 100 recent requests in this workspace.</p>
       <p>Workflow-node queuing, Start placement overrides and start estimates are unavailable.</p>
-      {queue.error && <Alert title="Queue unavailable" tone="danger">{jobError(queue.error)}</Alert>}
+      {queue.isError && <Alert title="Queue unavailable" tone="danger">{jobError(queue.error)}</Alert>}
       {queue.isPending && <p role="status">Loading queue…</p>}
       {queue.data?.length === 0 && <p>No queued requests.</p>}
       <div className="jobs-list">{queue.data?.map(ticket => <JobQueueRow key={ticket.id}
