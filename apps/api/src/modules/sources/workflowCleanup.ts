@@ -29,6 +29,8 @@ export async function closeCompletedWorkflowSources(
     join source_storage_reservations s on s.reservation_id=m.reservation_id
     where (m.state<>'closed' or (
         s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+        and not exists(select 1 from source_preparation_reconciliations c
+          where c.operation_id::text=m.record->>'operationId' and c.status='closed')
       )) and e.record->>'state'='completed'
     order by m.materialization_id limit 100`)
   for (const row of rows.rows) {

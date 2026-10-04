@@ -31,6 +31,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
       state text not null, execution_id text not null, reservation_id uuid not null);
       create table runs (id text primary key, execution_state text not null);
       create table harness_executions (id text primary key, run_id text not null, record jsonb not null);
+      create table source_preparation_reconciliations (operation_id text primary key, status text not null);
       create table source_storage_reservations (reservation_id uuid primary key, scope_id text not null, owner_kind text not null,
       owner_id text not null, state text not null, reserved_bytes bigint not null, record jsonb not null)`)
     const bytes = Buffer.from('retained original bytes\n')
@@ -88,6 +89,11 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
     expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(retainedBytes)
     expect(await readFile(join(root, receipt.materializationId, 'tree/app.ts'))).toEqual(bytes)
+    await pool.query(`insert into source_preparation_reconciliations values ($1,'closed')`, [record.operationId])
+    await pool.query('update source_storage_reservations set reserved_bytes=$1', [reservation.reservedBytes])
+    await closeCompletedWorkflowSources(pool, recovered, report)
+    expect((await pool.query('select reserved_bytes from source_storage_reservations')).rows[0].reserved_bytes)
+      .toBe(String(reservation.reservedBytes))
   } finally {
     await pool.end(); await admin.query(`drop database "${database}"`); await admin.end(); await rm(root, { recursive: true, force: true })
   }
