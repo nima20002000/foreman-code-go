@@ -65,6 +65,13 @@ describe('SCH-04 frozen-policy dispatch plan', () => {
     expect(scheduleRejectionReason(new DomainError('AUTH_REVOKED', 'private detail', 403))).toBe('schedule_authorization_denied')
     expect(scheduleRejectionReason(new Error('SQL, tokens or native output'))).toBeUndefined()
     expect(scheduleRejectionReason(new DomainError('LOCATION_REVISION_CONFLICT', 'changed', 409))).toBeUndefined()
+    expect(scheduleRejectionReason(new DomainError('PLACEMENT_ADMISSION_CONFLICT', 'saved instance changed', 409)))
+      .toBe('workflow_not_executable')
+    expect(scheduleRejectionReason(new DomainError('PLACEMENT_INVALID_ROOT', 'invalid saved root', 409)))
+      .toBe('workflow_not_executable')
+    for (const code of ['HARNESS_PROFILE_UNAVAILABLE', 'PLACEMENT_ADMISSION_UNAVAILABLE', 'WORKER_CONNECTION_UNAVAILABLE']) {
+      expect(scheduleRejectionReason(new DomainError(code, 'temporarily unavailable', 409))).toBeUndefined()
+    }
   })
 })
 
