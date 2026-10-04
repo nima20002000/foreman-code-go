@@ -2,7 +2,9 @@ import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
@@ -37,6 +39,8 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  readonly ownedFileRoot?: string | undefined
+  readonly processRecovery?: NativeProcessRecovery | undefined
   assertFileSourceIsolation?(root: string, signal: AbortSignal): Promise<void>
   /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
   readonly residentGeneration?: number | undefined
@@ -67,6 +71,7 @@ export interface ManagedOpenCodeServerOptions {
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
   protectedFileStorageRoot?: string
+  managedFileRoot?: string
   /** One budget for version probing, spawning, readiness and health, not per stage. */
   startupTimeoutMs?: number
 }
@@ -90,6 +95,8 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
   expectedVersion = ''
+  readonly ownedFileRoot: string | undefined
+  get processRecovery(): NativeProcessRecovery | undefined { return this.options.processRecovery }
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -107,6 +114,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private fileIsolation: OpenCodeVaultIsolation | undefined
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
+    this.ownedFileRoot = options.managedFileRoot ? join(options.managedFileRoot, randomUUID()) : undefined
     this.advancedConfiguration = options.advancedConfiguration
     this.desiredEnvironment = this.validateEnvironment(options.environment)
     if (options.pure !== undefined && options.advancedConfiguration
@@ -363,8 +371,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
+      if (this.ownedFileRoot) await mkdir(this.ownedFileRoot, { recursive: true, mode: 0o700 })
       this.fileIsolation = this.options.protectedFileStorageRoot
-        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot) : undefined
+        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot,
+          this.options.managedFileRoot && this.ownedFileRoot
+            ? { root: this.options.managedFileRoot, owned: this.ownedFileRoot } : undefined)
+        : undefined
       const launch = this.fileIsolation
         ? await this.fileIsolation.launch({ binary: this.options.binary, args,
           workingDirectory: this.options.workingDirectory, environment }, abort.signal)

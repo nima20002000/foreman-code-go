@@ -17,7 +17,7 @@ export class OpenCodeVaultIsolation {
   private readonly nonce = randomUUID()
   private verified = false
 
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, private readonly materializations?: { root: string; owned: string }) {}
 
   async launch(input: { binary: string; args: string[]; workingDirectory: string; environment: NodeJS.ProcessEnv },
     signal: AbortSignal) {
@@ -34,8 +34,24 @@ export class OpenCodeVaultIsolation {
     } finally {
       await directory.close()
     }
-    this.ancestors = []
-    for (let parent = dirname(this.root); parent !== '/'; parent = dirname(parent)) this.ancestors.unshift(parent)
+    const ancestors = new Set<string>()
+    for (const protectedRoot of [this.root, ...(this.materializations ? [this.materializations.root] : [])]) {
+      for (let parent = dirname(protectedRoot); parent !== '/'; parent = dirname(parent)) ancestors.add(parent)
+    }
+    this.ancestors = [...ancestors].sort((a, b) => a.split('/').length - b.split('/').length)
+    let materialized: { dev: number; ino: number } | undefined
+    if (this.materializations) {
+      checkFileCondition(dirname(this.materializations.owned) === this.materializations.root
+        && isAbsolute(this.materializations.root) && normalize(this.materializations.root) === this.materializations.root,
+      'FILE_SOURCE_ISOLATION_REQUIRED', 'Materialized files require one registered native owner directory.')
+      const owned = await openDirectory(this.materializations.owned)
+      try {
+        const stat = await owned.stat()
+        materialized = { dev: stat.dev, ino: stat.ino }
+      } finally {
+        await owned.close()
+      }
+    }
     const directories = []
     for (const path of this.ancestors) {
       const parent = await openDirectory(path)
@@ -56,7 +72,8 @@ export class OpenCodeVaultIsolation {
     for (const name of ['mnt', 'pid', 'user']) namespaces[name] = await readlink(`/proc/self/ns/${name}`)
     const hostInput = JSON.stringify({ binary: input.binary, args: input.args, workingDirectory: input.workingDirectory,
       root: this.root, source: this.source,
-      ancestors: this.ancestors, directories, namespaces, nonce: this.nonce })
+      ancestors: this.ancestors, directories, namespaces, nonce: this.nonce,
+      materializations: this.materializations, materialized })
     return { binary: launcher, args: [
       '--unshare-user', '--unshare-pid', '--unshare-ipc', '--disable-userns', '--assert-userns-disabled',
       '--as-pid-1', '--die-with-parent', '--cap-drop', 'ALL',
@@ -65,6 +82,11 @@ export class OpenCodeVaultIsolation {
       ...this.ancestors.flatMap((parent) => ['--bind', parent, parent]),
       '--proc', '/proc', '--dev', '/dev', '--setenv', 'PATH', environment.PATH ?? '',
       '--tmpfs', this.root, '--remount-ro', this.root,
+      ...(this.materializations ? [
+        '--tmpfs', this.materializations.root,
+        '--bind', this.materializations.owned, this.materializations.owned,
+        '--remount-ro', this.materializations.root,
+      ] : []),
       '--', process.execPath, '-e', openCodeIsolationHost, hostInput,
     ] }
   }

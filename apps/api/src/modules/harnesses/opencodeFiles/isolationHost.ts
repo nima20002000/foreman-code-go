@@ -30,6 +30,14 @@ check(mounts.some((mount) => mount.path === '/proc' && mount.type === 'proc'))
 const hidden = fs.lstatSync(input.root)
 check(hidden.isDirectory() && (hidden.dev !== input.source.dev || hidden.ino !== input.source.ino))
 check(fs.readdirSync(input.root).length === 0)
+if (input.materializations) {
+  const managed = mounts.findLast((mount) => mount.path === input.materializations.root)
+  check(managed && managed.type === 'tmpfs' && managed.options.includes('ro'))
+  check(fs.readdirSync(input.materializations.root).join('') === path.basename(input.materializations.owned))
+  const owner = fs.lstatSync(input.materializations.owned)
+  check(owner.isDirectory() && owner.dev === input.materialized.dev && owner.ino === input.materialized.ino)
+  check(mounts.some((mount) => mount.path === input.materializations.owned && mount.options.includes('rw')))
+}
 for (const directory of input.directories) {
   const stat = fs.lstatSync(directory.path)
   check(stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === directory.dev && stat.ino === directory.ino)

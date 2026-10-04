@@ -42,7 +42,10 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
     publishedForTurn: service.publishedForTurn.bind(service),
     writeWorkingCopy: service.writeWorkingCopy.bind(service), applyFormatEdit: service.applyFormatEdit.bind(service) }
     const mountId = randomUUID()
-    const root = join(config.harnesses.workspaceRoot, 'chat-files', mountId)
+    if (!server.ownedFileRoot) {
+      throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server has no owned materialization directory.')
+    }
+    const root = join(server.ownedFileRoot, mountId)
     const host = new LocalOpenCodeExecutionFiles({
       executionHostId: 'runner-local', root, maxFileBytes: MAX_FILE_BYTES,
       assertSourceIsolation: async (checkSignal) => {
