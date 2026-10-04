@@ -8,8 +8,18 @@ export class NativeRollout {
     const selected = harness === 'codex' ? this.environment.GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER
       : harness === 'claude' ? this.environment.GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK
         : this.environment.GRAPHQL_OPENCODE_PARITY_QUALIFIED
-    if (this.environment.NODE_ENV === 'production') return harness === 'opencode' && selected === '1'
     const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(this.environment.HOST ?? '127.0.0.1')
+    if (this.environment.NODE_ENV === 'production') {
+      if (this.environment.GRAPHQL_LOCAL_PRODUCTION !== '1') return harness === 'opencode' && selected === '1'
+      let localDatabase = false
+      try {
+        const database = new URL(this.environment.DATABASE_URL ?? '')
+        localDatabase = ['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname)
+      } catch {
+        return false
+      }
+      if (!local || !localDatabase) return false
+    }
     // Supported local harnesses still pass native version, account, model,
     // approval and sandbox qualification at every execution admission.
     return selected === '1' || (selected === undefined && local)
@@ -17,9 +27,9 @@ export class NativeRollout {
   assertChat(configuration: OperatorConfigurationVersion): void {
     if (!this.enabled(configuration.harness.harness)) throw new DomainError('OPERATOR_NATIVE_CAPABILITY_DISABLED',
       configuration.harness.harness === 'codex'
-        ? 'Codex execution is disabled for this runtime. Supported local development enables it by default; explicit disables and production restrictions remain in effect.'
+        ? 'Codex execution is disabled for this runtime. Supported local installations enable it by default; native qualification remains required.'
         : configuration.harness.harness === 'claude'
-          ? 'Claude execution is disabled for this runtime. Supported local development enables it by default; exact-host native qualification remains required.'
-          : 'OpenCode execution is disabled for this runtime. Supported local development enables it by default; explicit disables and production qualification remain in effect.', 409)
+          ? 'Claude execution is disabled for this runtime. Supported local installations enable it by default; host native qualification remains required.'
+          : 'OpenCode execution is disabled for this runtime. Supported local installations enable it by default; native qualification remains required.', 409)
   }
 }

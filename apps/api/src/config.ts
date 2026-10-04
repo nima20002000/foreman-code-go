@@ -28,6 +28,7 @@ const EnvironmentSchema = z.object({
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
   OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
   GRAPHQL_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
+  GRAPHQL_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
 })
 
 export interface ApiConfig {
@@ -60,6 +61,11 @@ export interface ApiConfig {
 
 export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   const parsed = EnvironmentSchema.parse(environment)
+  if (parsed.GRAPHQL_LOCAL_PRODUCTION === '1'
+    && (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.HOST)
+      || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname))) {
+    throw new Error('Local production requires a loopback API and database.')
+  }
   const browserAuth = readBrowserAuthConfig(environment)
   const localDevBrowserAccess = environment.GRAPHQL_DEV_BROWSER_ACCESS === '1'
   if (environment.GRAPHQL_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.GRAPHQL_DEV_BROWSER_ACCESS)) {
