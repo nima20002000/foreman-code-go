@@ -31,13 +31,19 @@ function toolError(result: Awaited<ReturnType<Client['callTool']>>) {
 }
 
 async function fixture() {
-  const base = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential') })
+  let placementProducer: Awaited<ReturnType<typeof mixedComputerPlacement>>['producer'] | undefined
+  const base = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential'),
+    admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
+      if (!placementProducer) throw new Error('Placement producer is not initialized')
+      await placementProducer.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId)
+    } })
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined
   let directory: string | undefined
   try {
     directory = await privateFixtureDirectory('mixed-placement-')
     const placement = await mixedComputerPlacement(base, directory)
+    placementProducer = placement.producer
     await base.app.close()
     // Start admission and readback are real; this external provider boundary
     // refuses native entry so no remote execution is simulated on Main.
