@@ -1,4 +1,5 @@
 import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from './opencodeTransport.js'
+import { openCodeMediaStream } from './opencodeMedia.js'
 
 export interface OpenCodeHttpEvidence {
   readonly operation: { readonly method: string; readonly path: string }
@@ -86,12 +87,27 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
       await response.body?.cancel().catch(() => undefined)
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native generation or owner lifetime changed after dispatch.', 'uncertain')
     }
+    const history = request.method === 'GET' && /^\/session\/[^/]+\/message(?:\/[^/]+)?$/.test(url.pathname)
+    if (history && response.ok && response.body) {
+      const headers = new Headers(response.headers)
+      headers.delete('content-length')
+      return new Response(response.body.pipeThrough(openCodeMediaStream(), { signal: combined }), {
+        status: response.status, statusText: response.statusText, headers,
+      })
+    }
     return response
   }
 }
 export type OpenCodeClientFactory = typeof createOpenCodeBoundFetch
 
 export const OPENCODE_HTTP_BODY_LIMIT = 8_000_000
+
+export class OpenCodeResponseTooLargeError extends Error {
+  constructor() {
+    super('OpenCode response exceeds the bounded native page buffer.')
+    this.name = 'OpenCodeResponseTooLargeError'
+  }
+}
 
 /** Keep generated SDK text parsing inside the same native-page byte budget. */
 export async function readOpenCodeResponseText(response: Response, ownerSignal?: AbortSignal): Promise<string> {
@@ -114,7 +130,7 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
       signal.throwIfAborted()
       if (chunk.done) return text + decoder.decode()
       bytes += chunk.value.byteLength
-      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new Error('OpenCode response exceeds the bounded native page buffer.')
+      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new OpenCodeResponseTooLargeError()
       text += decoder.decode(chunk.value, { stream: true })
     }
   } finally {
