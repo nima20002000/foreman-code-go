@@ -1,3 +1,6 @@
+import { openCodeCompactionResult, openCodeContextSnapshot, openCodeSessionAgent } from './opencodeSessionControls.js'
+import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@graphql/contracts'
+import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
@@ -91,6 +94,8 @@ interface OwnedTurn {
   fileIdentity?: string
 }
 interface SessionState {
+  compaction?: CompactionState
+  context?: ContextSnapshot
   readonly connectionId: string
   responsesInFlight: Set<string>
   responsesUncertain: Set<string>
@@ -346,8 +351,88 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async sessionControlCapabilities(session: NativeSessionReference): Promise<SessionControlCapabilities> {
+    const state = this.requireSession(session)
+    const signal = this.signal(AbortSignal.timeout(10000))
+    await this.ready(signal)
+    const agents = await this.json('/agent', state.directory, signal)
+    const plan = Array.isArray(agents) && agents.some(value => {
+      const agent = object(value)
+      return agent.name === 'plan' && agent.mode !== 'subagent' && agent.hidden !== true
+    })
+    const doc = object(await this.json('/doc', undefined, signal))
+    const compact = '/session/{sessionID}/summarize' in object(doc.paths)
+    const [providerId, ...modelId] = state.configuration.model.split('/')
+    const providers = object(await this.json('/provider', state.directory, signal))
+    const provider = Array.isArray(providers.all) ? providers.all.map(object).find(value => value.id === providerId) : undefined
+    const model = provider ? object(object(provider.models)[modelId.join('/')]) : {}
+    const capacity = object(model.limit).context
+    const modelCapacity = typeof capacity === 'number' && capacity > 0 ? capacity : null
+    const unsupported = { supported: false, reason: 'OpenCode has no qualified session-local context override.' }
+    const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
+    state.context = openCodeContextSnapshot(page.messages, session.nativeSessionId, state.configuration.model, modelCapacity) ?? undefined
+    return { compact: { supported: compact, reason: compact ? null : 'Native summarize is unavailable.' },
+      plan: { supported: plan, reason: plan ? null : 'No permitted Plan primary agent was discovered.' },
+      autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
+      modelCapacity, model: state.configuration.model, profileKey: digest(state.configuration) }
+  }
+
+  contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
+    return this.requireSession(session).context ?? null
+  }
+
+  async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState> {
+    return this.exclusive(async () => {
+      const state = this.requireSession(session)
+      const combined = this.signal(signal)
+      await this.ready(combined)
+      if (state.admissionPending || state.turn && !state.turn.terminalResult
+        || await this.ownedStatus(session, state, combined) !== 'idle' || await this.pending(session, combined)) {
+        throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_BUSY', 'Wait for native work and approvals to finish.', 'definite')
+      }
+      const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, combined)
+      const baseline = page.messages.at(-1)?.info.id
+      if (typeof baseline !== 'string') return { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        nativeOperationId: null, status: 'no-op', message: 'There is no native history to compact.',
+        beforeTokens: null, observedAt: new Date().toISOString() }
+      state.compaction = { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        nativeOperationId: baseline, status: 'running', message: 'Compacting context.',
+        beforeTokens: state.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
+      await input.onProgress(state.compaction)
+      const [providerID, ...model] = state.configuration.model.split('/')
+      const accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerID, modelID: model.join('/'), auto: false }),
+      }, combined)
+      if (accepted !== true) {
+        if (accepted === false) state.compaction = { ...state.compaction, status: 'failed', message: 'OpenCode declined compaction.' }
+        else throw new OpenCodeNativeDeliveryError('OPENCODE_COMPACT_UNCONFIRMED', 'The accepted summarize response was invalid.', 'uncertain')
+      } else state.compaction = await this.reconcileCompaction(session, state.compaction, combined)
+      if (state.compaction.status === 'running') state.compaction = { ...state.compaction, status: 'uncertain', message: 'Read to recover compaction.' }
+      if (state.context) state.context = { ...state.context, stale: true }
+      this.recordSynthetic(state, 'session.compaction', { ...state.compaction })
+      return state.compaction
+    })
+  }
+
+  async reconcileCompaction(session: NativeSessionReference, control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    const state = this.requireSession(session)
+    const combined = this.signal(signal)
+    const messages: OpenCodeMessage[] = []
+    let cursor: string | undefined
+    for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+      const page = await this.messagePage(session.nativeSessionId, state.directory, cursor, combined)
+      messages.unshift(...page.messages)
+      if (page.messages.some(message => message.info.id === control.nativeOperationId) || !page.nextCursor) break
+      cursor = page.nextCursor
+    }
+    const result = openCodeCompactionResult(control, messages)
+    state.compaction = result
+    return result
+  }
+
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
-    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input.onSubmitted)
+    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input.onSubmitted, input.sessionMode)
   }
 
   /** Explicit nonmutating recovery seam: this method never submits prompt_async. */
@@ -356,8 +441,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
-    onSubmitted?: (nativeTurnId: string) => Promise<void>): AsyncIterable<NativeHarnessEvent> {
+    onSubmitted?: (nativeTurnId: string) => Promise<void>, sessionMode?: SessionMode): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
+    if (state.compaction && ['accepted', 'running', 'uncertain'].includes(state.compaction.status)) throw new HarnessExecutionError('OPENCODE_COMPACT_PENDING', 'Recover compaction before sending another turn.')
     if (state.admissionPending) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This session already has pending turn admission.')
     const admission = new AbortController()
     state.admissionPending = admission
@@ -452,7 +538,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               variant: state.configuration.variant,
-              agent: state.configuration.nativeAgent, parts: [
+              agent: openCodeSessionAgent(sessionMode, state.configuration.nativeAgent), parts: [
                 { type: 'text', text: turn.files ? `${prompt ?? ''}\n\n${turn.files.inputs.promptSuffix}` : prompt },
                 ...(turn.files?.inputs.imageParts ?? []),
               ],
