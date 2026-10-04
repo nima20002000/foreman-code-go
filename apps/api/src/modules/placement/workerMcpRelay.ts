@@ -164,14 +164,41 @@ export function selectedMainMcpForward(app: import('fastify').FastifyInstance): 
       ? request.params as Record<string, unknown> : undefined
     const url = request?.method === 'tools/call' && typeof params?.name === 'string'
       ? artifactToolPaths.get(params.name) ?? '/mcp' : '/mcp'
-    const response = await app.inject({ method: 'POST', url, payload: body as Record<string, unknown>, headers: {
-      host: '127.0.0.1', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
+    const address = app.server.address()
+    if (!app.server.listening || !address || typeof address === 'string') {
+      throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The selected Main HTTP listener is unavailable.', 503)
+    }
+    let host = address.address
+    if (host === '0.0.0.0') host = '127.0.0.1'
+    else if (host === '::') host = '::1'
+    const authority = `${host.includes(':') ? `[${host}]` : host}:${address.port}`
+    const response = await fetch(`http://${authority}${url}`, {
+      method: 'POST', body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30_000), headers: {
+      authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
       ...(protocolVersion ? { 'mcp-protocol-version': protocolVersion } : {}),
     } })
-    const type = response.headers['content-type']
-    const contentType = response.payload === '' ? 'empty' : typeof type === 'string' && type.startsWith('application/json') ? 'application/json'
-      : typeof type === 'string' && type.startsWith('text/event-stream') ? 'text/event-stream' : undefined
+    const chunks: Uint8Array[] = []
+    let byteLength = 0
+    const reader = response.body?.getReader()
+    try {
+      while (reader) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        byteLength += chunk.value.byteLength
+        if (byteLength > 1_000_000) {
+          await reader.cancel()
+          throw new DomainError('WORKER_MCP_RESPONSE_INVALID', 'The selected Main MCP response exceeds its relay limit.', 502)
+        }
+        chunks.push(chunk.value)
+      }
+    } finally { reader?.releaseLock() }
+    const payload = Buffer.concat(chunks).toString('utf8')
+    const type = response.headers.get('content-type')
+    let contentType: 'empty' | 'application/json' | 'text/event-stream' | undefined
+    if (payload === '') contentType = 'empty'
+    else if (type?.startsWith('application/json')) contentType = 'application/json'
+    else if (type?.startsWith('text/event-stream')) contentType = 'text/event-stream'
     if (!contentType) throw new DomainError('WORKER_MCP_RESPONSE_INVALID', 'The selected main returned an unsupported MCP response.', 502)
-    return { statusCode: response.statusCode, contentType, body: response.payload }
+    return { statusCode: response.status, contentType, body: payload }
   } }
 }

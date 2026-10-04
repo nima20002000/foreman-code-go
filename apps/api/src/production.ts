@@ -15,6 +15,8 @@ import { interactionConnection } from './modules/interactions/connection.js'
 import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
 import { remoteMcpPreflight } from './modules/placement/remoteMcpPreflight.js'
 import { closeCompletedWorkflowSources } from './modules/sources/workflowCleanup.js'
+import { remoteWorkflowPreparationClosed } from './modules/sources/workflowPreparationCleanup.js'
+import { readExecutionPlacement } from './modules/placement/persistence.js'
 import { placedContinuationValidator } from './modules/placement/continuation.js'
 import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
@@ -772,8 +774,15 @@ export function buildProductionApp(
       remoteWorkflow!.capture(input, workflowCapture.verify.read(evidence))
       return evidence
     } }, reviewCapture.capture,
-    (executionId, signal) => remoteWorkflow!.isRemote(executionId)
-      ? Promise.resolve(false) : processRegistry.closeOwner(`execution:${executionId}`, signal),
+    async (executionId, signal) => {
+      signal.throwIfAborted()
+      const placement = await readExecutionPlacement(database.pool, executionId)
+      const closed = placement?.hostRef.kind === 'device'
+        ? await remoteWorkflowPreparationClosed(database.pool, executionId)
+        : await processRegistry.closeOwner(`execution:${executionId}`, signal)
+      signal.throwIfAborted()
+      return closed
+    },
     (executionId, manager) => {
       if (remoteWorkflow!.isRemote(executionId)) return
       const scope = launchScopes.get(manager)

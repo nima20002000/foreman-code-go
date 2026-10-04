@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { Socket } from 'node:net'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -142,8 +143,13 @@ describe('selected Main fixed artifact tool routing', () => {
     ['/mcp/artifact-publications', '/mcp'],
   ])('forwards %s to its fixed path with the original worker bearer', async (name, expected) => {
     const app = Fastify()
-    for (const url of ['/mcp', '/mcp/artifact-transfers', '/mcp/artifact-inputs', '/mcp/artifact-publications']) app.post(url, request => ({ path: request.url, authorization: request.headers.authorization, protocolVersion: request.headers['mcp-protocol-version'] }))
+    for (const url of ['/mcp', '/mcp/artifact-transfers', '/mcp/artifact-inputs', '/mcp/artifact-publications']) app.post(url, request => {
+      expect(request.raw.socket).toBeInstanceOf(Socket)
+      expect(typeof request.raw.socket.destroySoon).toBe('function')
+      return { path: request.url, authorization: request.headers.authorization, protocolVersion: request.headers['mcp-protocol-version'] }
+    })
     try {
+      await app.listen({ host: '127.0.0.1', port: 0 })
       const response = await selectedMainMcpForward(app).request({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: {} }, destination: '/caller-selected' }, 'original-worker-bearer', '2025-03-26')
       expect(JSON.parse(response.body)).toEqual({ path: expected, authorization: 'Bearer original-worker-bearer', protocolVersion: '2025-03-26' })
     } finally { await app.close() }
@@ -151,7 +157,18 @@ describe('selected Main fixed artifact tool routing', () => {
   it('keeps ordinary discovery on the common MCP endpoint', async () => {
     const app = Fastify(); app.post('/mcp', () => ({ common: true }))
     try {
+      await app.listen({ host: '127.0.0.1', port: 0 })
       expect(JSON.parse((await selectedMainMcpForward(app).request({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { name: 'files.read_edge_input' } }, 'original-worker-bearer')).body)).toEqual({ common: true })
+    } finally { await app.close() }
+  })
+  it('refuses an unavailable listener and oversized responses', async () => {
+    const app = Fastify()
+    app.post('/mcp', (_request, reply) => reply.type('application/json').send('x'.repeat(1_000_001)))
+    const forward = selectedMainMcpForward(app)
+    try {
+      await expect(forward.request({}, 'worker-token')).rejects.toMatchObject({ code: 'WORKER_MCP_UNAVAILABLE' })
+      await app.listen({ host: '127.0.0.1', port: 0 })
+      await expect(forward.request({}, 'worker-token')).rejects.toMatchObject({ code: 'WORKER_MCP_RESPONSE_INVALID' })
     } finally { await app.close() }
   })
 })

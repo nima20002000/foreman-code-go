@@ -540,17 +540,21 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     if (status.status === 'unknown') return !owned && launches().length === 0
     const receipt = status.receipt
     if (receipt.intent.executionId !== owner.attempt.executionId || receipt.intent.attemptId !== owner.attempt.attemptId
-      || receipt.entryAttempted || receipt.native || owned?.native || owned?.session) return false
-    if (receipt.terminal) return receipt.terminal.kind === 'not_started'
+      || receipt.entryAttempted && !receipt.native
+      || owned?.native && !isDeepStrictEqual(owned.native.native, receipt.native)
+      || owned?.session && owned.session.nativeSessionId !== receipt.native?.sessionId) return false
+    if (receipt.terminal?.kind === 'not_started') return true
     if (owned) owned.launchDisabled = true
     await log.revokeFence(owner.identity.operationId)
     if (owned?.manager) {
       if (!owned.manager.dispose) return false
       await owned.manager.dispose()
     }
-    if (launches().length && !await registry.closeOwner(processOwner)) return false
+    if ((receipt.native || launches().length) && !await registry.closeOwner(processOwner)) return false
+    await owned?.mcp?.close()
+    if (receipt.terminal) return true
     await log.terminal(owner.identity.operationId, {
-      kind: 'not_started',
+      kind: receipt.native ? 'cancelled' : 'not_started',
       closureEvidenceDigest: digest({ intent: receipt.intent, preparationClosed: true, launches: launches() }),
     })
     return true

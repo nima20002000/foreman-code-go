@@ -1,11 +1,8 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../runs/repeatResolution.js'
-import { readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import { assertWorkflowPreparationClosed, type loadWorkflowPreparation } from './workflowPreparationCleanup.js'
-
-vi.mock('../interactions/workflowClosure.js', () => ({ readUnboundWorkflowClosure: vi.fn() }))
 
 function fixture() {
   const execution = HarnessExecutionSchema.parse({
@@ -16,18 +13,19 @@ function fixture() {
   const entry = { phase: 'entered', reservation: { execution: repeatExecutionIdentity(execution) } }
   const sql = { query: async () => ({ rows: [entry] }) } as unknown as GraphSqlClient
   const state = {
-    execution, execution_state: 'completed', cleanup_pending: false, session_bound: false,
+    execution, execution_state: 'completed', stop_requested: false, cleanup_pending: false, session_bound: false,
   } as Awaited<ReturnType<typeof loadWorkflowPreparation>>
-  vi.mocked(readUnboundWorkflowClosure).mockReset()
   return { sql, state, entry }
 }
 
-it('requires the original unbound close for a stopped attempt that entered native preflight', async () => {
+it('allows a durable Stop to request worker closure before Main can finish its interrupted execution', async () => {
   const f = fixture()
-  await expect(assertWorkflowPreparationClosed(f.sql, f.state)).rejects.toMatchObject({ code: 'SOURCE_EXECUTION_UNCERTAIN' })
-  vi.mocked(readUnboundWorkflowClosure).mockResolvedValue({
-    execution: { ...f.state.execution, workingDirectory: '/source', runtimeDirectory: '/runtime' }, durableGeneration: '1',
-  })
+  f.state.execution_state = 'running'
+  f.state.execution.state = 'starting'
+  delete f.state.execution.result
+  delete f.state.execution.finishedAt
+  await expect(assertWorkflowPreparationClosed(f.sql, f.state)).rejects.toMatchObject({ code: 'SOURCE_PREPARATION_ACTIVE' })
+  f.state.stop_requested = true
   await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
 })
 
@@ -35,14 +33,13 @@ it('accepts the persisted no-submission outcome of a stopped preparation', async
   const f = fixture()
   f.entry.phase = 'not_submitted'
   await expect(assertWorkflowPreparationClosed(f.sql, f.state)).resolves.toBeUndefined()
-  expect(readUnboundWorkflowClosure).not.toHaveBeenCalled()
 })
 
-it.each(['running', 'cleanup', 'bound', 'native-id', 'success', 'changed-attempt'] as const)(
+it.each(['running', 'live-execution', 'bound', 'native-id', 'success', 'changed-attempt'] as const)(
   'refuses to release a workflow preparation with %s', async defect => {
     const f = fixture()
     if (defect === 'running') f.state.execution_state = 'running'
-    if (defect === 'cleanup') f.state.cleanup_pending = true
+    if (defect === 'live-execution') f.state.execution.state = 'running'
     if (defect === 'bound') f.state.session_bound = true
     if (defect === 'native-id') f.state.execution.nativeSessionId = 'native'
     if (defect === 'success') f.state.execution.result = { outcome: 'succeeded', output: {} }

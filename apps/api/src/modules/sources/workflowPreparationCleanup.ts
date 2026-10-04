@@ -1,9 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import { AcceptedNodePlacementSchema, DispatchIntentSchema } from '@graphql/contracts/node-placement'
-import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { SourceMaterializationRecordSchema, SourcePreparationClosureSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { SourceOperationOwnerSchema } from '@graphql/contracts/source-operations'
 import { DomainError } from '../errors.js'
-import { readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { sourceBindingHash } from './bindingHash.js'
@@ -12,12 +12,12 @@ import type { SourceReservation } from './reservations.js'
 export async function loadWorkflowPreparation(sql: GraphSqlClient, workspaceId: string, operationId: string) {
   const row = (await sql.query<{
     intent: unknown; execution: unknown; placement: unknown; principal_id: string;
-    execution_state: string; cleanup_pending: boolean; session_bound: boolean;
+    execution_state: string; stop_requested: boolean; cleanup_pending: boolean; session_bound: boolean;
     reservation: SourceReservation; reservation_state: string; reserved_bytes: string;
     materialization: unknown | null; reconciliation_id: string | null; command_id: string | null;
     status: string | null; owner: unknown | null; closure: unknown | null;
   }>(`select i.record as intent,e.record as execution,p.record as placement,
-      r.record->>'authorizationPrincipalId' as principal_id,r.execution_state,
+      r.record->>'authorizationPrincipalId' as principal_id,r.execution_state,r.stop_requested_at is not null as stop_requested,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending,
       exists(select 1 from execution_native_sessions n where n.execution_id=e.id) as session_bound,
       s.record as reservation,s.state as reservation_state,s.reserved_bytes,m.record as materialization,
@@ -79,17 +79,41 @@ export async function assertWorkflowPreparationClosed(
   state: Awaited<ReturnType<typeof loadWorkflowPreparation>>,
 ): Promise<void> {
   const execution = state.execution
-  if (state.execution_state !== 'completed' || execution.state !== 'completed' || state.cleanup_pending
+  const fenced = state.execution_state === 'completed' || state.stop_requested || state.cleanup_pending
+  if (!fenced || !['queued', 'starting', 'completed'].includes(execution.state)
     || state.session_bound || execution.nativeSessionId || execution.result?.outcome === 'succeeded') {
-    throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'Stop the workflow and finish its native cleanup before releasing preparation.', 409)
+    throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'Stop the workflow before reconciling an unacknowledged worker session.', 409)
   }
   const entry = (await sql.query<{ phase: string; reservation: { execution: unknown } }>(
     'select phase,reservation from workflow_native_entries where execution_id=$1 and run_id=$2 for share',
     [execution.id, execution.runId],
   )).rows[0]
   if (!entry || !isDeepStrictEqual(entry.reservation.execution, repeatExecutionIdentity(execution))
-    || !['reserved', 'prepared', 'entered', 'not_submitted'].includes(entry.phase)
-    || entry.phase === 'entered' && !await readUnboundWorkflowClosure(sql, execution)) {
+    || !['reserved', 'prepared', 'entered', 'not_submitted'].includes(entry.phase)) {
     throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'The original workflow launch is not closed.', 409)
   }
+}
+
+/** A completed worker reconciliation is physical closure; a pending Stop alone is not. */
+export async function remoteWorkflowPreparationClosed(sql: GraphSqlClient, executionId: string): Promise<boolean> {
+  const allocation = (await sql.query<{ operation_id: string; workspace_id: string }>(`select i.operation_id,r.workspace_id
+    from execution_dispatch_intents i join runs r on r.id=i.run_id where i.execution_id=$1`, [executionId])).rows[0]
+  if (!allocation) return false
+  const state = await loadWorkflowPreparation(sql, allocation.workspace_id, allocation.operation_id)
+  if (state.status !== 'closed' || !state.closure || state.root.selection.hostRef.kind !== 'device') return false
+  await assertWorkflowPreparationClosed(sql, state)
+  const closure = SourcePreparationClosureSchema.parse(state.closure)
+  const owner = SourceOperationOwnerSchema.parse(state.owner)
+  const binding = state.root.binding
+  return owner.preparationKind === 'workflow' && owner.preparationClosed === true
+    && isDeepStrictEqual(owner.root, state.root) && isDeepStrictEqual(owner.attempt, state.attempt)
+    && isDeepStrictEqual(owner.record, state.record)
+    && closure.reconciliationId === state.reconciliation_id && closure.operationId === state.operationId
+    && closure.executionId === executionId && closure.attemptId === state.attempt.attemptId
+    && closure.rootId === binding.rootId && closure.bindingRevision === binding.bindingRevision
+    && closure.materializationId === (state.record?.receipt.materializationId ?? null)
+    && closure.mainId === binding.mainId && closure.deviceId === binding.deviceId
+    && closure.workerInstallationId === binding.workerInstallationId
+    && closure.keyRevision === state.attempt.keyRevision && closure.authorizationRevision === state.attempt.authorizationRevision
+    && isDeepStrictEqual(closure.filesystem, binding.filesystem)
 }

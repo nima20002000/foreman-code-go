@@ -228,6 +228,22 @@ describe('lazy installed worker host qualification boundary',()=>{
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({
         status: 'known', receipt: { phase: 'confirmed_terminal', entryAttempted: false, terminal: { kind: 'not_started' } },
       })
+      const interrupted = { ...f.intent, executionId: 'interrupted-execution', attemptId: 'interrupted-attempt', operationId: 'interrupted-operation' }
+      const cleanupOwner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const,
+        identity: { ...f.owner.identity, operationId: interrupted.operationId },
+        attempt: { ...f.owner.attempt, executionId: interrupted.executionId, attemptId: interrupted.attemptId } }
+      await retainedJournal!.accept(interrupted, connection, randomUUID())
+      await retainedJournal!.reserveEntry(interrupted.operationId)
+      await retainedJournal!.acknowledgeStart(interrupted.operationId, { sessionId: 'unacknowledged-on-main', processIdentityDigest: 'a'.repeat(64) })
+      const closeOwner = vi.spyOn(NativeProcessRegistry.prototype, 'closeOwner').mockResolvedValue(false)
+      expect(await host.preparationClosed(cleanupOwner)).toBe(false)
+      closeOwner.mockResolvedValue(true)
+      expect(await host.preparationClosed(cleanupOwner)).toBe(true)
+      expect(closeOwner).toHaveBeenLastCalledWith('execution:interrupted-execution')
+      expect(await retainedJournal!.status(interrupted.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'confirmed_terminal', native: { sessionId: 'unacknowledged-on-main' },
+          terminal: { kind: 'cancelled' } },
+      })
       currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
       await expect(handler({method:'status',intent:f.intent,placement:f.placement},f.context)).rejects.toMatchObject({code:'WORKER_WORKFLOW_UNAVAILABLE'})
     } finally {await host.close(); await retainedJournal?.close()}

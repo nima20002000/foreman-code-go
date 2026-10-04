@@ -54,9 +54,11 @@ This operation requires the original installed worker closure journal. Main-host
 preparations are explicitly unsupported here. Already-admitted Jobs must use
 their original execution cancellation/reconciliation path.
 
-Workflow preparations can be addressed by `operationId` after the Run and its
-execution have stopped and Main has confirmed closure without a native session.
+Workflow preparations can be addressed by `operationId` after Main has fenced
+the Run for Stop or cleanup, when no native session was acknowledged on Main.
 The same HTTP and Operator MCP operations apply. Main fences new worker
 construction before requesting cleanup. The worker joins earlier construction
-and requires its protected journal and process registry to contain no native
-owner for that attempt. An allocated or uncertain worker lifetime remains held.
+and checks its protected journal. A known worker session requires positive
+closure of its original process registry owner. Unknown native entry remains
+held. Main can then use the committed worker closure to finish the interrupted
+Run without starting another session or claiming a successful result.
