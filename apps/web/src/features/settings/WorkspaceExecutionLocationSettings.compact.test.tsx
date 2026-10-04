@@ -143,7 +143,7 @@ describe('compact Main folder browser', () => {
   it('denies root metadata without opening a filesystem browser', async () => {
     server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Root metadata denied.' } }, { status: 403 })))
     mount()
-    expect(await screen.findByText('Authenticated execution location or computer roots could not be read.')).toBeVisible()
+    expect(await screen.findByText('Project folder or computer roots could not be loaded.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Execution location' })).not.toBeInTheDocument()
     expect(localRootReads).toEqual([])
     expect(writes).toHaveLength(0)

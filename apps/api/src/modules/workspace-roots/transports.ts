@@ -28,11 +28,11 @@ export function registerWorkspaceRootRoutes(app: FastifyInstance, service: Works
   const base = '/api/management/workspaces/:workspaceId'
   app.post<Request>(`${base}/root-configurations/adopt`, request => service.adopt(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))
   app.get<Request>(`${base}/root-policies`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service.choices(requirePrincipal(request), scoped(request.params.workspaceId, request.query))
   })
   app.get<Request>(`${base}/root-location`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     return service.get(requirePrincipal(request), scoped(request.params.workspaceId, request.query))
   })
   app.post<Request>(`${base}/root-location/validate`, request => service.validate(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))

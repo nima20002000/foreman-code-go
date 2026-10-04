@@ -42,13 +42,12 @@ share-locked through that transaction.
 
 This follows the existing root-human authority convention in
 `modules/access/runAuthority.ts`: a non-delegated Operator principal represents
-its own human owner. Both a verified owner browser session and the owner's
-non-delegated bearer credential can act. This is credential authority, not a
-new human-presence check. Worker/User audiences and delegated native
+its own root authority. The implicit local human and explicitly granted
+non-delegated Operator credentials can act. Worker/User audiences and delegated native
 Operator/Run credentials cannot manage retention, even with broad settings
 grants. Delegates are never silently translated to their parent owner.
-Authentication and browser Origin/CSRF protections remain at the existing HTTP
-and `/mcp` boundaries. Authorization denials from this service are audited for
+Loopback and Origin protections remain at the HTTP boundary; `/mcp` still requires
+explicit bearer authentication. Authorization denials from this service are audited for
 both transports; direct MCP calls to grant-hidden retention tools are also
 audited and return an explicit denial.
 

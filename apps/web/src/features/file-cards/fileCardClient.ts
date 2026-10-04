@@ -78,7 +78,7 @@ async function readBytes(response: Response, limit: number, signal: AbortSignal)
 }
 
 /** Binary sibling to the shared JSON-only ApiClient, following FIL-11's scoped boundary.
- * All networking is here (never in components), with the same auth/session error behavior.
+ * All networking is here (never in components), with the same API error and app-instance cancellation behavior.
  * Global fetch is resolved at call time so MSW intercepts the real HTTP boundary. */
 export function createFileCardHttpClient(paths: FileCardHttpPaths): FileCardClient {
   fileDownloadPath(paths.download, { fileId: 'validate-file', revisionId: 'validate-revision' })

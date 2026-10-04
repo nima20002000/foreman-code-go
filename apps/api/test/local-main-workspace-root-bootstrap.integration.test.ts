@@ -11,6 +11,7 @@ import { WorkspaceBoundLocationSetResultSchema } from '@foreman-code/contracts/w
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { workspaceRootDirectory } from './helpers/workspaceRootDirectory.js'
 import { PostgresAccessService, bearerToken } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { registerOperatorHttpSecurity, requireLocalRequest } from '../src/modules/access/http.js'
 import { WorkspaceBoundLocationService } from '../src/modules/workspace-roots/service.js'
@@ -71,7 +72,8 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       const readOnly = await access.issue({ name: 'Scoped read-only caller', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
         grants: [{ actions: ['source_roots:read', 'workspace_locations:read'], scope: { workspaceIds: [workspaceId] } }] })
       const service = new WorkspaceBoundLocationService(db.pool, commands, sources.policies)
-      registerOperatorHttpSecurity(app, access); registerWorkspaceRootRoutes(app, service)
+      registerOperatorHttpSecurity(app, access, new PostgresLocalHumanAccess(db.pool, access))
+      registerWorkspaceRootRoutes(app, service)
       app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500)
         .send({ error: { code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' } }))
       app.post('/mcp', async (request, reply) => {
@@ -91,10 +93,40 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       }
       const client = await connect(owner.token), denied = await connect(readOnly.token)
       const auth = { authorization: `Bearer ${owner.token}` }, url = `/api/management/workspaces/${workspaceId}`
+      const localAccess = await app.inject({ url: '/api/local-human' })
+      expect(localAccess.statusCode, localAccess.body).toBe(200)
+      expect(localAccess.json().principal.id).toBe('principal-local-human')
+      const localLocation = await app.inject({ url: `${url}/root-location` })
+      expect(localLocation.statusCode, localLocation.body).toBe(200)
+      expect(localLocation.json()).toMatchObject({ workspaceId, evidence: 'legacy_missing', locationRevision: 1 })
+      const localChoices = await app.inject({ url: `${url}/root-policies`,
+        headers: { cookie: 'graphql_operator=obsolete' } })
+      expect(localChoices.statusCode, localChoices.body).toBe(200)
+      expect(localChoices.json()).toMatchObject({ workspaceId, allowlists: [approved], readiness: 'metadata-only' })
+      expect(localChoices.headers['set-cookie']).toBeUndefined()
       expect(await service.get(owner.principal, { workspaceId })).toMatchObject({ evidence: 'legacy_missing', locationRevision: 1 })
       const choices = await client.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })
       expect(choices.isError).not.toBe(true)
+      expect(choices.structuredContent).toEqual(localChoices.json())
       expect(choices.structuredContent).toEqual((await app.inject({ method: 'GET', url: `${url}/root-policies`, headers: auth })).json())
+      for (const grants of [
+        [{ actions: ['workspace_locations:read' as const], scope: { workspaceIds: [workspaceId] } }],
+        [{ actions: ['source_roots:read' as const, 'workspace_locations:read' as const],
+          scope: { workspaceIds: ['another-workspace'] } }],
+      ]) {
+        const restricted = await access.issue({ name: 'Restricted root reader', audience: 'operator', grants,
+          expiresAt: new Date(Date.now() + 600_000) })
+        const restrictedClient = await connect(restricted.token)
+        for (const suffix of ['root-location', 'root-policies']) {
+          const response = await app.inject({ url: `${url}/${suffix}`,
+            headers: { authorization: `Bearer ${restricted.token}` } })
+          expect(response.statusCode, response.body).toBe(403)
+        }
+        for (const name of ['workspace_root_location_get', 'workspace_root_choices_list']) {
+          expect((await restrictedClient.callTool({ name, arguments: { workspaceId } })).isError).toBe(true)
+        }
+        expect(await access.authenticate(restricted.token)).toEqual(restricted.principal)
+      }
       const selection = { workspaceId, hostRef: approved.hostRef, allowedBaseId: approved.bases[0]!.baseId, configurationRevision: '1',
         relativePath: '', accessMode: 'read-write', expectedLocationRevision: 1, expectedRootPolicyRevision: 0 }
       const browse = await client.callTool({ name: 'workspace_root_directories_list', arguments: selection })
@@ -115,6 +147,12 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       const get = await client.callTool({ name: 'workspace_root_location_get', arguments: { workspaceId } })
       expect(get.structuredContent).toEqual(accepted.value)
       expect((await app.inject({ method: 'GET', url: `${url}/root-location`, headers: auth })).json()).toEqual(get.structuredContent)
+      const persistedLocalLocation = await app.inject({ url: `${url}/root-location` })
+      expect(persistedLocalLocation.statusCode, persistedLocalLocation.body).toBe(200)
+      expect(persistedLocalLocation.json()).toEqual(accepted.value)
+      const persistedLocalChoices = await app.inject({ url: `${url}/root-policies` })
+      expect(persistedLocalChoices.statusCode, persistedLocalChoices.body).toBe(200)
+      expect(persistedLocalChoices.json().policies).toEqual([persistedLocalLocation.json().binding])
       expect((await client.callTool({ name: 'workspace_root_location_set', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)
       expect((await client.callTool({ name: 'workspace_root_location_set', arguments: { ...input, relativePath: '' } })).isError).toBe(true)
       const freshSelection = { ...selection, expectedLocationRevision: 2, expectedRootPolicyRevision: 1 }

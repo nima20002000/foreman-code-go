@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { apiClient } from '../../shared/api/client'
 import { getOperatorConversationHistory } from '../../shared/api/operatorChatHistory'
-import { beginSessionChange, clearProtectedStorage, finishSessionChange } from '../../shared/api/sessionBoundary'
+import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
 
-let currentOwner: string
+let currentInstance: string
 let accepted: { requestId: string; content: string } | undefined
 let submissions: number
 let originalLocks: PropertyDescriptor | undefined
@@ -17,7 +17,7 @@ function historyResponse() {
       receipt: { requestId: accepted!.requestId, inputHash: 'a'.repeat(64), outcome: null, retryable: false } }] })
 }
 beforeEach(() => {
-  finishSessionChange(); window.localStorage.clear(); currentOwner = 'a'; accepted = undefined; submissions = 0
+  finishSessionChange(); window.localStorage.clear(); currentInstance = 'a'; accepted = undefined; submissions = 0
   originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
   Object.defineProperty(navigator, 'locks', { configurable: true, value: {
     request: async (_name: string, options: LockOptions, work: (lock: Lock) => unknown) => {
@@ -29,7 +29,7 @@ beforeEach(() => {
       accepted = JSON.parse(String(options.body)); submissions++
       throw new TypeError('Server accepted; HTTP response was lost')
     }
-    return currentOwner === 'a' ? historyResponse()
+    return currentInstance === 'a' ? historyResponse()
       : Response.json({ error: { code: 'CONVERSATION_NOT_FOUND', message: 'Conversation was not found.' } }, { status: 404 })
   }))
 })
@@ -45,11 +45,11 @@ async function loseAcknowledgement() {
   return command
 }
 
-describe('F12 enrollment recovery through owner-scoped server receipts', () => {
-  for (const enrollment of ['successful same-owner', 'failed retaining previous owner']) it(enrollment, async () => {
+describe('app-instance recovery through server receipts', () => {
+  it('recovers the original receipt without adopting or replaying the previous outbox', async () => {
     const command = await loseAcknowledgement(), oldKey = protectedKey('outbox', 'chat')
-    beginSessionChange(); clearProtectedStorage(window.localStorage); finishSessionChange()
-    expect(window.localStorage.getItem(oldKey)).toBeNull() // Never retain old plaintext to solve recovery.
+    beginSessionChange(); finishSessionChange()
+    expect(protectedKey('outbox', 'chat')).not.toBe(oldKey)
     expect(readPendingOperatorMessage('chat').command).toBeUndefined()
     const recovered = await getOperatorConversationHistory('chat')
     expect(recovered.entries[0]?.receipt?.requestId).toBe(command.requestId)
@@ -57,22 +57,22 @@ describe('F12 enrollment recovery through owner-scoped server receipts', () => {
     expect(submissions).toBe(1)
     expect(readPendingOperatorMessage('chat').command).toBeUndefined() // GET never manufactures a retry.
   })
-  it('a different enrolled owner cannot retrieve the prior command or its receipt', async () => {
+  it('a different app instance cannot retrieve the prior command or its receipt', async () => {
     await loseAcknowledgement()
-    beginSessionChange(); clearProtectedStorage(window.localStorage); currentOwner = 'b'; finishSessionChange()
+    beginSessionChange(); currentInstance = 'b'; finishSessionChange()
     await expect(getOperatorConversationHistory('chat')).rejects.toMatchObject({ status: 404 })
     expect(readPendingOperatorMessage('chat').command).toBeUndefined()
     expect(submissions).toBe(1)
   })
-  it('rejects a late old-owner history response even when fetch ignores its aborted signal', async () => {
+  it('rejects a late previous-instance history response even when fetch ignores its aborted signal', async () => {
     await loseAcknowledgement()
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     vi.stubGlobal('fetch', vi.fn(async () => { await gate; return historyResponse() }))
-    const oldOwnerRead = getOperatorConversationHistory('chat').catch((error: unknown) => error)
-    beginSessionChange(); clearProtectedStorage(window.localStorage); currentOwner = 'b'; finishSessionChange()
+    const previousInstanceRead = getOperatorConversationHistory('chat').catch((error: unknown) => error)
+    beginSessionChange(); currentInstance = 'b'; finishSessionChange()
     release()
-    expect(await oldOwnerRead).toMatchObject({ name: 'AbortError' })
+    expect(await previousInstanceRead).toMatchObject({ name: 'AbortError' })
     expect(submissions).toBe(1)
   })
 })
