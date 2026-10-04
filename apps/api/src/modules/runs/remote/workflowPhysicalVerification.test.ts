@@ -119,7 +119,8 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
   const entry={phase:'entered',reservation,reservation_digest:repeatDigest(reservation),transition,source_id:'actual-unit-entry',source_digest:repeatDigest(transition,8*1024*1024)}
   const lane={owner_agent_id:execution.agentId,harness:n.session.harness,native_session_id:n.session.nativeSessionId,generation:'2',token:lifetime.lane!.token as string|null,
     correlation:`execution:${execution.id}`,provider_id:'original-turn',held:true}
-  const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}}),currentBinding=vi.fn(()=>f.context.binding)
+  const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}})
+  const currentBinding=vi.fn<()=>DeviceSessionBinding|undefined>(()=>f.context.binding)
   const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:typeof source}}[]=[]
   // Authenticated carrier/SQL/process observations are explicit unit doubles.
   // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
@@ -329,5 +330,64 @@ describe('original published-artifact terminal physical companion',()=>{
         await expect(f.producer.assertAdoptedArtifacts(sql,f.owner,f.original)).rejects.toThrow('W09 map absent')
       })).rejects.toThrow()
     }finally{await f.sqlConnection.close()}
+  })
+})
+
+async function publishPhysicalObservation(f: Awaited<ReturnType<typeof physicalFixture>>) {
+  const original = await f.bind()
+  f.canonicalProofs.push({ record: {
+    execution: repeatExecutionIdentity(f.execution), session: f.session, original: f.source,
+  } })
+  await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+  return original
+}
+
+describe('physical acknowledgment retry eligibility', () => {
+  it.each(['expired', 'replaced-connection'] as const)('retires an %s observation without sending an ACK', async reason => {
+    const f = await physicalFixture()
+    try {
+      const original = await publishPhysicalObservation(f)
+      if (reason === 'expired') {
+        vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.readout.expiresAt) + 1)
+      } else {
+        f.currentBinding.mockReturnValue({ ...f.context.binding, connectionGeneration: 4 })
+      }
+      await expect(f.producer.acknowledge(original)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_ACK_OBSOLETE' })
+      await expect(f.producer.acknowledgeReply(original)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_ACK_OBSOLETE' })
+      expect(f.request).toHaveBeenCalledOnce()
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('keeps a disconnected observation retryable while its original binding and proof remain valid', async () => {
+    const f = await physicalFixture()
+    try {
+      const original = await publishPhysicalObservation(f)
+      f.currentBinding.mockReturnValue(undefined)
+      await expect(f.producer.acknowledge(original)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'connection_expired' },
+      })
+      expect(f.request).toHaveBeenCalledOnce()
+      f.currentBinding.mockReturnValue(f.context.binding)
+      const ack = { version: 1, operationId: f.intent.operationId,
+        receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest, status: 'retired' }
+      f.request.mockRejectedValueOnce(new Error('Temporary transport failure'))
+      await expect(f.producer.acknowledge(original)).rejects.toThrow('Temporary transport failure')
+      f.request.mockResolvedValueOnce({ payload: ack })
+      await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
+      expect(f.request).toHaveBeenLastCalledWith({ method: 'physical-ack', intent: f.readout.receipt.intent,
+        placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest }, {})
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('requires committed publication even when an observation has expired', async () => {
+    const f = await physicalFixture()
+    try {
+      const original = await f.bind()
+      vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.readout.expiresAt) + 1)
+      await expect(f.producer.acknowledge(original)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'uncommitted_publication' },
+      })
+      expect(f.request).toHaveBeenCalledOnce()
+    } finally { await f.sqlConnection.close() }
   })
 })

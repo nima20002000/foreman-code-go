@@ -48,6 +48,7 @@ interface Prepared {
   placement: AcceptedNodePlacement
   source: WorkflowOriginalNativeSource
   assertCurrent(): void
+  assertAcknowledgmentCurrent(): void
   acknowledge(sourceDigest:string):Promise<RemoteWorkflowPhysicalAck>
 }
 interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
@@ -146,14 +147,22 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       assertCurrent()
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
       assertSource(readout, source)
+      const assertAcknowledgmentCurrent = () => {
+        const current = endpoint.currentBinding(captured.binding.deviceId)
+        if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
+          throw new DomainError('REMOTE_NATIVE_ACK_OBSOLETE',
+            'The captured physical observation can no longer authorize an acknowledgment.', 409)
+        }
+        assertCurrent()
+      }
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
+      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
         acknowledge:async(sourceDigest)=>{
-          assertCurrent()
+          assertAcknowledgmentCurrent()
           const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
           if(reply.bytes!==undefined)return unavailable('ack_binary')
           const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
-          assertCurrent()
+          assertAcknowledgmentCurrent()
           if(ack.operationId!==receipt.intent.operationId||ack.receiptSequence!==receipt.sequence||ack.sourceDigest!==sourceDigest)return unavailable('ack_identity')
           return ack
         } }
@@ -202,12 +211,14 @@ export function createRemoteWorkflowPhysicalVerification(input: {
     async acknowledge(original) {
       const capture=bound.get(original)
       if(!capture||![...capture.publications].some(didGraphTransactionCommit))return unavailable('uncommitted_publication')
+      capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
       return capture.acknowledge(original.sourceDigest)
     },
     async acknowledgeReply(original) {
       const capture=bound.get(original)
       if(!capture?.readout.history||![...capture.replyPublications].some(didGraphTransactionCommit))return unavailable('uncommitted_history')
+      capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
       return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}))
     },

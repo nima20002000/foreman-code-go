@@ -50,7 +50,7 @@ export function createProductionRemoteWorkflow(input: {
   const companions = new WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>()
   const artifactTerminals = new WeakMap<WorkflowNativeCapture, VerifiedRemoteOriginalSource>()
   const latest = new Map<string, string>()
-  const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledged?: boolean; capture?: WorkflowNativeCapture }>>()
+  const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledgment?: 'sent' | 'obsolete'; capture?: WorkflowNativeCapture }>>()
   const requireProducer = () => {
     const producer = input.producer()
     if (!producer) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual placement producer is unavailable.', 503)
@@ -143,7 +143,7 @@ export function createProductionRemoteWorkflow(input: {
           const entries = retained.get(receipt.intent.executionId) ?? new Map()
           const key = sourceKey(source)
           if (!entries.has(key) && entries.size >= 1024) throw new DomainError('REMOTE_NATIVE_SOURCE_BACKPRESSURE', 'The original remote source window is full.', 503)
-          for (const [oldKey, old] of entries) if (oldKey !== key && (old.acknowledged || source.type === 'history' && old.source.type === 'history' && !old.evidence)) entries.delete(oldKey)
+          for (const [oldKey, old] of entries) if (oldKey !== key && (old.acknowledgment || source.type === 'history' && old.source.type === 'history' && !old.evidence)) entries.delete(oldKey)
           entries.set(key, { source, prepared })
           retained.set(receipt.intent.executionId, entries)
           latest.set(receipt.intent.executionId, key)
@@ -222,19 +222,35 @@ export function createProductionRemoteWorkflow(input: {
       const evidence = companions.get(capture)
       if (!evidence) return
       acknowledgments.add(channel.verify.read(evidence))
-      // This method is called only after the original repository transaction
-      // returns COMMIT. ACK failure retains metadata; it cannot undo a result.
-      for (const original of [...acknowledgments].slice(0, 32)) {
+      // Obsolete observations do not consume the network retry budget.
+      let attempts = 0
+      for (const original of [...acknowledgments]) {
+        if (attempts >= 32) break
+        acknowledgments.delete(original)
+        const executionId = original.verified.receipt.intent.executionId
+        const entries = retained.get(executionId)
+        const entry = entries?.get(original.sourceDigest)
         try {
           await physical.acknowledge(original)
           try { await physical.acknowledgeReply(original) }
-          catch (error) { if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE') throw error }
-          acknowledgments.delete(original)
-          const entries = retained.get(original.verified.receipt.intent.executionId)
-          const entry = entries?.get(original.sourceDigest)
-          if (entry) entry.acknowledged = true
-          if (latest.get(original.verified.receipt.intent.executionId) !== original.sourceDigest) entries?.delete(original.sourceDigest)
-        } catch { /* Same original selector remains available for a later metadata retry. */ }
+          catch (error) {
+            if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
+              || error.details?.reason !== 'uncommitted_history') throw error
+          }
+          if (entry) entry.acknowledgment = 'sent'
+        } catch (error) {
+          if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
+            if (entry) entry.acknowledgment = 'obsolete'
+            if (latest.get(executionId) !== original.sourceDigest) entries?.delete(original.sourceDigest)
+            continue
+          }
+          // Move a transient failure behind observations that have not had a turn.
+          acknowledgments.add(original)
+        }
+        attempts++
+        if (entry?.acknowledgment === 'sent' && latest.get(executionId) !== original.sourceDigest) {
+          entries?.delete(original.sourceDigest)
+        }
       }
     },
     async assertPhysical(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) {
