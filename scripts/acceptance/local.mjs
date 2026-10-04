@@ -164,7 +164,11 @@ async function main() {
   resources = await createTestDatabase(admin, resources)
   const isolated = testEnvironment(process.env, resources)
   safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS }
-  toolEnv = Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY')))
+  toolEnv = {
+    ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
+    ...(isolated.GRAPHQL_HEAVY_JOB_COMMON ? { GRAPHQL_HEAVY_JOB_COMMON: isolated.GRAPHQL_HEAVY_JOB_COMMON } : {}),
+    ...(isolated.GRAPHQL_HEAVY_JOB_TOKEN ? { GRAPHQL_HEAVY_JOB_TOKEN: isolated.GRAPHQL_HEAVY_JOB_TOKEN } : {}),
+  }
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {
     stage = 'OpenCode prerequisite (qualified 1.18.31 binary)'
@@ -180,7 +184,7 @@ async function main() {
   interrupted()
   process.umask(0o077)
   await assertOwned(state, owner)
-  for (const name of ['projects', 'runtime', 'empty-env', 'tmp']) await mkdir(join(state, name), { mode: 0o700 })
+  for (const name of ['projects', 'runtime', 'empty-env']) await mkdir(join(state, name), { mode: 0o700 })
   const database = resources.name
   const apiRequirePg = apiRequire('pg')
   const pool = new apiRequirePg.Pool({ connectionString: resources.databaseUrl, max: 1 })

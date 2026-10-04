@@ -9,6 +9,10 @@ export function createTestRoot(parent?: string, prefix?: string): TestRoot
 export function assertTestRoot(directory: string, token: string): void
 export function removeTestRoot(resource: TestRoot): void
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
+export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise<{
+  environment: NodeJS.ProcessEnv
+  close(): Promise<void>
+}>
 export function createTestDatabase(admin: Sql, resource: TestRoot): Promise<TestDatabase>
 export function assertTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>
 export function dropTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>

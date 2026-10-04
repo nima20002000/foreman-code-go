@@ -51,6 +51,7 @@ describe('disposable test resources', () => {
     try {
       const environment = testEnvironment({ HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
         OPENAI_API_KEY: 'real-key', GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log',
+        GRAPHQL_API_ENV_FILE: '/real/api.env',
         GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key' },
       { ...resource, name: 'graphql_test_unit', databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
@@ -61,6 +62,7 @@ describe('disposable test resources', () => {
       expect(environment.PGHOST).toBeUndefined()
       expect(environment.GRAPHQL_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
+      expect(await readFile(environment.GRAPHQL_API_ENV_FILE!, 'utf8')).toBe('')
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
       expect(environment.OPENAI_API_KEY).toBe('test-key')

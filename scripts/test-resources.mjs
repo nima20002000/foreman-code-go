@@ -79,6 +79,15 @@ export function testEnvironment(environment, resource) {
     clean[key] = join(resource.directory, suffix)
     mkdirSync(clean[key], { recursive: true, mode: 0o700 })
   }
+  const apiEnvFile = join(resource.directory, 'api.env')
+  if (existsSync(apiEnvFile)) {
+    const stat = lstatSync(apiEnvFile)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid()
+      || (stat.mode & 0o077) !== 0 || readFileSync(apiEnvFile, 'utf8') !== '') {
+      throw new Error('Test API environment file ownership changed')
+    }
+  } else writeFileSync(apiEnvFile, '', { mode: 0o600, flag: 'wx' })
+  clean.GRAPHQL_API_ENV_FILE = apiEnvFile
   clean.SKILLS_EVIDENCE_FILE = join(clean.ENG03_A_EVIDENCE_DIR, 'skills.jsonl')
   clean.A2_QUALIFICATION_REPORT = join(clean.ENG03_A_EVIDENCE_DIR, 'a2-native-qualification.json')
   const launcher = join(clean.HOME, '.local', 'share', 'graphql', 'mcp', 'launcher.mjs')
