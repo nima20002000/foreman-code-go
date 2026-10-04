@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { AgentConfigurationVersion, ExecutionResult, HarnessExecution, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, it, vi } from 'vitest'
 
@@ -22,7 +23,7 @@ import { nativeLanes } from './helpers/nativeLanes.js'
 const secret = 'private-pr11-engine-secret'
 const now = '2026-09-17T00:00:00.000Z'
 type Fixture = Awaited<ReturnType<typeof createFixture>>
-async function createFixture() {
+async function createFixture(placement?: AcceptedNodePlacement) {
   const directory = await mkdtemp(join(tmpdir(), 'graphql-native-credential-'))
   const configuration: AgentConfigurationVersion = {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
@@ -44,7 +45,8 @@ async function createFixture() {
   const accepted: HarnessExecution[] = [], events: unknown[] = [], activities: unknown[] = [], revoked: string[] = []
   let changedDirectory = false, revokedAuthority = false, cleanupFails = false, cleanupPending = false
   let prepared: () => Promise<void> = async () => undefined
-  let expiresIn = 60_000, creates = 0, starts = 0, cancels = 0
+  let published: (execution: HarnessExecution) => Promise<void> = async () => undefined
+  let expiresIn = 60_000, creates = 0, starts = 0, cancels = 0, disposals = 0
   let native: (signal: AbortSignal) => Promise<ExecutionResult> = async () => ({ outcome: 'succeeded', output: { text: `done ${secret}` } })
   let terminal: ExecutionResult | undefined, correlation: string | undefined
   const session: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'native-exact' }
@@ -79,7 +81,7 @@ async function createFixture() {
         ? { terminalResult: terminal, terminalTurn: { correlationId: id, providerId: 'turn-exact', result: terminal } } : {}) }
     },
     close: async () => undefined,
-    dispose: async () => undefined,
+    dispose: async () => { disposals += 1 },
   }
   const negativeSettlements: string[] = []
   const runs = {
@@ -93,7 +95,10 @@ async function createFixture() {
       if (!previous) rows.set(value.id, value)
       return { execution: previous ?? value, created: !previous }
     },
-    updateExecution: async (value: HarnessExecution) => { rows.set(value.id, value) },
+    updateExecution: async (value: HarnessExecution) => {
+      if (value.state === 'running') await published(value)
+      rows.set(value.id, value)
+    },
     acceptExecutionResult: async (value: HarnessExecution) => { accepted.push(value) },
     appendNativeEvent: async (value: unknown) => { events.push(value) },
     recordActivity: async (...args: unknown[]) => { activities.push(args) },
@@ -141,14 +146,17 @@ async function createFixture() {
   }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never,
     new ExecutionScopedNativeSessionManagerResolver(() => manager), 300_000, credentials,
-    async () => { await locations.revalidateRunAuthorization(); await locations.revalidateSnapshot() }, closures, undefined, captures.capture)
+    async () => { await locations.revalidateRunAuthorization(); await locations.revalidateSnapshot() }, closures, undefined, captures.capture,
+    undefined, undefined, undefined, async context => placement ? { ...context, acceptedPlacement: placement } : context)
   const owner = { runId: run.id, assertOwned: () => undefined, client: {} } as unknown as RunOwnership
   return {
     coordinator, credentials, rows, accepted, events, activities, revoked, negativeSettlements,
     setDirectoryChanged: () => { changedDirectory = true }, setAuthorityRevoked: () => { revokedAuthority = true },
     failCleanup: () => { cleanupFails = true }, onPrepare: (callback: () => Promise<void>) => { prepared = callback },
     setNative: (callback: (signal: AbortSignal) => Promise<ExecutionResult>) => { native = callback },
-    setExpiresIn: (ms: number) => { expiresIn = ms }, counters: () => ({ creates, starts, cancels }),
+    setExpiresIn: (ms: number) => { expiresIn = ms }, counters: () => ({ creates, starts, cancels, disposals }),
+    onPublished: (callback: typeof published) => { published = callback },
+    coordination: interactions.coordination,
     execute: () => coordinator.observeExact({ execution: candidate, store, owner, approval: { handler: 'user' },
       workflowId: run.workflowId, graphThreadId: run.id, signal: new AbortController().signal,
       request: { executionId: candidate.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: candidate.workflowNodeId,
@@ -162,6 +170,38 @@ async function withFixture(perform: (fixture: Fixture) => Promise<void>) {
 }
 
 describe('native launch, outcome and credential lifecycle', () => {
+  it('disposes an observed session whose database publication failed before starting its turn', async () => {
+    const f = await createFixture()
+    f.onPublished(async () => { throw new Error('session publication failed') })
+    try {
+      await assert.rejects(f.execute(), /session publication failed/)
+      assert.equal(f.counters().creates, 1)
+      assert.equal(f.counters().starts, 0)
+      assert.equal(f.counters().disposals, 0)
+    } finally {
+      await f.close()
+    }
+    assert.equal(f.counters().disposals, 1)
+    assert.equal(f.counters().cancels, 0)
+  })
+  it('binds the workflow correlation before publishing a placed native session', async () => {
+    const f = await createFixture({ hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+    let observed = false
+    f.onPublished(async execution => {
+      const lane = await f.coordination.getLane('opencode', execution.nativeSessionId!)
+      assert.equal(lane?.correlationId, `execution:${execution.id}`)
+      assert.ok(lane?.leaseToken)
+      assert.equal(f.counters().starts, 0)
+      observed = true
+    })
+    try {
+      await f.execute()
+      assert.ok(observed)
+      assert.equal(f.counters().starts, 1)
+    } finally {
+      await f.close()
+    }
+  })
   it('rechecks directory identity after asynchronous credential preparation', async () => {
     await withFixture(async (f) => {
       f.onPrepare(async () => f.setDirectoryChanged())

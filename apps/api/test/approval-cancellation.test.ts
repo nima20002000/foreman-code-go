@@ -345,6 +345,11 @@ it('closes a session created concurrently with Stop before any turn is started',
   const f = await fixture([item])
   const creating = deferred<void>()
   const opened = deferred<NativeSessionReference>()
+  const manager = f.managers.get('one')!
+  Object.assign(manager, { dispose: async () => {
+    f.calls.push('dispose:one')
+    await manager.close(await opened.promise)
+  } })
   f.managers.get('one')!.createImpl = async () => { creating.resolve(); return opened.promise }
   f.managers.get('one')!.turnImpl = () => { throw new Error('a stopped execution must not start a turn') }
   const observed = f.observe(item).catch((error: unknown) => error)
@@ -353,7 +358,7 @@ it('closes a session created concurrently with Stop before any turn is started',
   opened.resolve({ harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-one' })
   await stopping
   assert.ok(await observed instanceof Error)
-  assert.ok(f.calls.includes('cancel:one'))
+  assert.ok(f.calls.includes('dispose:one'))
   assert.ok(f.calls.includes('close:one'))
 })
 

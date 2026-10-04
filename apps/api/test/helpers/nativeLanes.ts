@@ -31,13 +31,13 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
       if (!existing) lanes.set(input.id, structuredClone(input))
       return structuredClone(existing ?? input)
     },
-    async claimLane(id: string, revision: number, owner: string, token: string, expiresAt: string, correlationId: string) {
+    async claimLane(id: string, revision: number, owner: string, token: string, expiresAt: string) {
       const current = lanes.get(id)
       if (!current || current.revision !== revision || Date.parse(current.leaseExpiresAt ?? '') > Date.now()) {
         throw new DomainError('SESSION_LANE_BUSY', 'The lane is already owned.', 409)
       }
       const lane = { ...current, revision: revision + 1, leaseOwner: owner, leaseToken: token,
-        leaseExpiresAt: expiresAt, correlationId, observedStatus: 'busy' as const }
+        leaseExpiresAt: expiresAt, observedStatus: 'busy' as const }
       lanes.set(id, lane)
       return structuredClone(lane)
     },

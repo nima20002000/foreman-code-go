@@ -206,7 +206,7 @@ export class ApprovalExecutionCoordinator {
       // A persisted session reference is not evidence that THIS manager ever
       // attached it. A failed cold attach cannot close an invented local session.
       let closed = false
-      if (owned.session) {
+      if (owned.session && owned.execution.nativeSessionId) {
         const session = owned.session
         const proof = await attempt('read exact durable closure', () => this.workflowClosures!.read(owned.execution))
         if (proof?.durableGeneration === owned.closureGeneration) closed = true
@@ -217,13 +217,16 @@ export class ApprovalExecutionCoordinator {
       } else {
         // Positive disposal, not an empty map, no-session row or a terminal enum.
         // The captured manager rejects future setup and drains all its creates.
-        const manager = owned.manager, generation = owned.generation
+        const manager = owned.manager
+        const generation = owned.generation
+        const observedSession = owned.session
         const disposed = await attempt('dispose original unbound native manager', async () => { await manager.dispose(); return true }) === true
-        if (disposed && !owned.opening && !owned.session && owned.generation === generation) {
+        if (disposed && !owned.opening && owned.session === observedSession && owned.generation === generation) {
           const registration = owned.closureRegistration && await attempt('read native lifetime reservation', () => owned.closureRegistration!)
           const check = () => {
             if (this.ownedSessions.get(owned.execution.id) !== owned || owned.manager !== manager
-              || owned.generation !== generation || owned.opening || owned.session) throw new DomainError('NATIVE_LIFETIME_CHANGED',
+              || owned.generation !== generation || owned.opening || owned.session !== observedSession
+              || owned.execution.nativeSessionId) throw new DomainError('NATIVE_LIFETIME_CHANGED',
               'The unbound native manager changed during disposal.', 409)
           }
           if (registration && this.workflowClosures) {
@@ -1376,8 +1379,12 @@ export class ApprovalExecutionCoordinator {
           if (!context!.acceptedPlacement || active) return persistObservedSession(observed, active)
           // Actual source continuation needs the original native owner and a
           // live lane during publication/revalidation before its first turn.
-          return manager!.withLane(observed, `execution:${execution.id}`, signal,
-            (_native, lane) => persistObservedSession(observed, lane))
+          const correlationId = `execution:${execution.id}`
+          return manager!.withLane(observed, correlationId, signal, async (native, lane) => {
+            await manager!.requireIdle(native, observed, correlationId, lane, signal)
+            await this.interactions.coordination.bindLaneTurn(lane.fence, correlationId)
+            return persistObservedSession(observed, lane)
+          })
         }
         let nativeEvents: AsyncIterable<NativeHarnessEvent>
         let liveTerminalCommitted = false
