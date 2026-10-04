@@ -125,9 +125,13 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
         { artifactId, contentBase64: Buffer.from('new').toString('base64') }), hasFileCode('FILE_SESSION_INVALID'))
       assert.deepEqual(calls, [`write:${artifactId}`, `format:${artifactId}`])
       f.backend.hostFiles.get(artifactId)!.bytes = Buffer.from('changed on host')
-      await assert.rejects(() => f.facade.publish(f.backend.token, {
+      const published = await f.facade.publish(f.backend.token, {
         commandId: randomUUID(), artifactId, filename: 'result.md', mediaType: 'text/markdown', scope: fileScope,
-      }), hasFileCode('FILE_ARTIFACT_CONFLICT'))
+      })
+      const revision = published.value.revision
+      const read = await f.facade.read(f.backend.token, { fileId: revision.fileId, revisionId: revision.revisionId })
+      assert.equal(read.status, 'ready')
+      if (read.status === 'ready') assert.equal(Buffer.from(read.contentBase64, 'base64').toString(), 'changed on host')
       f.server.complete(f.correlationId); await drain(iterator)
     } finally { await f.close() }
   })
@@ -136,7 +140,7 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
     try {
       f.onPrompt((_id, body) => {
         assert.equal(f.backend.issued.length, 0)
-        assert.equal(f.backend.audit.includes('connect'), false)
+        assert.equal(f.backend.audit.includes('connect'), true)
         const parts = body.parts as Record<string, unknown>[]
         assert.equal(parts[1]?.type, 'file'); assert.equal(parts[1]?.mime, 'image/png')
         assert.match(String(parts[1]?.url), /^file:\/\/\/execution\/b\//)
@@ -148,7 +152,7 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
       const iterator = f.start(async () => { f.backend.audit.push('durable_ack') })
       await iterator.next()
       assert.deepEqual(f.backend.audit.filter((event) => ['native_ack', 'durable_ack', 'issue', 'connect'].includes(event)),
-        ['native_ack', 'durable_ack', 'issue', 'connect'])
+        ['connect', 'native_ack', 'durable_ack', 'issue'])
       f.server.complete(f.correlationId); await drain(iterator)
       assert.equal(f.backend.revocations, 1); assert.equal(f.unmounts, 1)
       assert.equal(f.backend.hostFiles.size, 0)
@@ -313,15 +317,14 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
     } finally { await f.close() }
   })
 
-  it('post-ack tool registration failure is fenced rather than resubmitting native input', async () => {
+  it('tool registration failure cleans up before any native prompt or file credential exists', async () => {
     const f = await fixture()
     try {
       f.failConnect()
       await assert.rejects(f.start().next(), hasFileCode('FILE_NATIVE_SETUP_FAILED'))
-      assert.equal(f.backend.revocations, 1); assert.equal(f.backend.hostFiles.size, 1)
-      const resumed = f.start(); await resumed.next()
-      assert.equal(f.prompts.length, 1); assert.equal(f.backend.issued.length, 1)
-      await resumed.return?.()
+      assert.equal(f.backend.revocations, 0); assert.equal(f.backend.hostFiles.size, 0)
+      assert.equal(f.prompts.length, 0); assert.equal(f.backend.issued.length, 0)
+      assert.equal(f.unmounts, 1)
     } finally { await f.close() }
   })
 

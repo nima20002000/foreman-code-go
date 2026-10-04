@@ -36,13 +36,16 @@ export interface OpenCodeExecutionFiles {
   }, signal: AbortSignal): Promise<OpenCodeRegisteredFile>
   /** A bounded, detached, stable snapshot of a registered handle, never a path argument. */
   snapshot(handle: string, signal: AbortSignal): Promise<Uint8Array>
+  /** Replace an owned working copy only if its native bytes still match the edit's base. */
+  replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void>
   remove(handle: string): Promise<void>
 }
 
 export type OpenCodeFileService = Pick<AgentFileToolService,
   'artifacts' | 'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'>
   & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>>
-  & { sessions: Pick<AgentFileToolService['sessions'], 'issueForAcceptedSession' | 'authenticate' | 'revoke'> }
+  & { sessions: Pick<AgentFileToolService['sessions'],
+    'issueForAcceptedSession' | 'authenticate' | 'authorizeAccepted' | 'revoke'> }
 
 /** A trusted admission-bound range reader. It reauthorizes the owner/scope and
  * pinned revision on every call without minting a native file-tool credential.

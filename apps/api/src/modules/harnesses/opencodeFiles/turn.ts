@@ -1,9 +1,10 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
   AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@foreman-code/contracts/files'
 import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
+import type { FileToolOperation } from '../../files/tools/types.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
   type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileTurnOptions } from './types.js'
@@ -20,7 +21,11 @@ export interface PreparedOpenCodeFiles {
   /** Incorporate in the durable request/turn identity. No token is included. */
   identity: string
 }
-interface WorkingCopy { file: DeliveredAttachment; writeId: string | undefined }
+interface WorkingCopy {
+  file: DeliveredAttachment
+  writeId: string | undefined
+  pendingEdit?: { expectedSha256: string }
+}
 
 /** One instance per accepted turn on a dedicated chat server. This helper does not submit prompts.
  * Call submissionAttempted immediately BEFORE prompt_async. Observation loss must not call finish.
@@ -28,12 +33,14 @@ interface WorkingCopy { file: DeliveredAttachment; writeId: string | undefined }
  */
 export class OpenCodeFileTurn {
   private token: string | undefined
+  private connectionToken: string | undefined
+  private wakeFileCalls: () => void = () => {}
+  private readonly fileCallsReady = new Promise<void>((resolve) => { this.wakeFileCalls = resolve })
   private accepted: AcceptedOpenCodeFileTurn | undefined
   private generation: number | undefined
   private serverName: string | undefined
   private result: PreparedOpenCodeFiles | undefined
   private copies = new Map<string, WorkingCopy>()
-  private serverEdited = new Set<string>()
   private handles = new Set<string>()
   private lifecycle: Promise<unknown> = Promise.resolve()
   private submission: 'not_submitted' | 'uncertain' | 'submitted' | 'terminal' = 'not_submitted'
@@ -120,7 +127,7 @@ export class OpenCodeFileTurn {
     signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn is closed.')
-      // An empty input set still needs post-ACK tools for inherited reference reads.
+      // An empty input set still needs tools for inherited reference reads.
       checkFileCondition(admission.attachments.length <= this.options.maxAttachments,
         'FILE_ATTACHMENT_LIMIT', 'A bounded attachment set is required.')
       checkFileCondition(admission.executionHostId === this.options.host.executionHostId,
@@ -182,36 +189,85 @@ export class OpenCodeFileTurn {
    */
   get needsAcknowledgement(): boolean {
     return this.preparation === 'post_ack' && !this.closed && !this.revoked && !this.toolAdmissionClosed
-      && !this.toolsReady && !this.activationAttempted
+      && !this.token && !this.activationAttempted
       && (this.submission === 'uncertain' || this.submission === 'submitted')
   }
 
-  /** Only the native manager may call this after positive prompt acknowledgement
-   * (or exact persisted user-message evidence). Registration failure never allows
-   * another prompt, another token, or an automatic configuration retry.
+  /** Connect discovery before submitting; this credential cannot access file bytes or mutate artifacts. */
+  connectTools(signal: AbortSignal): Promise<void> {
+    return this.exclusive(() => this.connectReady(signal))
+  }
+
+  private async connectReady(signal: AbortSignal): Promise<void> {
+    checkFileCondition(this.result && this.accepted && !this.closed && !this.toolAdmissionClosed,
+      'FILE_TURN_CLOSED', 'Prepare the accepted file inputs before connecting tools.')
+    if (this.toolsReady) return
+    checkFileCondition(!this.connectionToken, 'FILE_NATIVE_SETUP_UNCERTAIN',
+      'The file connection did not complete; clean up before another submission.')
+    checkFileCondition((this.options.server.generation ?? 0) === this.generation,
+      'FILE_NATIVE_PROCESS_CHANGED', 'File discovery belongs to the accepted native process.')
+    await this.assertChat(signal)
+    this.connectionToken = `gql_file_${randomBytes(32).toString('base64url')}`
+    this.options.rememberCredential?.(this.connectionToken)
+    await this.connect(signal)
+    this.toolsReady = true
+  }
+
+  async discover(token: string | undefined, tool?: FileToolOperation) {
+    this.assertConnectionCredential(token)
+    const caller = await this.options.service.sessions.authorizeAccepted(this.accepted!.context, tool)
+    this.assertConnectionCredential(token)
+    return caller
+  }
+
+  private assertConnectionCredential(token: string | undefined): asserts token is string {
+    checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && this.accepted && token,
+      'FILE_TURN_CLOSED', 'This file connection is unavailable.')
+    checkFileCondition(!this.processClosed && (this.options.server.generation ?? 0) === this.generation,
+      'FILE_NATIVE_PROCESS_CHANGED', 'The connection belongs to a previous native process.')
+    const expected = this.connectionToken ?? this.token
+    checkFileCondition(expected && timingSafeEqual(Buffer.from(sha256(token)), Buffer.from(sha256(expected)))
+      || this.token && timingSafeEqual(Buffer.from(sha256(token)), Buffer.from(sha256(this.token))),
+    'FILE_CONTEXT_DENIED', 'The file connection belongs to another turn.')
+  }
+
+  /** Calls arriving before prompt acknowledgement wait without holding the lifecycle lock. */
+  async fileCredential(connectionToken: string | undefined): Promise<string> {
+    this.assertConnectionCredential(connectionToken)
+    if (!this.token) await this.fileCallsReady
+    this.assertConnectionCredential(connectionToken)
+    this.assertCredential(this.token)
+    return this.token
+  }
+
+  /** Only the native manager may enable file calls after positive acknowledgement
+   * or persisted user-message evidence. The connection credential never becomes
+   * a file-session credential and is not accepted by the shared file endpoint.
    */
   acknowledge(signal: AbortSignal): Promise<void> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && this.result && this.accepted
+        && this.toolsReady
         && (this.submission === 'uncertain' || this.submission === 'submitted'),
       'FILE_SUBMISSION_INVALID', 'There is no live native submission to acknowledge.')
       this.submission = 'submitted'
-      if (this.preparation === 'legacy' || this.toolsReady) return
+      if (this.preparation === 'legacy' || this.token) return
       checkFileCondition(!this.activationAttempted, 'FILE_NATIVE_SETUP_UNCERTAIN',
         'File registration requires explicit recovery; do not reissue the prompt or credential.')
       this.activationAttempted = true
-      signal.throwIfAborted()
-      checkFileCondition((this.options.server.generation ?? 0) === this.generation,
-        'FILE_NATIVE_PROCESS_CHANGED', 'File tools cannot bind to a replacement native process.')
-      await this.assertChat(signal)
-      this.token = await this.options.service.sessions.issueForAcceptedSession(this.accepted.context, this.accepted.expiresAt)
       try {
+        signal.throwIfAborted()
+        checkFileCondition((this.options.server.generation ?? 0) === this.generation,
+          'FILE_NATIVE_PROCESS_CHANGED', 'File tools cannot bind to a replacement native process.')
+        await this.assertChat(signal)
+        this.token = await this.options.service.sessions.issueForAcceptedSession(this.accepted.context, this.accepted.expiresAt)
         this.options.rememberCredential?.(this.token)
         signal.throwIfAborted()
         checkFileCondition(!this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn was stopped during credential issuance.')
-        await this.connect(signal)
-        this.toolsReady = true
+        this.wakeFileCalls()
       } catch (error) {
+        this.toolAdmissionClosed = true
+        this.wakeFileCalls()
         // The prompt is accepted, so keep its input files. Revoke authority even
         // if disconnect failed; a lost observer must never leave usable tools.
         try { await this.revokeReady() }
@@ -230,7 +286,7 @@ export class OpenCodeFileTurn {
     this.connected = true // A lost reply still requires disconnect/revocation.
     await this.json('/mcp', signal, { name: this.serverName, config: {
       type: 'remote', url: this.options.endpoint, enabled: true, oauth: false,
-      headers: { Authorization: `Bearer ${this.token}` },
+      headers: { Authorization: `Bearer ${this.connectionToken ?? this.token}` },
     } })
     const status = object(await this.json('/mcp', signal))
     checkFileCondition(object(status[this.serverName]).status === 'connected',
@@ -238,7 +294,7 @@ export class OpenCodeFileTurn {
     await this.assertChat(signal)
   }
 
-  /** Legacy standalone FIL-09 API. Production uses prepareInputs + acknowledge. */
+  /** Standalone API. Production uses prepareInputs, connectTools and acknowledge. */
   async prepare(admission: AcceptedOpenCodeFileTurn, signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn is closed.')
@@ -364,61 +420,82 @@ export class OpenCodeFileTurn {
 
   writeWorkingCopy(token: string, input: AgentFileWriteWorkingCopyInput) {
     return this.exclusive(async () => {
-      await this.authorize(token, true)
-      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      const signal = AbortSignal.timeout(120_000)
       checkFileCondition(this.options.service.writeWorkingCopy, 'FILE_TOOL_DENIED', 'Working-copy writes are unavailable.')
+      const nativeBytes = await this.importWorkingCopy(token, input.artifactId, signal)
+      this.copies.get(input.artifactId)!.pendingEdit = { expectedSha256: sha256(nativeBytes) }
       const result = await this.options.service.writeWorkingCopy(token, input)
-      this.serverEdited.add(input.artifactId)
+      await this.synchronizeWorkingCopy(token, input.artifactId, signal)
       return result
     })
   }
 
   applyFormatEdit(token: string, input: AgentFileApplyFormatEditInput) {
     return this.exclusive(async () => {
-      await this.authorize(token, true)
-      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      const signal = AbortSignal.timeout(120_000)
       checkFileCondition(this.options.service.applyFormatEdit, 'FILE_TOOL_DENIED', 'Format edits are unavailable.')
+      const nativeBytes = await this.importWorkingCopy(token, input.artifactId, signal)
+      this.copies.get(input.artifactId)!.pendingEdit = { expectedSha256: sha256(nativeBytes) }
       const result = await this.options.service.applyFormatEdit(token, input)
-      this.serverEdited.add(input.artifactId)
+      await this.synchronizeWorkingCopy(token, input.artifactId, signal)
       return result
     })
   }
 
-  async workingCopyLocation(token: string, artifactId: string): Promise<string> {
-    await this.authorize(token)
+  workingCopyLocation(token: string, artifactId: string): Promise<string> {
+    return this.exclusive(async () => {
+      await this.authorize(token)
+      const copy = this.copies.get(artifactId)
+      checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'The artifact is not registered for this native turn.')
+      await this.synchronizeWorkingCopy(token, artifactId, AbortSignal.timeout(120_000))
+      return copy.file.registered.path
+    })
+  }
+
+  private async synchronizeWorkingCopy(token: string, artifactId: string, signal: AbortSignal): Promise<void> {
+    const copy = this.copies.get(artifactId)!
+    if (!copy.pendingEdit) return
+    const caller = await this.authorize(token, true)
+    const edited = await this.options.service.artifacts.readSnapshot(caller, artifactId, signal)
+    if (edited.revision.sha256 === copy.pendingEdit.expectedSha256) {
+      delete copy.pendingEdit
+      return
+    }
+    if (sha256(await this.options.host.snapshot(artifactId, signal)) === edited.revision.sha256) {
+      delete copy.pendingEdit
+      return
+    }
+    await this.authorize(token, true)
+    await this.options.host.replace(artifactId, edited.bytes, copy.pendingEdit.expectedSha256, signal)
+    delete copy.pendingEdit
+  }
+
+  private async importWorkingCopy(token: string, artifactId: string, signal: AbortSignal): Promise<Uint8Array> {
+    const caller = await this.authorize(token, true)
     const copy = this.copies.get(artifactId)
-    checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'The artifact is not registered for this native turn.')
-    return copy.file.registered.path
+    checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'Edit or publish a registered working copy.')
+    await this.synchronizeWorkingCopy(token, artifactId, signal)
+    const bytes = await this.options.host.snapshot(artifactId, signal)
+    checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
+      'FILE_ARTIFACT_TOO_LARGE', 'The completed working copy exceeds the file limit.')
+    const artifact = await this.options.service.artifacts.get(caller, artifactId)
+    if (artifact.state === 'writing') checkFileCondition(copy.writeId === artifact.writeId,
+      'FILE_ARTIFACT_BUSY', 'Another trusted runner owns the artifact write lease.')
+    if (artifact.state === 'complete' && artifact.snapshot?.revision.sha256 === sha256(bytes)) return bytes
+    const writeId = artifact.state === 'writing' ? artifact.writeId
+      : await this.options.service.artifacts.beginWrite(token, artifactId)
+    copy.writeId = writeId
+    await this.options.service.artifacts.completeWrite(token, artifactId, writeId, Readable.from([bytes]), signal)
+    copy.writeId = undefined
+    return bytes
   }
 
   publish(token: string, input: AgentFilePublishInput, signal: AbortSignal) {
     return this.exclusive(async () => {
-      const caller = await this.authorize(token, true)
+      await this.authorize(token, true)
       checkFileCondition(isDeepStrictEqual(input.scope, this.accepted!.context.scope),
         'FILE_CONTEXT_DENIED', 'Publish only to the originating temporary conversation.')
-      const copy = this.copies.get(input.artifactId)
-      checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'Publish a registered working copy, not an arbitrary host path.')
-      if (this.serverEdited.has(input.artifactId)) {
-        const hostBytes = await this.options.host.snapshot(input.artifactId, signal)
-        checkFileCondition(sha256(hostBytes) === copy.file.revision.sha256,
-          'FILE_ARTIFACT_CONFLICT', 'The host copy also changed after a file-tool edit.')
-        this.publicationsAdopted = false
-        const result = await this.options.service.publish(token, input)
-        await this.adoptReady()
-        return result
-      }
-      const artifact = await this.options.service.artifacts.get(caller, input.artifactId)
-      if (artifact.state === 'writing') checkFileCondition(copy.writeId === artifact.writeId,
-        'FILE_ARTIFACT_BUSY', 'Another trusted runner owns the artifact write lease.')
-      const writeId = artifact.state === 'writing' ? artifact.writeId
-        : await this.options.service.artifacts.beginWrite(token, input.artifactId)
-      copy.writeId = writeId
-      const bytes = await this.options.host.snapshot(input.artifactId, signal)
-      checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
-        'FILE_ARTIFACT_TOO_LARGE', 'The completed working copy exceeds the file limit.')
-      await this.options.service.artifacts.completeWrite(token, input.artifactId, writeId,
-        Readable.from([bytes]), signal)
-      copy.writeId = undefined
+      await this.importWorkingCopy(token, input.artifactId, signal)
       // FIL-05 reauthorizes source pins, hashes content for commandId conflicts and links the turn.
       this.publicationsAdopted = false
       const result = await this.options.service.publish(token, input)
@@ -429,7 +506,7 @@ export class OpenCodeFileTurn {
 
   /** Must precede submission, not follow its acknowledgement. */
   submissionAttempted(): void {
-    checkFileCondition(this.result && !this.closed && this.submission === 'not_submitted',
+    checkFileCondition(this.result && this.toolsReady && !this.closed && this.submission === 'not_submitted',
       'FILE_SUBMISSION_FENCED', 'An accepted or uncertain native prompt must not be resubmitted.')
     this.submission = 'uncertain'
   }
@@ -445,6 +522,7 @@ export class OpenCodeFileTurn {
     // Close the in-process facade immediately, even when persistent revoke fails.
     // Do not let an invalid definite-rejection request close an accepted turn.
     if (evidence === 'terminal' || this.submission !== 'submitted') this.toolAdmissionClosed = true
+    if (this.toolAdmissionClosed) this.wakeFileCalls()
     return this.exclusive(async () => {
       checkFileCondition(evidence !== 'definite_rejection' || this.submission !== 'submitted',
         'FILE_SUBMISSION_INVALID', 'A positively accepted submission cannot become a definite rejection.')
@@ -477,6 +555,7 @@ export class OpenCodeFileTurn {
    */
   revoke(): Promise<void> {
     this.toolAdmissionClosed = true
+    this.wakeFileCalls()
     return this.exclusive(() => this.revokeReady())
   }
 
@@ -485,6 +564,7 @@ export class OpenCodeFileTurn {
    */
   nativeProcessClosed(signal: AbortSignal): Promise<void> {
     this.toolAdmissionClosed = true
+    this.wakeFileCalls()
     return this.exclusive(async () => {
       this.processClosed = true
       this.releaseAuthorized = true
@@ -524,6 +604,8 @@ export class OpenCodeFileTurn {
     this.copies.clear()
     this.closed = true
     this.token = undefined
+    this.connectionToken = undefined
+    this.wakeFileCalls()
     if (owners.get(this.options.server) === this) owners.delete(this.options.server)
   }
 }

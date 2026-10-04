@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
@@ -43,7 +43,7 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     await expect(turn['assertChat'](signal)).resolves.toBeUndefined()
   })
 
-  it('copies, annotates the native path, publishes edited bytes, denies foreign credentials and keeps permanent writes forbidden', async () => {
+  it('synchronizes tool and native edits, publishes their bytes and preserves credential and scope denials', async () => {
     const f = await fileToolFixture()
     const root = await mkdtemp(join(tmpdir(), 'fil09-mcp-'))
     const app = Fastify()
@@ -79,7 +79,8 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     }
     try {
       const source = await f.upload()
-      await turn.prepare({ context: { ...f.context, nativeSessionId: 'opencode-test', turnId: randomUUID() },
+      await turn.prepare({ context: { ...f.context, nativeSessionId: 'opencode-test', turnId: randomUUID(),
+        allowedTools: [...f.context.allowedTools, 'files.write_working_copy', 'files.apply_format_edit'] },
         attachments: [], mode: 'write', directory: root, executionHostId: 'fixture-host',
         expiresAt: new Date(f.clock().getTime() + 3_600_000) }, AbortSignal.timeout(10_000))
       const copy = await call('files.create_working_copy', { commandId: randomUUID(), source, destination: f.scope })
@@ -89,6 +90,30 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
         .find((text: string | undefined) => text?.includes('"path"'))
       const path = JSON.parse(annotation!).path
       expect(path).toBe(await turn.workingCopyLocation(token, artifactId))
+      const written = await call('files.write_working_copy', {
+        artifactId, contentBase64: Buffer.from('# edited by file tools\n').toString('base64'),
+      })
+      expect(written.body.result.isError).not.toBe(true)
+      expect(await readFile(path, 'utf8')).toBe('# edited by file tools\n')
+      const writtenRevision = written.body.result.structuredContent.revisionId
+      const formatted = await call('files.apply_format_edit', {
+        artifactId, baseRevisionId: writtenRevision, edit: { kind: 'append_text', text: 'Appended by file tools.\n' },
+      })
+      expect(formatted.body.result.isError).not.toBe(true)
+      expect(await readFile(path, 'utf8')).toBe('# edited by file tools\nAppended by file tools.\n')
+      expect(await turn.workingCopyLocation(token, artifactId)).toBe(path)
+      const stale = await call('files.write_working_copy', {
+        artifactId, baseRevisionId: writtenRevision, contentBase64: Buffer.from('stale').toString('base64'),
+      })
+      expect(stale.body.result.isError).toBe(true)
+      expect(await turn.workingCopyLocation(token, artifactId)).toBe(path)
+      expect(await readFile(path, 'utf8')).toBe('# edited by file tools\nAppended by file tools.\n')
+      await writeFile(path, '# native intermediate edit\n')
+      const combined = await call('files.apply_format_edit', {
+        artifactId, edit: { kind: 'append_text', text: 'Appended after the native edit.\n' },
+      })
+      expect(combined.body.result.isError).not.toBe(true)
+      expect(await readFile(path, 'utf8')).toBe('# native intermediate edit\nAppended after the native edit.\n')
       await writeFile(path, '# edited by native OpenCode\n')
       const input = { commandId: randomUUID(), artifactId, scope: f.scope, filename: 'returned.md', mediaType: 'text/markdown' }
       const published = await call('files.publish_result', input)
@@ -103,12 +128,19 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
       expect(original.status).toBe('ready')
       if (original.status === 'ready') expect(Buffer.from(original.contentBase64, 'base64').toString()).toBe('# original\n')
       expect((await call('files.read', source, f.token)).status).toBe(401)
+      expect((await call('files.write_working_copy', {
+        artifactId, contentBase64: Buffer.from('foreign').toString('base64'),
+      }, f.token)).status).toBe(401)
       const permanent = await call('files.publish_result', { ...input, commandId: randomUUID(),
         scope: { kind: 'workspace_reference', workspaceId: 'workspace-a' } })
       expect(permanent.body.result.isError).toBe(true)
       f.denyWrites()
       const denied = await call('files.publish_result', { ...input, commandId: randomUUID() })
       expect(denied.body.result.isError).toBe(true)
+      expect((await call('files.write_working_copy', {
+        artifactId, contentBase64: Buffer.from('denied').toString('base64'),
+      })).body.result.isError).toBe(true)
+      expect(await readFile(path, 'utf8')).toBe('# edited by native OpenCode\n')
       await turn.finish('terminal', AbortSignal.timeout(10_000))
       expect((await call('files.read', source)).status).toBe(401)
     } finally {

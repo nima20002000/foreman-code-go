@@ -1,5 +1,6 @@
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, open, readFile, readlink, rmdir, unlink, type FileHandle } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { access, lstat, mkdir, open, readFile, readlink, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { FileRevision } from '@foreman-code/contracts/files'
 import { sha256 } from './attachments.js'
@@ -109,40 +110,83 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
   }
 
   snapshot(handle: string, signal: AbortSignal): Promise<Uint8Array> {
+    return this.exclusive(() => this.snapshotReady(handle, signal))
+  }
+
+  private async snapshotReady(handle: string, signal: AbortSignal): Promise<Uint8Array> {
+    const entry = this.entries.get(handle)
+    checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
+    signal.throwIfAborted()
+    const file = await open(at(entry.directory, entry.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const before = await file.stat({ bigint: true })
+      checkFileCondition(before.isFile() && before.nlink === 1n && before.size <= BigInt(this.options.maxFileBytes),
+        'FILE_ARTIFACT_INVALID', 'Publish a bounded regular file, never a link, device, FIFO or directory.')
+      const length = Number(before.size)
+      const read = async () => {
+        const data = Buffer.alloc(length)
+        let offset = 0
+        while (offset < length) {
+          signal.throwIfAborted()
+          const next = await file.read(data, offset, Math.min(65_536, length - offset), offset)
+          checkFileCondition(next.bytesRead > 0, 'FILE_ARTIFACT_CHANGED', 'The working copy changed while being read.')
+          offset += next.bytesRead
+        }
+        return data
+      }
+      const first = await read(), second = await read()
+      const after = await file.stat({ bigint: true })
+      checkFileCondition(before.dev === after.dev && before.ino === after.ino && before.size === after.size
+        && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && after.nlink === 1n
+        && sha256(first) === sha256(second), 'FILE_ARTIFACT_CHANGED', 'Finish native writes before publishing the working copy.')
+      // Detect rename-based edits too; the FD must still be the currently registered directory entry.
+      const current = await lstat(at(entry.directory, entry.filename), { bigint: true })
+      checkFileCondition(current.dev === after.dev && current.ino === after.ino
+        && current.mtimeNs === after.mtimeNs && current.ctimeNs === after.ctimeNs,
+      'FILE_ARTIFACT_CHANGED', 'The working copy was replaced during publication.')
+      signal.throwIfAborted()
+      return first
+    } finally { await file.close() }
+  }
+
+  replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void> {
     return this.exclusive(async () => {
       const entry = this.entries.get(handle)
-      checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
-      signal.throwIfAborted()
-      const file = await open(at(entry.directory, entry.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
+      checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
+        'FILE_ARTIFACT_TOO_LARGE', 'The edited working copy exceeds the file limit.')
+      const root = await this.rootDirectory()
+      const held = await entry.directory.stat()
+      const named = await lstat(at(root, handle))
+      checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
+        'FILE_ARTIFACT_CHANGED', 'The registered working-copy directory moved.')
+      const temporaryName = `.${randomUUID()}.tmp`
+      const temporaryPath = at(entry.directory, temporaryName)
+      const temporary = await open(temporaryPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
       try {
-        const before = await file.stat({ bigint: true })
-        checkFileCondition(before.isFile() && before.nlink === 1n && before.size <= BigInt(this.options.maxFileBytes),
-          'FILE_ARTIFACT_INVALID', 'Publish a bounded regular file, never a link, device, FIFO or directory.')
-        const length = Number(before.size)
-        const read = async () => {
-          const data = Buffer.alloc(length)
-          let offset = 0
-          while (offset < length) {
-            signal.throwIfAborted()
-            const next = await file.read(data, offset, Math.min(65_536, length - offset), offset)
-            checkFileCondition(next.bytesRead > 0, 'FILE_ARTIFACT_CHANGED', 'The working copy changed while being read.')
-            offset += next.bytesRead
-          }
-          return data
-        }
-        const first = await read(), second = await read()
-        const after = await file.stat({ bigint: true })
-        checkFileCondition(before.dev === after.dev && before.ino === after.ino && before.size === after.size
-          && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && after.nlink === 1n
-          && sha256(first) === sha256(second), 'FILE_ARTIFACT_CHANGED', 'Finish native writes before publishing the working copy.')
-        // Detect rename-based edits too; the FD must still be the currently registered directory entry.
-        const current = await lstat(at(entry.directory, entry.filename), { bigint: true })
-        checkFileCondition(current.dev === after.dev && current.ino === after.ino
-          && current.mtimeNs === after.mtimeNs && current.ctimeNs === after.ctimeNs,
-        'FILE_ARTIFACT_CHANGED', 'The working copy was replaced during publication.')
+        await temporary.writeFile(bytes)
+        await temporary.sync()
+        const candidate = await temporary.stat()
+        const candidatePath = await lstat(temporaryPath)
+        const currentDirectory = await lstat(at(root, handle))
+        checkFileCondition(candidate.isFile() && candidate.nlink === 1
+          && candidatePath.dev === candidate.dev && candidatePath.ino === candidate.ino
+          && currentDirectory.dev === held.dev && currentDirectory.ino === held.ino && currentDirectory.isDirectory(),
+        'FILE_ARTIFACT_CHANGED', 'The registered working copy moved during replacement.')
+        checkFileCondition(sha256(await this.snapshotReady(handle, signal)) === expectedSha256,
+          'FILE_ARTIFACT_CONFLICT', 'The native working copy changed during the file-tool edit.')
         signal.throwIfAborted()
-        return first
-      } finally { await file.close() }
+        // Rename the registered leaf, never open or truncate a model-controlled replacement path.
+        await rename(temporaryPath, at(entry.directory, entry.filename))
+        const publishedDirectory = await lstat(at(root, handle))
+        checkFileCondition(publishedDirectory.dev === held.dev && publishedDirectory.ino === held.ino
+          && publishedDirectory.isDirectory(), 'FILE_ARTIFACT_CHANGED', 'The working-copy path moved during replacement.')
+      } finally {
+        await temporary.close()
+        try { await unlink(temporaryPath) }
+        catch (error) { if (code(error) !== 'ENOENT') throw error }
+      }
     })
   }
 
