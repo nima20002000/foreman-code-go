@@ -23,13 +23,13 @@ export function useSelectedSubagent(scope: SubagentsScope) {
     const location = router.history.location
     const search = parse(location.search)
     const run = readRunSelection(scope, { pathname: location.pathname, search })
-    if (!run.active || run.invalid || run.identity.runId !== scope.runId) return
+    if (!run.active || run.invalid || run.identity.runId !== scope.runId) return Promise.resolve()
     const fragment = new URLSearchParams(location.hash.slice(1))
     if (id === null) fragment.delete(SUBAGENT_SEARCH_PARAM)
     else fragment.set(SUBAGENT_SEARCH_PARAM, RunSubagentGetInputSchema.shape.subagentId.parse(id))
     const hash = fragment.size ? `#${fragment}` : ''
     const query = (router.options.stringifySearch ?? defaultStringifySearch)(search)
-    void router.navigate({ href: `${location.pathname}${query}${hash}`, resetScroll: false })
+    return router.navigate({ href: `${location.pathname}${query}${hash}`, resetScroll: false })
   }, [router, parse, scope])
   return { selected, select }
 }

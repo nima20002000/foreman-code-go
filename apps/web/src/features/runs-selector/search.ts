@@ -61,3 +61,11 @@ export function searchForSelectedRun(
   if (runId !== null) next[SELECTED_RUN_PARAM] = runIdSchema.parse(runId)
   return next
 }
+
+export function clearSelectedSubagentHash(hash: string): string {
+  const prefix = hash.startsWith('#') ? '#' : ''
+  const fragment = new URLSearchParams(hash.replace(/^#/, ''))
+  if (!fragment.has(SELECTED_SUBAGENT_FRAGMENT_PARAM)) return hash
+  fragment.delete(SELECTED_SUBAGENT_FRAGMENT_PARAM)
+  return fragment.size ? `${prefix}${fragment}` : ''
+}

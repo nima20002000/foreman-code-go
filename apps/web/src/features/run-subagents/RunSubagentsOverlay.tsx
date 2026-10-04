@@ -1,18 +1,23 @@
+import { useRef } from 'react'
 import { ViewportPortal } from '@xyflow/react'
-import type { RunBoardSnapshot } from '@graphql/contracts/run-snapshots'
-import { layoutSubagents, isTerminalSubagent } from './layout'
-import { useRunSubagents } from './query'
+import { layoutSubagents, isTerminalSubagent, type SubagentLayoutNode } from './layout'
+import { useRunSubagents, type SubagentsScope } from './query'
 import { useSelectedSubagent } from './selection'
 import { SubagentPanel } from './SubagentPanel'
 import './runSubagents.css'
 
-export function RunSubagentsOverlay({ snapshot }: { snapshot: Extract<RunBoardSnapshot, { kind: 'available' }> }) {
-  const scope = { workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId, runId: snapshot.runId }
+export function RunSubagentsOverlay({ scope, nodes }: {
+  scope: SubagentsScope; nodes: readonly SubagentLayoutNode[]
+}) {
   const query = useRunSubagents(scope)
   const { selected, select } = useSelectedSubagent(scope)
+  const trigger = useRef<HTMLButtonElement | null>(null)
+  const closePanel = () => {
+    void select(null).then(() => trigger.current?.focus())
+  }
   // A failed read (including revoked access) cannot leave cached circles visible.
   const children = query.isError ? [] : query.data?.pages.flatMap((page) => page.items.map((item) => item.subagent)) ?? []
-  const circles = layoutSubagents(snapshot.nodes, children)
+  const circles = layoutSubagents(nodes, children)
   return <>
     <ViewportPortal>
       <div className="run-subagents-overlay">
@@ -22,11 +27,13 @@ export function RunSubagentsOverlay({ snapshot }: { snapshot: Extract<RunBoardSn
         {circles.map(({ subagent, x, y, parentId }) => {
           const name = subagent.name || 'Subagent'
           const label = `${name}, ${subagent.provider}, ${subagent.status}${subagent.evidence !== 'confirmed' ? `, ${subagent.evidence}` : ''}`
-          return <button key={subagent.id} type="button" className="run-subagent-circle nodrag nopan"
+          return <button key={subagent.id} ref={(element) => {
+            if (selected === subagent.id && element) trigger.current = element
+          }} type="button" className="run-subagent-circle nodrag nopan"
             data-parent-id={parentId} data-subagent-id={subagent.id} data-inactive={isTerminalSubagent(subagent.status)}
             data-uncertain={subagent.evidence !== 'confirmed' || subagent.status === 'unknown'}
             style={{ left: x, top: y }} title={label} aria-label={label} aria-pressed={selected === subagent.id}
-            onClick={(event) => { event.stopPropagation(); select(subagent.id) }}>
+            onClick={(event) => { event.stopPropagation(); trigger.current = event.currentTarget; void select(subagent.id) }}>
             <span aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
           </button>
         })}
@@ -40,6 +47,6 @@ export function RunSubagentsOverlay({ snapshot }: { snapshot: Extract<RunBoardSn
           {circles.length < children.length && <span>Some attachments await parent evidence.</span>}
         </>}
       </div>}
-    {!query.isError && selected && <SubagentPanel key={`${snapshot.runId}:${selected}`} scope={scope} subagentId={selected} onClose={() => select(null)} />}
+    {!query.isError && selected && <SubagentPanel key={`${scope.runId}:${selected}`} scope={scope} subagentId={selected} onClose={closePanel} />}
   </>
 }

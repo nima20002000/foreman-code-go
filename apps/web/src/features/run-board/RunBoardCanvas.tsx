@@ -50,7 +50,7 @@ export function RunBoardCanvas({ snapshot }: { snapshot: AvailableRunBoardSnapsh
         {...READ_ONLY_FLOW_PROPS} fitView fitViewOptions={fitViewOptions} minZoom={0.02} maxZoom={2}
         proOptions={proOptions} preventScrolling={false} aria-label="Saved Run graph"
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Saved agent, read only.', 'edge.a11yDescription.default': 'Saved connection, read only.' }}>
-        <RunSubagentsOverlay snapshot={snapshot} />
+        <RunSubagentsOverlay scope={snapshot} nodes={snapshot.nodes} />
         <Background color="var(--border)" gap={24} size={1} />
         <Controls showInteractive={false} fitViewOptions={fitViewOptions} aria-label="Run view controls" />
       </ReactFlow>

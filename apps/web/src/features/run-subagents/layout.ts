@@ -2,7 +2,8 @@ import type { RunBoardNodeSnapshot } from '@graphql/contracts/run-snapshots'
 import type { RunSubagent } from '@graphql/contracts/subagents'
 
 export const isTerminalSubagent = (status: RunSubagent['status']) => ['completed', 'failed', 'canceled'].includes(status)
-export function layoutSubagents(nodes: readonly RunBoardNodeSnapshot[], children: readonly RunSubagent[]) {
+export type SubagentLayoutNode = Pick<RunBoardNodeSnapshot, 'id' | 'kind' | 'position' | 'size'>
+export function layoutSubagents(nodes: readonly SubagentLayoutNode[], children: readonly RunSubagent[]) {
   const result: { subagent: RunSubagent; x: number; y: number; fromX: number; fromY: number; parentId: string }[] = []
   const ordered = [...children].sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.id.localeCompare(b.id))
   for (const node of nodes) {

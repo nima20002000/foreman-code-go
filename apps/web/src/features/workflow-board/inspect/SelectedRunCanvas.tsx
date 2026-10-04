@@ -1,7 +1,7 @@
 import type { JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { Background, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
+import { Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 import { AgentNodeView, AgentPopover, Dialog, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
@@ -18,6 +18,8 @@ import { useRunHandoffsQuery } from '../runHandoffsQuery'
 import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import { useRunChoreography } from './runChoreography'
+import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
+import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
 
 const RunAgentPanels = createContext<{ panels?: AgentPanelRenderer; open?: OpenAgentPanel; setOpen(value?: OpenAgentPanel): void } | null>(null)
@@ -222,14 +224,15 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
       if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
       event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
     }}>
-      <RunAgentPanels.Provider value={{ panels, open, setOpen }}><Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen }}><Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
         onEdgeClick={(_, edge) => { board.selectInspection({ runRelationshipId: edge.id }); board.openRuns() }}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
         aria-label="Run graph canvas">
+        <SelectedRunSubagents key={scope.runId} scope={scope} nodes={nodes} />
         <Background color="var(--border)" gap={24} size={1} />
-      </ReactFlow></Choreography.Provider></RunAgentPanels.Provider>
+      </ReactFlow></Choreography.Provider></RunAgentPanels.Provider></ReactFlowProvider>
     </div> : null}
     {version ? <p className="pinned-run-footnote">{version.definition.handoffs
       ? 'Work handoff limits belong to this saved version. Usage comes from this Run, not the current Board draft.'
@@ -237,4 +240,17 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
       ? 'Configured repeat blocks belong to this saved version. Node badges show the bounded current cut; inspect a repetition for its recorded facts.'
       : 'No repeat block is configured in this saved version. Inspect execution attempts without synthetic repetition rounds.'}</p> : null}
   </section>
+}
+
+function SelectedRunSubagents({ scope, nodes: flowNodes }: { scope: RepeatGraphScopeV3; nodes: RunNode[] }) {
+  const initialized = useNodesInitialized()
+  const flow = useReactFlow<RunNode>()
+  const nodes: SubagentLayoutNode[] = flowNodes.flatMap((node) => {
+    const measured = initialized ? flow.getInternalNode(node.id)?.measured : undefined
+    const width = measured?.width
+    const height = measured?.height
+    if (!width || !height) return []
+    return [{ id: node.id, kind: node.data.kind, position: node.position, size: { width, height } }]
+  })
+  return <RunSubagentsOverlay scope={scope} nodes={nodes} />
 }
