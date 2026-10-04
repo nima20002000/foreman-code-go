@@ -3,6 +3,7 @@ import {
   JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuedStartSchema, JobResourceReservationSchema,
   JobComputerEligibilitySchema, JobComputerSelectionRequestSchema, JOB_COMPUTER_ORDER, JOB_QUEUE_ORDER,
   JobAvailableCapacitySchema,
+  JobBuildQueueConfigurationSchema,
 } from './jobAdmission.js'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, AcceptedJobSpecSchema } from './jobs.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
@@ -105,5 +106,27 @@ describe('resource reservation closure', () => {
     expect(JobResourceReservationSchema.safeParse({ ...closed, storageReleasedAt: verificationTime }).success).toBe(false)
     expect(JobResourceReservationSchema.parse({ ...closed, state: 'released',
       cleanupCompletedAt: verificationTime, storageReleasedAt: verificationTime }).state).toBe('released')
+  })
+})
+
+describe('reviewed build queue configuration', () => {
+  it('requires explicit owner review, positive revisions and bounded unambiguous resource envelopes without defaults', () => {
+    const { resources } = verificationFixture()
+    const configuration = {
+      schemaVersion: 1, mainId: verificationId, revision: 1,
+      limits: { maxPendingPerPrincipal: 5, maxPendingPerWorkspace: 10, maxBackfillClaims: 0 },
+      envelopes: [resources], review: {
+        reviewedByPrincipalId: 'owner', reviewedAt: verificationTime, decisionDigest: verificationDigest,
+      },
+    }
+    expect(JobBuildQueueConfigurationSchema.parse(configuration)).toEqual(configuration)
+    expect(JobBuildQueueConfigurationSchema.safeParse({}).success).toBe(false)
+    expect(JobBuildQueueConfigurationSchema.safeParse({ ...configuration, review: null }).success).toBe(false)
+    expect(JobBuildQueueConfigurationSchema.safeParse({ ...configuration, revision: 0 }).success).toBe(false)
+    expect(JobBuildQueueConfigurationSchema.safeParse({ ...configuration, envelopes: [resources, resources] }).success).toBe(false)
+    expect(JobBuildQueueConfigurationSchema.safeParse({ ...configuration,
+      limits: { ...configuration.limits, maxPendingPerPrincipal: 0 } }).success).toBe(false)
+    expect(JobBuildQueueConfigurationSchema.safeParse({ ...configuration,
+      envelopes: [{ ...resources, scratchBytes: resources.limits.diskBytes }] }).success).toBe(false)
   })
 })

@@ -192,6 +192,27 @@ export const JobQueueLimitsSchema = z.object({
   maxPendingPerWorkspace: PositiveInteger,
   maxBackfillClaims: DeviceSafeIntegerSchema,
 }).strict()
+/** Installer/owner configuration only. HTTP/MCP callers cannot submit reviewed envelopes or review metadata. */
+export const JobBuildQueuePolicySchema = z.object({
+  schemaVersion: z.literal(1),
+  mainId: z.uuid(),
+  revision: PositiveInteger,
+  limits: JobQueueLimitsSchema,
+  envelopes: z.array(JobResourceRequestSchema).min(1).max(64),
+}).strict().superRefine((value, context) => {
+  const budgets = value.envelopes.map(envelope => JSON.stringify(envelope.limits))
+  if (new Set(budgets).size !== budgets.length) {
+    context.addIssue({ code: 'custom', path: ['envelopes'], message: 'Each build resource budget has one reviewed envelope.' })
+  }
+})
+export const JobBuildQueueConfigurationSchema = JobBuildQueuePolicySchema.safeExtend({
+  review: z.object({
+    reviewedByPrincipalId: IdSchema,
+    reviewedAt: z.iso.datetime(),
+    decisionDigest: DeviceDigestSchema,
+  }).strict(),
+})
+export type JobBuildQueueConfiguration = z.infer<typeof JobBuildQueueConfigurationSchema>
 export type JobQueueTicket = z.infer<typeof JobQueueTicketSchema>
 export type JobResourceReservation = z.infer<typeof JobResourceReservationSchema>
 export type JobComputerEligibility = z.infer<typeof JobComputerEligibilitySchema>

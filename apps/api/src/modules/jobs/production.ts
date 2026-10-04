@@ -1,5 +1,6 @@
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import { lstat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, open, realpath } from 'node:fs/promises'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { reserveInstalledJobQualification } from './installedRuntimeQualification.js'
@@ -19,7 +20,7 @@ import { PostgresJobDispatch } from './dispatch.js'
 import { RemoteJobCarrierDispatch } from '../runs/remote/jobCarrierDispatch.js'
 import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
 import { CanonicalJobPreparationSources, CanonicalJobPreparationService, CanonicalJobPrivateRepositories } from './sourcePreparation.js'
-import type { JobPreparationPort } from './ports.js'
+import type { JobPreparationPort, JobQueueConfiguration } from './ports.js'
 import { JobPublicationAuthority } from './authority.js'
 import { createCanonicalJobInputPorts } from '../files/jobInputs/factory.js'
 import { createMainJobInputRsyncExtension, type MainJobInputRsyncPorts } from '../files/jobInputs/rsyncProduction.js'
@@ -27,7 +28,7 @@ import { createAdmittedJobOutputs } from '../files/jobs/admittedFactory.js'
 import type { ResumableByteTransferService } from '../byte-transfer/service.js'
 import type { MainJobOutputRsyncPorts } from '../files/jobs/rsyncProduction.js'
 import type { TrustedJobOutputReader } from '../files/jobs/port.js'
-import { JobService } from './service.js'
+import { JobService, jobDigest } from './service.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { JobWorkerService } from './worker.js'
 import { projectJobReceiptLocked } from './receiptProjection.js'
@@ -37,11 +38,16 @@ import { assertGraphTransaction } from '../run-graph/connection.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { createWorkflowJobComposition } from './workflowComposition.js'
 import { JobApplicationBridge } from '../runs/remote/jobApplicationBridge.js'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import { BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
 import { buildComputerReadiness } from '../settings/buildComputerReadiness.js'
 import { JobComputerSelection, releaseClosedJobComputers } from './computerSelection.js'
+import { JobBuildQueueConfigurationSchema, type JobBuildQueueConfiguration } from '@graphql/contracts/job-admission'
+import { isAutoJobSpec } from '@graphql/contracts/jobs'
+import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
+import { JobResourceRequestSchema, type JobResourceRequest } from '@graphql/contracts/job-verification-policy'
+import { canonical } from './repository.js'
 
 export interface ProductionJobInfrastructure {
   installedConfiguration: InstalledRuntimeHostDependencies['configuration']
@@ -50,6 +56,76 @@ export interface ProductionJobInfrastructure {
   sourceRemote?: Parameters<typeof createProductionSources>[0]['remote']
   privateRepositoryRemote?: ConstructorParameters<typeof CanonicalJobPrivateRepositories>[3]
   outputReader?: TrustedJobOutputReader
+  queueConfiguration?: JobBuildQueueConfiguration
+}
+
+/** Passive owner-file read. Missing review/configuration never creates envelopes or enables the queue. */
+export async function readBuildQueueConfiguration(path: string): Promise<JobBuildQueueConfiguration | null> {
+  let file: Awaited<ReturnType<typeof open>>
+  try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  try {
+    const parent = await lstat(dirname(path))
+    const before = await file.stat()
+    if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.()
+      || parent.mode & 0o022 || await realpath(dirname(path)) !== dirname(path)
+      || !before.isFile() || before.uid !== process.getuid?.() || before.mode & 0o077
+      || before.nlink !== 1 || before.size > 65536) {
+      throw new DomainError('JOB_QUEUE_CONFIGURATION_UNPROTECTED', 'Build queue configuration requires a private owner file.', 409)
+    }
+    const bytes = Buffer.alloc(before.size)
+    let offset = 0
+    while (offset < bytes.length) {
+      const read = await file.read(bytes, offset, bytes.length - offset, offset)
+      if (!read.bytesRead) throw new DomainError('JOB_QUEUE_CONFIGURATION_CHANGED', 'Build queue configuration changed while reading.', 409)
+      offset += read.bytesRead
+    }
+    const after = await file.stat()
+    const named = await lstat(path)
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs
+      || named.isSymbolicLink() || named.dev !== after.dev || named.ino !== after.ino) {
+      throw new DomainError('JOB_QUEUE_CONFIGURATION_CHANGED', 'Build queue configuration changed while reading.', 409)
+    }
+    return JobBuildQueueConfigurationSchema.parse(JSON.parse(bytes.toString('utf8')))
+  } finally { await file.close() }
+}
+
+export function createReviewedBuildQueueConfiguration(
+  input: JobBuildQueueConfiguration, mainId: string,
+): JobQueueConfiguration {
+  const configuration = JobBuildQueueConfigurationSchema.parse(input)
+  const { review, ...policy } = configuration
+  if (configuration.mainId !== mainId || review.decisionDigest !== jobDigest(policy)) {
+    throw new DomainError('JOB_QUEUE_REVIEW_CONFLICT', 'Queue review differs from this Main or its saved configuration.', 409)
+  }
+  return {
+    revision: configuration.revision,
+    review: configuration.review,
+    limits: configuration.limits,
+    async resources(sql, definition) {
+      let limits: JobResourceRequest['limits']
+      if (isAutoJobSpec(definition.spec)) limits = definition.spec.limits
+      else {
+        const { isolationPolicyId, isolationPolicyRevision } = definition.spec.policy
+        const row = (await sql.query<{ record: unknown }>(`select record from job_runtime_profile_versions
+          where profile_id=$1 and revision=$2`, [isolationPolicyId, isolationPolicyRevision])).rows[0]
+        if (!row) throw new DomainError('JOB_RUNTIME_PROFILE_VERSION_NOT_FOUND', 'The saved build profile version is unavailable.', 409)
+        const profile = JobRuntimeProfileSchema.parse(row.record)
+        if (profile.id !== isolationPolicyId || profile.revision !== isolationPolicyRevision
+          || profile.workspaceId !== definition.workspaceId || canonical(profile.policy) !== canonical(definition.spec.policy)) {
+          throw new DomainError('JOB_QUEUE_PROFILE_CONFLICT', 'The saved build profile differs from the definition policy or workspace.', 409)
+        }
+        limits = profile.limits
+      }
+      const envelope = configuration.envelopes.find(candidate => canonical(candidate.limits) === canonical(limits))
+      if (!envelope) throw new DomainError('JOB_QUEUE_ENVELOPE_REVIEW_REQUIRED', 'No reviewed resource envelope covers this build.', 409)
+      return JobResourceRequestSchema.parse(envelope)
+    },
+  }
 }
 /** Concrete domain services are initialized after the original main identity.
  * Missing installer/host bytes remain unavailable, never a qualified default. */
@@ -64,6 +140,10 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   transferPreparationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferPreparationClosed']>;
   transferMaterializationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferMaterializationClosed']>;
   outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
+  const reviewedQueue = input.infrastructure?.queueConfiguration
+    ?? await readBuildQueueConfiguration(join(input.runtimeRoot, 'job-queue.json'))
+  const queue = reviewedQueue ? createReviewedBuildQueueConfiguration(reviewedQueue, input.mainId) : undefined
+  const requestQueueWake = () => { if (queue) jobs.requestQueueWake() }
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
@@ -101,7 +181,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const buildComputers = new BuildComputerSettings(input.pool, input.commands, buildComputerReadiness({
     endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(input.infrastructure?.localExecution),
-  }))
+  }), requestQueueWake)
   const preparationPort: JobPreparationPort = {
     choices: (...args) => preparation.choices(...args), validate: (...args) => preparation.validate(...args),
     accept: (...args) => preparation.accept(...args), revalidateAccepted: (...args) => preparation.revalidateAccepted(...args),
@@ -109,6 +189,8 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   }
   const carrier = new RemoteJobCarrierDispatch(input.pool, { request: (deviceId, namespace, payload) => input.endpoint().request(deviceId, namespace, payload) }, input.infrastructure?.localExecution)
   const dispatch = new PostgresJobDispatch(input.pool, carrier, {
+    prepareWaiting: () => jobs.wakeQueue(),
+    capacityChanged: requestQueueWake,
     revalidate: (sql, execution, principal) => preparationPort.revalidateAccepted(sql, principal, execution),
     authorizeLaunch: async (sql, execution) => {
       await buildComputers.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
@@ -183,12 +265,21 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     dispatch,
     artifacts,
     cancellationRecovery: new PostgresJobCancellationRecovery(input.pool, input.commands, dispatch),
+    ...(queue ? { queue } : {}),
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const workers = new JobWorkerService(input.pool, { require: dispatch.require.bind(dispatch),
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)
   const workflow = createWorkflowJobComposition({ jobs, dispatch, outputs: artifacts })
+  if (queue) jobs.startQueueRecovery()
   return { ...source, jobs, buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
-    async close() { await dispatch.close(); await outputs.close(); if (qualificationJournal) await (await qualificationJournal).close() } }
+    queueConfiguration: reviewedQueue,
+    requestQueueWake,
+    async close() {
+      await jobs.closeQueue()
+      await dispatch.close()
+      await outputs.close()
+      if (qualificationJournal) await (await qualificationJournal).close()
+    } }
 }
