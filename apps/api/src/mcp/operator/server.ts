@@ -1,4 +1,5 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
+import { registerSessionControlTools } from './tools/sessionControls.js'
 import { registerSubagentTools } from './tools/subagents.js'
 import { operatorToolAvailable } from './availability.js'
 import { registerHarnessRegistryTools } from '../../modules/harnesses/registryManagement.js'
@@ -61,6 +62,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerHarnessMcpTools(server, context)
   registerSettingsTools(server, context)
   registerAgentChatTools(server, context)
+  registerSessionControlTools(server, context)
   registerWorkspaceDefaultsTools(server, context)
   registerFileRetentionTools(server, context)
   registerWorkspaceTools(server, context)

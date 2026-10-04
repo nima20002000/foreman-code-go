@@ -1,4 +1,5 @@
 import type { TextTruncation } from '@foreman-code/contracts/activity-text'
+import { SessionControlStore } from './sessionControls/store.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { NativeHistory } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -172,6 +173,8 @@ export class PostgresOperatorConversationRepository {
       needsAttention: row.needs_attention, ...(row.background_activity !== undefined ? { backgroundActivity: row.background_activity } : {}),
     }))
   }
+
+  createSessionControls() { return new SessionControlStore(this.pool, 'operator') }
 
   createControlCommands() { return new OperatorChatCommands(this.pool) }
 

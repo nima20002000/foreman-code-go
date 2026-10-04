@@ -131,6 +131,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
+  if (name.startsWith('operator_chat_controls_')) scope = 'global'
   if (name === 'operator_get_capabilities') scope = 'caller'
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
@@ -154,7 +155,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
   if (name.startsWith('agent_chat_') && name !== 'agent_chat_read') result.push({action:'agent_chat:read',scope:'resource'})
-  if (['operator_chat_cancel', 'operator_chat_respond'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
+  if (['operator_chat_cancel', 'operator_chat_respond', 'operator_chat_controls_update'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
   if (name === 'skill_archive') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})

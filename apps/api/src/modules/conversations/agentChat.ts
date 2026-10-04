@@ -1,5 +1,7 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
+import type { SessionControlRequest } from '@foreman-code/contracts'
+import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
@@ -176,6 +178,7 @@ export class AgentChatService {
   private recovery: Promise<void> | undefined
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
+  private readonly sessionControls: SessionControlStore
   private readonly commands: AgentChatCommands
   private readonly lifetime = new AbortController()
   private closing = false
@@ -192,6 +195,7 @@ export class AgentChatService {
   ) {
     this.activity = new PostgresOperatorActivityRepository(pool)
     this.commands = new AgentChatCommands(pool)
+    this.sessionControls = new SessionControlStore(pool, 'agent')
   }
 
   /** Publish command ownership before the first await so shutdown also drains admission/readback. */
@@ -498,6 +502,31 @@ export class AgentChatService {
     if (resolution.row?.id !== id) staleRunChat()
     return this.state(resolution, principal)
   }
+  private async sessionControlBinding(principal: ManagementPrincipal, workspaceId: string, id: string, write = false) {
+    const row = await this.conversation(workspaceId, id, principal, write ? 'agent_chat:write' : 'agent_chat:read')
+    const state = await this.readConversation(principal, workspaceId, id)
+    const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+    const runtime = !row.active_request_id && row.native_session_id && configuration
+      ? await this.runtime(row, configuration, `session-control:${id}`, this.lifetime.signal) : this.runtimes.get(id)
+    const session = runtime?.session ?? (row.native_session_id ? {
+      harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id,
+    } : undefined)
+    return { conversationId: id, profileKey: row.agent_configuration_version_id,
+      busyReason: row.active_request_id || row.pending_interaction || state.turns.some(turn => turn.delivery === 'queued')
+        ? 'Wait for the active and queued turns and their approvals to finish.' : null,
+      session, manager: runtime?.manager }
+  }
+
+  async readSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string) {
+    return this.control(id, async () => this.sessionControls.read(await this.sessionControlBinding(principal, workspaceId, id)))
+  }
+
+  changeSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string,
+    input: SessionControlRequest, source: 'http' | 'mcp' = 'http') {
+    return this.command(() => this.control(id, () => this.sessionControls.execute(principal, source, input,
+      () => this.sessionControlBinding(principal, workspaceId, id, true), this.lifetime.signal)))
+  }
+
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
     const page = AgentChatReadbackQuerySchema.parse({ before, limit })
@@ -567,6 +596,12 @@ export class AgentChatService {
   send(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
     return this.command(() => this.sendMessage(principal, workspaceId, value))
   }
+  private async conversationAuthority(principal: ManagementPrincipal, context: AgentChatContext) {
+    const live = await readLiveManagementPrincipal(this.pool, principal.id)
+    this.authorize(live, 'agent_chat:write', context)
+    this.authorize(live, 'agent_chat:read', context)
+  }
+
   private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest, executionId?: string, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     this.assertOpen()
     const input = SendAgentChatMessageRequestSchema.parse(value)
@@ -604,8 +639,13 @@ export class AgentChatService {
     if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution, selectedRun, assertCurrent)
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
     const create = resolution.create ? { ...resolution.create, context } : undefined
-    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id, assertCurrent,
-      ...(create ? { create } : {}) })
+    const admit = async () => {
+      if (row) await this.sessionControls.assertSendAllowed(row.id)
+      await this.conversationAuthority(principal, context)
+      return this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id,
+        assertCurrent, ...(create ? { create } : {}) })
+    }
+    const admitted = row ? await this.control(row.id, admit) : await admit()
     if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })
@@ -1003,6 +1043,7 @@ export class AgentChatService {
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
+        ...await this.sessionControls.turnSettings(id),
         prompt: prompt.text, clientCorrelationId: correlationId,
         onMessageSubmitted: async (receipt) => {
           submitted = true

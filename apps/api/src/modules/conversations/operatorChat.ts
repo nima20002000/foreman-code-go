@@ -2,6 +2,8 @@ import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interac
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import { publicOperatorConversation } from './operatorConversationRecord.js'
 import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
+import type { SessionControlRequest } from '@foreman-code/contracts'
+import type { SessionControlStore } from './sessionControls/store.js'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
@@ -160,6 +162,9 @@ export class OperatorChatService {
   private reconciliation: Promise<void> | undefined
   private closing = false
   private shutdownTask: Promise<void> | undefined
+  private sessionControlsStore: SessionControlStore | undefined
+  private sessionControls() { return this.sessionControlsStore ??= this.repository.createSessionControls() }
+
   private commandReceipts: OperatorChatCommands | undefined
   private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
@@ -301,6 +306,35 @@ export class OperatorChatService {
         responseAvailability: qualifiedResponse ?? null }).slice(7) }
   }
 
+  private async sessionControlBinding(id: string, principal: ManagementPrincipal, write = false) {
+    const row = await this.assertAccess(id, principal, write ? 'operator_chat:write' : 'operator_chat:read')
+    await this.assertAccess(id, principal)
+    const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+    if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Conversation configuration is unavailable.', 409)
+    const busy = !!row.active_request_id || !!row.pending_interaction
+    const runtime = !busy && row.native_session_id
+      ? await this.runtime(id, row, configuration, this.lifetime.signal, Boolean(this.runtimes.get(id)?.fileInputs))
+      : this.runtimes.get(id)
+    const session = runtime?.session ?? (row.native_session_id ? {
+      harness: configuration.harness.harness, providerVersion: row.provider_version ?? 'unknown',
+      nativeSessionId: row.native_session_id,
+    } : undefined)
+    return { conversationId: id, profileKey: configuration.contentHash,
+      busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
+      session, manager: runtime?.manager }
+  }
+
+  async readSessionControls(id: string, principal: ManagementPrincipal) {
+    return this.control(id, async () => this.sessionControls().read(await this.sessionControlBinding(id, principal)))
+  }
+
+  async changeSessionControls(id: string, input: SessionControlRequest, principal: ManagementPrincipal,
+    source: 'http' | 'mcp' = 'http') {
+    this.assertOpen()
+    return this.control(id, () => this.sessionControls().execute(principal, source, input,
+      () => this.sessionControlBinding(id, principal, true), this.lifetime.signal))
+  }
+
   async history(id: string, principal: ManagementPrincipal, query: Partial<OperatorConversationHistoryQuery> = {}) {
     // Read-only recovery uses the same owner boundary as the live transcript.
     // A recovered request ID is never submitted or approved by this endpoint.
@@ -404,6 +438,7 @@ export class OperatorChatService {
     const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
       requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
+      if (!receiptId) await this.sessionControls().assertSendAllowed(id)
       const begun = receiptId
         ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, false,
             (accepted) => this.validate(accepted))
@@ -630,6 +665,7 @@ export class OperatorChatService {
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
+        ...await this.sessionControls().turnSettings(id),
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {

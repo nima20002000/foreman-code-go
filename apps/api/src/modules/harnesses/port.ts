@@ -1,5 +1,6 @@
 import type { NativeMessageSubmission } from '@foreman-code/contracts'
 export type { NativeMessageSubmission } from '@foreman-code/contracts'
+import type { CompactionState, ContextSnapshot, SessionControlCapabilities, SessionMode, SessionPreferences } from '@foreman-code/contracts'
 import type {
   AgentHarness,
   ExecutionResult,
@@ -60,7 +61,14 @@ export interface OperatorNativeSessionStart {
 export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
 
 
+export interface NativeCompactInput {
+  requestId: string
+  onProgress(state: CompactionState): Promise<void>
+}
+
 export interface NativeTurnInput {
+  sessionMode?: SessionMode
+  sessionPreferences?: SessionPreferences
   prompt: string
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
@@ -145,6 +153,10 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly harness: AgentHarness
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
+  compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>
+  reconcileCompaction?(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
+  contextSnapshot?(session: NativeSessionReference): ContextSnapshot | null
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

@@ -1,4 +1,5 @@
 import type { AgentHarness } from '@foreman-code/contracts'
+import { unavailableSessionControls } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager } from './port.js'
@@ -34,6 +35,21 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     harness,
     requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
+    sessionControlCapabilities: async session => {
+      const current = await actual()
+      return current.sessionControlCapabilities ? current.sessionControlCapabilities(session)
+        : unavailableSessionControls(`${harness}:${session.providerVersion}`)
+    },
+    compactSession: async (session, input, signal) => {
+      const current = await actual(signal)
+      if (!current.compactSession) throw new DomainError('SESSION_COMPACT_UNSUPPORTED', 'This harness cannot compact this session.', 409)
+      return current.compactSession(session, input, signal)
+    },
+    reconcileCompaction: async (session, state, signal) => {
+      const current = await actual(signal)
+      return current.reconcileCompaction ? current.reconcileCompaction(session, state, signal) : state
+    },
+    contextSnapshot: session => allocation?.manager.contextSnapshot?.(session) ?? null,
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
     createSession: async (start, signal) => {
       let current: T
