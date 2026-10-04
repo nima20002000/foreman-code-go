@@ -42,6 +42,15 @@ export async function qualifyEng03OpenCode() {
   }
   try {
     await applyApplicationMigrations(pool)
+    const settings = new PostgresSettingsRepository(pool)
+    const defaults = await settings.getHarnessDefaults()
+    await settings.saveHarnessDefaults({
+      ...defaults,
+      opencode: {
+        ...defaults.opencode,
+        model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
+      },
+    })
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
@@ -59,7 +68,7 @@ export async function qualifyEng03OpenCode() {
     opencode: withNativeQualificationOwnership(opencodeQualificationSuite, processes,
       (input) => guard(input.binary, input.binarySha256)) }
     service = new HarnessQualificationService(repository, registry, suites, binaries,
-      new PostgresCommandCoordinator(pool), new PostgresSettingsRepository(pool), undefined, undefined,
+      new PostgresCommandCoordinator(pool), settings, undefined, undefined,
       (_harness, binary, timeoutMs) => nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory,
         process.env, timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
           beforeCommand: async (current, signal) => {
