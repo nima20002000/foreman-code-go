@@ -20,6 +20,7 @@ import {
 import type pg from 'pg'
 
 import { requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -173,6 +174,13 @@ export class WorkspaceLocationService {
     return this.commands.execute({
       principal, source, operation: 'workspace.location.set', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:location`, payload: input,
+      authorize: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        await client.query('select id from workspaces where id = $1 for update', [input.workspaceId])
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workspace_locations:update', { workspaceId: input.workspaceId })
+      },
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])

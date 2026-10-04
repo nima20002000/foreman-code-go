@@ -13,6 +13,7 @@ import { WorkspaceSchema } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkspaceLocationService } from './location.js'
@@ -89,6 +90,17 @@ export class WorkspaceManagementService {
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.create', commandId: input.commandId,
       targetKey: 'workspaces:new', payload: input,
+      authorize: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workspaces:create')
+        if (input.parentPath) {
+          for (const action of ['workspace_locations:provision', 'workspace_locations:update', 'workspace_locations:read'] as const) {
+            requireAuthorization(principal, action)
+            requireAuthorization(live, action)
+          }
+        }
+      },
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         const defaults = input.name === undefined || input.description === undefined
@@ -149,6 +161,12 @@ export class WorkspaceManagementService {
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.update', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
+      authorize: async (client) => {
+        // Wait for the workspace before retaining authority locks, so revocation can complete while waiting.
+        await client.query('select id from workspaces where id = $1 for update', [input.workspaceId])
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workspaces:update', { workspaceId: input.workspaceId })
+      },
       perform: async (client) => {
         const current = await client.query<WorkspaceRow>(
           'select record, revision, archived_at from workspaces where id = $1 for update', [input.workspaceId],
@@ -184,6 +202,20 @@ export class WorkspaceManagementService {
     const result = await this.commands.execute({
       principal, source, operation: 'workspace.batch_archive', commandId: input.commandId,
       targetKey: 'workspaces:batch', payload: input,
+      authorize: async (client) => {
+        await client.query(
+          `select pg_advisory_xact_lock(hashtext(lock_key)) from
+           (select 'admission:workspace:' || id as lock_key from unnest($1::text[]) as selected(id) order by id) locks`, [ids],
+        )
+        const owned = await client.query<{ id: string; created_project_folder: unknown }>(
+          'select id, created_project_folder from workspaces where id = any($1::text[]) order by id for update', [ids],
+        )
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        for (const workspaceId of ids) requireAuthorization(live, 'workspaces:archive', { workspaceId })
+        for (const row of owned.rows) {
+          if (row.created_project_folder) requireAuthorization(live, 'workspace_locations:provision', { workspaceId: row.id })
+        }
+      },
       perform: async (client) => {
         // Match child admission locks in stable order, in one database round trip.
         await client.query(
@@ -222,6 +254,17 @@ export class WorkspaceManagementService {
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.archive', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
+      authorize: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        const owned = await client.query<{ created_project_folder: unknown }>(
+          'select created_project_folder from workspaces where id = $1 for update', [input.workspaceId],
+        )
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workspaces:archive', { workspaceId: input.workspaceId })
+        if (owned.rows[0]?.created_project_folder) {
+          requireAuthorization(live, 'workspace_locations:provision', { workspaceId: input.workspaceId })
+        }
+      },
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
         const current = await client.query<WorkspaceRow>(

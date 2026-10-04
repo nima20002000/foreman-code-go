@@ -1,0 +1,95 @@
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import * as contracts from '@graphql/contracts/management'
+import pg from 'pg'
+import type { z } from 'zod'
+
+import { buildApp } from '../../src/app.js'
+import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../../src/modules/settings/foundation.js'
+import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
+import type { OperatorServices } from '../../src/mcp/operator/types.js'
+
+export async function workspaceMcpFixture() {
+  const connectionString = process.env.TEST_DATABASE_URL
+  if (!connectionString) throw new Error('TEST_DATABASE_URL is required')
+  const databaseUrl = new URL(connectionString)
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(databaseUrl.hostname)
+    || !databaseUrl.pathname.includes('test')) {
+    throw new Error('Use a disposable loopback test database')
+  }
+  const schema = 'workspace_mcp_' + randomUUID().replaceAll('-', '')
+  const parentPath = await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
+  const admin = new pg.Pool({ connectionString })
+  await admin.query(`create schema "${schema}"`)
+  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+  const clients: Client[] = []
+  const access = new PostgresAccessService(pool)
+  const commands = new PostgresCommandCoordinator(pool)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', parentPath)
+  const defaults = new PostgresFoundationSettingsRepository(pool, parentPath)
+  const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, parentPath)
+  const services = { commands, locations, workspaces } as unknown as OperatorServices
+  const app = buildApp({ logger: false, readiness: {
+    database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
+  }, operator: { access, services } })
+
+  async function close() {
+    await Promise.all(clients.map(client => client.close()))
+    await app.close()
+    await pool.end()
+    await admin.query(`drop schema "${schema}" cascade`)
+    await admin.end()
+    await rm(parentPath, { recursive: true, force: true })
+  }
+  try {
+    await applyApplicationMigrations(pool)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    async function connect(token: string) {
+      const client = new Client({ name: 'workspace-regression', version: '1.0.0' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        authProvider: { token: async () => token },
+      }))
+      return client
+    }
+    async function issue(grants: contracts.ManagementGrant[] = [{
+      actions: [...contracts.ManagementActionSchema.options], scope: {},
+    }]) {
+      const issued = await access.issue({ name: 'Workspace caller', audience: 'operator', grants,
+        expiresAt: new Date(Date.now() + 120_000) })
+      return { ...issued, client: await connect(issued.token) }
+    }
+    const owner = await issue()
+    return { pool, access, commands, defaults, parentPath, owner, connect, issue, close }
+  } catch (error) {
+    await close()
+    throw error
+  }
+}
+
+export async function callWorkspaceTool<T>(
+  client: Client, name: string, schema: z.ZodType<T>, args: Record<string, unknown> = {},
+): Promise<T> {
+  const response = await client.callTool({ name, arguments: args })
+  if (response.isError) throw new Error(JSON.stringify(response))
+  return schema.parse(response.structuredContent)
+}
+
+export async function waitForWorkspaceBlocker(pool: pg.Pool, blockerPid: number) {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const result = await pool.query<{ waiting: boolean }>(
+      `select exists(select 1 from pg_stat_activity
+       where $1::int = any(pg_blocking_pids(pid))) as waiting`, [blockerPid],
+    )
+    if (result.rows[0]?.waiting) return
+    await new Promise<void>(done => setTimeout(done, 10))
+  }
+  throw new Error('The MCP mutation did not wait for the held workspace lock')
+}
