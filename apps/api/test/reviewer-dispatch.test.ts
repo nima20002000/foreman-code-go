@@ -370,6 +370,7 @@ async function remoteReviewerFixture() {
   return { state, coordination, dispatcher, get manager() { return manager }, get journal() { return journal },
     request, intent, placement, release,
     async restart() {
+      await host.drain()
       await journal.close()
       journal = await RemoteOperationJournal.open(path)
       ports.journal = journal

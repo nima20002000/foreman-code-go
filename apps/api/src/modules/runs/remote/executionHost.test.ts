@@ -18,6 +18,16 @@ import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
 import { RemoteExecutionHost, type RemoteExecutionHostPorts } from './executionHost.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
+import { loadConfig } from '../../../config.js'
+import { createDatabase } from '../../../infrastructure/database.js'
+import { createCheckpointStore } from '../../../infrastructure/checkpoints.js'
+import { OperatorRuntimeOwner } from '../../../infrastructure/operatorRuntimeOwner.js'
+import { OperatorChatService } from '../../conversations/operatorChat.js'
+import { AutomaticReviewService } from '../../interactions/automaticReview.js'
+import { ApprovalExecutionCoordinator } from '../../interactions/execution.js'
+import { LangGraphWorkflowEngine } from '../engine.js'
+import { ProductionDeviceRuntime } from '../../devices/productionRuntime.js'
+import { buildProductionApp } from '../../../production.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 const hosts: RemoteExecutionHost[] = []
@@ -49,16 +59,6 @@ async function setup(expectedToken?: string) {
 }
 
 async function productionShutdownFixture() {
-  const { loadConfig } = await import('../../../config.js')
-  const { createDatabase } = await import('../../../infrastructure/database.js')
-  const { createCheckpointStore } = await import('../../../infrastructure/checkpoints.js')
-  const { OperatorRuntimeOwner } = await import('../../../infrastructure/operatorRuntimeOwner.js')
-  const { OperatorChatService } = await import('../../conversations/operatorChat.js')
-  const { AutomaticReviewService } = await import('../../interactions/automaticReview.js')
-  const { ApprovalExecutionCoordinator } = await import('../../interactions/execution.js')
-  const { LangGraphWorkflowEngine } = await import('../engine.js')
-  const { ProductionDeviceRuntime } = await import('../../devices/productionRuntime.js')
-  const { buildProductionApp } = await import('../../../production.js')
   const ownerClose = vi.spyOn(OperatorRuntimeOwner.prototype, 'close').mockResolvedValue()
   const managerDispose = vi.spyOn(ExecutionScopedNativeSessionManagerResolver.prototype, 'dispose').mockResolvedValue()
   const detach = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'closeForRestart')

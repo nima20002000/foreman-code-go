@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentFilePublishInput } from '@foreman-code/contracts/files'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import type { TransferContext, TransferIntent } from '@foreman-code/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
 import { fileToolFixture } from '../../../../test/support/fileTools.js'
@@ -190,7 +191,9 @@ describe('original worker-native artifact sender', () => {
   it('hands an installed producer on one computer to a second computer through authenticated MCP after a lost publication reply', async ({ onTestFailed }) => {
     let stage = 'fixture'
     onTestFailed(() => { console.error(`Artifact handoff stopped at: ${stage}`) })
-    const t = await fixture()
+    // Use the production chunk window here; the resume cases below separately
+    // exercise small chunks and lost chunk acknowledgments.
+    const t = await fixture(undefined, BYTE_TRANSFER_POLICY.maxChunkBytes)
     const producer = await installedProducer(t)
     const app = Fastify()
     cleanups.push(() => app.close())
@@ -238,6 +241,7 @@ describe('original worker-native artifact sender', () => {
       })
       stage = `response ${path}`
       const bodyText = await response.text()
+      stage = `read response ${path}`
       expect(response.headers.get('content-type')).toMatch(/^application\/json/)
       return { statusCode: response.status, headers: { 'content-type': response.headers.get('content-type') ?? '' },
         body: bodyText }
