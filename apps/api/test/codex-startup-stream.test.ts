@@ -24,7 +24,7 @@ vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
 })
 const { CodexAppServerSessionManager } = await import('../src/modules/harnesses/codexAppServer.js')
 
-function textTimeline(events: NativeHarnessEvent[]): string[] {
+function textTimeline(events: readonly NativeHarnessEvent[]): string[] {
   return events.flatMap((event) => {
     if (event.type === 'item.started' || event.type === 'item.completed') {
       const item = event.payload.item
@@ -179,8 +179,8 @@ describe.skipIf(process.platform === 'win32')('Codex assistant text across start
         await observeArrival('startup-arrived')
         assert.equal(entered, timing === 'during persistence')
         assert.deepEqual(textTimeline((await manager.history(session)).events), [])
-        assert.deepEqual(streamed, [])
-        assert.deepEqual(published, [])
+        assert.equal(streamed.length, 0)
+        assert.equal(published.length, 0)
         if (timing === 'before acknowledgement') await ack()
         releaseAdmission!()
         await result

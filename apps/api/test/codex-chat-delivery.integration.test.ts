@@ -79,7 +79,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     messages = new PostgresOperatorConversationRepository(database.pool)
     agentChat = new AgentChatService(database.pool, repository, messages, new PostgresWorkflowRepository(database.pool), {
       getForWorkspace: async () => { throw new Error('No Run source in this fixture.') },
-      executionPages: async () => { throw new Error('No Run source in this fixture.') },
+      executionPages: () => { throw new Error('No Run source in this fixture.') },
     }, factory, database.directory)
     const operatorOwners = new Map<string, NativeHarnessSessionManager>()
     const resolver: NativeManagerResolver = (_configuration, id) => {
