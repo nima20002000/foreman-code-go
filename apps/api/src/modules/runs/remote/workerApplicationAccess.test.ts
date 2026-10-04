@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 
@@ -37,5 +37,46 @@ describe('worker selected-main application lease with authenticated carrier doub
     const value = fixture(); let requests = 0
     await expect(prepareWorkerApplicationAccess({ request: async () => { requests++; return { payload: value.lease } } }, value.intent, value.placement, { ...value.applicationAccess, executionId: 'other' })).rejects.toThrow('original accepted execution')
     expect(requests).toBe(0)
+  })
+  it.each(['generation', 'approval wait'])('refreshes the same principal and token over twenty minutes of %s', async () => {
+    const value = fixture()
+    const startedAt = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(startedAt)
+    const requests: unknown[] = []
+    let renewedExpiry = new Date(startedAt + 15 * 60_000).toISOString()
+    try {
+      const prepared = await prepareWorkerApplicationAccess({ request: async (_namespace, raw) => {
+        requests.push(raw)
+        return { payload: { ...value.lease, expiresAt: renewedExpiry } }
+      } }, value.intent, value.placement, value.applicationAccess)
+      const environment = prepared.environment
+      for (const minute of [10, 20]) {
+        clock.mockReturnValue(startedAt + minute * 60_000)
+        renewedExpiry = new Date(Date.now() + 15 * 60_000).toISOString()
+        expect(await prepared.refresh()).toBe(renewedExpiry)
+        expect(prepared.expiresAt).toBe(renewedExpiry)
+        expect(prepared.environment).toBe(environment)
+      }
+      expect(requests).toHaveLength(3)
+      for (const request of requests) expect(request).toMatchObject({
+        operation: 'worker-mcp.authorize', applicationAccess: value.applicationAccess,
+      })
+      expect(environment.variables.GRAPHQL_MCP_TOKEN).toBe(value.applicationAccess.token)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+  it.each(['principal', 'attempt', 'expiry', 'revoked'])('rejects changed %s on lease refresh', async defect => {
+    const value = fixture()
+    const request = vi.fn(async () => ({ payload: value.lease }))
+    const prepared = await prepareWorkerApplicationAccess({ request }, value.intent, value.placement, value.applicationAccess)
+    const expiresAt = prepared.expiresAt
+    if (defect === 'principal') value.lease.principalId = 'replacement'
+    if (defect === 'attempt') value.lease.attemptId = 'replacement'
+    if (defect === 'expiry') value.lease.expiresAt = new Date(0).toISOString()
+    if (defect === 'revoked') request.mockRejectedValueOnce(new Error('Lease revoked'))
+    await expect(prepared.refresh()).rejects.toThrow()
+    expect(prepared.expiresAt).toBe(expiresAt)
+    expect(prepared.environment.variables.GRAPHQL_MCP_TOKEN).toBe(value.applicationAccess.token)
   })
 })

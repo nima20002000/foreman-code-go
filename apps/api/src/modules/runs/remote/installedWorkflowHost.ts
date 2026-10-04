@@ -210,6 +210,7 @@ interface InstalledOperation {
   nativeStart?:NativeSessionStart
   applicationAccess?:RemoteApplicationAccess
   mcp?:Awaited<ReturnType<typeof createWorkerMcpEndpoint>>
+  relay?:Awaited<ReturnType<typeof prepareWorkerApplicationAccess>>
   leaseExpiresAt?:string
   runtimeLeaf?:RuntimeLeafAttestation
   retainedHistory?:NativeHistory
@@ -379,6 +380,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!isDeepStrictEqual(nativeRequest.configuration,actual.capture.facts.configuration))unavailable('accepted_configuration_conflict')
           const relay=await prepareWorkerApplicationAccess({request},actual.intent,actual.placement,access,signal)
           actual.applicationAccess=structuredClone(access)
+          actual.relay=relay
           actual.leaseExpiresAt=relay.expiresAt
           const nativeStart:NativeSessionStart={request:structuredClone(nativeRequest),correlationId:`execution:${actual.intent.executionId}`,environment:relay.environment}
           if(actual.nativeStart&&!isDeepStrictEqual(actual.nativeStart,nativeStart))unavailable('original_native_start_changed')
@@ -450,6 +452,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(status?.status==='known') {
           const receipt=RemoteOperationReceiptSchema.parse(status.receipt),resident=operation(frame.intent)
           if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
+            if (!resident.relay) unavailable('original_main_lease_required')
+            resident.leaseExpiresAt = await resident.relay!.refresh(signal)
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :value?.history?{type:'history',history:value.history}:{type:'boundary'}
             const history = value?.history ?? (resident.retainedHistory

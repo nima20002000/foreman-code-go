@@ -16,17 +16,29 @@ export async function prepareWorkerApplicationAccess(channel: Pick<DeviceConnect
     || applicationAccess.bindingHash !== intent.bindingHash || placement.bindingHash !== intent.bindingHash
     || placement.mainId !== intent.mainId) throw new Error('Application access does not bind this original accepted execution')
   const envelope = { version: 1 as const, intent, placement, applicationAccess }
-  signal?.throwIfAborted()
-  const authorized = await channel.request(WORKER_MCP_EXTENSION.namespace,
-    WorkerMcpRelayRequestSchema.parse({ ...envelope, operation: 'worker-mcp.authorize' }), signal ? { signal } : {})
-  if (authorized.bytes !== undefined) throw new Error('Application lease authorization cannot contain binary bytes')
-  const lease = WorkerMcpRelayAuthorizationSchema.parse(authorized.payload)
-  if (lease.mainId !== intent.mainId || lease.agentId !== applicationAccess.agentId || lease.executionId !== intent.executionId
-    || lease.operationId !== intent.operationId || lease.attemptId !== intent.attemptId || lease.bindingHash !== intent.bindingHash
-    || Date.parse(lease.expiresAt) <= Date.now()) throw new Error('Original main application lease is unavailable')
-  signal?.throwIfAborted()
+  let principalId: string | undefined
+  let expiresAt: string
+  const refresh = async (refreshSignal = signal) => {
+    refreshSignal?.throwIfAborted()
+    const authorized = await channel.request(WORKER_MCP_EXTENSION.namespace,
+      WorkerMcpRelayRequestSchema.parse({ ...envelope, operation: 'worker-mcp.authorize' }),
+      refreshSignal ? { signal: refreshSignal } : {})
+    if (authorized.bytes !== undefined) throw new Error('Application lease authorization cannot contain binary bytes')
+    const lease = WorkerMcpRelayAuthorizationSchema.parse(authorized.payload)
+    if (lease.mainId !== intent.mainId || lease.agentId !== applicationAccess.agentId
+      || lease.executionId !== intent.executionId || lease.operationId !== intent.operationId
+      || lease.attemptId !== intent.attemptId || lease.bindingHash !== intent.bindingHash
+      || principalId !== undefined && lease.principalId !== principalId
+      || Date.parse(lease.expiresAt) <= Date.now()) throw new Error('Original main application lease is unavailable')
+    refreshSignal?.throwIfAborted()
+    principalId ??= lease.principalId
+    expiresAt = lease.expiresAt
+    return expiresAt
+  }
+  await refresh()
   const environment: ChildProcessEnvironment = { agentId: applicationAccess.agentId, variables: { GRAPHQL_MCP_TOKEN: applicationAccess.token } }
-  return { environment, expiresAt: lease.expiresAt, async request(body: unknown, protocolVersion?: string, requestSignal?: AbortSignal) {
+  return { environment, get expiresAt() { return expiresAt }, refresh,
+    async request(body: unknown, protocolVersion?: string, requestSignal?: AbortSignal) {
     requestSignal?.throwIfAborted()
     const response = await channel.request(WORKER_MCP_EXTENSION.namespace,
       WorkerMcpRelayRequestSchema.parse({ ...envelope, operation: 'worker-mcp.request', body, ...(protocolVersion ? { protocolVersion } : {}) }),
