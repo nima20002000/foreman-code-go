@@ -1,4 +1,7 @@
-export function nativeActivityStatus(value: string | null | undefined) {
+import type { ActivityItem } from '@graphql/contracts'
+
+export function nativeActivityStatus(value: string | null | undefined):
+  Extract<ActivityItem, { kind: 'tool' }>['status'] | undefined {
   switch (value) {
     case 'canceled':
     case 'cancelled':
