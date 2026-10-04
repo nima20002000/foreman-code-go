@@ -16,6 +16,8 @@ import { createPostgresClaudeInteractionBridge, type ClaudeDomainBinding } from 
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { loadOfficialClaudeSdk } from './official.js'
+import { acceptedClaudeAppTools } from './mcpPolicy.js'
+import type { ClaudeInteractionBridge } from './interactions.js'
 import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
 
@@ -59,6 +61,7 @@ export function productionClaudeManager(input: {
     inspectedStart ??= structuredClone(await input.inspectionStart())
     return structuredClone(inspectedStart)
   }
+  let policyBridge: ClaudeInteractionBridge | undefined
   let fileServer: ReturnType<typeof createClaudeFileMcpServer> | undefined
   let allocated: ((manager: ClaudeNativeSessionManager) => void) | undefined
   const result = input.factories.allocateAdmittedClaude(async signal => {
@@ -79,6 +82,7 @@ export function productionClaudeManager(input: {
       'A registered-device profile must execute through its authenticated host.', 409)
     const domain = createPostgresClaudeInteractionBridge({ database: input.pool, binding: input.binding,
       configuration: compiled.configuration, manager: { nativeCallbackContext: (sessionId, toolUseId) => actual?.nativeCallbackContext(sessionId, toolUseId) } })
+    policyBridge = domain.bridge
     let callbackAuthority = await domain.callbackAdmission()
     signal.throwIfAborted()
     const scope = { deviceId: accepted.override.target.hostRef.mainId, profilePath: compiled.configuration.configDirectory,
@@ -94,6 +98,14 @@ export function productionClaudeManager(input: {
     allocated = manager => {
       actual = manager
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
+      const readHistory = manager.history.bind(manager)
+      manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
+        responseDeliveries: domain.bridge.deliveryEvidence(session) })
+      const reconcile = manager.reconcile.bind(manager)
+      manager.reconcile = async (session, correlationId, effectSignal) => {
+        const history = await reconcile(session, correlationId, effectSignal)
+        return { ...history, responseDeliveries: domain.bridge.deliveryEvidence(session) }
+      }
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message, effectSignal) {
         if (input.appMcpAccess === 'none' && start.environment?.variables.GRAPHQL_MCP_TOKEN) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
@@ -128,6 +140,7 @@ export function productionClaudeManager(input: {
         calls: createClaudeFileCallResolver({ manager: () => actual, signal }),
         admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })
     }
+    domain.bridge.bindMcpTools(fileServer ? [fileServer.manifest] : [])
     const callbacks = createClaudeSdkCallbacks({ manager: () => actual!, bridge: domain.bridge })
     const options = { cwd: compiled.cwd, model: compiled.model, permissionMode: compiled.permissionMode,
       ...(compiled.effort ? { effort: compiled.effort } : {}),
@@ -154,10 +167,30 @@ export function productionClaudeManager(input: {
   // Factory initialization remains lazy; the admitted allocator's exact instance
   // is captured in the construction callback rather than selected by harness ID.
   const refresh = result.manager.refreshInspectionCredentials.bind(result.manager)
+  let refreshingMcp = false
   result.manager.refreshInspectionCredentials = async (start, servers, signal) => {
-    const snapshot = await refresh(start, servers, signal)
-    inspectedStart = structuredClone(start)
-    return snapshot
+    if (refreshingMcp) throw new DomainError('CLAUDE_MCP_CONTROL_CONFLICT', 'An MCP credential refresh is already in progress.', 409)
+    refreshingMcp = true
+    try {
+      policyBridge?.bindMcpTools(fileServer ? [fileServer.manifest] : [])
+      if (input.appMcpAccess === 'none' && servers.graphql) {
+        throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This Claude owner cannot receive management MCP tools.', 403)
+      }
+      if (fileServer && servers['graphql-files'] !== undefined && servers['graphql-files'] !== fileServer.server) {
+        throw new DomainError('CLAUDE_MCP_SCOPE_CONFLICT', 'The local file server cannot be replaced during credential refresh.', 409)
+      }
+      const acceptedServers = { ...servers, ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }
+      const snapshot = await refresh(start, acceptedServers, signal)
+      const manifests = input.appMcpAccess === 'none' ? [] : await acceptedClaudeAppTools({
+        configuration: input.configuration, servers: acceptedServers, token: start.environment?.variables.GRAPHQL_MCP_TOKEN,
+        ...(signal ? { signal } : {}),
+      })
+      policyBridge!.bindMcpTools([...manifests, ...(fileServer ? [fileServer.manifest] : [])])
+      inspectedStart = structuredClone(start)
+      return snapshot
+    } finally {
+      refreshingMcp = false
+    }
   }
   const dispose = result.manager.dispose!.bind(result.manager)
   result.manager.dispose = async () => {

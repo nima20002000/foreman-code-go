@@ -53,9 +53,38 @@ export const AcceptedChatResponseControlSchema = z.object({
 })
 export type AcceptedChatResponseControl = z.infer<typeof AcceptedChatResponseControlSchema>
 
+export const ChatResponseIdentitySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('turn'), nativeTurnId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('message'), nativeMessageId: z.string().min(1), generation: z.string().min(1) }).strict(),
+])
+export type ChatResponseIdentity = z.infer<typeof ChatResponseIdentitySchema>
+
 export const ChatResponseAcknowledgmentSchema = z.object({
   source: z.enum(['provider_acknowledgement', 'provider_history']), harness: z.string().min(1), providerVersion: z.string().min(1),
   nativeSessionId: z.string().min(1), nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1),
   optionId: z.string().min(1), semantic: z.string().min(1),
-}).strict()
+  nativeIdentity: ChatResponseIdentitySchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.harness === 'claude' && value.nativeIdentity?.kind !== 'message') {
+    context.addIssue({ code: 'custom', path: ['nativeIdentity'], message: 'Claude delivery requires its message and callback generation.' })
+  }
+  if (value.harness !== 'claude' && value.nativeIdentity?.kind === 'message') {
+    context.addIssue({ code: 'custom', path: ['nativeIdentity'], message: 'This provider uses a native turn identity.' })
+  }
+})
 export type ChatResponseAcknowledgment = z.infer<typeof ChatResponseAcknowledgmentSchema>
+
+export function matchingChatResponseAcknowledgment(control: AcceptedChatResponseControl, raw: unknown): ChatResponseAcknowledgment | undefined {
+  const parsed = ChatResponseAcknowledgmentSchema.safeParse(raw)
+  if (!parsed.success) return undefined
+  const proof = parsed.data
+  if (proof.harness !== control.native.harness || proof.providerVersion !== control.native.providerVersion
+    || proof.nativeSessionId !== control.native.sessionId || proof.nativeRequestId !== control.native.requestId
+    || proof.nativeRequestType !== control.native.requestType || proof.optionId !== control.choice.optionId
+    || proof.semantic !== control.choice.semantic) return undefined
+  if (control.native.harness === 'claude' && (proof.nativeIdentity?.kind !== 'message'
+    || proof.nativeIdentity.nativeMessageId !== control.native.messageId
+    || proof.nativeIdentity.generation !== control.native.generation)) return undefined
+  if (proof.nativeIdentity?.kind === 'turn' && proof.nativeIdentity.nativeTurnId !== control.native.turnId) return undefined
+  return proof
+}

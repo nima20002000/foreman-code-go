@@ -46,3 +46,13 @@ it.each(['read-only', 'workspace-write'] as const)('keeps the existing %s sandbo
   const f = fixture(sandbox)
   expect(compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {}).sandbox.enabled).toBe(true)
 })
+
+it('qualifies built-ins separately from MCP names and keeps MCP approval out of SDK automatic allows', () => {
+  const f = fixture('danger-full-access')
+  f.configuration.tools.push('mcp__graphql__workspace_list')
+  f.configuration.permissionRules.push({ tool: 'mcp__graphql__workspace_list', effect: 'allow' })
+  f.qualification.persistedProof.claudeProof!.observedTools = ['Read', 'Bash']
+  const compiled = compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {})
+  expect(compiled.tools).toEqual(['Read', 'Bash'])
+  expect(compiled.allowedTools).toEqual(['Read'])
+})

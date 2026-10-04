@@ -1,4 +1,5 @@
 import type { DurableInteraction, NativeSessionReference } from '@graphql/contracts'
+import type { ChatResponseIdentity } from '@graphql/contracts/interaction-activity'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */
@@ -35,6 +36,7 @@ export interface NativeResponseDeliveryEvidence {
   nativeRequestType: string
   optionId: string
   semantic: NonNullable<DurableInteraction['selectedSemantic']>
+  nativeIdentity?: ChatResponseIdentity
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -114,7 +116,11 @@ export function matchingDeliveryEvidence(
   const sameRequest = deliveries.filter((proof) => proof.harness === interaction.harness
     && proof.providerVersion === interaction.providerVersion
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId)
-  if (sameRequest.some((proof) => proof.nativeRequestType !== interaction.nativeRequestType
+  const request = object(interaction.request)
+  if (sameRequest.some((proof) => proof.harness === 'claude' && (proof.nativeIdentity?.kind !== 'message'
+      || proof.nativeIdentity.nativeMessageId !== request?.nativeMessageId
+      || proof.nativeIdentity.generation !== request?.generation)
+    || proof.nativeRequestType !== interaction.nativeRequestType
     || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic)) return undefined
   const explicit = sameRequest.find((proof) =>
     (proof.source === 'provider_acknowledgement' || proof.source === 'provider_history')

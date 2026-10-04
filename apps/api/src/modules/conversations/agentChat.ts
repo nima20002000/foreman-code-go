@@ -1094,6 +1094,22 @@ export class AgentChatService {
     const current = await this.repository.get(id)
     if (!current || current.active_request_id !== requestId || current.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(current.pending_interaction, history)
+    if (runtime.manager.harness === 'claude' && messageIdentity) {
+      const sender = (await this.pool.query<{ principal_id: string }>(`select payload->>'ownerPrincipalId' as principal_id
+        from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])).rows[0]
+      if (sender?.principal_id) {
+        const principal = await readLiveManagementPrincipal(this.pool, sender.principal_id)
+        const state = await this.readConversation(principal, row.workspace_id, id)
+        const scope = state.activitySnapshot?.scope
+        if (scope) {
+          await this.commands.reconcileStoredResponses(id, requestId, scope, runtime.session!, receipt!, state)
+          for (const proof of history.responseDeliveries ?? []) {
+            if (proof.nativeIdentity) await this.commands.reconcileResponses(id, requestId, scope, runtime.session!,
+              proof.nativeIdentity, history.responseDeliveries!, state)
+          }
+        }
+      }
+    }
     if (history.terminalResult && !pending) {
       await this.settle(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {

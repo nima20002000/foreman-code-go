@@ -731,10 +731,18 @@ export class OperatorChatService {
     if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
     await this.repository.pending(id, requestId, pending)
-    if (!this.responding.has(id) && history.nativeTurnId && history.responseDeliveries?.length) {
+    if (!this.responding.has(id) && messageIdentity) {
       const state = await this.repository.get(id)
-      if (state) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
-        runtime.session, history.nativeTurnId, history.responseDeliveries, state)
+      if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+        runtime.session, receipt!, state)
+    }
+    if (!this.responding.has(id) && history.responseDeliveries?.length) {
+      const state = await this.repository.get(id)
+      for (const proof of history.responseDeliveries) {
+        const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)
+        if (state && identity) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+          runtime.session, identity, history.responseDeliveries, state)
+      }
     }
     if (history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
       && history.terminalTurn.providerId === receipt!.nativeMessageId)) {

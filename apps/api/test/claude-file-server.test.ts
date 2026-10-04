@@ -51,9 +51,24 @@ describe('official Claude SDK admitted file MCP server', () => {
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toMatchObject({ status: 'ready', contentBase64: Buffer.from('native').toString('base64') })
       expect(f.issue).toHaveBeenCalledOnce()
+      const issued = await f.issue.mock.results[0]!.value
+      await expect(f.sessions.authenticate(issued)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
       expect(f.tools.reads).toMatchObject([{ runId: 'run-a', executionId: 'execution-a', ...ref }])
       f.revoke()
       expect((await f.client.callTool({ name: 'files.read', arguments: ref })).isError).toBe(true)
+    } finally { await f.close() }
+  })
+
+  it('retires each completed call credential while later calls in the same request remain authorized', async () => {
+    const f = await fixture()
+    try {
+      for (let index = 0; index < 16; index += 1) {
+        const result = await f.client.callTool({ name: 'files.list', arguments: { scope: f.scope, limit: 25 } })
+        expect(result.isError).not.toBe(true)
+        const issued = await f.issue.mock.results[index]!.value
+        await expect(f.sessions.authenticate(issued)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
+      }
+      expect(f.issue).toHaveBeenCalledTimes(16)
     } finally { await f.close() }
   })
 

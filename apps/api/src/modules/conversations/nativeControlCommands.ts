@@ -1,8 +1,9 @@
-import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, type ChatResponseAcknowledgment, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
+import { AcceptedChatResponseControlSchema, matchingChatResponseAcknowledgment, type ChatResponseAcknowledgment, type AcceptedChatResponseControl, type ChatResponseIdentity } from '@graphql/contracts/interaction-activity'
 import type pg from 'pg'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ActivityScope, NativeSessionReference } from '@graphql/contracts'
+import type { NativeMessageSubmission } from '@graphql/contracts/claude'
 
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -19,14 +20,6 @@ function unconfirmed(requestId: string, prefix: string) {
   return new DomainError(`${prefix}_CONTROL_UNCONFIRMED`,
     'This control was recorded but its outcome is unconfirmed. Read the conversation; do not submit it again with a new request ID.',
     409, { requestId })
-}
-
-function exactAcknowledgment(control: AcceptedChatResponseControl, raw: unknown): ChatResponseAcknowledgment | undefined {
-  const proof = ChatResponseAcknowledgmentSchema.safeParse(raw)
-  return proof.success && proof.data.harness === control.native.harness && proof.data.providerVersion === control.native.providerVersion
-    && proof.data.nativeSessionId === control.native.sessionId && proof.data.nativeRequestId === control.native.requestId
-    && proof.data.nativeRequestType === control.native.requestType && proof.data.optionId === control.choice.optionId
-    && proof.data.semantic === control.choice.semantic ? proof.data : undefined
 }
 
 /**
@@ -63,7 +56,20 @@ export class NativeConversationControlCommands<State> {
 
   /** Observation may settle the original fence, never replay the native effect or change its accepted choice. */
   async reconcileResponses(conversationId: string, modelRequestId: string, scope: ActivityScope,
-    session: NativeSessionReference, nativeTurnId: string, proofs: readonly ChatResponseAcknowledgment[], state: State): Promise<void> {
+    session: NativeSessionReference, identity: ChatResponseIdentity, proofs: readonly ChatResponseAcknowledgment[], state: State): Promise<void> {
+    await this.reconcile(conversationId, modelRequestId, scope, session, identity, proofs, state)
+  }
+
+  async reconcileStoredResponses(conversationId: string, modelRequestId: string, scope: ActivityScope,
+    session: NativeSessionReference, submission: NativeMessageSubmission, state: State): Promise<void> {
+    if (session.harness !== 'claude' || submission.nativeSessionId !== session.nativeSessionId) return
+    await this.reconcile(conversationId, modelRequestId, scope, session,
+      { kind: 'message', nativeMessageId: submission.nativeMessageId }, [], state)
+  }
+
+  private async reconcile(conversationId: string, modelRequestId: string, scope: ActivityScope,
+    session: NativeSessionReference, identity: ChatResponseIdentity | { kind: 'message'; nativeMessageId: string },
+    proofs: readonly ChatResponseAcknowledgment[], state: State): Promise<void> {
     const rows = (await this.pool.query<{ principal_id: string; command_id: string; result: Outcome<State>; source: 'http' | 'mcp' }>(`
       select r.principal_id,r.command_id,r.result,a.source from management_command_receipts r
       join lateral (select source from management_audit where principal_id=r.principal_id and action=r.operation
@@ -77,9 +83,14 @@ export class NativeConversationControlCommands<State> {
       const control = parsed.data
       if (control.conversationId !== conversationId || JSON.stringify(control.scope) !== JSON.stringify(scope)
         || control.native.harness !== session.harness || control.native.providerVersion !== session.providerVersion
-        || control.native.sessionId !== session.nativeSessionId || control.native.turnId !== nativeTurnId) continue
+        || control.native.sessionId !== session.nativeSessionId
+        || (identity.kind === 'turn' ? control.native.turnId !== identity.nativeTurnId || control.native.messageId !== undefined
+          : control.native.messageId !== identity.nativeMessageId
+            || 'generation' in identity && control.native.generation !== identity.generation
+            || control.native.turnId !== undefined)) continue
       const relevant = proofs.filter((proof) => proof.nativeSessionId === session.nativeSessionId && proof.nativeRequestId === control.native.requestId)
-      const acknowledgments = relevant.map((proof) => exactAcknowledgment(control, proof))
+      const stored = matchingChatResponseAcknowledgment(control, row.result.providerAcknowledgment)
+      const acknowledgments = [...relevant.map((proof) => matchingChatResponseAcknowledgment(control, proof)), ...(stored ? [stored] : [])]
       if (!acknowledgments.length || acknowledgments.some((proof) => !proof)) continue
       const outcome = { ...row.result, status: 'completed', state: this.contract.parse(state), providerAcknowledgment: acknowledgments[0] }
       await this.pool.query(`with reconciled as (
@@ -124,6 +135,19 @@ export class NativeConversationControlCommands<State> {
         const error = prior.result.error
         throw new DomainError(error.code, error.message, error.status, error.details)
       }
+      const accepted = AcceptedChatResponseControlSchema.safeParse(prior.result.acceptedControl)
+      const proof = accepted.success ? matchingChatResponseAcknowledgment(accepted.data, prior.result.providerAcknowledgment) : undefined
+      if (accepted.success && accepted.data.conversationId === conversationId && proof && readCurrent) {
+        const state = this.contract.parse(await readCurrent())
+        const recovered = { ...prior.result, status: 'completed', state, providerAcknowledgment: proof }
+        const saved = await this.pool.query(`with recovered as (
+          update management_command_receipts set result=$4::jsonb
+          where principal_id=$1 and operation=$2 and command_id=$3 and result=$5::jsonb returning target_key
+        ) insert into management_audit(principal_id,source,action,target_key,outcome,details)
+          select $1,$6,$2,target_key,'succeeded',jsonb_build_object('commandId',$3::text,'phase','reconciled') from recovered returning 1`,
+        [...key, JSON.stringify(recovered), JSON.stringify(prior.result), source])
+        if (saved.rowCount === 1) return state
+      }
       throw unconfirmed(requestId, this.contract.prefix)
     }
 
@@ -146,8 +170,22 @@ export class NativeConversationControlCommands<State> {
     }
     if (control) {
       outcome = { ...outcome, acceptedControl: control }
-      const acknowledgment = exactAcknowledgment(control, responseEvidence?.())
+      const acknowledgment = matchingChatResponseAcknowledgment(control, responseEvidence?.())
       if (acknowledgment) outcome.providerAcknowledgment = acknowledgment
+      if (control.native.harness === 'claude' && outcome.status === 'completed' && !acknowledgment) {
+        outcome = { status: 'uncertain', acceptedControl: control }
+      }
+    }
+    if (control?.native.harness === 'claude' && outcome.providerAcknowledgment) {
+      try {
+        const journal = await this.pool.query(`update management_command_receipts set result=$4::jsonb
+          where principal_id=$1 and operation=$2 and command_id=$3 and result->>'status'='pending' returning 1`,
+        [...key, JSON.stringify({ status: 'pending', acceptedControl: control, providerAcknowledgment: outcome.providerAcknowledgment })])
+        if (journal.rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix)
+      } catch {
+        // A lost storage write leaves the original response fenced against another native send.
+        throw unconfirmed(requestId, this.contract.prefix)
+      }
     }
     const save = () => this.pool.query(`with settled as (
         update management_command_receipts set result=$4::jsonb
