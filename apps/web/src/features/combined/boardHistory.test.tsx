@@ -52,9 +52,8 @@ async function mountBoard(entry = runsUrl('run-a', scope)) {
   return { ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>), router }
 }
 
-async function choose(runId: string, user: ReturnType<typeof userEvent.setup>) {
-  const controls = screen.getByRole('group', { name: 'Board controls' })
-  await user.click(within(controls).getByRole('button', { name: 'Runs' }))
+async function choose(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement, runId: string) {
+  await user.click(trigger)
   const menu = await screen.findByRole('menu', { name: 'Runs' })
   await user.click(await waitFor(() => {
     const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
@@ -144,9 +143,9 @@ describe('FIL-17 + SCH selected Board', () => {
         HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
     )
     await mountBoard()
-    await screen.findByRole('region', { name: 'Selected Run board' })
-    const board = () => within(screen.getByRole('region', { name: 'Selected Run board' }))
-    expect(await board().findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    const board = await screen.findByRole('region', { name: 'Selected Run board' })
+    const graph = within(board)
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
@@ -160,12 +159,12 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(within(dialog).queryByRole('button', { name: 'Upload workflow file' })).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Choose workflow file')).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
-    await choose('run-b', user)
-    expect(await board().findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
+    await choose(user, runs, 'run-b')
+    expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
     expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
-    await choose('run-a', user)
-    expect(await board().findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    await choose(user, runs, 'run-a')
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
   })
 
