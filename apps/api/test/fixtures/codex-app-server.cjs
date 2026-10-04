@@ -175,7 +175,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       process.exit(17)
     }
     const started = () => {
-      result(message.id, { turn: nativeTurn })
+      if (!flag('hold-turn-start-ack')) result(message.id, { turn: nativeTurn })
       if (prompt === 'approval' || prompt === 'multi') {
         expectedResponses = prompt === 'multi' ? 2 : 1
         approval(nativeTurn, 900 + nextTurn)
