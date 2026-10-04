@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { IdSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema,
   OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
+  ListOperatorConversationsResponseSchema,
   GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
   OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@foreman-code/contracts/operator-chat'
@@ -32,10 +33,23 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
   }
   registerOperatorControlTools(server, context)
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_create')) server.registerTool('operator_chat_create', {
-    description: 'Create an owner-bound Operator conversation using the current saved Operator defaults. Requires operator_chat:write.',
-    inputSchema: CreateOperatorConversationRequestSchema, outputSchema: CreateOperatorConversationResponseSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'operator_chat_create', async () => ({ conversation: await context.services.operatorChat!.create(context.principal, input.title) })))
+    description: 'Create an owner-bound Operator conversation using the current saved Operator defaults. Supply a commandId and reuse it with the same title after a lost response to recover the same conversation, even if defaults have changed. Reusing it with a different title is a conflict. Use operator_chat_list to rediscover owned conversations. Requires global operator_chat:write.',
+    inputSchema: CreateOperatorConversationRequestSchema.required({ commandId: true }),
+    outputSchema: CreateOperatorConversationResponseSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ commandId, title }) => invokeOperatorTool(context, 'operator_chat_create', async () => ({
+    conversation: await context.services.operatorChat!.create(context.principal, title, { commandId, source: 'mcp' }),
+  })))
+  if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_list')) {
+    server.registerTool('operator_chat_list', {
+      description: 'Rediscover this caller\'s persisted Operator conversations, including newly created empty chats. Returns only conversations owned by this principal and excludes deleted conversations. Requires global operator_chat:read.',
+      inputSchema: z.object({}).strict(),
+      outputSchema: ListOperatorConversationsResponseSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, async () => invokeOperatorTool(context, 'operator_chat_list', async () => ({
+      conversations: await context.services.operatorChat!.list(context.principal),
+    })))
+  }
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_get')) server.registerTool('operator_chat_get', {
     description: 'Read an owned Operator conversation snapshot, including its harness handoff parent and recent persisted messages and activities. Use operator_chat_history_get and operator_chat_activity_get to page older records. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1) }).strict(), outputSchema: GetOperatorConversationResponseSchema,

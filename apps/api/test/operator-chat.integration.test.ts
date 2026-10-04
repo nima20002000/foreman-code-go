@@ -378,7 +378,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         return client
       }
       client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
-      const created = (await client.callTool({ name: 'operator_chat_create', arguments: {} })).structuredContent as { conversation: { id: string } }
+      const created = (await client.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })).structuredContent as { conversation: { id: string } }
       sourceId = created.conversation.id
       await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId,
         request: { requestId: 'mcp-source', content: 'Remember the release details.' } } })

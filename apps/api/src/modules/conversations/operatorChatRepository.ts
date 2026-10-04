@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   applyOperatorChatSettings, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
-  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
+  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorAgent, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@foreman-code/contracts'
 import {
@@ -12,6 +12,7 @@ import {
   type OperatorConversationHistoryPage, type OperatorConversationHistoryQuery,
 } from '@foreman-code/contracts/operator-chat'
 import type pg from 'pg'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
@@ -25,6 +26,9 @@ import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
+import { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../access/policy.js'
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
@@ -111,6 +115,30 @@ export class PostgresOperatorConversationRepository {
 
   async create(operatorId: string, configuration: OperatorConfigurationVersion, ownerId: string, title?: string, id: string = randomUUID()): Promise<Conversation> {
     return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
+  }
+
+  async createCommand(
+    principal: ManagementPrincipal,
+    input: { commandId: string; source: 'http' | 'mcp'; title?: string | undefined },
+    configure: (client: pg.PoolClient) => Promise<{ operator: OperatorAgent; configuration: OperatorConfigurationVersion }>,
+  ): Promise<Conversation> {
+    const result = await new PostgresCommandCoordinator(this.pool).execute({
+      principal,
+      source: input.source,
+      operation: 'operator_chat_create',
+      commandId: input.commandId,
+      targetKey: 'operator-conversations',
+      payload: { title: input.title ?? 'New conversation' },
+      authorize: async (client) => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'operator_chat:write')
+      },
+      perform: async (client) => {
+        const { operator, configuration } = await configure(client)
+        return this.createWithQuery(client, operator.id, configuration, principal.id, input.title, randomUUID())
+      },
+      replayResult: (value) => ConversationSchema.parse(value),
+    })
+    return result.value
   }
 
   private async createWithQuery(query: Queryable, operatorId: string, configuration: OperatorConfigurationVersion,

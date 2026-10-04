@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { GetOperatorConversationResponseSchema, OperatorActivityPageSchema,
+  CreateOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
   SendOperatorMessageResponseSchema } from '@graphql/contracts'
 import { OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
 import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
@@ -12,6 +13,8 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { ReviewManager } from './fixtures/agent1OperatorChat.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
@@ -55,6 +58,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
         } as unknown as OperatorServices,
       },
     })
+    registerOperatorChatRoutes(app, chat)
     clients = []
     address = await app.listen({ host: '127.0.0.1', port: 0 })
   }, 30_000)
@@ -236,5 +240,76 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     }
     expect((await repository.get(conversation.id))?.revision).toBe(snapshot.revision)
     expect((await repository.history(conversation.id))?.entries).toHaveLength(40)
+  })
+
+  it('rediscovers empty owned conversations and recovers creation after response loss without duplicates', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write', 'capabilities:read'])
+    const command = { commandId: randomUUID(), title: 'Recover this empty conversation' }
+    const create = () => owner.client.callTool({ name: 'operator_chat_create', arguments: command })
+    // Discard the creation response; discovery must recover an empty conversation.
+    expect((await create()).isError).not.toBe(true)
+    const discovery = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
+    const listed = ListOperatorConversationsResponseSchema.parse(discovery.structuredContent)
+    expect(listed.conversations).toHaveLength(1)
+    const original = listed.conversations[0]!
+    expect(original.title).toBe(command.title)
+    expect((await repository.get(original.id))?.messages).toEqual([])
+    const initial = await operators.ensure()
+    const defaults = new PostgresFoundationSettingsRepository(database.pool)
+    const snapshot = await defaults.getAgentDefaults()
+    const harness = { ...initial.configuration.harness, model: 'changed-default-model' }
+    await defaults.updateAgentDefaults({
+      ...snapshot.value, operator: { ...snapshot.value.operator, harness },
+    }, snapshot.revision)
+    await operators.update(harness, initial.configuration.id)
+
+    const retries = await Promise.all([create(), create()])
+    for (const retry of retries) {
+      expect(retry.isError).not.toBe(true)
+      expect(CreateOperatorConversationResponseSchema.parse(retry.structuredContent).conversation).toEqual(original)
+    }
+    const httpRetry = await fetch(new URL('/api/operator/conversations', address), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(command),
+    })
+    expect(httpRetry.status).toBe(201)
+    expect(CreateOperatorConversationResponseSchema.parse(await httpRetry.json()).conversation).toEqual(original)
+    const read = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: original.id } })
+    expect(GetOperatorConversationResponseSchema.parse(read.structuredContent).conversation).toEqual(original)
+    const conflict = await owner.client.callTool({ name: 'operator_chat_create', arguments: {
+      ...command, title: 'Different title',
+    } })
+    expect(conflict.isError).toBe(true)
+    expect(JSON.stringify(conflict)).toContain('COMMAND_ID_CONFLICT')
+
+    const another = await issue(['operator_chat:read', 'operator_chat:write'])
+    const independent = await another.client.callTool({ name: 'operator_chat_create', arguments: command })
+    const other = CreateOperatorConversationResponseSchema.parse(independent.structuredContent).conversation
+    expect(other.id).not.toBe(original.id)
+    const ownList = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
+    expect(ListOperatorConversationsResponseSchema.parse(ownList.structuredContent).conversations).toEqual([original])
+    const otherList = await another.client.callTool({ name: 'operator_chat_list', arguments: {} })
+    expect(ListOperatorConversationsResponseSchema.parse(otherList.structuredContent).conversations).toEqual([other])
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['operator_chat_list']) })
+
+    const reader = await issue(['operator_chat:read'])
+    const scoped = await issue(['operator_chat:write', 'operator_chat:read'], { workspaceIds: [randomUUID()] })
+    await denied(reader.client, 'operator_chat_create', command)
+    await denied(scoped.client, 'operator_chat_create', command)
+    await denied(scoped.client, 'operator_chat_list', {})
+    const writeOnly = await issue(['operator_chat:write'])
+    await denied(writeOnly.client, 'operator_chat_list', {})
+    expect((await repository.list(owner.principal.id)).map((conversation) => conversation.id)).toEqual([original.id])
+    const receipts = await database.pool.query('select result from management_command_receipts where principal_id=$1', [
+      owner.principal.id,
+    ])
+    expect(receipts.rows).toEqual([{ result: original }])
+    const audits = await database.pool.query(
+      "select source,outcome from management_audit where principal_id=$1 and action='operator_chat_create' and outcome='succeeded'",
+      [owner.principal.id],
+    )
+    expect(audits.rows).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
   })
 })

@@ -236,8 +236,16 @@ export class OperatorChatService {
     }
     return row
   }
-  async create(principal: ManagementPrincipal, title?: string) {
-    this.assertOpen(); requireAuthorization(principal, 'operator_chat:write')
+  async create(principal: ManagementPrincipal, title?: string, command?: { commandId: string; source: 'http' | 'mcp' }) {
+    this.assertOpen()
+    requireAuthorization(principal, 'operator_chat:write')
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:write')
+    if (command) {
+      return this.repository.createCommand(principal, { ...command, title }, async (client) => {
+        this.assertOpen()
+        return this.operators.ensure(client)
+      })
+    }
     const { operator, configuration } = await this.operators.ensure()
     this.assertOpen()
     return this.repository.create(operator.id, configuration, principal.id, title)
@@ -250,9 +258,12 @@ export class OperatorChatService {
       return { conversationId: id }
     })
   }
-  list(principal: ManagementPrincipal) {
+  async list(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'operator_chat:read')
-    return this.repository.list(principal.id)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    const conversations = await this.repository.list(principal.id)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    return conversations
   }
   summaries(principal: ManagementPrincipal, limit?: number, attentionOnly = false) {
     requireAuthorization(principal, 'operator_chat:read')
