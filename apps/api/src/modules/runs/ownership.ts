@@ -49,7 +49,7 @@ export class RunOwnership {
     const result = await sql.query<{ owner_id: string; fence: string }>(
       `select pg_backend_pid()::text as owner_id,
               (extract(epoch from a.backend_start)*1000000)::bigint::text as fence
-       from pg_stat_activity a
+       from pg_stat_get_activity(pg_backend_pid()) a
        where a.pid=pg_backend_pid() and exists (
          select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory'
          and l.classid=810002::oid and l.objid=(hashtext($1)::bigint & 4294967295)::oid
