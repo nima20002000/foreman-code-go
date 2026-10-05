@@ -29,9 +29,9 @@ import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 async function fixture(readOnly: boolean) {
   const db = await agent3Database()
   const app = Fastify({ logger: false })
-  let detach: (() => Promise<void>) | undefined
+  const resources: { close?: () => Promise<void> } = {}
   onTestFinished(async () => {
-    try { await detach?.() }
+    try { await resources.close?.() }
     finally { try { await app.close() } finally { await db.close() } }
   })
   const config: ApiConfig = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
@@ -105,7 +105,7 @@ async function fixture(readOnly: boolean) {
     }, recorded.connection, signal) } })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'Worker file caller', version: '1.0.0' })
-  detach = async () => {
+  resources.close = async () => {
     lifetime.abort()
     lease.close()
     try { await workerFiles.close() }
