@@ -1,4 +1,5 @@
 import { ClaudeInputNotDeliveredError } from './port.js'
+import { readClaudeCompactionHistory } from './compactionHistory.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { isDeepStrictEqual } from 'node:util'
 import type {
@@ -138,6 +139,10 @@ export function createClaudeSdkRunner(input: {
       const fork = await client.forkSession(source.nativeSessionId, { dir: source.cwd })
       if (!fork.sessionId || fork.sessionId === source.nativeSessionId) throw new Error('Claude fork did not return a new native session')
       return { ...target, nativeSessionId: fork.sessionId }
+    },
+    async compactionHistory(session, scope, cursor, signal) {
+      assertClaudeSessionScope(session, scope)
+      return readClaudeCompactionHistory(session, cursor, signal)
     },
     async history(session, scope, signal, page) {
       signal?.throwIfAborted()

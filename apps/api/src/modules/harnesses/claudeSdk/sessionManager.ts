@@ -1,3 +1,4 @@
+import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { SessionPreferencesSchema } from '@graphql/contracts'
 import { claudeContextSnapshot, claudeSessionEnvironment } from './sessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionPreferences } from '@graphql/contracts'
@@ -86,7 +87,7 @@ interface Runtime {
   appliedPreferences?: SessionPreferences
   commands?: string[]
   context?: ContextSnapshot
-  compaction?: { state: CompactionState; promptUuid: string; finish(): void; fail(error: unknown): void } | undefined
+  compaction?: { state: CompactionState; promptUuid: string; progress: import('../port.js').NativeCompactInput['onProgress']; finish(): void; fail(error: unknown): void } | undefined
 
   sdk: ClaudeSdkSession
   generation: string
@@ -509,8 +510,12 @@ export function createClaudeNativeSessionManager(options: {
           record(runtime, 'session.compaction', { nativeSessionId: runtime.session.nativeSessionId,
             nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
             trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null }, runtime.active)
-          if (runtime.compaction) runtime.compaction.state = { ...runtime.compaction.state,
-            status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
+          if (runtime.compaction) {
+            runtime.compaction.state = { ...runtime.compaction.state,
+              nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
+              status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
+            await runtime.compaction.progress(runtime.compaction.state)
+          }
         }
         if (frame.type === 'result' && runtime.context && frame.session_id === runtime.session?.nativeSessionId) {
           const modelUsage = frame.modelUsage as Record<string, { contextWindow?: number; inputTokens?: number; outputTokens?: number }> | undefined
@@ -940,19 +945,22 @@ export function createClaudeNativeSessionManager(options: {
       if (runtime.active || runtime.controlPending || runtime.compaction
         || options.pendingInteractions?.(session).length) throw new HarnessExecutionError('CLAUDE_TURN_ACTIVE', 'Wait for the turn and its approvals to finish.')
       if (!runtime.commands?.includes('compact')) throw new HarnessExecutionError('CLAUDE_COMPACT_UNAVAILABLE', 'Native compact is unavailable.')
+      const before = await options.runner.compactionHistory?.({ ...options.scope, nativeSessionId: session.nativeSessionId }, options.scope, undefined, signal)
+      if (!before) throw new HarnessExecutionError('CLAUDE_COMPACTION_HISTORY_UNAVAILABLE', 'Native compaction requires its persisted session boundary reader.')
       runtime.controlPending = true
       let finish!: () => void
       let fail!: (error: unknown) => void
       const completed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
       const control = { state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
-        nativeOperationId: null, status: 'running' as CompactionState['status'], message: 'Compacting context.',
+        nativeOperationId: null, claudeCursor: before.cursor, status: 'running' as CompactionState['status'], message: 'Compacting context.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: now() },
-        promptUuid: claudePromptUuid(input.clientCorrelationId), finish, fail }
+        promptUuid: claudePromptUuid(input.clientCorrelationId), progress: input.onProgress, finish, fail }
       runtime.compaction = control
       const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
       const abort = () => fail(waitSignal.reason)
       waitSignal.addEventListener('abort', abort, { once: true })
       try {
+        await input.onProgress(control.state)
         await runtime.sdk.offer({ promptUuid: control.promptUuid, content: '/compact' }, signal)
         await input.onProgress(control.state)
         await completed
@@ -970,10 +978,15 @@ export function createClaudeNativeSessionManager(options: {
         runtime.controlPending = control.state.status === 'uncertain'
       }
     },
-    async reconcileCompaction(session, state) {
+    async reconcileCompaction(session, state, signal) {
       const runtime = runtimeFor(session)
       const control = runtime.compaction
-      if (!control || control.state.requestId !== state.requestId) return state
+      if (!control || control.state.requestId !== state.requestId) {
+        if (!state.claudeCursor || !options.runner.compactionHistory) return state
+        const history = await options.runner.compactionHistory({ ...options.scope, nativeSessionId: session.nativeSessionId },
+          options.scope, state.claudeCursor, signal)
+        return recoveredClaudeCompaction(state, history.boundaries)
+      }
       if (['completed', 'no-op', 'failed'].includes(control.state.status)) {
         runtime.compaction = undefined
         runtime.controlPending = false

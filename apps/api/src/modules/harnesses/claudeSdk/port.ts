@@ -101,5 +101,9 @@ export interface ClaudeSdkRunner {
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>
   subagentHistory?(session: ClaudePersistedSession, scope: ClaudeSessionScope, agentId?: string, offset?: number, signal?: AbortSignal): Promise<{ agentIds: string[]; agentId?: string; messages: readonly unknown[]; hasMore: boolean }>
+  compactionHistory?(session: ClaudePersistedSession, scope: ClaudeSessionScope,
+    cursor?: import('./compactionHistory.js').ClaudeCompactionCursor, signal?: AbortSignal): Promise<{
+      cursor: import('./compactionHistory.js').ClaudeCompactionCursor; boundaries: Record<string, unknown>[];
+    }>
   dispose(): Promise<void>
 }
