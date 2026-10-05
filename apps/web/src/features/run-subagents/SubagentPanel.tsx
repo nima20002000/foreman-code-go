@@ -117,7 +117,8 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
           <StatusBadge label={status.label} tone={status.tone} busy={child.status === 'running'} />
           <span>{subagentTiming(child)}</span>
           {child.evidence !== 'confirmed' && <p className="run-subagent-note">This status isn't confirmed yet and may still change.</p>}
-          {!canSend && !canInterrupt && <p className="run-subagent-note">Controls are unavailable for this subagent right now.</p>}
+          {!canSend && !canInterrupt && !record.availableActions.respond
+            && <p className="run-subagent-note">Controls are unavailable for this subagent right now.</p>}
         </section>
         {record.pendingInteraction ? <section aria-label="Subagent request">
           <p>This subagent needs your response.</p>

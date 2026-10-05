@@ -17,7 +17,7 @@ export function subagentAvailableActions(child: RunSubagent, principal: Manageme
   const interrupt = live && active && qualified('interrupt') && Boolean(lease?.interrupt) && isAuthorized(principal, 'runs:stop', resource)
   const respond = live && Boolean(lease?.respond && lease.pendingInteraction?.())
     && isAuthorized(principal, 'interactions:respond', resource)
-  const blockedReason = sendInput || interrupt ? null : stopped ? 'RUN_STOPPED' : !lease ? 'SUBAGENT_CONTROL_UNAVAILABLE'
+  const blockedReason = sendInput || interrupt || respond ? null : stopped ? 'RUN_STOPPED' : !lease ? 'SUBAGENT_CONTROL_UNAVAILABLE'
     : !live ? 'SUBAGENT_LEASE_UNAVAILABLE' : !qualified('sendInput') && !qualified('interrupt') ? 'SUBAGENT_CONTROL_UNQUALIFIED' : 'SUBAGENT_ACTION_NOT_PERMITTED'
   return { sendInput, interrupt, ...(lease?.respond ? { respond } : {}), blockedReason }
 }
