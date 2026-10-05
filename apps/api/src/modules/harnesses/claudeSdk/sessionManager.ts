@@ -1,3 +1,4 @@
+import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { z } from 'zod'
 import { SessionPreferencesSchema } from '@graphql/contracts'
@@ -612,7 +613,7 @@ export function createClaudeNativeSessionManager(options: {
           record(runtime, 'session.compaction', { nativeSessionId: runtime.session.nativeSessionId,
             nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
             trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null }, runtime.active)
-          if (runtime.compaction) {
+          if (runtime.compaction && metadata?.trigger === 'manual') {
             runtime.compaction.state = { ...runtime.compaction.state,
               nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
               status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
@@ -625,7 +626,8 @@ export function createClaudeNativeSessionManager(options: {
           if (usage?.contextWindow && usage.contextWindow > 0) runtime.context = { ...runtime.context,
             capacityTokens: usage.contextWindow }
         }
-        if (runtime.compaction && frame.type === 'result' && frame.session_id === runtime.session?.nativeSessionId) {
+        if (runtime.compaction && runtime.session
+          && claudeCompactionResultMatches(frame, runtime.session.nativeSessionId, runtime.compaction.promptUuid)) {
           const control = runtime.compaction
           if (frame.is_error === true) control.state = { ...control.state, status: 'failed', message: 'Claude rejected compaction.' }
           else if (control.state.status !== 'completed') control.state = { ...control.state,

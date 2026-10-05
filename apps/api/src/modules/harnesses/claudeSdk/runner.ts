@@ -1,5 +1,5 @@
 import { ClaudeInputNotDeliveredError } from './port.js'
-import { readClaudeCompactionResult, saveClaudeCompactionResult } from './compactionResults.js'
+import { readClaudeCompactionResult, saveClaudeCompactionResult, claudeCompactionResultMatches } from './compactionResults.js'
 import { readClaudeCompactionHistory } from './compactionHistory.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -376,8 +376,10 @@ export function createClaudeSdkRunner(input: {
               if (options.resume && options.resume.nativeSessionId !== frame.session_id) throw new Error('Claude resumed a different native session')
               nativeSessionId = frame.session_id
             }
-            if (compact && frame?.type === 'system' && frame.subtype === 'compact_boundary') compact.boundary = true
-            if (compact && frame?.type === 'result' && nativeSessionId && frame.parent_tool_use_id == null) {
+            if (compact && frame?.type === 'system' && frame.subtype === 'compact_boundary'
+              && frame.session_id === nativeSessionId
+              && (frame.compact_metadata as { trigger?: string } | undefined)?.trigger === 'manual') compact.boundary = true
+            if (compact && frame && nativeSessionId && claudeCompactionResultMatches(frame, nativeSessionId, compact.promptUuid)) {
               await saveClaudeCompactionResult({ ...options.scope, nativeSessionId }, compact.promptUuid,
                 frame.is_error === true ? 'failed' : compact.boundary ? 'completed' : 'no-op')
               compact = undefined

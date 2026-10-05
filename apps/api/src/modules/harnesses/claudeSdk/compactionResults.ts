@@ -49,3 +49,15 @@ export async function readClaudeCompactionResult(session: ClaudePersistedSession
     return result
   } finally { await file.close() }
 }
+
+
+export function claudeCompactionResultMatches(frame: Record<string, unknown>, sessionId: string, promptUuid: string) {
+  if (frame.type !== 'result' || frame.session_id !== sessionId || typeof frame.is_error !== 'boolean'
+    || frame.parent_tool_use_id != null || frame.deferred_tool_use != null
+    || ['tool_deferred', 'background_requested'].includes(String(frame.terminal_reason))) return false
+  const uuids = Array.isArray(frame.user_message_uuids)
+    ? frame.user_message_uuids.filter((value): value is string => typeof value === 'string') : []
+  if (typeof frame.user_message_uuid === 'string') uuids.push(frame.user_message_uuid)
+  // Native command-only results may omit UUIDs; the owned idle query admits one control at a time.
+  return uuids.length === 0 || uuids.every(uuid => uuid === promptUuid)
+}

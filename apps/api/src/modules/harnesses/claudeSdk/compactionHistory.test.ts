@@ -1,4 +1,4 @@
-import { saveClaudeCompactionResult } from './compactionResults.js'
+import { saveClaudeCompactionResult, claudeCompactionResultMatches } from './compactionResults.js'
 import { recoverPersistedClaudeCompaction } from './recoverCompaction.js'
 import { mkdtemp, mkdir, appendFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -51,4 +51,13 @@ for (const outcome of ['no-op', 'failed'] as const) it(`reads a cold ${outcome} 
     expect((await recoverPersistedClaudeCompaction({ ...pending,
       claudeSession: { ...scope, configRevision: 'another-configuration' } })).status).toBe('uncertain')
   } finally { await rm(profilePath, { recursive: true, force: true }) }
+})
+
+it('does not settle a command from another result, a child or a malformed frame', () => {
+  const result = { type: 'result', session_id: 'session', is_error: false, user_message_uuid: 'compact-uuid' }
+  expect(claudeCompactionResultMatches(result, 'session', 'compact-uuid')).toBe(true)
+  expect(claudeCompactionResultMatches({ ...result, user_message_uuid: 'old-turn' }, 'session', 'compact-uuid')).toBe(false)
+  expect(claudeCompactionResultMatches({ ...result, parent_tool_use_id: 'child' }, 'session', 'compact-uuid')).toBe(false)
+  expect(claudeCompactionResultMatches({ ...result, session_id: 'foreign' }, 'session', 'compact-uuid')).toBe(false)
+  expect(claudeCompactionResultMatches({ ...result, is_error: undefined }, 'session', 'compact-uuid')).toBe(false)
 })
