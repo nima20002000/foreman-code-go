@@ -1,7 +1,7 @@
 import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -25,6 +25,7 @@ import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServe
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -179,15 +180,8 @@ export async function qualifyEng03OpenCode() {
         where harness=$1 and version=$2 and binary_sha256=$3 and suite_revision=$4`,
       ['opencode', submitted.version, submitted.binarySha256, submitted.suiteRevision],
     )
-    const report = JSON.stringify({ qualification, evidence: result.rows[0]?.evidence ?? null }, null, 2)
     const filename = `opencode-qualification-${randomUUID()}.json`
-    await writeFile(join(process.env.ENG03_A_EVIDENCE_DIR!, filename), report, { mode: 0o600, flag: 'wx' })
-    // Only the controller receives this explicit archive path; native launch filters GRAPHQL_TEST_*.
-    const archive = process.env.GRAPHQL_TEST_EVIDENCE_ARCHIVE
-    if (archive) {
-      await mkdir(archive, { recursive: true, mode: 0o700 })
-      await writeFile(join(archive, filename), report, { mode: 0o600, flag: 'wx' })
-    }
+    await writeNativeAcceptanceEvidence(filename, { qualification, evidence: result.rows[0]?.evidence ?? null })
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)

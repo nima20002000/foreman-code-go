@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
@@ -61,6 +61,8 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { configureNativeAcceptanceMcp } from './nativeAcceptanceMcp.js'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
@@ -304,6 +306,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     })
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
+    await configureNativeAcceptanceMcp(livePool, runtimeDirectory,
+      { codex: codexBinary, opencode: openCodeBinary }, endpoint)
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
@@ -712,7 +716,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
     }
     const finalized = await Promise.allSettled([
-      writeFile(artifactPath, JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2)),
+      writeNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence)),
       removeFixtureDirectory(root),
     ])
     for (const result of finalized) if (result.status === 'rejected') cleanupErrors.push(result.reason)

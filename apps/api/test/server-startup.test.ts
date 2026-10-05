@@ -17,6 +17,10 @@ vi.mock('node:fs/promises', async original => ({
 // Native qualification belongs to buildProductionApp, which this lifecycle fixture replaces.
 vi.mock('../src/modules/harnesses/qualification/suites/codex.js', () => ({ codexQualificationSuite: {} }))
 vi.mock('../src/modules/harnesses/qualification/suites/opencode.js', () => ({ opencodeQualificationSuite: {} }))
+vi.mock('../src/infrastructure/logger.js', async original => ({
+  ...(await original<typeof import('../src/infrastructure/logger.js')>()),
+  enableFileLogging: async () => undefined,
+}))
 vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: '/fixture' }, host: '127.0.0.1', port: 0 }) }))
 vi.mock('../src/modules/byte-transfer/installedEntrypoints.js', () => ({ readMainRsyncEntrypoint: async () => ({ kind: 'unavailable', reason: 'Startup lifecycle fixture has no installed rsync selection.' }) }))
 vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
