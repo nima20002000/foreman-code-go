@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, type CodexNativeOutputs,
   type CodexNativeOutputCallback, type CodexNativeOutputTurnPin } from '../src/modules/harnesses/codexNativeOutput.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
@@ -103,7 +104,8 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
       for (const sandbox of ['read-only', 'danger-full-access'] as const) {
         f.config.sandbox = sandbox
         delete f.config.advanced!.workspaceWrite
-        await assert.rejects(f.manager.createSession(f.source), { code: 'CODEX_NATIVE_OUTPUT_UNQUALIFIED' })
+        await assert.rejects(f.manager.createSession(f.source), (error: unknown) =>
+          error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_NATIVE_OUTPUT_UNQUALIFIED')
         assert.throws(() => codexNativeOutputDeclarations(f.config, 'codex-cli 0.154.0'))
       }
       assert.throws(() => new CodexAppServerSessionManager('/unused', undefined, undefined, undefined, 'scoped',

@@ -425,6 +425,8 @@ describe('authenticated namespace carrier mechanics', () => {
       await flush()
       expect(handler).not.toHaveBeenCalled()
       expect(pair.rawMain.closed).toBe(false)
+      await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: null })
+      expect(handler).toHaveBeenCalledOnce()
     } finally { await pair.close() }
   })
   it('delivers Stop while the ordinary chunk window is waiting for receipts', async () => {

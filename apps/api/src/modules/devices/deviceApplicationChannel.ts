@@ -237,6 +237,8 @@ export class DeviceApplicationChannel {
       await this.sendPacket(id, assembly.namespace, registration.version, kind,
         result.payload, result.bytes, assembly.abort.signal, { stop: assembly.stop })
     } catch (error) {
+      // A peer can abandon a reply after its completed handler releases the request slot.
+      if (error instanceof DeviceApplicationError && error.code === 'cancelled') return
       if (!(error instanceof DeviceApplicationError) || assembly.abort.signal.aborted) throw error
       if (error.code === 'backpressure') {
         // A rejection needs no packet allocation when uploads exhaust the shared byte budget.
