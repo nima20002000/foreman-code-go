@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { readdir } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
-import { CURRENT_WORKFLOW_TOOLS, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
-import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
+import { CURRENT_WORKFLOW_TOOLS, RUN_INSPECTION_TOOLS } from '@foreman-code/contracts/wave25'
+import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'

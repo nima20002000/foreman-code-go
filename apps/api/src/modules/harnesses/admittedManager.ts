@@ -2,7 +2,7 @@ import type { AgentHarness } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { unavailableNativeResponse } from './responseAvailability.js'
 import { NativeDeliveryError } from './errors.js'
 

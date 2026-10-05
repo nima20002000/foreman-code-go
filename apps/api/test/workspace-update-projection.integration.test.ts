@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import * as contracts from '@graphql/contracts/management'
+import * as contracts from '@foreman-code/contracts/management'
 import { describe, expect, it } from 'vitest'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
 

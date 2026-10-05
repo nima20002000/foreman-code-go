@@ -6,10 +6,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, CreateOperatorConversationResponseSchema,
-  GetOperatorConversationResponseSchema, SendOperatorMessageResponseSchema, type NativeHarnessEvent } from '@graphql/contracts'
-import { FileWithRevisionSchema } from '@graphql/contracts/files'
-import { ManagedWorkspaceCommandResultSchema } from '@graphql/contracts/management'
-import { SavedManagedWorkflowSchema } from '@graphql/contracts/wave25'
+  GetOperatorConversationResponseSchema, SendOperatorMessageResponseSchema, type NativeHarnessEvent } from '@foreman-code/contracts'
+import { FileWithRevisionSchema } from '@foreman-code/contracts/files'
+import { ManagedWorkspaceCommandResultSchema } from '@foreman-code/contracts/management'
+import { SavedManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import type { ApiConfig } from '../src/config.js'
 import { OperatorChatService, PostgresOperatorConversationRepository,
   type NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
@@ -36,12 +37,15 @@ function nativeCallCompleted(event: NativeHarnessEvent, harness: 'codex' | 'open
     const item = event.payload.item as Record<string, unknown> | undefined
     return event.type === 'item.completed' && item?.tool === name
       && (name === 'files_read' ? item.type === 'dynamicToolCall' && item.success === true
-        : item.type === 'mcpToolCall' && item.server === 'graphql')
+        : item.type === 'mcpToolCall' && APP_MCP_SERVER_NAMES.some(server => server === item.server))
   }
   const part = event.payload.part as Record<string, unknown> | undefined
   const state = part?.state as Record<string, unknown> | undefined
   const tool = String(part?.tool)
-  const matches = name === 'files_read' ? /^graphql_files_.+_files_read$/.test(tool) : tool === `graphql_${name}`
+  const managementNames = APP_MCP_SERVER_NAMES.flatMap(server => [
+    `${server}_${name}`, `${server.replaceAll('-', '_')}_${name}`,
+  ])
+  const matches = name === 'files_read' ? /^graphql_files_.+_files_read$/.test(tool) : managementNames.includes(tool)
   return event.type === 'message.part.updated' && part?.type === 'tool' && matches
     && (name === 'files_read' ? state?.status === 'completed'
       : ['completed', 'error'].includes(String(state?.status)))
@@ -81,15 +85,17 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           '[mcp_servers.graphql]', `url = ${JSON.stringify(endpoint)}`,
           'bearer_token_env_var = "GRAPHQL_MCP_TOKEN"', '',
         ].join('\n'))
+        // Exercise the supported installed connection name without creating a naming collision.
         await writeFile(join(directory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
           type: 'remote', url: endpoint, enabled: true, oauth: false,
           headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
         } } }))
         f = await workspaceMcpFixture({ connectionString, port, async configure({ app, pool, access, commands, parentPath, services }) {
+          const fileStorageRoot = join(home, 'vault')
           const config: ApiConfig = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
             database: { connectionString, maxConnections: 4,
               connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
-            workspaceStorageRoot: parentPath, fileStorageRoot: join(home, 'vault'), harnesses: {
+            workspaceStorageRoot: parentPath, fileStorageRoot, harnesses: {
               ...binaries, workspaceRoot: join(home, 'runtime'), timeoutMs: 180000,
             } }
           const operators = new PostgresOperatorRepository(pool)
@@ -106,7 +112,8 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
               ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp, serverEnabled: { graphql: true } } } }
           await operators.update(native, current.configuration.id)
           const responseJournal = new NativeResponseJournal(join(home, 'responses'))
-          const factories = new NativeHarnessFactories({ ...binaries, appMcpEndpoint: endpoint, responseJournal })
+          const factories = new NativeHarnessFactories({ ...binaries, appMcpEndpoint: endpoint, responseJournal,
+            openCodeFileStorageRoot: fileStorageRoot, workspaceRoot: config.harnesses.workspaceRoot })
           const resolver = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: directory,
             endpointHost: '127.0.0.1', appMcpEndpoint: endpoint, managers: new Map(), nativeFactories: factories,
             processRegistry: new NativeProcessRegistry(join(home, 'processes')), responseJournal })
@@ -178,7 +185,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           CreateOperatorConversationResponseSchema, { commandId: randomUUID(), title: 'Implement attached specification' })
         const command = { workspaceId: workspace.value.workspace.id, commandId: randomUUID(),
           name: `Native spec ${randomUUID()}` }
-        const spec = `Call the graphql MCP workflow_create tool exactly once with ${JSON.stringify(command)}.\n`
+        const spec = `Call the Foreman Code MCP workflow_create tool exactly once with ${JSON.stringify(command)}.\n`
           + 'If creation succeeds, call workflow_get with its workspaceId and workflowId.\n'
           + 'If access is denied, report ACCESS_DENIED and stop. Do not change any files.\n'
         const bytes = Buffer.from(spec)
@@ -200,7 +207,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         const request = { requestId: randomUUID(), attachments: [ref], content:
           `Read spec.md by calling the attached-file files_read tool with this exact JSON: ${JSON.stringify({
             ...ref, offset: 0, length: bytes.length,
-          })}. Copy both IDs completely. Decode contentBase64 and follow its instructions using graphql MCP. `
+          })}. Copy both IDs completely. Decode contentBase64 and follow its instructions using Foreman Code MCP. `
           + 'Do not use shell commands or change any files.' }
         const accepted = await callWorkspaceTool(caller.client, 'operator_chat_send', SendOperatorMessageResponseSchema,
           { conversationId: conversation.id, request })

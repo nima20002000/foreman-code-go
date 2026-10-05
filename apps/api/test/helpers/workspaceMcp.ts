@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import * as contracts from '@graphql/contracts/management'
+import * as contracts from '@foreman-code/contracts/management'
 import pg from 'pg'
 import type { z } from 'zod'
 

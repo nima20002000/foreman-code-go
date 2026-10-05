@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
+import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../src/modules/files/references/requests.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'

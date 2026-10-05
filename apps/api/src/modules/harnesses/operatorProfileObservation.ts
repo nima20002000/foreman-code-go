@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { OperatorConfigurationVersionSchema, type NativeSessionReference } from '@graphql/contracts'
+import { OperatorConfigurationVersionSchema, type NativeSessionReference } from '@foreman-code/contracts'
 import { nativeCorrelation } from '../conversations/operatorChatRepository.js'
 import { DomainError } from '../errors.js'
 import type { AcceptedProfileSelector } from './instanceSettings/acceptedProfile.js'

@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
-import * as contracts from '@graphql/contracts/management'
+import * as contracts from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
 

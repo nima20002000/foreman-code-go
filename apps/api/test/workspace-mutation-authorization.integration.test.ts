@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import * as contracts from '@graphql/contracts/management'
+import * as contracts from '@foreman-code/contracts/management'
 import { describe, expect, it } from 'vitest'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../src/modules/workspaces/projectFolderCleanup.js'
 import { callWorkspaceTool, waitForWorkspaceBlocker, workspaceMcpFixture } from './helpers/workspaceMcp.js'

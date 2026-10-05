@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import type { WorkspaceCreateInput } from '@graphql/contracts/management'
+import type { WorkspaceCreateInput } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import filesystem from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'

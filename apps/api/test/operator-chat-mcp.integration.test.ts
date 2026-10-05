@@ -3,9 +3,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GetOperatorConversationResponseSchema, OperatorActivityPageSchema,
   CreateOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
-  OperatorChatSetupSchema, SendOperatorMessageResponseSchema } from '@graphql/contracts'
-import { OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
-import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
+  OperatorChatSetupSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
+import { OperatorConversationHistoryPageSchema } from '@foreman-code/contracts/operator-chat'
+import type { ManagementAction, ManagementScope } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

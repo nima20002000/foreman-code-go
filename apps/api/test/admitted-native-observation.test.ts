@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { request } from './opencode-fixtures.js'
-import { OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@graphql/contracts'
+import { OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
 
 it('forwards observation attachment and retains history/cancel access without new-work capability', async () => {
   const session = { harness: 'opencode' as const, providerVersion: '1.18.31', nativeSessionId: 'saved-session' }
