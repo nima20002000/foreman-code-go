@@ -29,7 +29,8 @@ describe('built web hosting', () => {
   it('serves the dashboard and deep links without caching HTML', async () => {
     const app = await fixture()
     for (const url of [
-      '/', '/workspaces', '/workspaces/workspace-1/workflows', '/settings/harnesses',
+      '/', '/workspaces', '/workspaces/workspace-1/workflows', '/workspaces/workspace-1/jobs',
+      '/settings/harnesses',
       '/account', '/terminal', '/approvals', '/sign-in', '/setup',
     ]) {
       const response = await app.inject({ url })

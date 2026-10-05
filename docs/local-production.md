@@ -54,6 +54,18 @@ Production storage is independent of development and tests:
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
 
+The Jobs view and Operator MCP use the same persistent build queue in this
+installation. Its reviewed Main configuration belongs at
+`~/.local/state/graphql-production/runs/job-queue.json`, under the configured
+`HARNESS_WORKSPACE_ROOT`. The owner supplies a private 0600 file with the shared
+`JobBuildQueueConfigurationSchema`, the installation's Main ID, reviewed limits
+and resource envelopes. Queue review is owner bootstrap metadata; Operator MCP
+cannot supply or approve it. The installer preserves this runtime directory
+across updates and does not create queue limits, resource allowances or approvals.
+Restart the API after changing the configuration. Saved requests, original
+deadlines, selections and reservations remain in the production database;
+startup reconciles those attempts and keeps capacity until confirmed closure.
+
 PostgreSQL uses its durable defaults, including fsync, synchronous commit, and
 full-page writes. The production password stays stable across updates. Preserve
 `production.env` with database backups; installation refuses to generate another
