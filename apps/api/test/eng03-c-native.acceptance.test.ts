@@ -236,7 +236,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
     const target = join(outside, 'approved.txt')
-    const command = `printf 'APPROVED\\n' > '${target}'`
+    const command = `echo APPROVED > '${target}'`
     let interactionId = '', sessionId = '', siblingActiveAtWait = false
     let approvalEvidence: unknown
     try {
