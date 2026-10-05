@@ -255,14 +255,18 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
       where d.run_id=$1 and d.relationship_id=$2 and a.lineage_id=$3 limit 1`,
     [scope.runId, relationshipId, activation.lineage_id])).rowCount) return repeatConflict('WORK_UNRESOLVED_DENIAL_MISSING')
   }
-  const unresolvedId = repeatId('work-unresolved', scope.runId, sourceExecutionId)
-  const prior = (await sql.query<{ reason: string; relationship_id: string | null; result_digest: string }>(
-    'select reason,relationship_id,result_digest from run_work_unresolved where unresolved_id=$1 and run_id=$2',
-    [unresolvedId, scope.runId])).rows[0]
+  const prior = (await sql.query<{ unresolved_id: string; reason: string; result_digest: string }>(
+    `select unresolved_id,reason,result_digest from run_work_unresolved
+      where run_id=$1 and execution_id=$2 and relationship_id is not distinct from $3`,
+    [scope.runId, sourceExecutionId, relationshipId ?? null])).rows[0]
+  const unresolvedId = prior?.unresolved_id ?? (relationshipId
+    ? repeatId('work-unresolved', scope.runId, sourceExecutionId, relationshipId)
+    : repeatId('work-unresolved', scope.runId, sourceExecutionId))
   const resultDigest = repeatDigest(execution.result, 64 * 1024)
   if (prior) {
-    if (prior.reason !== reason || prior.relationship_id !== (relationshipId ?? null)
-      || prior.result_digest !== resultDigest) return repeatConflict('WORK_UNRESOLVED_REPLAY_CONFLICT')
+    if (prior.reason !== reason || prior.result_digest !== resultDigest) {
+      return repeatConflict('WORK_UNRESOLVED_REPLAY_CONFLICT')
+    }
     return { unresolvedId, replayed: true }
   }
   context.assertActive()

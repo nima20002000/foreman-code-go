@@ -1086,8 +1086,12 @@ export class RepeatRunRepository {
       }>(`select unresolved_id,execution_id,result_digest,reason
           from run_work_unresolved where run_id=$1 order by unresolved_id`,
       [context.scope.runId])).rows
-      const unresolvedByExecution = new Map(unresolved.map((item) => [item.execution_id, item]))
-      if (unresolvedByExecution.size !== unresolved.length) return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
+      const unresolvedByExecution = new Map<string, typeof unresolved>()
+      for (const item of unresolved) {
+        const causes = unresolvedByExecution.get(item.execution_id) ?? []
+        causes.push(item)
+        unresolvedByExecution.set(item.execution_id, causes)
+      }
       const accepted = await context.sql.query<{ record: unknown; result_json: string; result_digest: string;
         execution_id: string; activation_id: string; stored_activation_id: string; accepted: boolean;
         source_requests: string; source_denials: string; returned: unknown | null }>(`
@@ -1120,14 +1124,14 @@ export class RepeatRunRepository {
             return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
           }
         }
-        const unresolvedItem = unresolvedByExecution.get(row.execution_id)
-        if (unresolvedItem) {
+        const unresolvedItems = unresolvedByExecution.get(row.execution_id)
+        if (unresolvedItems) {
           const terminalWithFindings = workResult.data.remainingFindings.length > 0
             && (routing.kind === 'finish' || routing.kind === 'return' && routing.outcome === 'accepted')
-          if (unresolvedItem.result_digest !== row.result_digest
+          if (unresolvedItems.some((unresolvedItem) => unresolvedItem.result_digest !== row.result_digest
             || unresolvedItem.reason === 'finish_with_findings' && !terminalWithFindings
             || unresolvedItem.reason === 'repeated_exhausted_route'
-              && routing.kind !== 'request' && routing.kind !== 'finish') {
+              && routing.kind !== 'request' && routing.kind !== 'finish')) {
             return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
           }
           unresolvedByExecution.delete(row.execution_id)
