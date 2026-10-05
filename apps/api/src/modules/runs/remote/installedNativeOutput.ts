@@ -70,7 +70,7 @@ export function createInstalledNativeOutputs(ports: InstalledNativeOutputProvide
           || scope.chat.executionId !== artifactBinding.intent.executionId) throw unavailable()
         await current(activationSignal)
         const storageInput = ports.storage(input, pin)
-        if (!isDeepStrictEqual(storageInput.owner.intent, artifactBinding.intent)
+        if (!('intent' in storageInput.owner) || !isDeepStrictEqual(storageInput.owner.intent, artifactBinding.intent)
           || !isDeepStrictEqual(storageInput.owner.session, pin.session)
           || storageInput.owner.nativeTurnId !== pin.nativeTurnId
           || storageInput.owner.runtimeGeneration !== pin.runtimeGeneration) throw unavailable()

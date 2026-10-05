@@ -58,13 +58,16 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     assertNativeOutputRootExcluded(rootDirectory, roots)
     assertNativeOutputRootExcluded(budgetDirectory, roots)
   }
-  const initialize = () => storage ??= (async () => {
+  const initialize = (signal?: AbortSignal) => storage ??= (async () => {
     await mkdir(rootDirectory, { recursive: true, mode: 0o700 })
     await mkdir(budgetDirectory, { recursive: true, mode: 0o700 })
     return createNativeOutputBudgetLedger({ rootDirectory: budgetDirectory,
       installation: { mainId: context.binding.mainId, deviceId: context.binding.deviceId,
-        workerInstallationId: context.binding.workerInstallationId }, limits, initializeNewStore: true })
-  })()
+        workerInstallationId: context.binding.workerInstallationId }, limits, initializeNewStore: true, signal })
+  })().catch((error: unknown) => {
+    storage = undefined
+    throw error
+  })
   const request = async (payload: unknown, signal?: AbortSignal) => {
     await context.assertCurrent(undefined, signal)
     const capture = input.captureRequest(WORKER_MCP_EXTENSION.namespace)
@@ -96,7 +99,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
         throw unavailable()
       }
       assertStoragePlacement(qualification.expectedSandbox)
-      await initialize()
+      await initialize(signal)
       if (!qualified || !isDeepStrictEqual(qualified, qualification)) {
         await qualifyCodexOutputProtection({ qualification, protectedDirectory: rootDirectory,
           registry: input.registry, ...input.qualification,
@@ -132,7 +135,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
       if (!qualified || !sameCodexNativeOutputSandbox(prepared.effectiveSandbox, prepared.expectedSandbox)
         || !sameCodexNativeOutputSandbox(prepared.effectiveSandbox, qualified.expectedSandbox)) throw unavailable()
       return { rootDirectory, owner, limits,
-        budget: { reserve: async (...args) => (await initialize()).reserve(...args) },
+        budget: { reserve: async (reservation, signal) => (await initialize(signal)).reserve(reservation, signal) },
         assertCurrent: (signal) => context.assertCurrent(pin, signal),
         protection: {
           assertProtected: async (original, signal) => {

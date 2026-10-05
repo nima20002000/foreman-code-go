@@ -1,16 +1,31 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile } from 'node:fs/promises'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile, rmdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceSessionBindingSchema } from '@foreman-code/contracts/device-connection'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, createNativeOutputBudgetLedger,
-  type InstalledNativeOutputStorageInput } from './installedNativeOutputStorage.js'
+  type InstalledNativeOutputStorageInput, type RemoteNativeOutputStorageOwner,
+  type LocalNativeOutputStorageOwner } from './installedNativeOutputStorage.js'
+import { openPrivateRoot, withPrivateDirectoryLock } from '../../sources/privateFilesystem.js'
 
 const roots: string[] = []
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
+const processes: ChildProcess[] = []
+afterEach(async () => {
+  for (const child of processes.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close')
+      child.kill('SIGKILL')
+      await closed
+    }
+  }
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+})
 async function fixture() {
   const root = await mkdtemp('/tmp/native-output-storage-'); roots.push(root)
   const rootDirectory = join(root, 'private'); await mkdir(rootDirectory, { mode: 0o700 })
@@ -24,13 +39,51 @@ async function fixture() {
   const release = vi.fn(async () => {}), reservationCurrent = vi.fn(async () => {})
   // Contract doubles only. These do not establish actual native qualification or
   // a production durable ledger; the adapter must require their real providers.
-  const input: InstalledNativeOutputStorageInput = { rootDirectory,
+  const input: InstalledNativeOutputStorageInput & { owner: RemoteNativeOutputStorageOwner } = { rootDirectory,
     owner: { intent, binding, session: { harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'native-session' },
       nativeTurnId: 'original-turn', runtimeGeneration: 1 }, limits,
     assertCurrent: vi.fn(async () => {}),
     protection: { assertProtected: vi.fn(async () => {}), assertQuiescent: vi.fn(async () => {}) },
     budget: { reserve: vi.fn(async () => ({ assertCurrent: reservationCurrent, release })) } }
   return { root, input, release, reservationCurrent, request: { artifactId: randomUUID(), ...limits } }
+}
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+async function budgetFixture() {
+  const f = await fixture()
+  const rootDirectory = join(f.root, 'budget')
+  await mkdir(rootDirectory, { mode: 0o700 })
+  const { binding } = f.input.owner
+  const input = { rootDirectory, installation: { mainId: binding.mainId, deviceId: binding.deviceId,
+    workerInstallationId: binding.workerInstallationId },
+    limits: { maxDiskBytes: 8, maxSnapshotBytes: 8, maxCommandRecords: 8 }, initializeNewStore: true as const }
+  const reservation = { owner: f.input.owner, limits: input.limits,
+    requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } }
+  return { ...f, budgetInput: input, reservation }
+}
+
+function ledgerProcess(script: string, input: unknown) {
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, JSON.stringify(input)],
+    { stdio: ['ignore', 'pipe', 'pipe'] })
+  processes.push(child)
+  const started = deferred()
+  let output = ''
+  let errors = ''
+  child.stdout!.on('data', (chunk: Buffer) => {
+    output += chunk.toString('utf8')
+    if (output.includes('ready\n')) started.resolve()
+  })
+  child.stderr!.on('data', (chunk: Buffer) => { errors += chunk.toString('utf8') })
+  const completed = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', code => code === 0 ? resolve() : reject(new Error(errors || `Ledger process exited ${code}`)))
+  })
+  return { child, started: Promise.race([started.promise, completed]), completed }
 }
 
 describe('explicit qualified native storage adapter, no native acceptance', () => {
@@ -92,6 +145,158 @@ describe('explicit qualified native storage adapter, no native acceptance', () =
 })
 
 describe('durable native output installation budget, no qualification grants', () => {
+  it('serializes simultaneous initialization, reservations and releases across independent turns', async () => {
+    const f = await budgetFixture()
+    const ledgers = await Promise.all(Array.from({ length: 4 }, () => createNativeOutputBudgetLedger(f.budgetInput)))
+    const allocations = ledgers.map((_ledger, index) => ({ ...f.reservation, artifactId: randomUUID(),
+      owner: { ...f.reservation.owner, nativeTurnId: `turn-${index}` },
+      requested: { maxDiskBytes: 2, maxSnapshotBytes: 2, maxCommandRecords: 2 } }))
+    const reservations = await Promise.all(ledgers.map((ledger, index) => ledger.reserve(allocations[index]!)))
+    await Promise.all(reservations.map(reservation => reservation.assertCurrent()))
+    await expect(ledgers[0]!.reserve({ ...f.reservation, artifactId: randomUUID() }))
+      .rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_STORAGE_UNAVAILABLE' })
+    const recovered = await Promise.all(allocations.map(async allocation => {
+      const ledger = await createNativeOutputBudgetLedger(f.budgetInput)
+      return ledger.reserve(allocation)
+    }))
+    await Promise.all([...reservations, ...recovered].map(reservation => reservation.release()))
+    await Promise.all(reservations.map(reservation => expect(reservation.assertCurrent()).rejects.toThrow()))
+    const full = await ledgers[0]!.reserve({ ...f.reservation, artifactId: randomUUID(), requested: f.budgetInput.limits })
+    await full.assertCurrent()
+    await full.release()
+  }, 30_000)
+
+  it('waits for a live operation across processes, then preserves all concurrent charges and releases', async () => {
+    const f = await budgetFixture()
+    const root = await openPrivateRoot(f.budgetInput.rootDirectory)
+    const entered = deferred()
+    const resume = deferred()
+    const marker = join(f.budgetInput.rootDirectory, '.native-output-budget.lock')
+    const holding = withPrivateDirectoryLock(root, async () => {
+      await mkdir(marker, { mode: 0o700 })
+      entered.resolve()
+      await resume.promise
+      await rmdir(marker)
+    })
+    await entered.promise
+    const script = `
+      import { randomUUID } from 'node:crypto';
+      const { createNativeOutputBudgetLedger } = await import(${JSON.stringify(new URL('./installedNativeOutputStorage.ts', import.meta.url).href)});
+      const { budgetInput, reservation } = JSON.parse(process.argv[1]);
+      console.log('ready');
+      const ledger = await createNativeOutputBudgetLedger(budgetInput);
+      const reservations = await Promise.all(Array.from({ length: 4 }, (_, index) => ledger.reserve({
+        ...reservation, artifactId: randomUUID(), owner: { ...reservation.owner, nativeTurnId: 'process-turn-' + index }
+      })));
+      await Promise.all(reservations.map(reservation => reservation.assertCurrent()));
+      await Promise.all(reservations.map(reservation => reservation.release()));
+    `
+    const child = ledgerProcess(script, { budgetInput: f.budgetInput, reservation: f.reservation })
+    const childResult = expect(child.completed).resolves.toBeUndefined()
+    const local = createNativeOutputBudgetLedger(f.budgetInput).then(async ledger => {
+      const reservations = await Promise.all(Array.from({ length: 4 }, (_, index) => ledger.reserve({
+        ...f.reservation, artifactId: randomUUID(), owner: { ...f.reservation.owner, nativeTurnId: `local-turn-${index}` },
+      })))
+      await Promise.all(reservations.map(reservation => reservation.assertCurrent()))
+      await Promise.all(reservations.map(reservation => reservation.release()))
+      return ledger
+    })
+    const localResult = expect(local).resolves.toBeDefined()
+    try {
+      await child.started
+      await delay(50)
+    } finally {
+      resume.resolve()
+      await holding
+      await root.close()
+    }
+    await Promise.all([childResult, localResult])
+    const ledger = await local
+    const full = await ledger.reserve({ ...f.reservation, artifactId: randomUUID(), requested: f.budgetInput.limits })
+    await full.assertCurrent()
+    await full.release()
+  }, 30_000)
+
+  it('cancels a queued reservation without changing an existing charge', async () => {
+    const f = await budgetFixture()
+    const ledger = await createNativeOutputBudgetLedger(f.budgetInput)
+    const original = await ledger.reserve({ ...f.reservation, artifactId: randomUUID() })
+    const root = await openPrivateRoot(f.budgetInput.rootDirectory)
+    const entered = deferred()
+    const resume = deferred()
+    const holding = withPrivateDirectoryLock(root, async () => { entered.resolve(); await resume.promise })
+    await entered.promise
+    const stop = new AbortController()
+    const waiting = ledger.reserve({ ...f.reservation, artifactId: randomUUID() }, stop.signal)
+    const rejected = expect(waiting).rejects.toThrow()
+    try {
+      await delay(25)
+      stop.abort(new Error('Turn stopped while waiting'))
+      await rejected
+    } finally {
+      resume.resolve()
+      await holding
+      await root.close()
+    }
+    await original.assertCurrent()
+    const remainder = await ledger.reserve({ ...f.reservation, artifactId: randomUUID(),
+      requested: { maxDiskBytes: 7, maxSnapshotBytes: 7, maxCommandRecords: 7 } })
+    await Promise.all([original.release(), remainder.release()])
+  }, 30_000)
+
+  it('retains a killed process marker and its original reservation on recovery', async () => {
+    const f = await budgetFixture()
+    const ledger = await createNativeOutputBudgetLedger(f.budgetInput)
+    const allocation = { ...f.reservation, artifactId: randomUUID(), requested: f.budgetInput.limits }
+    const original = await ledger.reserve(allocation)
+    const script = `
+      import { mkdir } from 'node:fs/promises';
+      import { join } from 'node:path';
+      const { openPrivateRoot, withPrivateDirectoryLock } = await import(${JSON.stringify(new URL('../../sources/privateFilesystem.ts', import.meta.url).href)});
+      const { rootDirectory } = JSON.parse(process.argv[1]);
+      const root = await openPrivateRoot(rootDirectory);
+      await withPrivateDirectoryLock(root, async () => {
+        await mkdir(join(rootDirectory, '.native-output-budget.lock'), { mode: 0o700 });
+        console.log('ready');
+        await new Promise(() => { setInterval(() => {}, 1000); });
+      });
+    `
+    const child = ledgerProcess(script, f.budgetInput)
+    const exited = expect(child.completed).rejects.toThrow()
+    await child.started
+    child.child.kill('SIGKILL')
+    await exited
+    await expect(createNativeOutputBudgetLedger(f.budgetInput)).rejects.toMatchObject({ code: 'EEXIST' })
+    await expect(original.release()).rejects.toMatchObject({ code: 'EEXIST' })
+    await expect(ledger.reserve({ ...f.reservation, artifactId: randomUUID() })).rejects.toMatchObject({ code: 'EEXIST' })
+    // A reconciler can remove the marker only after confirming that original operation stopped.
+    await rmdir(join(f.budgetInput.rootDirectory, '.native-output-budget.lock'))
+    const recovered = await createNativeOutputBudgetLedger(f.budgetInput)
+    await (await recovered.reserve(allocation)).assertCurrent()
+    await expect(recovered.reserve({ ...f.reservation, artifactId: randomUUID() })).rejects.toThrow()
+    await original.release()
+  }, 30_000)
+
+  it('recovers local owners without a remote dispatch identity and rejects cross-installation claims', async () => {
+    const f = await budgetFixture()
+    const installation = { kind: 'local' as const, mainId: f.input.owner.intent.mainId }
+    const owner: LocalNativeOutputStorageOwner = { kind: 'local', mainId: installation.mainId,
+      executionId: 'local-execution', attemptId: 'local-attempt', placementHash: 'a'.repeat(64),
+      session: f.input.owner.session, nativeTurnId: 'local-turn', runtimeGeneration: 1 }
+    const input = { ...f.budgetInput, installation }
+    const ledger = await createNativeOutputBudgetLedger(input)
+    const allocation = { ...f.reservation, owner, artifactId: randomUUID() }
+    const storage = await createInstalledNativeOutputStorage({ ...f.input, owner, limits: input.limits, budget: ledger })
+    const original = await storage.reserve({ artifactId: allocation.artifactId, ...allocation.requested })
+    const recovered = await createNativeOutputBudgetLedger(input)
+    await (await recovered.reserve(allocation)).assertCurrent()
+    await expect(recovered.reserve({ ...allocation, owner: { ...owner, mainId: randomUUID() } })).rejects.toThrow()
+    await expect(recovered.reserve({ ...allocation, owner: f.input.owner })).rejects.toThrow()
+    await expect(createNativeOutputBudgetLedger(f.budgetInput)).rejects.toThrow()
+    await original.release()
+    await expect(original.assertCurrent()).rejects.toThrow()
+  })
+
   it('recovers exact reservations and enforces aggregate caps across turns and ledger instances', async () => {
     const f = await fixture(), owner = f.input.owner, binding = owner.binding
     const rootDirectory = join(f.root, 'budget'); await mkdir(rootDirectory, { mode: 0o700 })
