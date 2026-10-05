@@ -73,7 +73,7 @@ export function createInstalledWorkflowNativeOutputFactory(input: {
     const request = async (operation: 'worker-mcp.authorize-native-output-declarations' | 'worker-mcp.authorize-native-output'
       | 'worker-mcp.request', details: Record<string, unknown>, signal?: AbortSignal) => {
       await current(signal)
-      const envelope = WorkerMcpRelayRequestSchema.parse({ version: 1, operation, intent: context.intent,
+      const envelope = WorkerMcpRelayRequestSchema.parse({ version: 1, operation, intent: context.currentIntent(),
         placement: context.placement, applicationAccess: context.applicationAccess(), ...details })
       const response = await context.requestMain(envelope, signal)
       await current(signal)
@@ -184,7 +184,7 @@ export function createInstalledWorkflowBufferedNativeOutputFactory(input: {
       | 'worker-mcp.authorize-native-output' | 'worker-mcp.request', details: Record<string, unknown>, signal?: AbortSignal) => {
       await context.assertCurrent(undefined, signal)
       const envelope = WorkerMcpRelayRequestSchema.parse({ version: 1, operation,
-        intent: context.intent, placement: context.placement, applicationAccess: context.applicationAccess(), ...details })
+        intent: context.currentIntent(), placement: context.placement, applicationAccess: context.applicationAccess(), ...details })
       const response = await context.requestMain(envelope, signal)
       await context.assertCurrent(undefined, signal)
       if (response.bytes !== undefined) throw unavailable()

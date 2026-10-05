@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Socket } from 'node:net'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,6 +11,8 @@ import Fastify from 'fastify'
 import { MainWorkerMcpRelay, selectedMainMcpForward, type SelectedMainMcpForward } from './workerMcpRelay.js'
 import { isAuthorized } from '../access/policy.js'
 import { deferred } from '../../../test/helpers/wave25Agent3.js'
+import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
+import { prepareWorkerApplicationAccess } from '../runs/remote/workerApplicationAccess.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -43,14 +48,80 @@ function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutpu
   const forward = vi.fn<SelectedMainMcpForward['request']>(async () => ({
     statusCode: 200, contentType: 'application/json', body: '{"ok":true}',
   }))
-  const relay = new MainWorkerMcpRelay(mainId, pool, { authenticate: async () => principal }, { request: forward }, nativeOutputs)
+  const createRelay = () => new MainWorkerMcpRelay(mainId, pool,
+    { authenticate: async () => principal }, { request: forward }, nativeOutputs)
+  const relay = createRelay()
   const applicationAccess = { kind: 'scoped-worker-mcp' as const, token: 'original-worker-bearer', executionId: intent.executionId,
     agentId: 'agent', operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash }
   const request = { version: 1, operation: 'worker-mcp.authorize', intent, placement, applicationAccess }
   const connection = { mainId, deviceId, workerInstallationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
-  return { relay, principal, binding, request, connection, forward, query }
+  return { relay, createRelay, principal, binding, request, connection, forward, query }
 }
 describe('Main worker MCP relay with original binding doubles and real worker scope policy', () => {
+  it('keeps the original authenticated worker endpoint through Main restart and owner reconciliation', async () => {
+    const f = fixture()
+    const root = await mkdtemp(join(tmpdir(), 'worker-mcp-restart-'))
+    let intent = f.request.intent
+    let selectedMain = f.relay
+    let main = Fastify()
+    let endpoint: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
+    const openMain = async () => {
+      main.post('/mcp', (request, reply) => {
+        if (request.headers.authorization !== `Bearer ${f.request.applicationAccess.token}`) {
+          return reply.code(401).send({ error: 'Worker credential denied' })
+        }
+        return { jsonrpc: '2.0', id: 1, result: { tools: [] } }
+      })
+      await main.listen({ host: '127.0.0.1', port: 0 })
+      f.forward.mockImplementation(selectedMainMcpForward(main).request)
+    }
+    try {
+      await openMain()
+      const relay = await prepareWorkerApplicationAccess({ request: async (_namespace, raw, options) => ({
+        payload: await selectedMain.handle(raw, f.connection, options?.signal),
+      }) }, f.request.intent, f.request.placement, f.request.applicationAccess,
+      new AbortController().signal, { currentIntent: () => intent })
+      const environment = relay.environment
+      endpoint = await createWorkerMcpEndpoint({ relay, launcher: join(root, 'graphql-mcp.mjs'),
+        signal: new AbortController().signal })
+      const route = join(root, 'routes', `${createHash('sha256').update(f.request.applicationAccess.token).digest('hex')}.json`)
+      const originalRoute = JSON.parse(await readFile(route, 'utf8'))
+      const requestWorker = (token = f.request.applicationAccess.token) => fetch(endpoint!.endpoint, {
+        method: 'POST', headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      })
+      expect((await requestWorker()).status).toBe(200)
+
+      await main.close()
+      const renewed = { ...intent, owner: { grantId: 'replacement-owner-grant', epoch: '2' } }
+      ports.intent.mockResolvedValue(renewed)
+      selectedMain = f.createRelay()
+      main = Fastify()
+      await openMain()
+      await expect(endpoint.refreshLease()).rejects.toMatchObject({ code: 'WORKER_MCP_SCOPE_CONFLICT' })
+      intent = renewed
+      await endpoint.refreshLease()
+      const recovered = await requestWorker()
+      expect(recovered.status).toBe(200)
+      expect(await recovered.json()).toMatchObject({ result: { tools: [] } })
+      expect(relay.environment).toBe(environment)
+      expect(environment.variables.GRAPHQL_MCP_TOKEN).toBe(f.request.applicationAccess.token)
+      expect(JSON.parse(await readFile(route, 'utf8'))).toEqual(originalRoute)
+
+      f.forward.mockClear()
+      expect((await requestWorker('foreign-worker-token')).status).toBe(401)
+      expect(f.forward).not.toHaveBeenCalled()
+      f.principal.grants = []
+      await expect(endpoint.refreshLease()).rejects.toMatchObject({ status: 403 })
+      expect((await requestWorker()).status).toBe(502)
+      expect(f.forward).not.toHaveBeenCalled()
+    } finally {
+      await endpoint?.close()
+      await main.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('does not infer native mutation permission from a valid application lease', async () => {
     const f = fixture()
     await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',

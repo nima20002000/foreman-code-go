@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest'
 import type { AgentFilePublishInput } from '@foreman-code/contracts/files'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import type { TransferContext, TransferIntent } from '@foreman-code/contracts/byte-transfer'
@@ -29,7 +29,8 @@ import { CanonicalNativeArtifactResults } from '../../files/distributed/nativeRe
 import { NativeArtifactOutputs, type WorkflowNativeArtifactOutput } from './nativeArtifactOutputs.js'
 import { DomainError } from '../../errors.js'
 import { createInstalledNativeOutputs } from './installedNativeOutput.js'
-import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
+import { createInstalledWorkflowBufferedNativeOutputFactory, createInstalledWorkflowNativeOutputFactory,
+  ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
 import type { InstalledWorkflowNativeOutputContext } from './installedWorkflowHost.js'
 import { WorkflowNativeArtifactResults } from './workflowNativeArtifactResults.js'
 
@@ -66,7 +67,7 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
       directoryIdentityHash: hash('unit-root'), rootPolicyId: 'policy', rootPolicyRevision: '1', locationRevision: '1',
       attestationId: 'unit-attestation', attestationHash: hash('unit-attestation') },
     source: { revisionId: 'source', manifestDigest: hash('source'), materializationId: 'materialization', materializationDigest: hash('materialization') },
-    payload: { kind: 'agent', agentId: f.scope.chat.agentId, agentConfigurationVersionId: 'saved-configuration', driverId: 'driver',
+    payload: { kind: 'agent', agentId: f.scope.chat.agentId, agentConfigurationVersionId: 'saved-configuration', driverId: 'codex',
       driverRevision: '1', instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'installation', installationFingerprint: 'fingerprint',
       runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [], artifactOutputs: { version: 1, outputKeys: ['report'] } },
     bindingHash: intent.bindingHash }
@@ -126,7 +127,7 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
     files, fileBytes, canonicalRoot, authority, publisher, token, accepted, publication, publish, admissions, links }
 }
 
-async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
+async function installedProducer(t: Awaited<ReturnType<typeof fixture>>, storageKind: 'installed' | 'buffer' = 'installed') {
   if (t.placement.payload.kind !== 'agent') throw new Error('Expected Agent fixture')
   const agentId = t.placement.payload.agentId
   const binding: DeviceSessionBinding = { ...t.context, connectionGeneration: 1 }
@@ -143,7 +144,7 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
     nativeSessionId: t.f.context.nativeSessionId }, connectionId: 'original-native-connection', runtimeGeneration: 1,
     nativeTurnId: t.f.context.turnId!, assertCurrent: vi.fn() }
   const context: InstalledWorkflowNativeOutputContext = {
-    intent: t.intent, placement: t.placement, binding,
+    intent: t.intent, currentIntent: vi.fn(() => t.intent), placement: t.placement, binding,
     materialization: { receipt: { binding: { rootId: t.rootBinding.rootId,
       bindingRevision: t.rootBinding.rootBindingRevision } } } as InstalledWorkflowNativeOutputContext['materialization'],
     assertCurrent: vi.fn(async () => {}),
@@ -177,10 +178,12 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
     if (request.method === 'finish') return { payload: await t.receiver.finish(request.transferId, t.context) }
     throw new Error('Unexpected artifact byte operation')
   } }
-  const factory = createInstalledWorkflowNativeOutputFactory({ stateDirectory: t.root, pairing,
-    connection: () => ({ captureRequest: () => captured }) })
-  const ports = factory(context)
-  const native = createInstalledNativeOutputs(ports)
+  const connection = () => ({ captureRequest: () => captured })
+  const native = storageKind === 'buffer'
+    ? createInstalledWorkflowBufferedNativeOutputFactory({ connection })(context).codex
+    : createInstalledNativeOutputs(createInstalledWorkflowNativeOutputFactory({
+      stateDirectory: t.root, pairing, connection,
+    })(context))
   const prepare = () => native.prepare({ ...q, effectiveSandbox: { ...q.expectedSandbox, writableRoots: [q.expectedSandbox.cwd] },
     session: pin.session, clientCorrelationId: `execution:${t.intent.executionId}`, connectionId: pin.connectionId,
     runtimeGeneration: pin.runtimeGeneration }, new AbortController().signal)
@@ -188,13 +191,16 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('original worker-native artifact sender', () => {
-  it('hands an installed producer on one computer to a second computer through authenticated MCP after a lost publication reply', async ({ onTestFailed }) => {
+  it.each(['installed', 'buffer'] as const)(
+    'hands a %s producer to a second computer through authenticated MCP after owner renewal and a lost reply',
+    async storageKind => {
     let stage = 'fixture'
     onTestFailed(() => { console.error(`Artifact handoff stopped at: ${stage}`) })
     // Use the production chunk window here; the resume cases below separately
     // exercise small chunks and lost chunk acknowledgments.
     const t = await fixture(undefined, BYTE_TRANSFER_POLICY.maxChunkBytes)
-    const producer = await installedProducer(t)
+    const producer = await installedProducer(t, storageKind)
+    let mainIntent = t.intent
     const app = Fastify()
     cleanups.push(() => app.close())
     app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500)
@@ -250,6 +256,8 @@ describe('original worker-native artifact sender', () => {
     let loseReply = true
     vi.mocked(producer.context.requestMain).mockImplementation(async (raw, signal) => {
       const request = WorkerMcpRelayRequestSchema.parse(raw)
+      expect(request.intent).toEqual(mainIntent)
+      expect(request.applicationAccess.token).toBe(t.token)
       if (request.operation !== 'worker-mcp.request') return requestMain(raw, signal)
       const body = request.body as { id: string; params: { name: string; arguments: Parameters<typeof t.main.admit>[0] } }
       if (body.params.name === 'files.admit_transferred_result') return { payload: { statusCode: 200,
@@ -272,6 +280,8 @@ describe('original worker-native artifact sender', () => {
     const created = await bridge.dispatch({ operation: 'create', commandId: randomUUID(),
       filename: 'result.md', mediaType: 'text/markdown' }, callback, signal)
     if (created.operation !== 'create') throw new Error('Expected native output allocation')
+    mainIntent = { ...t.intent, owner: { grantId: 'renewed-main-owner', epoch: '2' } }
+    vi.mocked(producer.context.currentIntent).mockReturnValue(mainIntent)
     stage = 'append'
     await bridge.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
       offset: 0, contentBase64: t.body.toString('base64') }, callback, signal)
@@ -327,7 +337,10 @@ describe('original worker-native artifact sender', () => {
     expect(t.links.size).toBe(1)
     stage = 'close bridge'
     await bridge.close()
-    expect(producer.context.closeNativeOutputWriters).toHaveBeenCalled()
+    if (storageKind === 'installed') expect(producer.context.closeNativeOutputWriters).toHaveBeenCalledWith(
+      expect.objectContaining({ intent: t.intent, session: producer.pin.session,
+        nativeTurnId: producer.pin.nativeTurnId }),
+    )
   })
 
   it('refuses a missing or replacement output store and absent native qualification', async () => {
