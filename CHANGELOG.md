@@ -16,6 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Page complete public Activity rows within 128 KiB over HTTP and Operator MCP, with cursors for all retained history and heavier snapshots available through Run details.
 - Keep incremental Activity reads independent of full execution history, back off unchanged feeds, and batch authorized workspace Run summaries.
+- Preserve configured native acceptance evidence directories while the root runner creates and cleans up its disposable database.
 
 ### Fixed
 
@@ -29,6 +30,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Security
 
 - Revalidate live and delegated Run-list grants, including empty pages, and deny unauthorized workspace and workflow scopes while retaining scoped readers and redacted HTTP/MCP parity.
+- Authorize edit-intent advancement before reading caller-private commands, preserving persisted rename recovery and original command identities.
 
 ## [0.0.7] - 2026-10-05
 
@@ -147,4 +149,3 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Security
 
 - Limit cancellation to the originating authenticated caller and reauthorize every retrieved content chunk.
-
