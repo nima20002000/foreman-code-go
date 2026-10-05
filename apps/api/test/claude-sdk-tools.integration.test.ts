@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -15,12 +16,14 @@ import { OperatorChatService, PostgresOperatorConversationRepository } from '../
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
 import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
 
 it.each(['management', 'denied-management', 'files'] as const)(
   'executes %s through the official SDK and production composition with persisted readback', async scenario => {
+    const vault = await privateFixtureDirectory('claude-sdk-files-')
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
       const access = new PostgresAccessService(pool)
@@ -44,7 +47,7 @@ it.each(['management', 'denied-management', 'files'] as const)(
         host: '127.0.0.1', port: 0, readinessTimeoutMs: 2_000,
         database: { connectionString: 'postgresql://graphql:graphql@127.0.0.1/graphql_test',
           maxConnections: 4, connectionTimeoutMs: 2_000, queryTimeoutMs: 5_000 }, checkpoints: { schema: 'langgraph' },
-        fileStorageRoot: join(directory, 'vault'), workspaceStorageRoot: join(directory, 'workspaces'),
+        fileStorageRoot: vault, workspaceStorageRoot: join(directory, 'workspaces'),
         harnesses: { workspaceRoot: join(directory, 'runtime'), codexBinary: 'unused', openCodeBinary: 'unused', timeoutMs: 10_000 },
       })
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -128,6 +131,8 @@ it.each(['management', 'denied-management', 'files'] as const)(
             [conversation.id])).rows[0]?.result
           expect(receipt).toMatchObject({ status: 'completed', providerAcknowledgment: { semantic: 'approve_once' } })
         }
-      } finally { await chat.shutdown(); await app.close() }
-    })
+      } finally {
+        try { await chat.shutdown() } finally { await app.close() }
+      }
+    }).finally(() => rm(vault, { recursive: true, force: true }))
   }, 60_000)

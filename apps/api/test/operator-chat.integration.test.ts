@@ -1318,6 +1318,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
     const streamed: unknown[] = []
     const unsubscribe = chat.events.subscribe(conversation.id, event => { if (event.type === 'delta') streamed.push(event.data) })
     try {

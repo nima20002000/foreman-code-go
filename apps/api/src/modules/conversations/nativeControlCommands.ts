@@ -99,6 +99,7 @@ export class NativeConversationControlCommands<State> {
             || control.native.turnId !== undefined)) continue
       const relevant = proofs.filter((proof) => proof.nativeSessionId === session.nativeSessionId && proof.nativeRequestId === control.native.requestId)
       const stored = exactAcknowledgment(control, row.result.providerAcknowledgment)
+      if (row.result.providerAcknowledgment !== undefined && !stored) continue
       const acknowledgments = [...relevant.map((proof) => exactAcknowledgment(control, proof)), ...(stored ? [stored] : [])]
       if (!acknowledgments.length || acknowledgments.some((proof) => !proof)) continue
       const outcome = { ...row.result, status: 'completed', state: this.contract.parse(state), providerAcknowledgment: acknowledgments[0] }

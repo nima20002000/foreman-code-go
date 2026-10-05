@@ -728,7 +728,9 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       await settled(service, read)
       await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
       const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
-      expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+      await vi.waitFor(async () => {
+        expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+      })
       expect(await receipt(interrupt.requestId)).toEqual(interruptReceipt)
       expect(interruptReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },
         turns: expect.arrayContaining([expect.objectContaining({ requestId: active.activeTurn!.requestId, nativeTurnId: active.activeTurn!.nativeTurnId })]) } })

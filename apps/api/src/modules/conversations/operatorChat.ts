@@ -1107,7 +1107,7 @@ export class OperatorChatService {
           if (this.tasks.has(row.id)) return
           if (await this.repository.terminal(row.id, requestId)) {
             const resident = this.runtimes.get(row.id)
-            if (resident?.session) await this.observe(row.id, requestId, resident)
+            if (resident?.session && !resident.disposal) await this.observe(row.id, requestId, resident)
             else await this.settleTerminal(row.id, requestId)
             return
           }
