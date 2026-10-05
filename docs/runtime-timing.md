@@ -5,6 +5,11 @@ logger. They contain phase names, timestamps, durations, and Run, execution,
 native-session, or process-owner identifiers. They exclude prompts, model text,
 SQL bodies, credentials, and environment values.
 
+SQL records include a truncated SHA-256 `statementId` of the statement text,
+computed only while timing observers are enabled. Bind parameter values are not
+included. This groups repeated query shapes without retaining their SQL bodies.
+Separate begin, commit and rollback spans measure transaction-control latency.
+
 In-process diagnostic collectors can subscribe to the Node diagnostics channel
 `foreman-code.runtime-timing`. Observers must return immediately and must not
 throw. The native acceptance runner retains these records in its scenario

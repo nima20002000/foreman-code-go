@@ -9,6 +9,7 @@ export interface RuntimeTimingFields {
   nativeSessionId?: string
   ownerId?: string
   operation?: string
+  statementId?: string
   eventType?: string
   nativeMethod?: string
   itemType?: string
