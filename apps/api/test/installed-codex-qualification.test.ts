@@ -6,7 +6,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-authority'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { loadOrCreateWorkerIdentity, persistWorkerPairing } from '@foreman-code/contracts/device-identity-node'
-import { createInstalledCodexQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
+import { createInstalledCodexQualificationReader, createInstalledHarnessQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
 import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
@@ -35,37 +35,46 @@ vi.mock('../../worker/src/runtime.mjs', () => ({
   },
 }))
 
-function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding = {
-  mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
-  keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
-}) {
+function fixture(options: {
+  suiteRevision?: string
+  binding?: DeviceSessionBinding
+  harness?: 'codex' | 'opencode'
+  assertResident?: Parameters<typeof createInstalledHarnessQualificationReader>[0]['assertResident']
+} = {}) {
+  const harness = options.harness ?? 'codex'
+  const suiteRevision = options.suiteRevision ?? `${harness}-live-4`
+  const version = harness === 'codex' ? '0.132.0' : '1.18.31'
+  const binding = options.binding ?? {
+    mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
+    keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
+  }
   const hostRef = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
-  const target = { hostRef, applicationInstallationId: binding.workerInstallationId, harnessInstallationId: 'actual-codex-installation', installationFingerprint: 'actual-whole-launcher-fingerprint' }
+  const target = { hostRef, applicationInstallationId: binding.workerInstallationId, harnessInstallationId: `actual-${harness}-installation`, installationFingerprint: 'actual-whole-launcher-fingerprint' }
   const sha = 'a'.repeat(64), hash = 'b'.repeat(64), timestamp = '2026-10-01T00:00:00.000Z'
   const environment = { generation: 'actual-worker-environment', provenance: 'worker' as const, cwd: '/state', path: '/usr/bin' }
   const installation = { hostRef, harnessInstallationId: target.harnessInstallationId, installationFingerprint: target.installationFingerprint,
-    driverId: 'codex', driverRevision: '1', protocolRevision: 'codex-native-adapter-v1', environmentGeneration: environment.generation,
-    connectionGeneration: harnessConnectionGeneration(binding), launcher: { requested: '/installed/codex', resolvedLauncher: '/installed/codex',
-      fingerprint: target.installationFingerprint, payloadFingerprints: [{ path: '/installed/codex', fingerprint: sha }],
+    driverId: harness, driverRevision: '1', protocolRevision: `${harness}-native-adapter-v1`, environmentGeneration: environment.generation,
+    connectionGeneration: harnessConnectionGeneration(binding), launcher: { requested: `/installed/${harness}`, resolvedLauncher: `/installed/${harness}`,
+      fingerprint: target.installationFingerprint, payloadFingerprints: [{ path: `/installed/${harness}`, fingerprint: sha }],
       status: 'installed' as const, interpreter: null, diagnostics: [], environment, checkedAt: timestamp },
-    observedVersion: '0.132.0', installed: true, authenticated: null, compatible: null, qualified: true }
+    observedVersion: version, installed: true, authenticated: null, compatible: null, qualified: true }
   const configuration = { id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1,
-    prompt: { system: 'test' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex, contentHash: 'configuration-hash', createdAt: timestamp }
+    prompt: { system: 'test' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS[harness], contentHash: 'configuration-hash', createdAt: timestamp }
   const instanceId = randomUUID(), fingerprint = commandInputHash(withAdvancedDefaults(configuration.harness))
   const override = { instanceId, revision: 1, instanceRevision: 'immutable-instance-revision', target, presetId: 'preset', enabled: true,
-    driverId: 'codex', configuration: configuration.harness, configurationFingerprint: fingerprint, qualification: 'qualified' }
+    driverId: harness, configuration: configuration.harness, configurationFingerprint: fingerprint, qualification: 'qualified' }
   const profileProof = { target, instanceRevision: override.instanceRevision, configurationFingerprint: fingerprint,
-    driverId: 'codex', driverRevision: installation.driverRevision, protocolRevision: installation.protocolRevision,
-    suiteRevision: 'codex-profile-check-v1', environmentGeneration: environment.generation, connectionGeneration: installation.connectionGeneration,
+    driverId: harness, driverRevision: installation.driverRevision, protocolRevision: installation.protocolRevision,
+    suiteRevision: `${harness}-profile-check-v1`, environmentGeneration: environment.generation, connectionGeneration: installation.connectionGeneration,
     authenticated: true, compatible: true, qualified: true, checkedAt: timestamp }
-  const qualification = { harness: 'codex', version: '0.132.0', binarySha256: sha, status: 'qualified', profile: 'codex-0.156',
-    suiteRevision: 'codex-live-4', checks: [{ id: 'actual-native-qualification', passed: true, detail: null }], failureReason: null, startedAt: timestamp, checkedAt: timestamp }
+  const qualification = { harness, version, binarySha256: sha, status: 'qualified', profile: harness === 'codex' ? 'codex-0.156' : 'opencode-1.18.31',
+    suiteRevision: `${harness}-live-4`, checks: [{ id: 'actual-native-qualification', passed: true, detail: null }], failureReason: null, startedAt: timestamp, checkedAt: timestamp }
   const placement = { schemaVersion: 1, mainId: binding.mainId, runId: 'run', nodeId: 'node', hostRef,
     registration: { workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision },
     mainInstallationId: binding.mainId, destination: { canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/runtime',
       directoryIdentityHash: hash, rootPolicyId: 'policy', rootPolicyRevision: '1', locationRevision: '1', attestationId: 'attestation', attestationHash: hash },
     source: { revisionId: 'source', manifestDigest: hash, materializationId: randomUUID(), materializationDigest: hash },
-    payload: { kind: 'agent', agentId: configuration.agentId, agentConfigurationVersionId: configuration.id, driverId: 'codex',
+    payload: { kind: 'agent', agentId: configuration.agentId, agentConfigurationVersionId: configuration.id, driverId: harness,
       driverRevision: installation.driverRevision, instanceId, instanceRevision: override.instanceRevision,
       harnessInstallationId: target.harnessInstallationId, installationFingerprint: target.installationFingerprint,
       runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [] }, bindingHash: hash }
@@ -86,12 +95,15 @@ function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding =
       materialization, workingTree: { materializationId: placement.source.materializationId, materializationDigest: hash, canonicalProjectRoot: '/project',
         canonicalCwd: '/project', directoryIdentityHash: hash, filesystem, accessMode: 'read-only', privateGit: null }, bindingHash: hash } })
   const inspection: InstalledCodexInspection = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
-    currentTarget: { binding, target, installation: { ...facts.harness.installation, observedVersion: null, qualified: false }, binarySha256: sha, expectedVersion: '0.132.0' } }
+    currentTarget: { binding, target, installation: { ...facts.harness.installation, observedVersion: null, qualified: false }, binarySha256: sha, expectedVersion: version } }
   let live: typeof binding | null = binding
   const inspect = vi.fn(async () => structuredClone(inspection)), readFacts = vi.fn(async () => structuredClone(facts))
   const controller = new AbortController()
-  const reader = createInstalledCodexQualificationReader({ intent: facts.intent, placement: facts.placement, trustedCurrentBinding: () => live,
-    inspect, readFacts, suiteRevision, signal: controller.signal })
+  const readerInput = { intent: facts.intent, placement: facts.placement, trustedCurrentBinding: () => live,
+    inspect, readFacts, suiteRevision, signal: controller.signal,
+    ...(options.assertResident ? { assertResident: options.assertResident } : {}) }
+  const reader = harness === 'codex' ? createInstalledCodexQualificationReader(readerInput)
+    : createInstalledHarnessQualificationReader({ ...readerInput, harness })
   return { facts, inspection, reader, inspect, readFacts, controller, binding, setLive: (value: typeof live) => { live = value } }
 }
 
@@ -118,7 +130,7 @@ describe('actual Main and installed Codex qualification read capability', () => 
       const worker = await startConfiguredWorker({ stateDirectory })
       try {
         expect(mount.revision).toBe('codex-live-5+identity-v1')
-        const f = fixture(mount.revision, original)
+        const f = fixture({ suiteRevision: mount.revision, binding: original })
         f.facts.harness.qualification.suiteRevision = 'codex-live-5+identity-v1'
         expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)
         expect(await f.reader.repository.find('codex', '0.132.0', 'a'.repeat(64), 'codex-live-5+identity-v1')).toEqual(f.facts.harness.qualification)
@@ -171,4 +183,51 @@ describe('actual Main and installed Codex qualification read capability', () => 
     await expect(f.reader.capture()).rejects.toBeDefined()
     expect(f.inspect).not.toHaveBeenCalled()
   })
+})
+
+
+describe('installed OpenCode execution qualification reader', () => {
+  it('reads OpenCode installed bytes, selected profile and authenticated Main facts together', async () => {
+    const f = fixture({ harness: 'opencode' })
+    expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)
+    expect(await f.reader.repository.find('opencode', '1.18.31', 'a'.repeat(64), 'opencode-live-4'))
+      .toEqual(f.facts.harness.qualification)
+    expect(await f.reader.repository.find('codex', '1.18.31', 'a'.repeat(64), 'opencode-live-4')).toBeNull()
+    f.facts.harness.qualification.status = 'unqualified'
+    await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+  })
+
+  it('requires verified original residency to accept an authenticated replacement channel', async () => {
+    const assertResident = vi.fn(async () => undefined)
+    const f = fixture({ harness: 'opencode', assertResident })
+    await f.reader.capture()
+    const replacement = { ...f.binding, connectionGeneration: f.binding.connectionGeneration + 1,
+      connectionEpoch: randomUUID() }
+    f.setLive(replacement)
+    f.inspection.currentTarget!.binding = replacement
+    f.inspection.currentTarget!.installation.connectionGeneration = harnessConnectionGeneration(replacement)
+    f.facts.harness.installation.connectionGeneration = harnessConnectionGeneration(replacement)
+    expect((await f.reader.capture()).binding).toEqual(replacement)
+    expect(assertResident).toHaveBeenCalledTimes(2)
+    expect(assertResident).toHaveBeenCalledWith(f.binding, replacement)
+    assertResident.mockRejectedValueOnce(new Error('The original native process changed.'))
+    await expect(f.reader.capture()).rejects.toThrow('The original native process changed.')
+    f.setLive({ ...replacement, bootId: randomUUID() })
+    await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+  })
+})
+
+
+it('reads a renewed execution owner without admitting a different operation or configuration', async () => {
+  const f = fixture({ harness: 'opencode' })
+  const originalIntent = structuredClone(f.facts.intent)
+  const reader = createInstalledHarnessQualificationReader({ harness: 'opencode', intent: originalIntent,
+    placement: f.facts.placement, trustedCurrentBinding: () => f.binding,
+    trustedCurrentIntent: () => f.facts.intent, inspect: f.inspect, readFacts: f.readFacts,
+    suiteRevision: 'opencode-live-4', signal: f.controller.signal })
+  await reader.capture()
+  f.facts.intent.owner = { grantId: 'renewed-original-execution-grant', epoch: '2' }
+  expect((await reader.capture()).facts.intent.owner).toEqual(f.facts.intent.owner)
+  f.facts.intent.operationId = 'replacement-operation'
+  await expect(reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
 })

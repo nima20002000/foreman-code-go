@@ -8,7 +8,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { describe, expect, it, vi } from 'vitest'
-import { inspectInstalledCodex, readInstalledCodexQualification, retainInstalledCodexInventory } from '../src/modules/harnesses/installedCodexInspection.js'
+import { inspectInstalledCodex, inspectInstalledHarness, inspectInstalledWorkflowHarnesses, readInstalledHarnessQualification, readInstalledCodexQualification, retainInstalledCodexInventory } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 
@@ -175,4 +175,49 @@ describe('passive installed worker Codex evidence producer', () => {
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
 
+})
+
+
+describe('installed OpenCode selection and inventory', () => {
+  it('supports an OpenCode-only installation without inventing a Codex installation or qualification', async () => {
+    const f = await fixture()
+    try {
+      await writeFile(f.path, JSON.stringify({ schemaVersion: 1, appMcpLauncher: '/installed/graphql-mcp-launcher',
+        opencode: { binary: f.binary, expectedVersion: '1.18.31', payloadPaths: [] } }), { mode: 0o600 })
+      const inventory = await inspectInstalledWorkflowHarnesses(f.input)
+      expect(inventory.installations).toHaveLength(1)
+      expect(inventory.installations[0]).toMatchObject({ driverId: 'opencode', installed: true,
+        qualified: false, authenticated: null, observedVersion: null, protocolRevision: 'opencode-native-adapter-v1' })
+      const target = (await inspectInstalledHarness({ ...f.input, harness: 'opencode' })).currentTarget!
+      const record: HarnessQualification = { ...proof(target), harness: 'opencode', version: '1.18.31',
+        profile: 'opencode-1.18.31' }
+      expect(await readInstalledHarnessQualification({ find: async () => record }, target, record.suiteRevision))
+        .toEqual(record)
+      expect(await readInstalledHarnessQualification({ find: async () => proof(target) }, target, record.suiteRevision))
+        .toBeNull()
+      await writeFile(f.binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('replacement-opencode-image')]))
+      const replacement = (await inspectInstalledHarness({ ...f.input, harness: 'opencode' })).currentTarget!
+      expect(replacement.binarySha256).not.toBe(target.binarySha256)
+      expect(await readInstalledHarnessQualification({ find: async () => record }, replacement, record.suiteRevision))
+        .toBeNull()
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
+
+  it('reports independent Codex and OpenCode selections on the same authenticated worker', async () => {
+    const f = await fixture()
+    try {
+      const opencode = join(f.root, 'opencode')
+      await writeFile(opencode, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('opencode-image')]), { mode: 0o700 })
+      await writeFile(f.path, JSON.stringify({ schemaVersion: 1, appMcpLauncher: '/installed/graphql-mcp-launcher',
+        codexBinary: f.binary, expectedVersion: '0.132.0', payloadPaths: [],
+        opencode: { binary: opencode, expectedVersion: '1.18.31', payloadPaths: [] } }), { mode: 0o600 })
+      const inventory = await inspectInstalledWorkflowHarnesses(f.input)
+      expect(inventory.installations.map(value => value.driverId)).toEqual(['codex', 'opencode'])
+      expect(new Set(inventory.installations.map(value => value.harnessInstallationId)).size).toBe(2)
+      await rm(opencode)
+      const missing = await inspectInstalledWorkflowHarnesses(f.input)
+      expect(missing.installations.find(value => value.driverId === 'codex')?.installed).toBe(true)
+      expect(missing.installations.find(value => value.driverId === 'opencode')?.installed).toBe(false)
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
 })

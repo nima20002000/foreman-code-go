@@ -32,7 +32,7 @@ import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
-import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { inspectInstalledWorkflowHarnesses } from '../harnesses/installedCodexInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
 
@@ -42,10 +42,12 @@ export async function createInstalledWorkerDomains(input: {
   stateDirectory: string; pairing: WorkerPairingConfiguration; bootId: string
   configuration: InstalledWorkflowConfigurationLocation | null
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
+  openCodeNativeOutputs?: InstalledWorkflowHostOptions['openCodeNativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
+  openCodeSuiteRevision?: string
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
 }) {
@@ -151,7 +153,9 @@ export async function createInstalledWorkerDomains(input: {
       configuration: input.configuration, currentBinding: () => input.connection()?.currentBinding(),
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
-      codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, registry, journal })
+      ...(input.openCodeNativeOutputs ? { openCodeNativeOutputs: input.openCodeNativeOutputs } : {}),
+      codexSuiteRevision: input.codexSuiteRevision,
+      ...(input.openCodeSuiteRevision ? { openCodeSuiteRevision: input.openCodeSuiteRevision } : {}), signal: lifetime.signal, registry, journal })
     extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
@@ -162,10 +166,10 @@ export async function createInstalledWorkerDomains(input: {
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
-      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
+      const inventory = await inspectInstalledWorkflowHarnesses({ binding: context.binding, configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
-      return { payload: inspected.inventory }
+      return { payload: inventory }
     },
   })
   let jobs: RemoteJobExecutionHost | undefined, jobOpening: Promise<RemoteJobExecutionHost> | undefined

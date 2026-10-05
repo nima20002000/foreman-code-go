@@ -9,27 +9,35 @@ import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-
 import { HarnessExecutionError } from './errors.js'
 import { DomainError } from '../errors.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
-import type { InstalledCodexInspection, CurrentInstalledCodexTarget } from './installedCodexInspection.js'
+import type { InstalledHarnessInspection, CurrentInstalledHarnessTarget } from './installedCodexInspection.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type CompatibilityProbeOwnership } from './compatibility/probe.js'
 import { runAsQualificationCandidate } from './qualification/gate.js'
 import { withNativeQualificationOwnership, type NativeQualificationSuiteInput } from './qualification/nativeOwnership.js'
 import { codexQualificationSuite } from './qualification/suites/codex.js'
+import { opencodeQualificationSuite } from './qualification/suites/opencode.js'
 import { qualificationRevisionWithIdentity } from './qualification/identity.js'
-import { QUALIFICATION_TARGET_PROFILE, normalizeHarnessVersion } from './qualification/profiles.js'
+import { QUALIFICATION_TARGET_PROFILE, normalizeHarnessVersion, runWithQualificationProfile } from './qualification/profiles.js'
 import type { QualificationSuite } from './qualification/types.js'
 import type { NativeProcessRecovery, NativeProcessRegistry } from './recovery/processRegistry.js'
 
 export const CODEX_COMPLETED_QUALIFICATION_CHECKS = Object.freeze(['static-compatibility', 'binary-sha256', 'version', 'schema',
   'thread-start', 'text-turn', 'file-tools', 'thread-resume', 'selected-profile', 'owned-resource-closure'])
+export const OPENCODE_COMPLETED_QUALIFICATION_CHECKS = Object.freeze(['static-compatibility', 'binary-sha256',
+  'server-health', 'openapi-paths', 'session-create', 'text-turn', 'mcp-file-tools', 'selected-profile', 'owned-resource-closure'])
+export const INSTALLED_NATIVE_QUALIFICATION_CHECKS = Object.freeze({
+  codex: CODEX_COMPLETED_QUALIFICATION_CHECKS,
+  opencode: OPENCODE_COMPLETED_QUALIFICATION_CHECKS,
+})
 const denied = (): never => { throw new DomainError('HARNESS_QUALIFICATION_TARGET_CHANGED', 'Explicit qualification requires the exact current installed host and selected profile.', 409) }
 const same = (a: unknown, b: unknown) => commandInputHash(a) === commandInputHash(b)
 
 /** This is only the existing authenticated profile-check handler's native
  * qualifier. It never allocates a workflow manager or accepts incoming proof. */
-export function createInstalledCodexNativeQualifier(input: {
+export function createInstalledHarnessNativeQualifier(input: {
+  harness: 'codex' | 'opencode'
   binding: Readonly<DeviceSessionBinding>
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
-  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledCodexInspection>
+  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection>
   registry: Pick<NativeProcessRegistry, 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'>
   workingRoot: string
   environment: NodeJS.ProcessEnv
@@ -37,16 +45,17 @@ export function createInstalledCodexNativeQualifier(input: {
   checkConfiguration(value: HostHarnessOverride, directory: string, signal: AbortSignal,
     recovery: NativeProcessRecovery, assertInstallation: (signal?: AbortSignal) => Promise<void>): Promise<ConfigurationQualification>
   suite?: QualificationSuite
-  probe?: (target: CurrentInstalledCodexTarget, ownership: CompatibilityProbeOwnership) => CompatibilityProbe
+  probe?: (target: CurrentInstalledHarnessTarget, ownership: CompatibilityProbeOwnership) => CompatibilityProbe
 }) {
+  const harness = input.harness
   const binding = DeviceSessionBindingSchema.parse(input.binding)
-  const suite = input.suite ?? codexQualificationSuite
+  const suite = input.suite ?? (harness === 'codex' ? codexQualificationSuite : opencodeQualificationSuite)
   // The adapter performs the same actual installation guards as identity-v1.
   const suiteRevision = qualificationRevisionWithIdentity(suite.revision)
-  if (!isAbsolute(input.workingRoot) || suite.harness !== 'codex') denied()
+  if (!isAbsolute(input.workingRoot) || suite.harness !== harness) denied()
   const stopping = new AbortController(), flights = new Set<Promise<HostHarnessProfileEvidence>>()
   const cleanups = new Set<() => Promise<void>>(), directories = new Set<string>()
-  const current = async (signal: AbortSignal, expected?: CurrentInstalledCodexTarget) => {
+  const current = async (signal: AbortSignal, expected?: CurrentInstalledHarnessTarget) => {
     signal.throwIfAborted()
     const live = input.trustedCurrentBinding()
     if (!live || !same(live, binding)) return denied()
@@ -66,7 +75,7 @@ export function createInstalledCodexNativeQualifier(input: {
     const value = HostHarnessOverrideSchema.parse(raw)
     const signal = AbortSignal.any([callerSignal, stopping.signal])
     const target = await current(signal)
-    if (value.driverId !== 'codex' || value.configuration.harness !== 'codex' || !value.enabled || !same(value.target, target.target)
+    if (value.driverId !== harness || value.configuration.harness !== harness || !value.enabled || !same(value.target, target.target)
       || value.configurationFingerprint !== commandInputHash(withAdvancedDefaults(value.configuration))) denied()
     // Validate the explicit Main check identity before any native acquisition.
     CompletedNativeQualificationSchema.shape.checkId.parse(checkId)
@@ -74,7 +83,7 @@ export function createInstalledCodexNativeQualifier(input: {
     const startedAt = new Date().toISOString(), checks: HarnessQualification['checks'] = []
     let version: string | undefined, profileResult: ConfigurationQualification | undefined
     let failureReason: string | null = null
-    const diagnostic = input.registry.reserveLaunch(`qualification:codex:${checkId}:static`)
+    const diagnostic = input.registry.reserveLaunch(`qualification:${harness}:${checkId}:static`)
     let probe: CompatibilityProbe | undefined
     const closeProbe = async () => {
       await probe?.close?.()
@@ -87,10 +96,10 @@ export function createInstalledCodexNativeQualifier(input: {
       ?? nativeCompatibilityProbe({ codex: target.installation.launcher.resolvedLauncher!, opencode: target.installation.launcher.resolvedLauncher! },
         input.workingRoot, input.environment, 5000, { recovery: diagnostic, beforeCommand: async (_binary, commandSignal) => { await assertInstallation(commandSignal) } })
       try {
-        const installed = await probe.inspect('codex', signal)
-        version = normalizeHarnessVersion('codex', installed.version)
+        const installed = await probe.inspect(harness, signal)
+        version = normalizeHarnessVersion(harness, installed.version)
         if (installed.executable !== target.installation.launcher.resolvedLauncher || version !== target.expectedVersion) denied()
-        const schemaHash = await probe.probe('codex', installed, signal)
+        const schemaHash = await probe.probe(harness, installed, signal)
         await probe.assertUnchanged(installed, signal)
         await assertInstallation(signal)
         checks.push({ id: 'static-compatibility', passed: true, detail: schemaHash })
@@ -104,24 +113,33 @@ export function createInstalledCodexNativeQualifier(input: {
         releaseProbe()
       }
       if (!failureReason) {
-        const directory = await mkdtemp(join(input.workingRoot, 'codex-qualification-'))
+        const directory = await mkdtemp(join(input.workingRoot, `${harness}-qualification-`))
         directories.add(directory); localDirectories.add(directory)
-        const selectedSuite: QualificationSuite = { harness: 'codex', revision: suite.revision,
+        const selectedSuite: QualificationSuite = { harness, revision: suite.revision,
           async run(scope: NativeQualificationSuiteInput) {
             const result = await suite.run(scope)
-            if (result.checks.length && result.checks.every(check => check.passed)) {
+            const nativeChecks = INSTALLED_NATIVE_QUALIFICATION_CHECKS[harness].filter(id =>
+              !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
+            const passed = result.checks.length > 0 && result.checks.every(check => check.passed)
+              && nativeChecks.every(id => result.checks.some(check => check.id === id && check.passed))
+            if (passed) {
               if (!scope.processRecovery || !scope.assertInstallation) return denied()
               await scope.assertInstallation(signal)
-              try { profileResult = await input.checkConfiguration(value, directory, signal, scope.processRecovery, scope.assertInstallation) }
+              try {
+                profileResult = await runWithQualificationProfile({ harness, version: version!,
+                  binarySha256: target.binarySha256, target: target.target,
+                  profile: QUALIFICATION_TARGET_PROFILE[harness], checks: result.checks },
+                () => input.checkConfiguration(value, directory, signal, scope.processRecovery!, scope.assertInstallation!))
+              }
               catch (error) {
                 signal.throwIfAborted()
                 const code = error instanceof DomainError ? error.code
                   : error instanceof HarnessExecutionError && error.result.outcome === 'failed' ? error.result.error?.code : undefined
-                if (!code || !/^CODEX_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH)/.test(code)) throw error
+                if (!code || !/^(?:CODEX|OPENCODE)_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH|AUTH_REQUIRED|CONFIGURATION)/.test(code)) throw error
                 failureReason = 'The selected host profile did not pass its native configuration checks.'
               }
               await scope.assertInstallation(signal)
-              const selected = Boolean(profileResult && profileResult.harness === 'codex' && normalizeHarnessVersion('codex', profileResult.version) === version
+              const selected = Boolean(profileResult && profileResult.harness === harness && normalizeHarnessVersion(harness, profileResult.version) === version
                 && profileResult.ready && profileResult.authenticated && profileResult.structuredEvents)
               result.checks.push({ id: 'selected-profile', passed: selected, detail: null })
             }
@@ -129,9 +147,9 @@ export function createInstalledCodexNativeQualifier(input: {
           } }
         const ownedSuite = withNativeQualificationOwnership(selectedSuite, input.registry, () => assertInstallation)
         // Candidate authority exists only while this actual owned suite runs.
-        const result = await runAsQualificationCandidate('codex', target.binarySha256, () => ownedSuite.run({
+        const result = await runAsQualificationCandidate(harness, target.binarySha256, () => ownedSuite.run({
           binary: target.installation.launcher.resolvedLauncher!, version: version!, binarySha256: target.binarySha256,
-          profile: QUALIFICATION_TARGET_PROFILE.codex, model: value.configuration.model, workDirectory: directory, signal, ownCleanup,
+          profile: QUALIFICATION_TARGET_PROFILE[harness], model: value.configuration.model, workDirectory: directory, signal, ownCleanup,
         }))
         checks.push(...result.checks)
         await assertInstallation(signal)
@@ -139,15 +157,15 @@ export function createInstalledCodexNativeQualifier(input: {
       }
       await assertInstallation(signal)
       checks.push({ id: 'owned-resource-closure', passed: true, detail: null })
-      const passed = CODEX_COMPLETED_QUALIFICATION_CHECKS.every(id => checks.some(check => check.id === id && check.passed))
+      const passed = INSTALLED_NATIVE_QUALIFICATION_CHECKS[harness].every(id => checks.some(check => check.id === id && check.passed))
         && checks.every(check => check.passed)
       const checkedAt = new Date().toISOString()
-      const record = HarnessQualificationSchema.parse({ harness: 'codex', version, binarySha256: target.binarySha256,
-        suiteRevision, profile: QUALIFICATION_TARGET_PROFILE.codex, status: passed ? 'qualified' : 'failed', checks,
+      const record = HarnessQualificationSchema.parse({ harness, version, binarySha256: target.binarySha256,
+        suiteRevision, profile: QUALIFICATION_TARGET_PROFILE[harness], status: passed ? 'qualified' : 'failed', checks,
         failureReason: passed ? null : failureReason ?? 'The actual native suite or selected profile did not pass.', startedAt, checkedAt })
       return HostHarnessProfileEvidenceSchema.parse({ target: value.target, instanceRevision: value.instanceRevision,
-        configurationFingerprint: value.configurationFingerprint, driverId: 'codex', driverRevision: target.installation.driverRevision,
-        protocolRevision: target.installation.protocolRevision, suiteRevision: 'codex-profile-check-v1',
+        configurationFingerprint: value.configurationFingerprint, driverId: harness, driverRevision: target.installation.driverRevision,
+        protocolRevision: target.installation.protocolRevision, suiteRevision: `${harness}-profile-check-v1`,
         environmentGeneration: target.installation.environmentGeneration, connectionGeneration: harnessConnectionGeneration(binding),
         authenticated: profileResult?.authenticated ?? null, compatible: checks.some(check => check.id === 'static-compatibility' && !check.passed) ? false : profileResult?.structuredEvents ?? null,
         qualified: passed, checkedAt, ...(passed ? {} : { failure: { code: 'HARNESS_UNQUALIFIED', message: record.failureReason! } }), completedNativeQualification: { purpose: 'explicit-host-qualification', checkId,
@@ -172,4 +190,9 @@ export function createInstalledCodexNativeQualifier(input: {
       for (const directory of directories) { await rm(directory, { recursive: true, force: true }); directories.delete(directory) }
     },
   }
+}
+
+export function createInstalledCodexNativeQualifier(
+  input: Omit<Parameters<typeof createInstalledHarnessNativeQualifier>[0], 'harness'>) {
+  return createInstalledHarnessNativeQualifier({ ...input, harness: 'codex' })
 }
