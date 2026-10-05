@@ -71,7 +71,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
 }
 
 it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-with-stored-proof', 'restart-wrong-generation',
-  'terminal-after-response', 'restart-after-terminal'] as const)(
+  'terminal-after-response', 'restart-after-terminal', 'concurrent-poll'] as const)(
   'recovers %s Claude approval through authenticated MCP with no response or prompt replay', async scenario => {
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
@@ -140,16 +140,25 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         expect(deniedResponse.error || deniedResponse.result?.isError).toBeTruthy()
         expect((await pool.query('select count(*)::int as n from management_command_receipts')).rows[0].n).toBe(0)
         const query = pool.query.bind(pool)
+        const journalEntered = deferred<void>()
+        const finishJournal = deferred<void>()
         let validations = 0
         const spy = vi.spyOn(pool, 'query').mockImplementation(((...args: unknown[]) => {
           const statement = String(args[0])
           if (scenario === 'aborted' && statement.includes('select principal_id,result from management_command_receipts') && ++validations === 2) {
             controller.abort(new Error('SDK callback canceled after selection'))
           }
-          if (scenario !== 'aborted' && statement.includes('with settled as')) return Promise.reject(new Error('Control outcome write lost'))
+          if (scenario === 'concurrent-poll' && statement.startsWith('update management_command_receipts set result=$4::jsonb')) {
+            journalEntered.resolve()
+            return finishJournal.promise.then(() => (query as (...values: unknown[]) => unknown)(...args))
+          }
+          if (scenario !== 'aborted' && scenario !== 'concurrent-poll' && statement.includes('with settled as')) {
+            return Promise.reject(new Error('Control outcome write lost'))
+          }
           return (query as (...values: unknown[]) => unknown)(...args)
         }) as typeof pool.query)
         const storedProof = scenario === 'restart-with-stored-proof' || scenario === 'restart-wrong-generation'
+          || scenario === 'concurrent-poll'
         if (storedProof) {
           const respond = owned.manager.respond.bind(owned.manager)
           owned.manager.respond = async (...args) => {
@@ -158,13 +167,27 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
               'read-tool', { signal: new AbortController().signal })
           }
         }
-        const response = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_respond', arguments: { conversationId: id, request: input } })
+        const responseTask = graphRpc(app, owner.token, 'tools/call', {
+          name: 'operator_chat_respond', arguments: { conversationId: id, request: input },
+        })
+        if (scenario === 'concurrent-poll') {
+          try {
+            await journalEntered.promise
+            const [, read] = await Promise.all([chat.reconcileActive(), graphRpc(app, owner.token, 'tools/call', {
+              name: 'operator_chat_get', arguments: { conversationId: id },
+            })])
+            expect(read.result?.isError).not.toBe(true)
+            expect((await pool.query('select result from management_command_receipts where command_id=$1',
+              [input.commandId])).rows[0].result.status).toBe('completed')
+          } finally { finishJournal.resolve() }
+        }
+        const response = await responseTask
         spy.mockRestore()
-        expect(response.result?.isError).toBe(true)
+        expect(Boolean(response.result?.isError)).toBe(scenario !== 'concurrent-poll')
         expect((await permission)?.behavior).toBe(scenario === 'aborted' ? 'deny' : 'allow')
         const readReceipt = async () => (await pool.query('select result from management_command_receipts where command_id=$1', [input.commandId])).rows[0].result
         const original = await readReceipt()
-        expect(original.status).toBe(scenario === 'aborted' ? 'uncertain' : 'pending')
+        expect(original.status).toBe(scenario === 'concurrent-poll' ? 'completed' : scenario === 'aborted' ? 'uncertain' : 'pending')
         if (scenario === 'resident-write-loss' || scenario === 'terminal-after-response' || scenario === 'restart-after-terminal') {
           await callbacks.hooks!.PostToolUse![0]!.hooks[0]!({ ...hook, hook_event_name: 'PostToolUse', tool_response: 'read-completed' },
             'read-tool', { signal: new AbortController().signal })
@@ -204,6 +227,7 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const receipt = await readReceipt()
         const completed = scenario === 'resident-write-loss' || scenario === 'restart-with-stored-proof'
           || scenario === 'terminal-after-response' || scenario === 'restart-after-terminal'
+          || scenario === 'concurrent-poll'
         expect(receipt.status).toBe(completed ? 'completed' : original.status)
         if (completed) expect(receipt.providerAcknowledgment.nativeIdentity).toMatchObject({ kind: 'message', nativeMessageId: message.uuid })
         const readback = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: id } })

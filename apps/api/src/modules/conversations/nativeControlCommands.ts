@@ -1,5 +1,6 @@
 import { AcceptedChatResponseControlSchema, matchingChatResponseAcknowledgment, type ChatResponseAcknowledgment, type AcceptedChatResponseControl, type ChatResponseIdentity } from '@graphql/contracts/interaction-activity'
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ActivityScope, NativeSessionReference } from '@graphql/contracts'
@@ -176,12 +177,27 @@ export class NativeConversationControlCommands<State> {
         outcome = { status: 'uncertain', acceptedControl: control }
       }
     }
+    const completedByObservation = async (): Promise<{ state: State } | undefined> => {
+      if (!control) return undefined
+      const prior = (await this.pool.query<Receipt<State>>(`select target_key,input_hash,result
+        from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3`, key)).rows[0]
+      if (!prior || prior.target_key !== conversationId || prior.input_hash !== hash
+        || prior.result.status !== 'completed' || !isDeepStrictEqual(prior.result.acceptedControl, control)) return undefined
+      const acknowledgment = matchingChatResponseAcknowledgment(control, prior.result.providerAcknowledgment)
+      if (!acknowledgment || outcome.providerAcknowledgment
+        && !isDeepStrictEqual(acknowledgment, outcome.providerAcknowledgment)) return undefined
+      return { state: this.contract.parse(readCurrent ? await readCurrent() : prior.result.state) }
+    }
     if (control?.native.harness === 'claude' && outcome.providerAcknowledgment) {
       try {
         const journal = await this.pool.query(`update management_command_receipts set result=$4::jsonb
           where principal_id=$1 and operation=$2 and command_id=$3 and result->>'status'='pending' returning 1`,
         [...key, JSON.stringify({ status: 'pending', acceptedControl: control, providerAcknowledgment: outcome.providerAcknowledgment })])
-        if (journal.rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix)
+        if (journal.rowCount !== 1) {
+          const completed = await completedByObservation()
+          if (completed) return completed.state
+          throw unconfirmed(requestId, this.contract.prefix)
+        }
       } catch {
         // A lost storage write leaves the original response fenced against another native send.
         throw unconfirmed(requestId, this.contract.prefix)
@@ -199,6 +215,8 @@ export class NativeConversationControlCommands<State> {
     } catch {
       // A qualified ACK permits one storage-only retry even when the turn has
       // finished. The pending receipt remains the fence; perform is never repeated.
+      const completed = await completedByObservation()
+      if (completed) return completed.state
       if (outcome.status !== 'completed' || !outcome.providerAcknowledgment) throw unconfirmed(requestId, this.contract.prefix)
       try { if ((await save()).rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix) }
       catch { throw unconfirmed(requestId, this.contract.prefix) }
