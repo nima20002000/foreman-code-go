@@ -1,3 +1,5 @@
+import type { WorkflowDefinitionV3 } from './saved.js'
+
 /**
  * The executable/presentation boundary used by authoring and save admission.
  * Node display names, board geometry and server version stamps are omitted
@@ -66,7 +68,7 @@ export function sameExecutableWorkflow(left: PresentedWorkflow, right: Presented
   return sameWorkflowValue(executableWorkflowContent(left), executableWorkflowContent(right))
 }
 
-export function workflowNodeNames(graph: PresentedWorkflow) {
+export function workflowNodeNames(graph: { nodes: ReadonlyArray<WorkflowDefinitionV3['nodes'][number]> }) {
   return graph.nodes.map(({ id, name, label }) => ({ id, name, label }))
 }
 
