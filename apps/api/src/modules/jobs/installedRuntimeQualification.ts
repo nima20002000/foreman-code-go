@@ -4,7 +4,10 @@ import { open, readdir, lstat, realpath, statfs } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
-import { JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema,
+  JobVerificationQualificationCandidateSchema, type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { qualifyVerificationRuntime } from './verificationQualification.js'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
@@ -14,8 +17,8 @@ import type { OCIContainerOwnership, OCIHostCertificate } from './executorContai
 import type { z } from 'zod'
 import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { jobSupervisorIdentity } from './executor.js'
-import { JobQualificationCandidateSchema, jobQualificationFingerprint, createQualificationNativeOwner,
-  qualifyJobRuntime, jobRuntimeMeasurement, type JobQualificationCandidate, type JobQualificationAuthority } from './qualification.js'
+import { jobQualificationFingerprint, createQualificationNativeOwner, fingerprintQualificationPath,
+  qualifyJobRuntime, jobRuntimeMeasurement, type JobQualificationAuthority } from './qualification.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 
 /** Samples the original Job boundary; no host-wide memory/CPU estimate is substituted for its cgroup. */
@@ -99,15 +102,15 @@ export async function measureVerificationResourceUsage(input: {
 }
 
 export interface InstalledJobQualificationReservation {
-  admission: JobRuntimeNativeAdmission
-  candidate: JobQualificationCandidate
+  admission: JobRuntimeNativeAdmissionRecord
+  candidate: JobQualificationCandidateRecord
   /** Current protected installation and actual authenticated connection, not copied caller authority. */
-  host: Pick<JobRuntimeNativeAdmission, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId' | 'connection'>
+  host: Pick<JobRuntimeNativeAdmissionRecord, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId' | 'connection'>
   journal: RemoteOperationJournal
   registry: NativeProcessRegistry
   authority: JobQualificationAuthority
   /** Main's persisted admission/live-scope assertion, via W07 on a device. */
-  assertAdmission(admission: JobRuntimeNativeAdmission): Promise<void>
+  assertAdmission(admission: JobRuntimeNativeAdmissionRecord): Promise<void>
   signal: AbortSignal
 }
 /** Entire physical diagnostic stays on its original host. The carrier returns
@@ -115,8 +118,8 @@ export interface InstalledJobQualificationReservation {
 export async function runInstalledJobRuntimeQualification(input: InstalledJobQualificationReservation & {
   configuration: InstalledRuntimeConfigurationLocation | null
 }): Promise<JobRuntimeQualificationResult> {
-  const candidate = JobQualificationCandidateSchema.parse(input.candidate)
-  await input.assertAdmission(JobRuntimeNativeAdmissionSchema.parse(input.admission))
+  const candidate = JobQualificationCandidateRecordSchema.parse(input.candidate)
+  await input.assertAdmission(JobRuntimeNativeAdmissionRecordSchema.parse(input.admission))
   await inspectInstalledJobRuntimeCandidate({ ...input, candidate })
   const prior = await input.journal.qualificationStatus(input.admission.operationId)
   if (prior && (!same(prior.admission, input.admission) || !same(prior.candidate, candidate))) throw new Error('Original diagnostic candidate or admission changed.')
@@ -126,7 +129,16 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
     const reserved = await reserveInstalledJobQualification({ ...input, candidate, authority: input.authority, signal })
     return createQualificationNativeOwner(candidate, reserved.native, reserved.ownership, reserved.authority)
   } }
-  const record = await qualifyJobRuntime(candidate, authority, input.signal)
+  if (candidate.fingerprint.schemaVersion === 3) {
+    const result = await qualifyVerificationRuntime({ ...input,
+      candidate: JobVerificationQualificationCandidateSchema.parse(candidate), authority })
+    if (await input.journal.qualificationStatus(input.admission.operationId)) {
+      await input.journal.qualificationResult(input.admission.operationId, result)
+    }
+    return result
+  }
+  const { JobQualificationCandidateSchema } = await import('@foreman-code/contracts/job-runtime')
+  const record = await qualifyJobRuntime(JobQualificationCandidateSchema.parse(candidate), authority, input.signal)
   const result: JobRuntimeQualificationResult = record.outcome === 'qualified' ? { outcome: 'qualified', measurement: jobRuntimeMeasurement(record) }
     : { outcome: 'denied', closure: record.closure, reasons: record.reasons.map(reason => reason.slice(0, 500)) }
   if (await input.journal.qualificationStatus(input.admission.operationId)) await input.journal.qualificationResult(input.admission.operationId, result)
@@ -136,7 +148,7 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
 /** Genuine human-approved diagnostic. Its single entry and exact process/OCI
  * identities remain in the existing worker journal and native registry. */
 export async function reserveInstalledJobQualification(input: InstalledJobQualificationReservation): Promise<Awaited<ReturnType<InstalledRuntimeHostDependencies['reserve']>>> {
-  const admission = JobRuntimeNativeAdmissionSchema.parse(input.admission), candidate = JobQualificationCandidateSchema.parse(input.candidate)
+  const admission = JobRuntimeNativeAdmissionRecordSchema.parse(input.admission), candidate = JobQualificationCandidateRecordSchema.parse(input.candidate)
   const { authority, journal, registry, signal } = input
   const operationId = admission.operationId
   const host = { hostRef: admission.hostRef, registration: admission.registration, mainInstallationId: admission.mainInstallationId,
@@ -158,6 +170,18 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
   }
   await assertCurrent()
   await journal.qualificationAccept(admission, candidate)
+  const original = await journal.qualificationStatus(operationId)
+  if (original?.phase === 'closed' && original.result) {
+    const noEntry = () => { throw new Error('Completed original qualification cannot launch native work.') }
+    return { authority, ownership: { scope: { subject: { kind: 'qualification',
+      qualificationId: admission.qualificationId, profileId: admission.profileId, profileRevision: admission.profileRevision,
+      operationId, fingerprint: admission.fingerprintDigest }, admission, bootId: admission.bootId },
+      assertCurrent, reserveContainerIntent: noEntry, bindContainer: noEntry, launchHelpers: noEntry,
+      readCertificate: noEntry, publish: noEntry },
+      native: { completedResult: original.result, reserveProcess: async () => noEntry(),
+        spawnProcess: noEntry, readNativeExit: async () => noEntry(),
+        stopProcess: async () => noEntry(), close: async () => true } }
+  }
   const entry = await journal.qualificationReserveEntry(operationId)
   if (!entry.reserved) throw new Error('Original qualification already entered; reconcile without rerunning.')
   const owner = `qualification:${operationId}:${admission.leaseId}`
@@ -192,9 +216,21 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     launch.closed = true; return true
   }
   return { authority, ownership, native: {
+    async recordResult(result) { await journal.qualificationResult(operationId, result) },
     async reserveProcess(binary, argv) {
-      if (closed || ![candidate.fingerprint.runtimeExecutable, candidate.findmntBinary].includes(binary) || argv.some(value => typeof value !== 'string' || value.includes('\0'))) throw new Error('Installed diagnostic executable/argv changed.')
+      if (closed || ![candidate.fingerprint.runtimeExecutable, candidate.findmntBinary,
+        ...('quotaPool' in candidate.fingerprint && candidate.fingerprint.quotaPool
+          ? [candidate.fingerprint.quotaPool.queryExecutable] : [])].includes(binary) || argv.some(value => typeof value !== 'string' || value.includes('\0'))) throw new Error('Installed diagnostic executable/argv changed.')
       await assertCurrent()
+      const pool = 'quotaPool' in candidate.fingerprint ? candidate.fingerprint.quotaPool : undefined
+      if (pool && binary === pool.queryExecutable) {
+        const permitted = pool.slots.some(slot => argv[0] === `${candidate.sourceParent}/${slot.namespace}`
+          || argv[0]?.startsWith(`${candidate.sourceParent}/${slot.namespace}/`))
+        if (!permitted || argv.length !== 2 || argv[1] !== pool.blockDevice
+          || (await fingerprintQualificationPath(binary, true)).sha256 !== pool.queryBinarySha256) {
+          throw new Error('Original read-only quota observer changed.')
+        }
+      }
       const scope = registry.reserveLaunch(owner)
       if (!scope.launchId) throw new Error('Original guarded native reservation unavailable.')
       const launch = { scope, binary, argv: [...argv], closed: false }

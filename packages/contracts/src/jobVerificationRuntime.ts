@@ -311,8 +311,19 @@ export type JobRuntimeApprovalRecord = z.infer<typeof JobRuntimeApprovalRecordSc
 export const JobVerificationQualificationCandidateSchema = z.object({
   ...ProvisionedJobQualificationCandidateSchema.shape,
   fingerprint: JobVerificationRuntimeFingerprintSchema,
+  profile: JobVerificationProfileSchema,
+  approvedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
   const fingerprint = value.fingerprint
+  const profile = value.profile
+  if (profile.id !== fingerprint.profileId || profile.revision !== fingerprint.profileRevision
+    || profile.specDigest !== fingerprint.specDigest || profile.sourceCommit !== fingerprint.sourceCommit
+    || JSON.stringify(profile.root) !== JSON.stringify(fingerprint.root)
+    || JSON.stringify(profile.spec.resources) !== JSON.stringify(fingerprint.resources)
+    || JSON.stringify(profile.spec.policy.network) !== JSON.stringify(fingerprint.network)
+    || JSON.stringify(profile.approvalConfig) !== JSON.stringify(fingerprint.approvalConfig)) {
+    context.addIssue({ code: 'custom', message: 'Qualification must retain its complete immutable verification profile.' })
+  }
   if (value.sourceParent !== fingerprint.root.binding.canonicalPath
     || fingerprint.root.binding.accessMode !== 'exclusive-write'
     || value.operationId !== value.qualificationId

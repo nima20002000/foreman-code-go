@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { JobRuntimeApprovalSchema, JobRuntimeProfileSchema, JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission,
-  type JobRuntimeFingerprint, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import { DeviceExecutionAdmissionFields } from '@foreman-code/contracts/device-resources'
+import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRuntimeNativeAdmissionRecordSchema,
+  type JobRuntimeNativeAdmissionRecord, type JobRuntimeFingerprintRecord, type JobRuntimeProfileRecord,
+  type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -8,29 +10,29 @@ import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { PostgresJobRuntimeHumanAuthority } from './runtimeHumanAuthority.js'
-import { jobQualificationFingerprint, type JobQualificationCandidate } from './qualification.js'
+import { jobQualificationFingerprint } from './qualification.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
 export interface JobRuntimeNativeAdmissionInput {
-  candidate: JobQualificationCandidate
+  candidate: JobQualificationCandidateRecord
   runCommandId: string
   runPrincipalId: string
-  resolveRoot(sql: JobSql, profile: JobRuntimeProfile, principal: Awaited<ReturnType<typeof readLiveManagementPrincipal>>): Promise<JobRuntimeProfile['root']>
+  resolveRoot(sql: JobSql, profile: JobRuntimeProfileRecord, principal: Awaited<ReturnType<typeof readLiveManagementPrincipal>>): Promise<JobRuntimeProfileRecord['root']>
   /** Trusted installed host capture and live carrier binding; no public observations. */
-  readCurrent(sql: JobSql, profile: JobRuntimeProfile): Promise<{ fingerprint: JobRuntimeFingerprint; connection: DeviceSessionBinding | null }>
+  readCurrent(sql: JobSql, profile: JobRuntimeProfileRecord): Promise<{ fingerprint: JobRuntimeFingerprintRecord; connection: DeviceSessionBinding | null }>
 }
 function changed(): never { throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original human-approved qualification authority changed.', 409) }
 /** Called inside the existing Main transaction, committed before native entry.
  * Its original approval row is the sole admission store. Retry reads the same
  * immutable lease and never mints replacement native authority. */
-export async function admitInstalledJobQualification(sql: JobSql, input: JobRuntimeNativeAdmissionInput, existingOnly=false): Promise<JobRuntimeNativeAdmission> {
+export async function admitInstalledJobQualification(sql: JobSql, input: JobRuntimeNativeAdmissionInput, existingOnly=false): Promise<JobRuntimeNativeAdmissionRecord> {
   const candidate = input.candidate
   await lockActiveWorkspace(sql,candidate.fingerprint.root.binding.workspaceId)
   const row = (await sql.query<{ record: unknown; run_command_id: string | null; run_principal_id: string | null;
     approved_by: string | null; native_admission: unknown }>(`select record,run_command_id,run_principal_id,approved_by,native_admission
       from job_runtime_qualification_approvals where id=$1 for update`, [candidate.approvalId])).rows[0]
   if (!row) changed()
-  const approval = JobRuntimeApprovalSchema.parse(row.record)
+  const approval = JobRuntimeApprovalRecordSchema.parse(row.record)
   if (approval.id!==candidate.approvalId||approval.workspaceId!==candidate.fingerprint.root.binding.workspaceId||approval.status !== 'qualifying' || row.run_command_id !== input.runCommandId || row.run_principal_id !== input.runPrincipalId || !approval.approvedByPrincipalId ||
     row.approved_by !== approval.approvedByPrincipalId || !approval.approvedAt || Date.parse(approval.expiresAt) <= Date.now() ||
     candidate.operationId !== approval.qualificationId || candidate.qualificationId !== approval.qualificationId ||
@@ -42,7 +44,9 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
     join job_runtime_profiles p on p.id=v.profile_id where p.workspace_id=$1 and v.profile_id=$2 and v.revision=$3
     and p.revision=$3 and p.record->>'status'='qualifying' for share of p,v`, [approval.workspaceId, approval.profileId, approval.profileRevision])).rows[0]
   if (!profileRow) changed()
-  const profile = JobRuntimeProfileSchema.parse(profileRow.record)
+  const profile = JobRuntimeProfileRecordSchema.parse(profileRow.record)
+  if ('approvedAt' in candidate && candidate.approvedAt !== approval.approvedAt) changed()
+  if ('profile' in candidate && canonical(candidate.profile) !== canonical(profile)) changed()
   if (profile.id !== approval.profileId || profile.revision !== approval.profileRevision || profile.workspaceId !== approval.workspaceId ||
     profile.specDigest !== approval.fingerprint.specDigest || canonical(profile.root) !== canonical(approval.fingerprint.root)) changed()
   if(canonical(await input.resolveRoot(sql,profile,runner))!==canonical(profile.root))changed()
@@ -60,25 +64,27 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
   const registrationPin = registration ? { workerInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
     authorizationRevision: registration.authorizationRevision } : null
   if (canonical(registrationPin) !== canonical(fingerprint.registration)) changed()
-  const context = { schemaVersion: 1 as const, kind: 'job-runtime-qualification' as const, approvalId: approval.id,
+  const context = { schemaVersion: fingerprint.schemaVersion,
+    ...Object.fromEntries(Object.keys(DeviceExecutionAdmissionFields).filter(field => field in fingerprint)
+      .map(field => [field, Reflect.get(fingerprint, field)])), kind: 'job-runtime-qualification' as const, approvalId: approval.id,
     qualificationId: approval.qualificationId, operationId: approval.qualificationId, workspaceId: approval.workspaceId,
     profileId: approval.profileId, profileRevision: approval.profileRevision, fingerprintDigest: approval.fingerprintDigest,
     runCommandId: input.runCommandId, runPrincipalId: input.runPrincipalId, approvedByPrincipalId: approval.approvedByPrincipalId,
     hostRef: fingerprint.hostRef, registration: fingerprint.registration, mainInstallationId: fingerprint.mainInstallationId,
     bootId: fingerprint.bootId, connection: current.connection, expiresAt: approval.expiresAt }
   if (row.native_admission) {
-    const saved = JobRuntimeNativeAdmissionSchema.parse(row.native_admission)
+    const saved = JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission)
     if (canonical(saved) !== canonical({ ...context, leaseId: saved.leaseId, admittedAt: saved.admittedAt })) changed()
     return saved
   }
   if(existingOnly)changed()
-  const admission = JobRuntimeNativeAdmissionSchema.parse({ ...context, leaseId: randomUUID(), admittedAt: new Date().toISOString() })
+  const admission = JobRuntimeNativeAdmissionRecordSchema.parse({ ...context, leaseId: randomUUID(), admittedAt: new Date().toISOString() })
   await sql.query('update job_runtime_qualification_approvals set native_admission=$2::jsonb where id=$1', [approval.id, JSON.stringify(admission)])
   return admission
 }
 
 /** Recheck the original persisted lease without ever creating one. */
-export async function assertInstalledJobQualification(sql:JobSql,input:JobRuntimeNativeAdmissionInput,admission:JobRuntimeNativeAdmission):Promise<void> {
+export async function assertInstalledJobQualification(sql:JobSql,input:JobRuntimeNativeAdmissionInput,admission:JobRuntimeNativeAdmissionRecord):Promise<void> {
   const saved=await admitInstalledJobQualification(sql,input,true)
   if(canonical(saved)!==canonical(admission))changed()
 }

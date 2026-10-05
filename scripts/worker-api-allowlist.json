@@ -98,6 +98,8 @@
   "apps/api/src/modules/jobs/qualificationJournal.ts",
   "apps/api/src/modules/jobs/quotaOwnership.ts",
   "apps/api/src/modules/jobs/repository.ts",
+  "apps/api/src/modules/jobs/verificationQualification.ts",
+  "apps/api/src/modules/jobs/verificationQualificationSource.ts",
   "apps/api/src/modules/jobs/verificationSystemInput.ts",
   "apps/api/src/modules/jobs/workerQualificationCarrier.ts",
   "apps/api/src/modules/placement/binding.ts",

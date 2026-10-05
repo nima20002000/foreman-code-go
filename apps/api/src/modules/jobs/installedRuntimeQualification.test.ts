@@ -11,6 +11,12 @@ import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { JobQualificationCandidateSchema, jobQualificationFingerprint } from './qualification.js'
 import { reserveInstalledJobQualification, runInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import * as installedHost from './installedRuntimeHost.js'
+import { JobVerificationQualificationCandidateSchema, JobRuntimeNativeAdmissionRecordSchema }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { DeviceExecutionAdmissionFields } from '@foreman-code/contracts/device-resources'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
+import { createVerificationProfile } from './verificationProfiles.js'
+import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 
 const id = '00000000-0000-4000-8000-000000000001', digest = 'a'.repeat(64)
 const roots: string[] = [], journals: RemoteOperationJournal[] = []
@@ -50,6 +56,42 @@ async function fixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it('reopens a closed verification diagnostic and returns its original result without another reservation', async () => {
+    const f = await fixture()
+    const v = verificationRuntimeFixture()
+    const now = new Date().toISOString()
+    const profile = createVerificationProfile({ id, workspaceId: id, revision: 1, name: 'Verification replay',
+      root: f.candidate.fingerprint.root, sourceCommit: v.measurement.fingerprint.sourceCommit!,
+      spec: { rootId: id, bindingRevision: 1, resources: v.measurement.fingerprint.resources,
+        policy: jobPolicyRequirementsRecord(v.spec.policy), suites: ['unit'],
+        approvalConfig: { approvalLifetimeMs: 24 * 60 * 60 * 1000 } }, previous: null, now })
+    const candidate = JobVerificationQualificationCandidateSchema.parse({ ...f.candidate,
+      backingFile: null, backingBytes: null, volumeCapacityBytes: v.measurement.fingerprint.quota.volumeCapacityBytes,
+      profile, approvedAt: now,
+      fingerprint: { ...v.measurement.fingerprint, profileId: id, profileRevision: 1,
+        specDigest: profile.specDigest, root: profile.root, hostRef: f.host.hostRef, registration: null,
+        mainInstallationId: id, bootId: f.host.bootId, resources: profile.spec.resources,
+        approvalConfig: profile.approvalConfig } })
+    const admission = JobRuntimeNativeAdmissionRecordSchema.parse({ ...f.admission, schemaVersion: 3,
+      fingerprintDigest: jobQualificationFingerprint(candidate),
+      ...Object.fromEntries(Object.keys(DeviceExecutionAdmissionFields).map(key => [key, Reflect.get(candidate.fingerprint, key)])),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() })
+    f.authority.readApproval.mockResolvedValue({ status: 'approved', fingerprint: admission.fingerprintDigest,
+      expiresAt: admission.expiresAt })
+    const input = { ...f.input, candidate, admission }
+    const reserved = await reserveInstalledJobQualification(input)
+    expect(await reserved.native.close()).toBe(true)
+    const result = { outcome: 'denied' as const, closure: 'confirmed' as const, reasons: ['original measured suite failure'] }
+    await reserved.native.recordResult!(result)
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.path)
+    journals.push(reopened)
+    const replay = await reserveInstalledJobQualification({ ...input, journal: reopened })
+    expect(replay.native.completedResult).toEqual(result)
+    await expect(replay.native.reserveProcess('/usr/bin/podman', ['info'])).rejects.toThrow('cannot launch')
+    expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
+    expect((await reopened.qualificationStatus(id))?.candidate).toEqual(candidate)
+  })
   it('denied approval and host mismatch perform no entry or registry reservation', async () => {
     const f = await fixture(); f.authority.readApproval.mockResolvedValue(null as never)
     await expect(reserveInstalledJobQualification(f.input)).rejects.toThrow('approval changed')
