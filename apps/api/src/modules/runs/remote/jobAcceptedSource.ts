@@ -15,7 +15,16 @@ export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadoutRecord
 function conflict(): never { throw new DomainError('JOB_ACCEPTED_SOURCE_CONFLICT', 'The original accepted Job source/root/runtime binding is unavailable or changed.', 409) }
 /** Call after the exact current Job read fence, in the same transaction. This
  * returns immutable Main metadata, never a physical source/qualification claim. */
-export async function readAcceptedJobSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
+export function readAcceptedJobSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
+  return readJobSource(sql, execution, 'execution')
+}
+
+export function readAcceptedJobCleanupSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
+  return readJobSource(sql, execution, 'before-entry-cleanup')
+}
+
+async function readJobSource(sql: JobSql, execution: JobExecutionRecord, purpose: 'execution' | 'before-entry-cleanup')
+  : Promise<AcceptedJobSourceReadout> {
   const spec = execution.acceptedSpec, target = spec.target, destination = target.destination
   const row = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations
     where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share`,
@@ -71,13 +80,15 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
       from job_runtime_qualification_approvals where id=$1 and qualification_id=$2
         and profile_id=$3 and profile_revision=$4 and workspace_id=$5 and record->>'status'='complete' for share`,
     [accepted.profile.approvalId, accepted.profile.qualificationId, profile.id, profile.revision, execution.workspaceId])).rows[0]
-    if (!qualified || profile.schemaVersion !== 2 || !receipt.quota) conflict()
+    if (!qualified || profile.schemaVersion !== 2) conflict()
     const measured = JobVerificationRuntimeMeasurementSchema.parse(qualified.measurement)
-    const slot = measured.fingerprint.quotaPool?.slots.find(value => value.namespace === receipt.quota!.namespace)
-    if (!same(measured.identity, accepted.profile) || !slot || !same(slot, receipt.quota)
-      || !same(measured.fingerprint.root, original)
-      || slot.hardLimitBytes !== accepted.verification.resources.limits.diskBytes
-      || slot.hardInodes !== accepted.verification.resources.mutableInodes) conflict()
+    if (!same(measured.identity, accepted.profile) || !same(measured.fingerprint.root, original)) conflict()
+    if (receipt.quota) {
+      const slot = measured.fingerprint.quotaPool?.slots.find(value => value.namespace === receipt.quota!.namespace)
+      if (!slot || !same(slot, receipt.quota)
+        || slot.hardLimitBytes !== accepted.verification.resources.limits.diskBytes
+        || slot.hardInodes !== accepted.verification.resources.mutableInodes) conflict()
+    } else if (purpose === 'execution') conflict()
   }
   return { execution, materialization, root, diskQuotaBytes: limits.diskBytes }
 }
