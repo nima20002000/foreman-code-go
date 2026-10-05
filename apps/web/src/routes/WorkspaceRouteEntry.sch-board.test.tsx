@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
+import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../app/router'
 import { useGraphDraftStore } from '../features/graph/store'
 import { nextDraftKey } from '../features/graph/nextDraft/state'
@@ -83,6 +84,24 @@ beforeEach(() => {
     http.get(`${runsRoute}/:runId/snapshot`, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/activities', ({ params, request }) => {
+      const runId = String(params.runId)
+      if (params.workspaceId !== scope.workspaceId || !['run-a', 'run-b'].includes(runId)) {
+        return HttpResponse.json({ error: { code: 'NOT_FOUND', message: 'Run not found' } }, { status: 404 })
+      }
+      const snapshot = reply(runId, scope).snapshot
+      if (snapshot.kind !== 'available') throw new Error('Expected the saved Run board fixture.')
+      const activityScope = { ...scope, runId, workflowVersionId: snapshot.workflowVersionId,
+        executionSemanticsVersion: 3 }
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      return HttpResponse.json(RunActivitiesPageSchema.parse({
+        scope: activityScope, mode: cursor ? 'newer' : 'initial',
+        items: cursor ? [] : [{ id: `activity-${runId}`, scope: activityScope, sequence: '1',
+          occurredAt: snapshot.capturedAt, source: 'backend', kind: 'run', status: 'recorded',
+          severity: 'info', summary: `History for ${runId}`, refs: {} }],
+        highWater: '1', retainedFrom: '1', nextCursor: `activities-${runId}-1`, olderCursor: null, hasMore: false,
+      }))
+    }),
     http.get('*/api/workspaces/:workspaceId/agent-chat/workflows/:workflowId/runs/:runId/nodes/:workflowNodeId',
       ({ params }) => HttpResponse.json(ReadSelectedRunChatResponseSchema.parse({ kind: 'unavailable',
         target: { workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
@@ -141,6 +160,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     expect(router.state.location.search.selectedRunId).toBe('run-a')
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveTextContent('Read only')
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('History for run-a')
     expect(editor.closest('.run-board-current')).toHaveAttribute('hidden')
     expect(editor.closest('.run-board-current')).toHaveAttribute('inert')
     expect(editor).not.toBeVisible()
@@ -200,6 +220,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     const hash = router.history.location.hash
     await choose('run-b')
     await screen.findByRole('img', { name: 'X in B, saved agent, read only' })
+    await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('History for run-b')
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1')
     expect(router.state.location.search).toMatchObject({ workflowId: scope.workflowId, selectedRunId: 'run-b', agentId: 'agent-researcher' })
     expect(router.state.location.search.runId).toBeUndefined()
