@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { pathToFileURL } from 'node:url'
@@ -49,8 +49,14 @@ export function writeReport(path, value, maxBytes) {
   if (bytes.length > maxBytes) throw new Error(`Report exceeds its declared byte limit: ${basename(path)}`)
   privateDirectory(dirname(path))
   const temporary = `${path}.${randomUUID()}.tmp`
-  writeFileSync(temporary, bytes, { mode: 0o600, flag: 'wx' })
+  const fd = openSync(temporary, 'wx', 0o600)
+  try {
+    writeFileSync(fd, bytes)
+    fsyncSync(fd)
+  } finally { closeSync(fd) }
   renameSync(temporary, path)
+  const directory = openSync(dirname(path), 'r')
+  try { fsyncSync(directory) } finally { closeSync(directory) }
 }
 
 export function portionKey(directory, script) {

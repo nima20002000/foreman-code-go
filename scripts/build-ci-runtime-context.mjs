@@ -57,7 +57,21 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
     validateSeedReceipt(seed, { dependencyInputs, packages, platform: { os: 'linux', arch: 'x64', libc: 'glibc' } });
     seedUsage = await verifySeedFiles(offlineSeed.directory, seed);
   }
+  let unitCodex;
+  if (offlineSeed?.unitCodex) {
+    const tool = offlineSeed.unitCodex;
+    if (!tool.review?.reviewedByPrincipalId || !/^[a-f0-9]{64}$/.test(tool.review.decisionDigest)
+      || !Number.isFinite(Date.parse(tool.review.reviewedAt)) || Date.parse(tool.review.reviewedAt) > Date.now()
+      || !/^[a-f0-9]{64}$/.test(tool.binarySha256) || !tool.version || !tool.path?.startsWith('/')) {
+      throw new Error('Reviewed Codex schema binary receipt required.');
+    }
+    const bytes = await readSeedFile(dirname(tool.path), tool.path.slice(dirname(tool.path).length + 1), 256 * 1024 * 1024);
+    if (hash(bytes) !== tool.binarySha256) throw new Error('Reviewed Codex schema binary changed.');
+    unitCodex = { tool, bytes };
+  }
   await mkdir(output, { mode: 0o700 });
+  await mkdir(join(output, 'tools'), { mode: 0o700 });
+  if (unitCodex) await writeFile(join(output, 'tools/codex'), unitCodex.bytes, { mode: 0o700, flag: 'wx' });
   for (const entry of paths) {
     const destination = join(output, 'source-lock', entry.path);
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
@@ -79,6 +93,8 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
       packageManager: seed.packageManager, provenanceDigest: seed.provenanceDigest,
       releaseAge: { minimumMinutes: 2880, strict: true, rejectMissingTime: true, packages: seed.packages.length } };
   }
+  if (unitCodex) receipt.unitCodex = { version: unitCodex.tool.version, binarySha256: unitCodex.tool.binarySha256,
+    executable: '/opt/graphql-ci/tools/codex', review: unitCodex.tool.review };
   await writeFile(join(output, 'context-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   return receipt;
 }

@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +17,7 @@ const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY'
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function offlineSeedFixture(t) {
-  const directory = await mkdtemp('/var/tmp/verification-seed-');
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'verification-seed-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const metadata = { name: 'fixture', time: { '1.0.0': '2026-09-30T00:00:00Z' },
     versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } } };
@@ -123,7 +124,19 @@ test('verification context binds reviewed seed provenance to committed dependenc
   }
   await writeFile(receiptPath, JSON.stringify(f.receipt), { mode: 0o600 });
   const output = join(f.directory, 'context');
-  const receipt = await buildCiRuntimeContext({ repository, output, offlineSeed: { directory: seedRoot, receiptPath } });
+  const binaryPath = join(f.directory, 'reviewed-codex');
+  const binary = Buffer.from('reviewed schema-only binary input');
+  await writeFile(binaryPath, binary, { mode: 0o700 });
+  const unitCodex = { path: binaryPath, version: 'schema-fixture', binarySha256: hash(binary),
+    review: { reviewedByPrincipalId: 'owner', decisionDigest: 'b'.repeat(64), reviewedAt: '2026-10-02T01:00:00Z' } };
+  const receipt = await buildCiRuntimeContext({ repository, output,
+    offlineSeed: { directory: seedRoot, receiptPath, unitCodex } });
+  assert.deepEqual(await readFile(join(output, 'tools/codex')), binary);
+  assert.deepEqual(receipt.unitCodex, { executable: '/opt/graphql-ci/tools/codex',
+    version: unitCodex.version, binarySha256: unitCodex.binarySha256, review: unitCodex.review });
+  await writeFile(binaryPath, 'changed reviewed binary');
+  await assert.rejects(buildCiRuntimeContext({ repository, output: join(f.directory, 'changed-tool'),
+    offlineSeed: { directory: seedRoot, receiptPath, unitCodex } }), /binary changed/);
   assert.equal(receipt.sourceCommit, git('rev-parse', 'HEAD'));
   assert.deepEqual(receipt.offlineSeed.releaseAge, { minimumMinutes: 2880, strict: true, rejectMissingTime: true, packages: 1 });
   assert.equal(receipt.offlineSeed.provenanceDigest, f.receipt.provenanceDigest);
@@ -167,7 +180,7 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
 
 async function fixture(t) {
   // Capture requires persistent storage with private ancestors, including HOME.
-  const directory = await mkdtemp(join('/var/tmp', 'job-runtime-cli-'));
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'job-runtime-cli-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state'), base = join(directory, 'projects'), runtime = join(directory, 'managed');
   for (const path of [state, base, runtime]) await mkdir(path, { mode: 0o700 });
