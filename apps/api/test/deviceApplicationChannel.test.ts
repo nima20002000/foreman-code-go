@@ -381,6 +381,30 @@ describe('authenticated namespace carrier mechanics', () => {
         command: { ...stop.command, owner: { ...stop.command.owner, epoch: '2' } } })).rejects.toThrow('backpressure')
     } finally { await pair.close(); await Promise.allSettled(requests) }
   })
+  it('delivers Stop with every declared output key at its admitted size while ordinary requests are full', async () => {
+    const base = stopRequest()
+    if (base.placement.payload.kind !== 'agent') throw new Error('Expected Agent placement')
+    const placement = freezePlacement({ ...base.placement, payload: { ...base.placement.payload, artifactOutputs: {
+      version: 1, outputKeys: Array.from({ length: 64 }, (_, index) => `${index}:`.padEnd(500, 'x')),
+    } } })
+    const stop = { ...base, placement, intent: { ...base.intent, bindingHash: placement.bindingHash },
+      command: { ...base.command, bindingHash: placement.bindingHash } }
+    expect(Buffer.byteLength(JSON.stringify(stop))).toBeGreaterThan(16_384)
+    const pair = setup(async payload => {
+      if (typeof payload === 'string') return new Promise(() => {})
+      expect(payload).toEqual(stop)
+      return { payload: 'stopped' }
+    })
+    const ordinary = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'occupied'))
+    for (const request of ordinary) void request.catch(() => {})
+    try {
+      await flush()
+      await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
+    } finally {
+      await pair.close()
+      await Promise.allSettled(ordinary)
+    }
+  })
   it('revalidates the Stop envelope before invoking a handler for a claimed reserved slot', async () => {
     const handler = vi.fn(async () => ({ payload: null }))
     const pair = setup(handler)

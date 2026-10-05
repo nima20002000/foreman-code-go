@@ -7,7 +7,7 @@ export const DEVICE_APPLICATION_CHUNK_BYTES = 8_192
 export const DEVICE_APPLICATION_CHUNK_WINDOW = 4
 export const DEVICE_APPLICATION_IN_FLIGHT = 8
 export const DEVICE_APPLICATION_STOP_IN_FLIGHT = 1
-export const DEVICE_APPLICATION_STOP_BYTES = 16_384
+export const DEVICE_APPLICATION_STOP_BYTES = DEVICE_APPLICATION_JSON_BYTES
 export const DEVICE_APPLICATION_BUFFER_BYTES = 4_194_304
 export type DeviceExtensionRole = 'client' | 'server' | 'duplex'
 export interface DeviceExtensionDescriptor {

@@ -4,6 +4,7 @@ import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnes
 import { HarnessQualificationSchema } from './harnessQualification.js'
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteReviewerRequestSchema } from './remoteExecution.js'
+import { DEVICE_APPLICATION_JSON_BYTES } from './deviceApplication.js'
 export const ExecutionAuthorityRequestSchema = z.object({ version: z.literal(1),
   action: z.enum(['start', 'read', 'control', 'stop', 'retain-reviewer', 'review']),
   intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, review: RemoteReviewerRequestSchema.optional(),
@@ -14,7 +15,7 @@ export const ExecutionAuthorityResultSchema = z.object({ version: z.literal(1),
   reviewer: z.object({ agentId: z.string().min(1), expiresAt: z.string().datetime() }).strict().optional(),
 }).strict()
 export const EXECUTION_AUTHORITY_EXTENSION = { namespace: 'execution-authority-v1', version: 1 as const,
-  role: 'duplex' as const, maxJsonBytes: 256 * 1024, maxBinaryBytes: 0 }
+  role: 'duplex' as const, maxJsonBytes: DEVICE_APPLICATION_JSON_BYTES, maxBinaryBytes: 0 }
 
 export const ExecutionFactsRequestSchema = z.object({ method: z.literal('read-facts'), authorization: ExecutionAuthorityRequestSchema }).strict().refine(value => value.authorization.action === 'read')
 export const ExecutionFactsResultSchema = z.object({ version: z.literal(1), intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema,

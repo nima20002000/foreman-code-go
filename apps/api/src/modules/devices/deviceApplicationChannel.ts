@@ -8,6 +8,8 @@ import {
 } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
@@ -98,10 +100,22 @@ export class DeviceApplicationChannel {
     this.current()
   }
   private stopRequest(namespace: string, payload: unknown): boolean {
+    if (namespace === EXECUTION_AUTHORITY_EXTENSION.namespace) {
+      const parsed = ExecutionAuthorityRequestSchema.safeParse(payload)
+      return parsed.success && parsed.data.action === 'stop'
+        && this.stopPlacement(parsed.data.intent, parsed.data.placement)
+    }
     if (namespace !== 'execution-v1') return false
     const parsed = RemoteExecutionRpcRequestSchema.safeParse(payload)
     if (!parsed.success || parsed.data.method !== 'control' || parsed.data.command.action.kind !== 'stop') return false
     const { intent, placement, command } = parsed.data
+    return this.stopPlacement(intent, placement)
+      && command.bindingHash === intent.bindingHash
+      && command.operationId === intent.operationId && command.executionId === intent.executionId
+      && command.attemptId === intent.attemptId && command.owner.grantId === intent.owner.grantId
+      && command.owner.epoch === intent.owner.epoch
+  }
+  private stopPlacement(intent: DispatchIntent, placement: AcceptedNodePlacement): boolean {
     if (placement.hostRef.kind !== 'device' || !placement.registration) return false
     const registration = placement.registration
     return intent.mainId === this.binding.mainId && placement.mainId === intent.mainId
@@ -110,10 +124,7 @@ export class DeviceApplicationChannel {
       && registration.keyRevision === this.binding.keyRevision
       && registration.authorizationRevision === this.binding.authorizationRevision
       && placement.runId === intent.runId && placement.nodeId === intent.nodeId
-      && placement.bindingHash === intent.bindingHash && command.bindingHash === intent.bindingHash
-      && command.operationId === intent.operationId && command.executionId === intent.executionId
-      && command.attemptId === intent.attemptId && command.owner.grantId === intent.owner.grantId
-      && command.owner.epoch === intent.owner.epoch
+      && placement.bindingHash === intent.bindingHash
   }
   private outgoingFull(stop: boolean): boolean {
     const count = [...this.pending.values()].filter(pending => pending.stop === stop).length
@@ -130,7 +141,8 @@ export class DeviceApplicationChannel {
   private async requestInternal(namespace: string, payload: unknown, options: DeviceApplicationRequestOptions): Promise<DeviceApplicationResult> {
     const extension = this.negotiated(namespace, true)
     this.current()
-    const stop = this.options.side === 'main' && !options.bytes && this.stopRequest(namespace, payload)
+    const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
+    const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
     if (this.outgoingFull(stop)) throw new DeviceApplicationError('backpressure')
     if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
     await this.authorized()
@@ -247,8 +259,9 @@ export class DeviceApplicationChannel {
     if (frame.type === 'application-open') {
       if (typeof frame.namespace !== 'string' || !['request', 'response', 'error'].includes(String(frame.kind))) throw new DeviceConnectionError('malformed-frame')
       const kind = frame.kind as Assembly['kind']
+      const stopNamespace = this.options.side === 'worker' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
       if (frame.admission !== undefined && (frame.admission !== 'stop' || kind !== 'request'
-        || frame.namespace !== 'execution-v1' || this.options.side !== 'worker')) throw new DeviceConnectionError('malformed-frame')
+        || frame.namespace !== stopNamespace)) throw new DeviceConnectionError('malformed-frame')
       const stop = kind === 'request' ? frame.admission === 'stop' : this.pending.get(id)?.stop === true
       const extension = kind === 'request' ? this.negotiated(frame.namespace, false) : this.extensions.find((item) => item.namespace === frame.namespace)
       if (kind !== 'request' && !this.pending.has(id)) { this.trySendCancel(id); return }
