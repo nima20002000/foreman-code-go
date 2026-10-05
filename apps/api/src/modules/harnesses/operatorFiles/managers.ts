@@ -37,6 +37,7 @@ export function productionOperatorManagers(input: {
   selectInstallation?: (configuration: OperatorConfigurationVersion) => RegistryHarnessSelection | undefined
 }): NativeManagerResolver {
   const factories = input.nativeFactories ?? new NativeHarnessFactories({ ...input.config.harnesses,
+    openCodeFileStorageRoot: input.config.fileStorageRoot ?? defaultFileStorageRoot(),
     appMcpEndpoint: input.appMcpEndpoint, responseJournal: input.responseJournal })
   const modes = new Map<string, boolean>()
   const resolver: NativeManagerResolver = (configuration, conversationId, fileInputs = false) => {
