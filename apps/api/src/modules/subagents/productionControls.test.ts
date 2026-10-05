@@ -24,15 +24,19 @@ function fixture(harness: 'codex' | 'opencode' = 'opencode') {
   return { managers, resolved, create, native, send, owner, lose: () => { live = false }, controls: productionSubagentControls(managers) }
 }
 describe('production native child control resolution', () => {
-  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('never resolves a %s controller even from a resident manager', nativeMode => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('resolves %s only from its resident admitted manager', nativeMode => {
     const f = fixture('codex')
     const codexChild = { ...child, provider: 'codex' as const, nativeMode,
       profile: { ...child.profile, providerVersion: '0.154.0' } }
     expect(f.controls(codexChild)).toBeUndefined()
     f.resolved.beginStart!()
     f.resolved.markResident!()
-    expect(f.controls(codexChild)).toBeUndefined()
-    expect(f.native.subagentControl).not.toHaveBeenCalled()
+    const lease = f.controls(codexChild)!
+    expect(lease).toBeDefined()
+    expect(f.native.subagentControl).toHaveBeenCalledTimes(1)
+    f.lose()
+    expect(lease.matches(codexChild)).toBe(false)
+    expect(() => lease.assertCurrent()).toThrow()
     expect(f.send).not.toHaveBeenCalled()
     expect(f.create).toHaveBeenCalledTimes(1)
   })

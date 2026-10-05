@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { CODEX_SUBAGENT_CONTROL_EXPLANATION, CODEX_SUBAGENT_CONTROL_UNSUPPORTED,
-  RunSubagentCommandReceiptSchema, RunSubagentInputSchema, RunSubagentInterruptSchema,
+import { RunSubagentCommandReceiptSchema, RunSubagentInputSchema, RunSubagentInterruptSchema,
   type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { DomainError } from '../errors.js'
 import { subagentAvailableActions } from './capabilities.js'
@@ -24,9 +23,6 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
     await reconcileRunSubagents(scope.sql, input.runId)
     await scope.sql.query('select pg_advisory_xact_lock(hashtext($1))', [JSON.stringify(['subagent-command', principal.id, operation, input.commandId])])
     const child = await service.child(scope, input)
-    if (child.provider === 'codex') {
-      throw new DomainError(CODEX_SUBAGENT_CONTROL_UNSUPPORTED, CODEX_SUBAGENT_CONTROL_EXPLANATION, 409)
-    }
     const existing = (await scope.sql.query<{ input_hash: string; record: unknown }>(`select input_hash,record from run_subagent_command_receipts
       where principal_id=$1 and operation=$2 and command_id=$3 for update`, [principal.id, operation, input.commandId])).rows[0]
     if (existing) {

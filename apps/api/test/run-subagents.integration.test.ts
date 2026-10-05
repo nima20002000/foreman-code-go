@@ -4,8 +4,7 @@ import pg from 'pg'
 import Fastify from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { CODEX_SUBAGENT_CONTROL_EXPLANATION, CODEX_SUBAGENT_CONTROL_UNSUPPORTED,
-  RunSubagentSchema, RunSubagentsPageSchema, RunSubagentDetailSchema,
+import { RunSubagentSchema, RunSubagentsPageSchema, RunSubagentDetailSchema,
   RunSubagentMessagesPageSchema, RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -21,6 +20,7 @@ import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
+import { codexChildControlFixture } from './fixtures/codex-child-control-helpers.js'
 
 // Explicit loopback admin connection and a random OWNED schema. Never read TEST_DATABASE_URL or migrate public.
 describe('durable per-Run children over SQL and authenticated MCP', () => {
@@ -293,7 +293,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect((await pool.query('select count(*)::int as count from harness_native_events where execution_id=$1', [f.executionId])).rows[0].count).toBe(2)
     } finally { await freshPool.end() }
   })
-  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('refuses %s controls through HTTP and MCP while retaining history', async nativeMode => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('controls the owned %s child through HTTP and MCP with persisted receipts', async nativeMode => {
     const f = await fixture('codex')
     if (nativeMode === 'codex-multi-agent-v2') await f.discover()
     else await f.event('item.completed', { threadId: 'root', item: {
@@ -306,14 +306,20 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       threadId: 'child', turnId: 'child-turn', item: { type: 'agentMessage', id: 'answer', text: 'Readable child history' },
     } })
     const child = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
-    // Saved flags cannot confer a control capability the provider does not have.
+    // Saved flags alone do not qualify native operations.
     const saved = { ...child, capabilities: { ...child.capabilities, inputTiming: 'active-and-idle',
       sendInput: { support: 'supported', qualification: 'passed' },
       interrupt: { support: 'supported', qualification: 'passed' },
       executionResume: { support: 'supported', qualification: 'passed' },
     } }
     await pool.query('update run_subagents set record=$2::jsonb where id=$1', [child.id, JSON.stringify(saved)])
-    const services = { commands: new PostgresCommandCoordinator(pool), runs: { subagents: f.service },
+    await expect(f.service.input(f.writer.principal, 'mcp', { ...f.input, subagentId: child.id,
+      commandId: randomUUID(), expectedRevision: child.revision, text: 'No resident owner' }))
+      .rejects.toMatchObject({ code: 'SUBAGENT_CONTROL_UNAVAILABLE' })
+    const native = codexChildControlFixture(child)
+    const controls = (value: typeof child) => native.controller.lease(value, native.host, native.host.assertCurrent)
+    const service = new RunSubagentService(pool, controls)
+    const services = { commands: new PostgresCommandCoordinator(pool), runs: { subagents: service },
       workspaces: {}, workflows: {}, agents: {}, locations: {}, harnesses: {} } as unknown as OperatorServices
     const app = Fastify()
     app.setErrorHandler((error, _request, reply) => {
@@ -339,41 +345,42 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     try {
       const allowed = await connect(f.writer.token)
       const reader = await connect(f.reader.token)
+      const wrongScope = await f.access.issue({ name: 'Other Run child controller', audience: 'operator',
+        grants: [{ actions: ['runs:read', 'runs:subagents:input', 'runs:stop'], scope: { runIds: ['different-run'] } }],
+        expiresAt: new Date(Date.now() + 600000) })
+      const foreign = await connect(wrongScope.token)
       for (const operation of ['input', 'interrupt'] as const) {
         const name = operation === 'input' ? 'run_subagent_input_v1' : 'run_subagent_interrupt_v1'
         const command = { ...childInput, commandId: randomUUID(), expectedRevision: child.revision,
           ...(operation === 'input' ? { text: 'follow up' } : {}) }
         for (let attempt = 0; attempt < 2; attempt++) {
           const http = await app.inject({ method: 'POST', url: `${base}/${operation}`, payload: command, headers })
-          expect(http.statusCode).toBe(409)
-          expect(http.json()).toEqual({ error: {
-            code: CODEX_SUBAGENT_CONTROL_UNSUPPORTED, message: CODEX_SUBAGENT_CONTROL_EXPLANATION,
-          } })
+          expect(http.statusCode).toBe(200)
+          const receipt = RunSubagentCommandReceiptSchema.parse(http.json())
+          expect(receipt).toMatchObject({ subagentId: child.id, state: 'acknowledged', nativeTurnId: 'child-turn' })
           const mcp = await allowed.callTool({ name, arguments: command })
-          expect(mcp.isError).toBe(true)
-          expect(mcp.content).toEqual([{ type: 'text', text: JSON.stringify({ error: {
-            code: CODEX_SUBAGENT_CONTROL_UNSUPPORTED, message: CODEX_SUBAGENT_CONTROL_EXPLANATION,
-          } }) }])
+          expect(mcp.isError).not.toBe(true)
+          expect(RunSubagentCommandReceiptSchema.parse(mcp.structuredContent)).toEqual(receipt)
         }
         const deniedHttp = await app.inject({ method: 'POST', url: `${base}/${operation}`, payload: command,
           headers: { ...headers, authorization: `Bearer ${f.reader.token}` } })
         expect(deniedHttp.statusCode).toBe(403)
         expect(deniedHttp.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
         expect((await reader.callTool({ name, arguments: command })).isError).toBe(true)
+        expect((await foreign.callTool({ name, arguments: command })).isError).toBe(true)
       }
       const detail = RunSubagentDetailSchema.parse((await app.inject({ method: 'GET', url: base, headers })).json())
       const listed = RunSubagentsPageSchema.parse((await reader.callTool({
         name: 'run_subagents_list_v1', arguments: f.input,
       })).structuredContent).items[0]!
       for (const record of [detail, listed]) {
-        expect(record.availableActions).toEqual({ sendInput: false, interrupt: false,
-          blockedReason: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+        expect(record.availableActions).toEqual({ sendInput: record === detail, interrupt: record === detail,
+          blockedReason: record === detail ? null : 'SUBAGENT_ACTION_NOT_PERMITTED' })
         expect(record.subagent).toMatchObject({ id: child.id, revision: child.revision, native: child.native })
         for (const action of ['sendInput', 'interrupt', 'executionResume'] as const) {
-          expect(record.subagent.capabilities[action]).toEqual({ support: 'unsupported', qualification: 'unverified',
-            reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+          expect(record.subagent.capabilities[action]).toEqual({ support: 'supported', qualification: 'passed' })
         }
-        expect(record.subagent.capabilities.inputTiming).toBe('none')
+        expect(record.subagent.capabilities.inputTiming).toBe('active-and-idle')
       }
       expect(RunSubagentMessagesPageSchema.parse((await app.inject({
         method: 'GET', url: `${base}/messages`, headers,
@@ -383,7 +390,18 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       })).structuredContent).items).toMatchObject([{ text: 'Readable child history' }])
       expect((await pool.query('select record from run_subagents where id=$1', [child.id])).rows[0].record).toEqual(saved)
       expect((await pool.query('select count(*)::int as count from run_subagent_command_receipts where subagent_id=$1',
-        [child.id])).rows[0].count).toBe(0)
+        [child.id])).rows[0].count).toBe(2)
+      expect(native.calls.filter(call => ['turn/steer', 'turn/interrupt'].includes(call.method))).toHaveLength(2)
+      expect(native.calls.every(call => call.params.threadId === child.native.childSessionId)).toBe(true)
+      const receiptRow = (await pool.query('select record from run_subagent_command_receipts where subagent_id=$1 and operation=$2',
+        [child.id, 'run_subagent_input_v1'])).rows[0].record
+      await pool.query("update run_subagent_command_receipts set record=jsonb_set(record,'{state}','\"dispatching\"') where id=$1",
+        [receiptRow.id])
+      await recoverSubagentCommands(pool)
+      const recovered = new RunSubagentService(pool, controls)
+      const inputCommand = { ...childInput, commandId: receiptRow.commandId, expectedRevision: receiptRow.expectedRevision, text: 'follow up' }
+      expect(await recovered.input(f.writer.principal, 'mcp', inputCommand)).toMatchObject({ id: receiptRow.id, state: 'acknowledged' })
+      expect(native.calls.filter(call => call.method === 'turn/steer')).toHaveLength(1)
     } finally {
       for (const client of clients) await client.close()
       await app.close()

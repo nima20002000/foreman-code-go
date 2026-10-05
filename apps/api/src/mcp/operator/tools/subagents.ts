@@ -15,7 +15,7 @@ export function registerSubagentTools(server: McpServer, context: OperatorReques
     inputSchema: RunSubagentsListInputSchema, outputSchema: RunSubagentsPageSchema, annotations: read,
   }, input => invokeOperatorTool(context, 'run_subagents_list_v1', () => service.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_subagent_get_v1')) server.registerTool('run_subagent_get_v1', {
-    description: 'Read the exact child and currently available actions. Native protocol support, app qualification and live computer ownership are separate; unavailable controls grant no session access. Codex children have readable history but no individual controls; blockedReason is CODEX_SUBAGENT_CONTROL_UNSUPPORTED.',
+    description: 'Read the exact child and currently available actions. Native protocol support, app qualification and live computer ownership are separate; unavailable controls grant no session access. Codex supports child turn steering, idle input and targeted interruption when its installed protocol and resident owner qualify them.',
     inputSchema: RunSubagentGetInputSchema, outputSchema: RunSubagentDetailSchema, annotations: read,
   }, input => invokeOperatorTool(context, 'run_subagent_get_v1', () => service.get(context.principal, input)))
   if (operatorToolAvailable(context, 'run_subagent_messages_list_v1')) server.registerTool('run_subagent_messages_list_v1', {
@@ -27,11 +27,11 @@ export function registerSubagentTools(server: McpServer, context: OperatorReques
     inputSchema: RunSubagentItemsInputSchema, outputSchema: RunSubagentToolsPageSchema, annotations: read,
   }, input => invokeOperatorTool(context, 'run_subagent_tools_list_v1', () => service.tools(context.principal, input)))
   if (operatorToolAvailable(context, 'run_subagent_input_v1')) server.registerTool('run_subagent_input_v1', {
-    description: 'Send exact child input only where qualified, currently available and owned by its admitted computer manager. Requires runs:read plus explicit runs:subagents:input on the same Run. Pin expectedRevision and retain commandId. A native ACK is acceptance, not consumption. Uncertain retries read the receipt without resending. All Codex child modes return CODEX_SUBAGENT_CONTROL_UNSUPPORTED; child history stays readable. Claude direct input is unavailable.',
+    description: 'Send exact child input only where qualified, currently available and owned by its admitted computer manager. Requires runs:read plus explicit runs:subagents:input on the same Run. Pin expectedRevision and retain commandId. A native ACK is acceptance, not consumption. Uncertain retries read the receipt without resending. Codex active input targets the child turn; idle input preserves the child settings. Claude direct input is unavailable.',
     inputSchema: RunSubagentInputSchema, outputSchema: RunSubagentCommandReceiptSchema, annotations: command,
   }, input => invokeOperatorTool(context, 'run_subagent_input_v1', () => service.input(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'run_subagent_interrupt_v1')) server.registerTool('run_subagent_interrupt_v1', {
-    description: 'Interrupt one exact active child only with qualified targeted cancellation, current computer lease, scoped runs:stop and runs:read. Pin expectedRevision and retain commandId. ACK never marks the child finished; observed provider cancellation remains required. All Codex child modes return CODEX_SUBAGENT_CONTROL_UNSUPPORTED; a parent-turn interrupt is never substituted.',
+    description: 'Interrupt one exact active child only with qualified targeted cancellation, current computer lease, scoped runs:stop and runs:read. Pin expectedRevision and retain commandId. ACK never marks the child finished; observed provider cancellation remains required. Codex interruption addresses the child thread and turn.',
     inputSchema: RunSubagentInterruptSchema, outputSchema: RunSubagentCommandReceiptSchema, annotations: { ...command, destructiveHint: true },
   }, input => invokeOperatorTool(context, 'run_subagent_interrupt_v1', () => service.interrupt(context.principal, 'mcp', input)))
 }

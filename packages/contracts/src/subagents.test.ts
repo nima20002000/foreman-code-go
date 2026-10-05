@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { CODEX_SUBAGENT_CONTROL_UNSUPPORTED, RunSubagentInputSchema,
+import { RunSubagentInputSchema,
   SubagentCapabilitiesSchema, RunSubagentSchema, subagentCapabilities } from './subagents.js'
 
 describe('native child contracts and evidence gates', () => {
-  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('reports no individual controls for %s', mode => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('reports protocol support separately from live qualification for %s', mode => {
     const capabilities = subagentCapabilities(mode, '0.154.0')
     for (const action of ['sendInput', 'interrupt', 'executionResume'] as const) {
-      expect(capabilities[action]).toEqual({ support: 'unsupported', qualification: 'unverified',
-        reasonCode: CODEX_SUBAGENT_CONTROL_UNSUPPORTED })
+      expect(capabilities[action]).toEqual({ support: 'supported', qualification: 'unverified' })
     }
-    expect(capabilities.inputTiming).toBe('none')
+    expect(capabilities.inputTiming).toBe('active-and-idle')
     expect(capabilities.historyReadback.support).not.toBe('unsupported')
   })
   it('separates protocol evidence from app qualification and exact version evidence', () => {
