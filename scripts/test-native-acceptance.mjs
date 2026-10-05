@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -87,6 +87,13 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 
 async function main() {
   const files = nativeAcceptanceFiles(process.argv.slice(2))
+  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
+    cwd: root, stdio: 'inherit',
+  })
+  if (contracts.status !== 0) {
+    process.exitCode = contracts.status ?? 1
+    return
+  }
   const configuration = nativeAcceptanceConfiguration(process.env)
   const opencode = configuration.opencodeBinary ?? 'opencode'
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,

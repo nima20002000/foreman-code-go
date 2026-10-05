@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
   nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
@@ -96,4 +97,13 @@ test('acceptance rejects empty selections, broad filters and paths outside API t
     ['--files', 'test/../opencode.acceptance.test.ts'], ['--testNamePattern', 'qualification']]) {
     assert.throws(() => nativeAcceptanceFiles(args))
   }
+})
+
+test('the root acceptance command forwards file selection and rejects invalid paths before native execution', () => {
+  const result = spawnSync('corepack', ['pnpm', 'test:acceptance', '--files', '../outside.acceptance.test.ts'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 10_000,
+  })
+  assert.ifError(result.error)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /Use --files followed by explicit API acceptance test paths/)
 })
