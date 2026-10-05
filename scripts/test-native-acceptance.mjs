@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -77,7 +77,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 async function main() {
   const files = nativeAcceptanceFiles(process.argv.slice(2))
   const configuration = nativeAcceptanceConfiguration(process.env)
-  const opencode = configuration.opencodeBinary ?? execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
+  const opencode = configuration.opencodeBinary ?? 'opencode'
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
     configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
       const environment = { ...nativeAcceptanceEnvironment(process.env),

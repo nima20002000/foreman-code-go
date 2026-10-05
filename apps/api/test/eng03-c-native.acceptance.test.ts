@@ -46,9 +46,6 @@ async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged 
 
 /** Paid-provider, task-owned internal qualification. Public app acceptance is separate. */
 describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live native lifecycle', () => {
-  let closeQualification: (() => Promise<void>) | undefined
-  beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
-  afterAll(async () => { await closeQualification?.() }, 30_000)
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {
@@ -240,6 +237,11 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     }, null, 2))
   }, 180_000)
 
+  describe('OpenCode approval lifecycle', () => {
+    let closeQualification: (() => Promise<void>) | undefined
+    beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
+    afterAll(async () => { await closeQualification?.() }, 30_000)
+
   it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
     const target = join(outside, 'approved.txt')
@@ -402,6 +404,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       }, null, 2))
     } finally { await rm(outside, { recursive: true, force: true }) }
   }, 180_000)
+
+  })
 
   it('E03-L04 restarts after one native terminal result but before its graph acceptance', async () => {
     let cutExecutionId = '', cutNativeSessionId = ''

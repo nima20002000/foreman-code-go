@@ -173,6 +173,7 @@ async function main() {
   let writer
   let writerCredential
   let failure
+  const codexModel = process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna'
   try {
     writerCredential = await issue([{ actions: ManagementActionSchema.options, scope: {} }])
     const deniedCredential = await issue([{ actions: ['operator_chat:read', 'harnesses:read'], scope: {} }])
@@ -186,8 +187,17 @@ async function main() {
     const conversation = await call(writer, 'operator_chat_create', { title: 'Production regression' })
     conversationId = conversation.conversation.id
     const beforeChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })
+    assert.ok(beforeChat.settings, 'Read the accepted Operator settings before native verification')
+    const chatSettings = { ...beforeChat.settings }
+    if (chatSettings.harness === 'codex') {
+      chatSettings.model = codexModel
+      chatSettings.reasoningEffort = 'medium'
+    } else if (chatSettings.harness === 'claude') {
+      chatSettings.model = 'claude-haiku-4-5-20251001'
+    }
     await call(writer, 'operator_chat_send', { conversationId: conversation.conversation.id, request: {
       requestId: randomUUID(), configurationVersionId: beforeChat.conversation.operatorConfigurationVersionId,
+      settings: chatSettings,
       content: 'Do not use tools. Reply with exactly LOCAL_PRODUCTION_OPERATOR.',
     } })
     const chat = await waitUntil(() => call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id }),
@@ -199,8 +209,13 @@ async function main() {
     const startWorkflow = async (harness, task) => {
       const catalog = await call(writer, 'harness_get', { harness })
       assert.equal(catalog.discoveryError, null, `${harness} must pass native qualification`)
+      const configuration = { ...catalog.defaults }
+      if (harness === 'codex') {
+        configuration.model = codexModel
+        configuration.reasoningEffort = 'medium'
+      }
       const agent = (await call(writer, 'agent_create', { workspaceId, commandId: randomUUID(),
-        agentId: randomUUID(), name: `Production ${harness}`, configuration: catalog.defaults,
+        agentId: randomUUID(), name: `Production ${harness}`, configuration,
         prompt: { system: 'Follow the Foreman Code work-handoff output contract. Do not use tools.' } })).value.agent
       const managed = (await call(writer, 'workflow_create', { workspaceId, commandId: randomUUID(),
         name: `Production ${harness}` })).value
