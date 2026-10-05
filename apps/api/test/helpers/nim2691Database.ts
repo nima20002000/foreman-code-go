@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import pg from 'pg'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 /** A fresh database and directory for this workstream only. Neither the admin
  * database nor an existing application database is migrated or cleaned. */
@@ -25,7 +24,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
     created = true
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
-    directory = await mkdtemp(join(tmpdir(), 'nim2691-workspace-'))
+    directory = await privateFixtureDirectory('workflow-native-')
     assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
     return await work(pool, directory, url.toString())
   } finally {

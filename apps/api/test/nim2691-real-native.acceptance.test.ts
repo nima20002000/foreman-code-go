@@ -18,6 +18,7 @@ import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { appLauncherPath, installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -62,7 +63,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
       const projectPath = await mkdtemp(join(repositoryRoot, '.nim2691-native-project-'))
       const runtimeRoot = join(directory, 'runtime')
-      await mkdir(runtimeRoot)
+      await mkdir(runtimeRoot, { mode: 0o700 })
       await installAppLauncher()
       await mkdir(join(projectPath, '.codex'))
       await writeFile(join(projectPath, '.codex', 'config.toml'), [
@@ -91,13 +92,15 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         await database.migrate()
         await checkpoints.setup()
         const production = buildProductionApp(config, database, checkpoints, false)
-        const startupErrors: string[] = []
+        const startupErrors: Array<{ code: string; message: string }> = []
         const start = production.engine.start.bind(production.engine)
         production.engine.start = async (runId) => {
           try { return await start(runId) }
           catch (error) {
-            startupErrors.push(error && typeof error === 'object' && 'code' in error
-              ? String(error.code) : error instanceof Error ? error.name : 'unknown')
+            const safe = nativePersistenceRedactor([]).error(error)
+            startupErrors.push({ code: safe && typeof safe === 'object' && 'code' in safe
+              ? String(safe.code) : safe instanceof Error ? safe.name : 'unknown',
+              message: safe instanceof Error ? safe.message : String(safe) })
             throw error
           }
         }
@@ -112,7 +115,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               nativeAgent: 'build', thinking: false, autoApprove: false,
               ...(scenario.approval && index === 0 ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
-            : { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'high',
+            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? 'gpt-5.6-luna',
+              reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop
             ? finalAccepted && index === 1
@@ -134,7 +138,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           const agent = AgentSchema.parse({ id: configuration.agentId,
             name: scenario.capLoop ? ['A', 'B', 'C', 'D'][index]! : `NIM-2691 Agent ${index + 1}`,
             productRole: 'coder', harness: configuration.harness.harness,
-            model: configuration.harness.model, effort: 'high', fastMode: false,
+            model: configuration.harness.model,
+            effort: configuration.harness.harness === 'codex' ? configuration.harness.reasoningEffort : 'high',
+            fastMode: false,
             harnessConfiguration: configuration.harness, prompt: configuration.prompt,
             assignedSkills: [], configurationVersionId: configuration.id })
           await pool.query(`insert into agents(id,workspace_id,record)
