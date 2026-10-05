@@ -163,6 +163,14 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(within(dialog).queryByRole('button', { name: 'Upload workflow file' })).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Choose workflow file')).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
+    await choose(user, runs, 'run-b')
+    expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
+    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    await choose(user, runs, 'run-a')
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
   })
 
   it('keeps the saved graph and chat selection together across A, B, A', async () => {
