@@ -86,6 +86,14 @@ export async function adoptOpenCodePublications(pool: pg.Pool, context: FileTool
   const client = await pool.connect()
   try {
     await client.query('begin')
+    const publishedTurn = await client.query(`select 1 from file_tool_publications p
+      join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
+      where p.binding=$1 and a.state='finalized' limit 1`, [bindingIdentity(context)])
+    // Preparation cannot publish; its resources can be reclaimed before a native acknowledgement exists.
+    if (!publishedTurn.rowCount) {
+      await client.query('commit')
+      return
+    }
     const row = (await client.query<{ request_id: string; message_record: unknown }>(`select t.request_id,m.record as message_record
       from operator_conversations c
       join operator_conversation_turns t on t.conversation_id=c.id and t.message_id=$2
