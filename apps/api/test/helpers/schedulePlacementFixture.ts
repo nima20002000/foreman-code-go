@@ -6,7 +6,7 @@ import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
 import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
 import { PostgresWorkspaceRootPolicies } from '../../src/modules/sources/rootPolicies.js'
-import { InstalledWorkspaceRootHosts } from '../../src/modules/sources/rootHosts.js'
+import { InstalledWorkspaceRootHosts, type RootWorkerClient } from '../../src/modules/sources/rootHosts.js'
 import { RegisteredWorkspaceSourceRoots } from '../../src/modules/sources/registeredSourceRoots.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { PostgresSourceService } from '../../src/modules/sources/service.js'
@@ -55,13 +55,14 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
     configurationRevision: '1', bases: [{ baseId: randomUUID(), canonicalPath: project,
       accessModes: ['read-only', 'read-write'] }], managedRuntimeRoot: f.runtimeRoot })
   const unused = async (): Promise<never> => { throw new Error('Scheduled Start admission does not execute a provider.') }
+  let rootWorker: RootWorkerClient = { request: unused }
   const createAuthorities = () => {
     const hosts = new InstalledWorkspaceRootHosts(allowlist,
       async (sql, _principal, host, installationId) => {
         const registration = await assertDeviceHostInstallation(sql, host, installationId)
         return registration ? { workerInstallationId: registration.workerInstallationId,
           keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision } : null
-      }, { request: unused })
+      }, { request: (...args) => rootWorker.request(...args) })
     const policies = new PostgresWorkspaceRootPolicies(mainId, hosts)
     const sources = new PostgresSourceService(pool, f.commands, f.locations, new PrivateSourceSnapshotStore(canonical),
       mainId, new RegisteredWorkspaceSourceRoots(policies, hosts),
@@ -110,7 +111,9 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
   const producer = () => new AgentPlacementProducer(pool, mainId, authorities.sources, authorities.policies,
     harness.registry, harness.suites)
   return {
-    writer, source, root, policy, harness,
+    writer, source, root, policy, harness, allowlist,
+    get policies() { return authorities.policies },
+    connectRootWorker: (worker: RootWorkerClient) => { rootWorker = worker },
     get sources() { return authorities.sources },
     get producer() { return producer() },
     save: async (schedule: ScheduleConfiguration = sch11Once) =>

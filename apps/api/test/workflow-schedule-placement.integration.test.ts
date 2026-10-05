@@ -14,6 +14,8 @@ import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11Fixture, sch11DomainState, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
 import { sch11Once } from './helpers/sch11ClockCases.js'
 import { schedulePlacementFixture } from './helpers/schedulePlacementFixture.js'
+import { scheduleDevicePlacementFixture } from './helpers/scheduleDevicePlacementFixture.js'
+import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 
 describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
   let database: Sch11Database
@@ -22,8 +24,11 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
   afterAll(async () => { await database?.close() })
   beforeEach(async () => { f = await sch11Fixture(database) }, 60_000)
 
-  it('records an instance revision rejection through authenticated HTTP/MCP history with denied callers', async () => {
-    const placement = await schedulePlacementFixture(f)
+  it.each(['instance revision', 'unavailable source', 'revoked device'] as const)(
+    'records %s rejection through authenticated HTTP/MCP history with denied callers', async (change) => {
+    const mainPlacement = await schedulePlacementFixture(f)
+    const device = change === 'revoked device' ? await scheduleDevicePlacementFixture(f, mainPlacement) : undefined
+    const placement = device ?? mainPlacement
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access: f.access, services: { workflows: f.workflows, commands: f.commands,
         sources: placement.sources, harnessInstances: placement.harness.service } as OperatorServices } })
@@ -66,18 +71,38 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       } })
       expect(deniedSource.isError).toBe(true)
       expect(JSON.stringify(deniedSource.content)).toContain('ACCESS_DENIED')
-      await placement.changeInstance()
+      let reason = 'workflow_not_executable'
+      if (change === 'instance revision') await placement.changeInstance()
+      if (change === 'unavailable source') {
+        await database.pool.query("update source_snapshots set availability='unavailable' where snapshot_id=$1",
+          [placement.source.snapshotId])
+        const unavailable = await owner.callTool({ name: 'source_get', arguments: {
+          workspaceId: f.scope.workspaceId, ...placement.source,
+        } })
+        expect(unavailable.isError).toBe(true)
+        expect(JSON.stringify(unavailable.content)).toContain('SOURCE_UNAVAILABLE')
+      }
+      if (device) {
+        const revoked = await device.revoke()
+        expect(revoked.status).toBe('revoked')
+        await expect(assertDeviceHostInstallation(database.pool, placement.policy.hostRef,
+          placement.policy.applicationInstallationId)).rejects.toMatchObject({ code: 'revoked' })
+        reason = 'schedule_authorization_denied'
+      }
+      placement.restart()
+      await placement.recover()
       f.time.now = saved.nextOccurrenceAt!
       const dispatcher = f.dispatcher(async (principal, start, schedule) => {
         await admitRepeatRun(database.pool, f.locations, principal, 'schedule', start,
-          { ...repeatStartPublication, placementAdmission: placement.producer }, { schedule })
+          { ...repeatStartPublication, placementAdmission: placement.producer,
+            ...(device ? { workerExecution: device.workerExecution } : {}) }, { schedule })
       })
       await dispatcher.dispatch(saved)
       const history = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: f.scope })
       expect(history.isError).not.toBe(true)
       const page = ScheduleOccurrencePageSchema.parse(history.structuredContent)
       expect(page.items).toEqual([expect.objectContaining({ dueAt: saved.nextOccurrenceAt,
-        status: 'rejected', reason: 'workflow_not_executable' })])
+        status: 'rejected', reason })])
       const http = await app.inject({ method: 'GET', url: `${root}/occurrences`,
         headers: { authorization: `Bearer ${f.reader.token}` } })
       expect(http.statusCode).toBe(200)
@@ -87,6 +112,12 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       expect(readback.isError).not.toBe(true)
       expect(ScheduleGetResultSchema.parse(readback.structuredContent).schedule).toEqual(await f.current())
       expect(await f.countRuns()).toBe(0)
+      await f.dispatcher(async (principal, start, schedule) => {
+        await admitRepeatRun(database.pool, f.locations, principal, 'schedule', start,
+          { ...repeatStartPublication, placementAdmission: placement.producer,
+            ...(device ? { workerExecution: device.workerExecution } : {}) }, { schedule })
+      }).dispatch(saved)
+      expect(await f.history()).toEqual(page.items)
       const before = await sch11DomainState(f)
       const denied = await reader.callTool({ name: 'workflow_schedule_save', arguments: {
         ...input, commandId: randomUUID(), expectedRevision: 1,

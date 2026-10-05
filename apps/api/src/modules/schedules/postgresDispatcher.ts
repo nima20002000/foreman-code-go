@@ -8,6 +8,7 @@ import {
 import { RunStartV3InputSchema, type RunStartV3Input } from '@graphql/contracts/wave25'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
+import { DeviceAccessError } from '../devices/access.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, type ImmutableWorkflowVersionRow,
 } from '../workflows/immutableRead.js'
@@ -32,6 +33,9 @@ const retry = () => new DomainError('SCHEDULE_DISPATCH_RETRY', 'Re-read the sche
 /** Application-owned reason codes only. Unknown/native/SQL errors are retried,
  * never copied into public history and never treated as negative COMMIT proof. */
 export function scheduleRejectionReason(error: unknown): string | undefined {
+  if (error instanceof DeviceAccessError) {
+    return error.code === 'conflict' ? 'workflow_not_executable' : 'schedule_authorization_denied'
+  }
   if (!(error instanceof DomainError)) return undefined
   if (['ACCESS_DENIED', 'AUTH_INVALID', 'AUTH_REVOKED', 'AUTH_EXPIRED', 'AUTH_RUN_ENDED'].includes(error.code)) {
     return 'schedule_authorization_denied'
@@ -40,7 +44,7 @@ export function scheduleRejectionReason(error: unknown): string | undefined {
   if (['WORKFLOW_VERSION_NOT_FOUND', 'SCHEDULE_WORKFLOW_NOT_SAVED'].includes(error.code)) return 'workflow_not_saved'
   if (['WORKFLOW_CONFIGURATION_STALE', 'EXECUTION_SEMANTICS_UNSUPPORTED', 'AGENT_CONFIGURATION_UNAVAILABLE',
     'WORKFLOW_VERSION_RECORD_INVALID', 'WORKFLOW_VERSION_PIN_MISMATCH', 'WORKFLOW_VERSION_HASH_MISMATCH',
-    'PLACEMENT_ADMISSION_CONFLICT', 'PLACEMENT_INVALID_ROOT',
+    'PLACEMENT_ADMISSION_CONFLICT', 'PLACEMENT_INVALID_ROOT', 'SOURCE_UNAVAILABLE',
     'ROOT_POLICY_CONFLICT', 'ROOT_POLICY_UNAVAILABLE', 'ROOT_CONFIGURATION_CONFLICT', 'ROOT_CONFIGURATION_MISSING',
     'HARNESS_INSTANCE_INVALID', 'HARNESS_INSTANCE_CHANGED', 'HARNESS_INSTALLATION_INVALID', 'HARNESS_INSTALLATION_CHANGED',
   ].includes(error.code)) return 'workflow_not_executable'
