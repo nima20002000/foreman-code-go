@@ -91,8 +91,10 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
         [execution.id, t.run.id, slotId, activationId, text(repeatExecutionIdentity(execution))])
         const reservation = workflowNativeReservation(activation.scope,
           { nodeId: b.workflowNodeId, occurrence: null }, execution, inputDigest)
+        const reservationJson = text(reservation)
         await sql.query(`insert into workflow_native_entries(execution_id,run_id,reservation,reservation_json,reservation_digest,phase)
-          values($1,$2,$3::jsonb,$3,$4,'reserved')`, [execution.id, t.run.id, text(reservation), digest(reservation)])
+          values($1,$2,$3::jsonb,$4::text,$5,'reserved')`,
+        [execution.id, t.run.id, reservationJson, reservationJson, digest(reservation)])
         await sql.query(`insert into run_repeat_effects(run_id,effect_kind,entity_id,payload_digest,owner_id,owner_fence)
           values($1,'input.bind',$2,$3,'historical-fixture','1')`,
         [t.run.id, execution.id, digest({ execution, inputDigest })])

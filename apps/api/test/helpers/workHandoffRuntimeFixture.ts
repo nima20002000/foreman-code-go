@@ -15,7 +15,7 @@ export async function workHandoffRuntimeFixture(definition: ReturnType<typeof ma
 
 type Fixture = Awaited<ReturnType<typeof workHandoffRuntimeFixture>>
 
-/** Pause the actual routing method only after its native result was accepted, then recompose the engine. */
+/** Pause after terminal acceptance and before routing, then recompose the engine. */
 export async function runWorkHandoffWithRestart(f: Fixture, restart: boolean,
   atAcceptance: (execution: HarnessExecution) => boolean) {
   if (!restart) {
@@ -26,18 +26,18 @@ export async function runWorkHandoffWithRestart(f: Fixture, restart: boolean,
   const release = deferred<void>()
   const closing = deferred<void>()
   let paused = false
-  const admit = RepeatRunRepository.prototype.admitWorkRequest
-  const pause = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkRequest').mockImplementation(async function (
-    this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['admitWorkRequest']>
+  const accept = RepeatRunRepository.prototype.acceptWorkTerminal
+  const pause = vi.spyOn(RepeatRunRepository.prototype, 'acceptWorkTerminal').mockImplementation(async function (
+    this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['acceptWorkTerminal']>
   ) {
-    const execution = await f.runs.getExecution(args[0])
-    if (!paused && execution && atAcceptance(execution)) {
+    const terminal = await accept.apply(this, args)
+    if (!paused && terminal.kind === 'accepted' && atAcceptance(terminal.execution)) {
       paused = true
-      WorkActivationInputSchema.parse(execution.input)
+      WorkActivationInputSchema.parse(terminal.execution.input)
       accepted.resolve()
       await release.promise
     }
-    return admit.apply(this, args)
+    return terminal
   })
   const closeForRestart = f.native.closeForRestart.bind(f.native)
   const close = vi.spyOn(f.native, 'closeForRestart').mockImplementation(() => {
