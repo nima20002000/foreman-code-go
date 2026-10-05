@@ -17,7 +17,7 @@ import { JobVerificationRuntimeMeasurementSchema, JOB_VERIFICATION_BASE_CHECKS }
   from '@graphql/contracts/job-verification-runtime'
 import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
 import { JOB_RUNTIME_PROVISIONING_SUITE } from '@graphql/contracts/job-runtime'
-import { verificationFixture } from '../../../../../packages/contracts/tests/helpers/jobVerification.js'
+import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { verificationRepositoryContext } from './executorOutputs.js'
 

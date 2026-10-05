@@ -193,7 +193,12 @@ export const HistoricalDeviceExecutionAdmissionFields = {
   runtimeApprovalId: z.uuid().optional(), runtimeApprovalRevision: DeviceRevisionSchema.optional(),
 }
 export type DeviceExecutionAdmission = z.infer<typeof DeviceExecutionAdmissionSchema>
-export function validateHistoricalDeviceExecutionAdmission(value: Partial<DeviceExecutionAdmission>, ctx: z.RefinementCtx): void {
+type HistoricalDeviceExecutionAdmission = {
+  [Field in keyof DeviceExecutionAdmission]?: DeviceExecutionAdmission[Field] | undefined
+}
+export function validateHistoricalDeviceExecutionAdmission(
+  value: HistoricalDeviceExecutionAdmission, ctx: z.RefinementCtx,
+): void {
   const fields = Object.keys(DeviceExecutionAdmissionFields) as (keyof DeviceExecutionAdmission)[]
   if (fields.some(field => value[field] !== undefined) && fields.some(field => value[field] === undefined))
     ctx.addIssue({ code: 'custom', message: 'Historical admission is absent or retains a complete policy and device approval reference.' })
