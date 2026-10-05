@@ -40,3 +40,18 @@ inodes, including open deleted files. Cancellation applies the same rule to
 incomplete preparations. Retried cleanup reads the original records and cannot
 release or delete a later Job's ownership. Reservations are reclaimed only after
 this physical cleanup succeeds.
+
+Manual before-entry recovery is an explicitly reviewed signed stop operation. It
+uses the grant's immutable expiry, including when the automatic cleanup budget
+has expired. The CLI cannot renew that grant. It preserves native-entry fences,
+checks any preparatory verification owner without treating metadata as a launch,
+and retires that owner only after source/quota cleanup. Completed signed closure
+replay reads the retained result and original journal without another cleanup.
+
+Project-quota recovery records the original filesystem UUID and volume identity,
+the current boot and restored root identity, and the reviewed block device. The
+observer obtains UUIDs through read-only filesystem ioctls; capture stores the
+observed UUID in the protected pool. Recovery checks UUID, project IDs, limits,
+inheritance and namespace inodes before deleting the original materialization.
+The existing immutable loopback backing-file proof remains available for volumes
+that use it; its size is volume geometry rather than a single Job's allowance.

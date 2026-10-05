@@ -90,7 +90,7 @@ const ToolIdentity = z.object({
 export const JobVerificationQuotaPoolSchema = z.object({
   queryExecutable: z.string().startsWith('/').max(2048), queryBinarySha256: DeviceDigestSchema,
   blockDevice: z.string().startsWith('/dev/').max(2048),
-  volumeCapacityInodes: DeviceSafeIntegerSchema.positive(),
+  volumeCapacityInodes: DeviceSafeIntegerSchema.positive(), filesystemUuid: z.uuid().optional(),
   slots: z.array(SourceProjectQuotaSlotSchema).min(1).max(64),
 }).strict().superRefine((value, context) => {
   if (new Set(value.slots.map(slot => slot.namespace)).size !== value.slots.length

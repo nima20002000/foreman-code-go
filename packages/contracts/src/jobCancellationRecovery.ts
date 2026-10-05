@@ -6,12 +6,19 @@ import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptRecordSchema } 
 import { canonicalGraphJson } from './wave25/index.js'
 
 export const JOB_CANCELLATION_GRANT_TTL_MS = 300_000
-export const JobCancellationFilesystemSchema = z.object({
+const BackingJobCancellationFilesystemSchema = z.object({
   kind: z.literal('restored-original-volume'), bootId: z.uuid(), filesystemUuid: z.uuid(),
   filesystem: SourceRootRecordSchema.shape.binding.shape.filesystem,
   backingFile: z.object({ path: z.string().startsWith('/'), device: z.string().regex(/^\d+$/),
     inode: z.string().regex(/^\d+$/), bytes: z.string().regex(/^[1-9]\d*$/) }).strict(),
 }).strict()
+export const ProjectJobCancellationFilesystemSchema = z.object({
+  kind: z.literal('restored-original-project-quota'), blockDevice: z.string().startsWith('/dev/').max(2048), bootId: z.uuid(), filesystemUuid: z.uuid(), volumeId: z.uuid(),
+  filesystem: SourceRootRecordSchema.shape.binding.shape.filesystem,
+}).strict()
+export const JobCancellationFilesystemSchema = z.union([
+  BackingJobCancellationFilesystemSchema, ProjectJobCancellationFilesystemSchema,
+])
 export const JobCancellationProposalInputSchema = z.object({
   workspaceId: z.string().min(1), executionId: z.string().min(1), commandId: z.string().min(8).max(200),
   journalSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -34,7 +41,7 @@ export const SignedJobCancellationGrantSchema = z.object({
 export const JobCancellationClosureSchema = z.object({
   schemaVersion: z.literal(1), grantId: z.uuid(), receipt: RemoteJobOperationReceiptRecordSchema,
   sourceClaim: z.object({ materializationId: z.uuid(), reservationId: z.uuid(),
-    released: z.literal(true), archiveSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+    released: z.literal(true), quotaReclaimed: z.literal(true).optional(), archiveSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
 }).strict()
 export const SignedJobCancellationClosureSchema = z.object({
   closure: JobCancellationClosureSchema, signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
