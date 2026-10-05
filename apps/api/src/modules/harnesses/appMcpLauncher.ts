@@ -40,13 +40,19 @@ export function appLauncherPath(): string {
 export function appLauncherConnection(): Extract<HarnessMcpConnection, { transport: 'stdio' }> {
   return { transport: 'stdio', executable: process.execPath, arguments: [appLauncherPath()], environmentVariables: [APP_MCP_TOKEN] }
 }
-interface LauncherInstallation { version: 1; executables: { path: string; realpath: string }[] }
+export interface LauncherInstallation {
+  version: 1
+  executables: { path: string; realpath: string }[]
+  launcherAliases?: string[]
+}
 function installationPath(launcher: string): string { return `${launcher}.installation.json` }
-function readInstallation(launcher: string): LauncherInstallation | undefined {
+export function readLauncherInstallation(launcher: string): LauncherInstallation | undefined {
   try {
     const value = JSON.parse(readFileSync(installationPath(launcher), 'utf8')) as LauncherInstallation
     if (value.version === 1 && Array.isArray(value.executables)
-      && value.executables.every((entry) => typeof entry?.path === 'string' && typeof entry.realpath === 'string')) return value
+      && value.executables.every((entry) => typeof entry?.path === 'string' && typeof entry.realpath === 'string')
+      && (value.launcherAliases === undefined || Array.isArray(value.launcherAliases)
+        && value.launcherAliases.every((alias) => typeof alias === 'string' && isAbsolute(alias)))) return value
   } catch { /* Legacy installations have no installation record. */ }
   return undefined
 }
@@ -61,12 +67,24 @@ export function isManagedLauncherCommand(command: unknown, launcher: string): bo
   try {
     const executable = realpathSync(command[0])
     if (executable === realpathSync(process.execPath)) return true
-    return readInstallation(launcher)?.executables.some((entry) => entry.path === command[0] && entry.realpath === executable) ?? false
+    return readLauncherInstallation(launcher)?.executables
+      .some((entry) => entry.path === command[0] && entry.realpath === executable) ?? false
+  } catch { return false }
+}
+function isAppLauncherCommand(command: unknown): boolean {
+  const launcher = appLauncherPath()
+  if (isManagedLauncherCommand(command, launcher)) return true
+  if (!Array.isArray(command) || typeof command[1] !== 'string') return false
+  const alias = command[1]
+  if (!readLauncherInstallation(launcher)?.launcherAliases?.includes(alias)) return false
+  try {
+    return realpathSync(dirname(alias)) === realpathSync(dirname(launcher))
+      && realpathSync(alias) === realpathSync(launcher) && isManagedLauncherCommand(command, alias)
   } catch { return false }
 }
 export function isAppLauncher(harness: 'codex' | 'opencode', entry: Record<string, unknown>): boolean {
   const command = harness === 'codex' ? [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])] : entry.command
-  if (!isManagedLauncherCommand(command, appLauncherPath())) return false
+  if (!isAppLauncherCommand(command)) return false
   if (entry.url != null || entry.bearer_token_env_var != null || entry.oauth != null
     || (entry.headers != null && Object.keys(entry.headers as object).length > 0)
     || (entry.http_headers != null && Object.keys(entry.http_headers as object).length > 0)
@@ -88,12 +106,16 @@ export async function installManagedLauncher(sourceUrl: URL, destination: string
   const temporary = `${destination}.${randomUUID()}.tmp`
   try { await writeFile(temporary, source, { mode: 0o600, flag: 'wx' }); await rename(temporary, destination) }
   finally { await rm(temporary, { force: true }) }
-  const executables = (readInstallation(destination)?.executables ?? []).filter((entry) => entry.path !== process.execPath)
+  const installation = readLauncherInstallation(destination)
+  const executables = (installation?.executables ?? []).filter((entry) => entry.path !== process.execPath)
   executables.push({ path: process.execPath, realpath: realpathSync(process.execPath) })
+  await writeLauncherInstallation(destination, { ...installation, version: 1, executables })
+}
+export async function writeLauncherInstallation(destination: string, installation: LauncherInstallation): Promise<void> {
   const metadata = installationPath(destination)
   const pending = `${metadata}.${randomUUID()}.tmp`
   try {
-    await writeFile(pending, JSON.stringify({ version: 1, executables } satisfies LauncherInstallation), { mode: 0o600, flag: 'wx' })
+    await writeFile(pending, JSON.stringify(installation), { mode: 0o600, flag: 'wx' })
     await rename(pending, metadata)
   } finally { await rm(pending, { force: true }) }
 }

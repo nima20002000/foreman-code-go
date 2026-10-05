@@ -4,7 +4,7 @@ import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, realpath, rename
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
@@ -203,6 +203,9 @@ async function install() {
   await run(join(release, 'node'), ['dist/cli/migrate.js'], {
     cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
   })
+  const upgradeModule = join(release, 'apps/api/dist/modules/harnesses/productionMcpUpgrade.js')
+  const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
+  await upgradeProductionMcpLauncher(home)
   const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
   try {
     await symlink(release, pending)

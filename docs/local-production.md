@@ -65,6 +65,16 @@ expiry times and app process IDs. Each credential routes to its issuing app;
 the endpoint still validates its grants and scope. Production database, files,
 workspaces and execution state remain separate from development and tests.
 
+Updates also transition managed launchers installed under
+`~/.local/state/graphql-production/mcp/`. With the API stopped, the installer
+validates their installation record, retains installed executable identities,
+and links that directory to the shared launcher and routing index. Saved native
+commands, credential references, tool policies, approval rules and disabled flags
+stay intact. Recognition requires the registered alias to resolve to the shared
+launcher and the executable to pass the same managed-command checks. The original
+directory is retained as `mcp.previous`; an interrupted transition resumes from it
+on the next install. Each API restart rebuilds credential routes from its database.
+
 The Jobs view and Operator MCP use the same persistent build queue in this
 installation. Its reviewed Main configuration belongs at
 `~/.local/state/graphql-production/runs/job-queue.json`, under the configured
