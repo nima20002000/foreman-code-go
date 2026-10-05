@@ -6,8 +6,6 @@ import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExec
 import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema, WorkActivationInputSchema,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
-import { componentLogger } from '../../infrastructure/logger.js'
-import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE } from '../interactions/repeatNativeEvidence.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
@@ -258,11 +256,18 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       const initialPrompt = currentInitialPrompt(node,
         context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false,
         context.version.definition.handoffs !== undefined)
-      const noticePrompt = context.version.definition.handoffs
-        ? trustedWorkNoticePrompt(WorkActivationInputSchema.parse(execution.input)) : undefined
+      const workInput = context.version.definition.handoffs
+        ? WorkActivationInputSchema.parse(execution.input) : undefined
+      const noticePrompt = workInput ? trustedWorkNoticePrompt(workInput) : undefined
+      const returnPrompt = workInput?.work.kind === 'work_request' ? [
+        'If you choose routing.kind "return", copy this routing object and add outcome "accepted" or "needs_changes":',
+        JSON.stringify({ kind: 'return', requestId: workInput.work.request.requestId }),
+        'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',
+      ].join('\n') : undefined
+      const prompts = [initialPrompt, noticePrompt, returnPrompt].filter(Boolean)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
-        ...(initialPrompt || noticePrompt ? { initialPrompt: [initialPrompt, noticePrompt].filter(Boolean).join('\n\n') } : {}),
+        ...(prompts.length ? { initialPrompt: prompts.join('\n\n') } : {}),
         configuration, input: execution.input })
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
@@ -371,8 +376,6 @@ export async function executeRepeatRuntime(input: {
         tasks.delete(task)
         if (!(input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') && definitive(error)) {
           firstFailure ??= error
-          componentLogger('engine').error({ runId: input.runId, err: nativePersistenceRedactor([]).error(error) },
-            'workflow activation failed before cleanup')
           const cleanup = input.lifecycle.requestCleanup().then(() => {
             failed.abort(error)
             return cancel()

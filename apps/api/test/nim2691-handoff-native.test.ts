@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { mkdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema,
+  type HarnessExecutionRequest } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, WorkActivationInputSchema,
+  WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
 import { repeatNativeObserver } from '../src/modules/runs/repeatRuntime.js'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 describe('NIM-2691 native work result boundary', () => {
   it('preserves a complete typed work request and rejects prose without inventing a route', () => {
@@ -70,5 +75,70 @@ describe('NIM-2691 native work result boundary', () => {
       .rejects.toMatchObject({ code: 'NATIVE_SESSION_START_UNCERTAIN' })
     expect(claims).toBe(1)
     expect(nativeCalls).toBe(0)
+  })
+
+  it.each(['codex', 'opencode'] as const)('delivers the received return correlation unchanged to %s', async (harness) => {
+    const fixture = makeCurrentWorkflowFixture('work-return-prompt')
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+    } })
+    const node = version.definition.nodes[1]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
+    const configuration = AgentConfigurationVersionSchema.parse({ ...fixture.configurations[1],
+      harness: harness === 'codex' ? fixture.configurations[1]!.harness : {
+        harness: 'opencode', model: 'opencode-go/fixture', variant: 'high', nativeAgent: 'build',
+        thinking: false, autoApprove: false,
+      },
+    })
+    const directory = await privateFixtureDirectory('return-prompt-')
+    try {
+      const requestId = 'work-request-5582bbadab58b00faed31d6bb449368111baead889d8bd3ce8c73517329fe23e'
+      const activationId = 'activation-return-prompt'
+      const input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3,
+        runInput: fixture.run.input, occurrence: null, entry: null, predecessors: [], work: {
+          kind: 'work_request', activation: { scope: fixture.scope, activationId,
+            workflowNodeId: node.id, lineageId: fixture.run.id, cause: { kind: 'work_request', requestId } },
+          request: { scope: fixture.scope, requestId, relationshipId: version.definition.edges[0]!.id,
+            requesterActivationId: 'activation-requester', requesterExecutionId: 'execution-requester',
+            destinationActivationId: activationId, requesterNodeId: version.definition.nodes[0]!.id,
+            destinationNodeId: node.id, payloadDigest: `sha256:${'1'.repeat(64)}`,
+            acceptedAt: fixture.createdAt, ordinal: 1 },
+          acceptedSourceResult: { outcome: 'succeeded', output: { routing: { kind: 'finish' },
+            data: { latestDeliverable: { revision: 0 }, remainingFindings: [] } } },
+        } })
+      const run = AcceptedWorkflowRunV3Schema.parse({ ...fixture.run,
+        authorizationPrincipalId: 'principal-return-prompt', executionLocation: {
+          runnerId: 'runner-local', rootPath: directory, locationRevision: 1,
+          identityHash: `sha256:${'2'.repeat(64)}`,
+        } })
+      const runtimeDirectory = join(directory, 'runtime')
+      await mkdir(runtimeDirectory, { mode: 0o700 })
+      const execution = HarnessExecutionSchema.parse({ id: 'execution-return-prompt', runId: run.id,
+        workflowNodeId: node.id, agentId: node.agentId, agentConfigurationVersionId: configuration.id,
+        attempt: 1, input, state: 'starting', createdAt: fixture.createdAt,
+        workingDirectory: directory, runtimeDirectory })
+      let received: HarnessExecutionRequest | undefined
+      const observer = repeatNativeObserver({ run, version,
+        owner: { runId: run.id, assertOwned() {}, client: {} } as never,
+        store: { readExecution: async () => ({ execution, ref: { nodeId: node.id, occurrence: null } }),
+          claimLaunch: async () => execution, beginNativeEntry: async () => undefined,
+          assertExecutionAdmission: async () => undefined } as never,
+        native: { observeExact: async (value: { request: HarnessExecutionRequest }) => {
+          received = value.request
+          return { state: 'completed', execution }
+        } } as never,
+        admission: new RunnerAdmission(1),
+        workflows: { getAgentConfiguration: async () => configuration },
+        locations: { revalidateRunAuthorization: async () => undefined,
+          revalidateSnapshot: async () => undefined } as never,
+        directory: () => runtimeDirectory,
+      })
+      await observer(execution, new AbortController().signal)
+      expect(received?.input).toEqual(input)
+      const routing = received?.initialPrompt?.split('\n').find((line) => line.startsWith('{'))
+      expect(routing && JSON.parse(routing)).toEqual({ kind: 'return', requestId })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })
