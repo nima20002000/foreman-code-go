@@ -229,6 +229,24 @@ export class DeviceApplicationChannel {
       }
     } finally { this.outboundBytes -= size; this.uploads.delete(id); signal.removeEventListener('abort', cancel); upload.abort() }
   }
+  private async sendReply(
+    id: string, assembly: Assembly, registration: DeviceExtensionRegistration,
+    kind: 'response' | 'error', result: DeviceApplicationResult,
+  ): Promise<void> {
+    try {
+      await this.sendPacket(id, assembly.namespace, registration.version, kind,
+        result.payload, result.bytes, assembly.abort.signal, { stop: assembly.stop })
+    } catch (error) {
+      if (!(error instanceof DeviceApplicationError) || assembly.abort.signal.aborted) throw error
+      if (error.code === 'backpressure') {
+        // A rejection needs no packet allocation when uploads exhaust the shared byte budget.
+        sendFrame(this.options.socket, { type: 'application-reject', id, code: 'backpressure' })
+        return
+      }
+      if (kind === 'error') throw error
+      await this.sendReply(id, assembly, registration, 'error', { payload: deviceApplicationFailure(error) })
+    }
+  }
   /** Called only by run()'s sole socket reader; control frames never wait for a domain handler. */
   private receive(frame: Record<string, unknown>) {
     this.current()
@@ -333,13 +351,11 @@ export class DeviceApplicationChannel {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
         componentLogger('devices').error({ err: error, namespace: assembly.namespace }, 'Device extension request failed')
         const failure = deviceApplicationFailure(error)
-        await this.sendPacket(id, assembly.namespace, registration.version, 'error', failure, undefined, assembly.abort.signal, { stop: assembly.stop }); return
+        await this.sendReply(id, assembly, registration, 'error', { payload: failure })
+        return
       }
       if (!assembly.abort.signal.aborted) {
-        try { await this.sendPacket(id, assembly.namespace, registration.version, 'response', result.payload, result.bytes, assembly.abort.signal, { stop: assembly.stop }) } catch (error) {
-          if (!(error instanceof DeviceApplicationError) || assembly.abort.signal.aborted) throw error
-          await this.sendPacket(id, assembly.namespace, registration.version, 'error', deviceApplicationFailure(error), undefined, assembly.abort.signal, { stop: assembly.stop })
-        }
+        await this.sendReply(id, assembly, registration, 'response', result)
       }
     } catch (error) {
       if (!assembly.abort.signal.aborted && !this.abort.signal.aborted) throw error

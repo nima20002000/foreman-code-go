@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEVICE_APPLICATION_CHUNK_WINDOW, negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import {
+  DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_WINDOW, DEVICE_APPLICATION_JSON_BYTES,
+  DEVICE_APPLICATION_BINARY_BYTES, DEVICE_APPLICATION_STOP_BYTES, negotiateDeviceExtensions,
+} from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 import { deriveDispatch, freezePlacement } from '../src/modules/placement/binding.js'
@@ -469,6 +472,82 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(await Promise.all(requests)).toEqual(Array.from({ length: 8 }, () => ({ payload: 'released' })))
     } finally { await pair.close(); await Promise.allSettled(requests) }
   })
+  it.each(['main', 'worker'] as const)(
+    'rejects duplex replies on saturated %s without losing heartbeat, Stop, or reusable capacity',
+    async side => {
+      vi.useFakeTimers()
+      const handled = vi.fn(async (payload: unknown) => {
+        if (payload === 'deny') throw new DomainError('forbidden', 'Denied', 403)
+        if (payload === 'large-reply') return { payload: 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1) }
+        if (typeof payload === 'object') return { payload: 'stopped' }
+        return { payload: 'reply' }
+      })
+      const pair = setup(handled, undefined, 100, handled)
+      const uploader = side === 'main' ? pair.main : pair.worker
+      const caller = side === 'main' ? pair.worker : pair.main
+      const rawUploader = side === 'main' ? pair.rawMain : pair.rawWorker
+      const rawReceiver = side === 'main' ? pair.rawWorker : pair.rawMain
+      const uploadIds = new Set<string>()
+      const sendUpload = rawUploader.send.bind(rawUploader)
+      const sendReceipt = rawReceiver.send.bind(rawReceiver)
+      rawUploader.send = text => {
+        const frame = JSON.parse(text) as { type: string; id: string; kind?: string; jsonBytes?: number }
+        if (frame.type === 'application-open' && frame.kind === 'request'
+          && frame.jsonBytes === DEVICE_APPLICATION_JSON_BYTES) uploadIds.add(frame.id)
+        sendUpload(text)
+      }
+      rawReceiver.send = text => {
+        const frame = JSON.parse(text) as { type: string; id: string }
+        if (frame.type !== 'application-ack' || !uploadIds.has(frame.id)) sendReceipt(text)
+      }
+      const abort = new AbortController()
+      const payload = 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES - 2)
+      const uploads = [
+        uploader.request('execution-v1', payload, {
+          signal: abort.signal, bytes: new Uint8Array(DEVICE_APPLICATION_BINARY_BYTES),
+        }),
+        uploader.request('execution-v1', payload, { signal: abort.signal }),
+      ]
+      for (const upload of uploads) void upload.catch(() => {})
+      try {
+        await flush()
+        expect(uploadIds.size).toBe(2)
+        const opens = rawUploader.frames.map(text => JSON.parse(text) as {
+          type: string; id: string; jsonBytes: number; binaryBytes: number
+        }).filter(frame => frame.type === 'application-open' && uploadIds.has(frame.id))
+        expect(opens.reduce((total, frame) => total + frame.jsonBytes + frame.binaryBytes, 0))
+          .toBe(DEVICE_APPLICATION_BUFFER_BYTES - DEVICE_APPLICATION_STOP_BYTES)
+        await expect(uploader.request('execution-v1', 'overflow')).rejects.toThrow('backpressure')
+        for (const request of ['reply', 'deny', 'large-reply']) {
+          await expect(caller.request('execution-v1', request)).rejects.toMatchObject({
+            code: 'backpressure', retryable: true,
+          })
+        }
+        expect(handled.mock.calls.map(([request]) => request)).toEqual(['reply', 'deny', 'large-reply'])
+        const rejections = rawUploader.frames.filter(text => JSON.parse(text).type === 'application-reject')
+        expect(rejections).toHaveLength(3)
+        expect(rejections.every(text => Buffer.byteLength(text) < 256)).toBe(true)
+        const pongs = pair.rawMain.frames.filter(text => JSON.parse(text).type === 'pong').length
+        await vi.advanceTimersByTimeAsync(450)
+        expect(pair.rawMain.frames.filter(text => JSON.parse(text).type === 'pong').length).toBeGreaterThan(pongs)
+        const stop = stopRequest()
+        await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
+        expect(handled).toHaveBeenCalledWith(stop)
+        expect(pair.rawMain.closed).toBe(false)
+        expect(pair.rawWorker.closed).toBe(false)
+        abort.abort()
+        for (const upload of uploads) await expect(upload).rejects.toThrow('cancelled')
+        await flush()
+        await expect(caller.request('execution-v1', 'recovered')).resolves.toEqual({ payload: 'reply' })
+        await expect(uploader.request('execution-v1', 'recovered')).resolves.toEqual({ payload: 'reply' })
+      } finally {
+        abort.abort()
+        await pair.close()
+        await Promise.allSettled(uploads)
+        expect(vi.getTimerCount()).toBe(0)
+      }
+    },
+  )
   it.each([
     ['request slots', 8, 2, 0],
     ['total bytes', 1, 1_048_576, 1_048_576],
