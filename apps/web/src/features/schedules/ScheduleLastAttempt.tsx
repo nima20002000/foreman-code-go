@@ -1,4 +1,4 @@
-import type { ScheduleGetInput, ScheduleOccurrence } from '@graphql/contracts/schedules'
+import type { ScheduleGetInput, ScheduleOccurrence } from '@foreman-code/contracts/schedules'
 import { Button } from '../../shared/ui/nocturne'
 import { useLatestScheduleOccurrence } from './queries'
 

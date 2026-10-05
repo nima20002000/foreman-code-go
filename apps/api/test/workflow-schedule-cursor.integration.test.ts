@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
   ScheduleGetResultSchema, ScheduleSaveResultSchema,
   type ScheduleConfiguration, type ScheduleSaveResult,
-} from '@graphql/contracts/schedules'
+} from '@foreman-code/contracts/schedules'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'

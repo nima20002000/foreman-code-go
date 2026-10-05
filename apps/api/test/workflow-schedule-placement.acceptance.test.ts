@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
