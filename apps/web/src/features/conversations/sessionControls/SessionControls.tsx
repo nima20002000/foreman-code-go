@@ -1,7 +1,7 @@
 import { useFloatingSurface } from '../../../shared/ui/nocturne/useFloatingSurface'
 import { useEffect, useId, useRef, useState } from 'react'
 import { compactionBlocksSend, type SessionPreferences } from '@graphql/contracts'
-import { Button, Input, Select } from '../../../shared/ui/nocturne'
+import { Button, TextField, Select } from '../../../shared/ui/nocturne'
 import type { ComposerSessionControls } from './useSessionControls'
 import './sessionControls.css'
 
@@ -74,7 +74,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
             onChange={event => update({ ...state.desired, contextProfile: event.target.value || null })} /> : null}
           {state.capabilities.autoCompact.supported ? <Select label="Auto compact" options={[{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]} value={state.desired.autoCompact} disabled={pending}
             onChange={event => update({ ...state.desired, autoCompact: event.target.value as SessionPreferences['autoCompact'] })} /> : null}
-          {state.capabilities.autoCompactBudget.supported ? <Input label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
+          {state.capabilities.autoCompactBudget.supported ? <TextField label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
               placeholder="Native default" defaultValue={state.desired.autoCompactTokens ?? ''} disabled={pending}
               onBlur={event => update({ ...state.desired, autoCompactTokens: event.target.value ? Number(event.target.value) : null })} /> : null}
           <p>{state.applicability === 'applied' ? 'Applied now' : `Applies ${state.applicability.replace('-', ' ')}`}</p>

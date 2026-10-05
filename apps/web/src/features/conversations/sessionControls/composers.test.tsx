@@ -81,3 +81,17 @@ it('closes context details with Escape and restores focus to the meter', () => {
   expect(screen.queryByText('Current usage unknown')).not.toBeInTheDocument()
   expect(meter).toHaveFocus()
 })
+
+it('renders the shared numeric budget field and submits a plain token value', async () => {
+  const controls = controller()
+  controls.state = { ...state, capabilities: { ...state.capabilities, modelCapacity: 200000,
+    autoCompactBudget: { supported: true, reason: null } } }
+  render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  fireEvent.click(screen.getByText('Context options for this chat'))
+  const budget = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
+  fireEvent.change(budget, { target: { value: '150000' } })
+  fireEvent.blur(budget)
+  await waitFor(() => expect(controls.change).toHaveBeenCalledWith({ kind: 'preferences',
+    preferences: { ...state.desired, autoCompactTokens: 150000 } }))
+})
