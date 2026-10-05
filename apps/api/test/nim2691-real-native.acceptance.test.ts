@@ -295,18 +295,23 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         const runError = (await pool.query<{ code: string | null }>(
           `select record #>> '{result,error,code}' as code from runs where id=$1`, [runId])).rows[0]
-        const executions = (await pool.query<{ id: string; state: string; outcome: string | null; code: string | null }>(
+        const executions = (await pool.query<{ id: string; state: string; outcome: string | null;
+          code: string | null; message: string | null }>(
           `select id,record->>'state' as state,record #>> '{result,outcome}' as outcome,
-            record #>> '{result,error,code}' as code from harness_executions where run_id=$1 order by id`, [runId])).rows
+            record #>> '{result,error,code}' as code,record #>> '{result,error,message}' as message
+            from harness_executions where run_id=$1 order by id`, [runId])).rows
+          .map(({ message, ...execution }) => ({ ...execution,
+            modelAtCapacity: message === 'Selected model is at capacity. Please try a different model.',
+          }))
         const activityKinds = (await pool.query<{ kind: string }>(
           'select kind from run_activity where run_id=$1 order by sequence', [runId])).rows.map((row) => row.kind)
         const publicEvents = await app.inject({ method: 'GET', headers,
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
         const publicPage = RunEventsPageSchema.parse(publicEvents.json())
-        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
+        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
         if (noRoute) {
           expect(runError?.code).toBeNull()
           expect(activityKinds).toContain('work_needs_direction')
