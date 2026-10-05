@@ -104,4 +104,22 @@ describe('execution readiness', () => {
     expect((await service.get(principal, 'codex')).status).toBe('blocked')
     await expect(service.get({ ...principal, grants: [] }, 'codex')).rejects.toMatchObject({ status: 403 })
   })
+  it.each(['codex', 'opencode', 'claude'] as const)(
+    'qualifies local production %s through the normal admission checks', async harness => {
+      const environment = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
+        DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production' }
+      const source = catalog({ code: 'HARNESS_PROFILE_UNAVAILABLE', message: 'Configure a host profile.' })
+      const service = new ExecutionReadinessService(new NativeRollout(environment), source)
+      expect(await service.get(principal, harness)).toMatchObject({ rolloutEnabled: true, status: 'blocked',
+        reason: { code: 'HARNESS_PROFILE_UNAVAILABLE' } })
+      expect(source.get).toHaveBeenCalledWith(principal, harness)
+      await expect(service.get({ ...principal, grants: [] }, harness)).rejects.toMatchObject({ status: 403 })
+      for (const override of [{ HOST: '0.0.0.0' }, { DATABASE_URL: 'postgresql://owner@remote/database' },
+        { DATABASE_URL: 'invalid' }]) {
+        expect(new NativeRollout({ ...environment, ...override }).enabled(harness)).toBe(false)
+      }
+      const flag = harness === 'codex' ? 'GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER'
+        : harness === 'claude' ? 'GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK' : 'GRAPHQL_OPENCODE_PARITY_QUALIFIED'
+      expect(new NativeRollout({ ...environment, [flag]: '0' }).enabled(harness)).toBe(false)
+    })
 })

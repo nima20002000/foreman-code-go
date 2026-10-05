@@ -22,6 +22,21 @@ function fixture() {
 }
 
 describe.skipIf(process.platform !== 'linux')('passive native registry producer', () => {
+  for (const evidence of ['native_exit_removed_cgroup', 'cgroup_v2_removed']) {
+    it(`reads persisted ${evidence} cleanup after reopening the registry`, () => {
+      const f = fixture()
+      try {
+        const row = f.seed()
+        writeRecord(join(row.directory, 'closed.json'), { ...row.intent, format: 2, evidence })
+        const reopened = new NativeProcessRegistry(f.root)
+        expect(reopened.snapshot().launches).toEqual([{ owner: f.owner, launchId: row.id,
+          bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: evidence }])
+      } finally {
+        rmSync(f.root, { recursive: true, force: true })
+      }
+    })
+  }
+
   it('does not create missing storage or compact closed/legacy records and freezes sanitized DTOs', () => {
     const f = fixture()
     try {
