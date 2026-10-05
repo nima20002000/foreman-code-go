@@ -89,7 +89,7 @@ describe('Claude native session manager admission', () => {
   it('accepts newer native init behavior and keeps the observed version as provenance', async () => {
     const f = fixture(undefined, {}, '2.2.0')
     let session: import('@foreman-code/contracts').NativeSessionReference | undefined
-    const output = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'newer-native',
+    const output = drain(f.manager.startInitialTurn({ ...start, correlationId: 'newer-native' }, { prompt: 'first', clientCorrelationId: 'newer-native',
       onSessionObserved: async value => { session = value } }))
     const message = await f.nextMessage()
     f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })

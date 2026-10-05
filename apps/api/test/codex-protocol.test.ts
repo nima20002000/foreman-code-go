@@ -52,6 +52,20 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
       && error.message.includes(newer) && error.message.includes('ThreadReadResponse.thread'))
   })
 
+  it('accepts a newer schema with optional settings and verifies the actual response', async () => {
+    const schema = codexSchema()
+    for (const response of [schema.definitions.v2.ThreadStartResponse, schema.definitions.v2.ThreadResumeResponse]) {
+      response.required = response.required.filter(name => name !== 'reasoningEffort')
+    }
+    await configure(schema)
+    const qualified = await qualify()
+    const response = { thread: { id: 'thread', turns: [] }, model: 'model', modelProvider: 'openai', cwd: f.directory,
+      sandbox: {}, approvalPolicy: 'never', approvalsReviewer: 'user', reasoningEffort: 'medium', serviceTier: null }
+    assert.doesNotThrow(() => qualified.protocol.response('thread/start', response))
+    Reflect.deleteProperty(response, 'reasoningEffort')
+    assert.throws(() => qualified.protocol.response('thread/start', response), /0.160.0.*reasoningEffort/)
+  })
+
   it('reverifies a changed binary even when its reported version is unchanged', async () => {
     await configure()
     const original = await qualify()

@@ -66,7 +66,7 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
   throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'The configured Codex executable is unavailable.')
 }
 
-async function identity(binary: string): Promise<string> {
+export async function codexBinaryIdentity(binary: string): Promise<string> {
   const payload = await passiveDriverPayloads('codex', binary)
   const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
   const entries = await Promise.all(paths.map(async path => {
@@ -78,7 +78,7 @@ async function identity(binary: string): Promise<string> {
 }
 
 export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {
-  if (await identity(qualified.binary) !== qualified.identity) {
+  if (await codexBinaryIdentity(qualified.binary) !== qualified.identity) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed during qualification; qualify the replacement before launch.')
   }
 }
@@ -94,6 +94,58 @@ const responseTypes: Record<Exclude<CodexClientMethod, 'config/mcpServer/reload'
   'mcpServerStatus/list': 'ListMcpServerStatusResponse',
   'account/login/start': 'LoginAccountResponse', 'account/login/cancel': 'CancelLoginAccountResponse',
 }
+const threadResponseFields = {
+  thread: 'object', model: 'string', modelProvider: 'string', cwd: 'string', sandbox: 'object',
+  approvalPolicy: 'policy', approvalsReviewer: 'string', reasoningEffort: 'string', serviceTier: 'string',
+} as const
+export const CODEX_RESPONSE_FIELDS: Record<string, Record<string, string>> = {
+  InitializeResponse: { userAgent: 'string' },
+  ThreadStartResponse: threadResponseFields,
+  ThreadResumeResponse: threadResponseFields,
+  ThreadForkResponse: threadResponseFields,
+  ThreadReadResponse: { thread: 'object' },
+  ThreadTurnsListResponse: { data: 'array', nextCursor: 'string' },
+  ThreadItemsListResponse: { data: 'array', nextCursor: 'string' },
+  ModelListResponse: { data: 'array', nextCursor: 'string' },
+  ListMcpServerStatusResponse: { data: 'array', nextCursor: 'string' },
+  ConfigReadResponse: { config: 'object' },
+  ConfigWriteResponse: { status: 'string', version: 'string' },
+  TurnStartResponse: { turn: 'object' },
+  TurnSteerResponse: { turnId: 'string' },
+  CancelLoginAccountResponse: { status: 'string' },
+}
+
+function checkResponseFields(type: string, value: unknown, providerVersion: string): void {
+  const fields = CODEX_RESPONSE_FIELDS[type]
+  if (!fields) return
+  const response = isObject(value) ? value : {}
+  for (const [name, expected] of Object.entries(fields)) {
+    const observed = response[name]
+    if (name === 'nextCursor' && observed === undefined) continue
+    if (observed === null && ['reasoningEffort', 'serviceTier', 'nextCursor'].includes(name)) continue
+    let valid: boolean
+    switch (expected) {
+      case 'array':
+        valid = Array.isArray(observed)
+        break
+      case 'object':
+        valid = isObject(observed)
+        break
+      case 'policy':
+        valid = typeof observed === 'string' || isObject(observed)
+        break
+      default:
+        valid = typeof observed === expected
+    }
+    if (!valid) throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED',
+      `Codex ${providerVersion} does not satisfy the ${type}.${name} response contract.`)
+  }
+  if (isObject(response.thread) && (typeof response.thread.id !== 'string' || !Array.isArray(response.thread.turns))) {
+    throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED',
+      `Codex ${providerVersion} does not satisfy the ${type}.thread identity/history response contract.`)
+  }
+}
+
 const serverResponseTypes: Record<string, string> = {
   'item/commandExecution/requestApproval': 'CommandExecutionRequestApprovalResponse',
   'item/fileChange/requestApproval': 'FileChangeRequestApprovalResponse',
@@ -201,6 +253,7 @@ export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknow
       const type = Object.hasOwn(responseTypes, method) ? responseTypes[method as keyof typeof responseTypes] : undefined
       if (!type) throw new Error('Unqualified response method.')
       check(type, definition(type), value)
+      checkResponseFields(type, value, providerVersion)
     },
     serverResponse: (method, value) => {
       const type = method === 'item/tool/call' && dynamicToolResponse ? 'DynamicToolCallResponse' : serverResponseTypes[method]
@@ -239,7 +292,7 @@ export async function qualifyCodex(
   requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
   const resolved = await executable(binary, cwd, environment)
-  const fingerprint = await identity(resolved)
+  const fingerprint = await codexBinaryIdentity(resolved)
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
   const version = await command(['--version'])
   const output = (version.stdout || version.stderr).trim()

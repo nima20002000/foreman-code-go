@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it, vi } from 'vitest'
-import { FixtureServer, configuration, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
+import { FixtureServer, configuration, environment, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 
@@ -234,7 +234,7 @@ it('answers an owned permission after attaching saved provenance under a newer c
   server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
   const native = manager(server)
   try {
-    assert.deepEqual(await native.attachSession(saved, { request: request() }), saved)
+    assert.deepEqual(await native.attachSession(saved, { request: request(), environment: environment() }), saved)
     ask(server)
     const availability = await native.inspectResponseAvailability(saved, query())
     assert.equal(availability.state, 'available')

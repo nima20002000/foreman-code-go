@@ -1,4 +1,4 @@
-import { protocolFromBundle } from '../codexProtocol.js'
+import { CODEX_RESPONSE_FIELDS, protocolFromBundle } from '../codexProtocol.js'
 import { CompatibilityCheckError } from './errors.js'
 
 type ObjectValue = Record<string, unknown>
@@ -28,12 +28,6 @@ function properties(document: ObjectValue, value: unknown): ObjectValue {
 }
 function fields(value: ObjectValue, names: readonly string[]): void {
   for (const name of names) if (!Object.hasOwn(value, name) || !value[name] || typeof value[name] !== 'object') throw invalid(`field ${name}`)
-}
-function requiredFields(document: ObjectValue, schema: unknown, names: readonly string[], context: string): void {
-  const required = resolve(document, schema).required
-  for (const name of names) {
-    if (!Array.isArray(required) || !required.includes(name)) throw invalid(`required ${context}.${name}`)
-  }
 }
 function supportsEnum(document: ObjectValue, value: unknown, expected: readonly string[], depth = 0): void {
   if (depth > 40) throw invalid()
@@ -76,37 +70,16 @@ export function checkCodexSchema(document: ObjectValue): void {
     const protocol = protocolFromBundle(document)
     const definitions = object(document.definitions)
     const v2 = definitions.v2 ? object(definitions.v2) : definitions
-    for (const name of ['ThreadStartResponse', 'ThreadResumeResponse', 'ThreadForkResponse']) {
-      const response = properties(document, v2[name] ?? definitions[name])
-      const names = ['thread', 'model', 'modelProvider', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'reasoningEffort', 'serviceTier']
-      fields(response, names)
-      requiredFields(document, v2[name] ?? definitions[name], names, name)
-    }
-    const responseContracts: Record<string, Record<string, string>> = {
-      InitializeResponse: { userAgent: 'string' },
-      ThreadReadResponse: { thread: 'object' },
-      ThreadTurnsListResponse: { data: 'array', nextCursor: 'string' },
-      ThreadItemsListResponse: { data: 'array', nextCursor: 'string' },
-      ModelListResponse: { data: 'array', nextCursor: 'string' },
-      ListMcpServerStatusResponse: { data: 'array', nextCursor: 'string' },
-      ConfigReadResponse: { config: 'object' },
-      ConfigWriteResponse: { status: 'string', version: 'string' },
-      TurnStartResponse: { turn: 'object' },
-      TurnSteerResponse: { turnId: 'string' },
-      CancelLoginAccountResponse: { status: 'string' },
-    }
-    for (const [name, contract] of Object.entries(responseContracts)) {
+    for (const [name, contract] of Object.entries(CODEX_RESPONSE_FIELDS)) {
       const response = properties(document, v2[name] ?? definitions[name])
       for (const [field, type] of Object.entries(contract)) {
         try {
           fields(response, [field])
-          supportsType(document, response[field], type)
-          if (field !== 'nextCursor') requiredFields(document, v2[name] ?? definitions[name], [field], name)
+          supportsType(document, response[field], type === 'policy' ? 'string' : type)
         } catch { throw invalid(`${name}.${field} (${type})`) }
       }
     }
     fields(properties(document, v2.Thread ?? definitions.Thread), ['id', 'turns'])
-    requiredFields(document, v2.Thread ?? definitions.Thread, ['id', 'turns'], 'Thread')
     const start = properties(document, v2.ThreadStartParams ?? definitions.ThreadStartParams)
     fields(start, ['model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config', 'ephemeral', 'serviceTier'])
     supportsType(document, start.model, 'string')
@@ -141,8 +114,8 @@ function commonObjectFields(document: ObjectValue, value: unknown, names: readon
     for (const choice of choices) commonObjectFields(document, choice, names, context)
     return
   }
-  fields(properties(document, schema), names)
-  requiredFields(document, schema, names, context)
+  try { fields(properties(document, schema), names) }
+  catch { throw invalid(`${context}.${names.join(', ')}`) }
 }
 
 function checkOpenCodeResponses(document: ObjectValue): void {
@@ -159,8 +132,6 @@ function checkOpenCodeResponses(document: ObjectValue): void {
       try {
         fields(value, [field])
         supportsType(document, value[field], type)
-        // Directory and permission may be optional in native declarations; attach checks their observed values.
-        if (field !== 'directory' && field !== 'permission') requiredFields(document, schema, [field], `${method.toUpperCase()} ${path}`)
       } catch { throw invalid(`${method.toUpperCase()} ${path} response.${field} (${type})`) }
     }
   }

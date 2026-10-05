@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { checkCodexSchema, checkOpenCodeSchema, parseExport } from '../src/modules/harnesses/compatibility/schema.js'
 import { diagnosticEnvironment, parseInstalledVersion, schemaExportArguments } from '../src/modules/harnesses/compatibility/probe.js'
 
+import { protocolFromBundle } from '../src/modules/harnesses/codexProtocol.js'
 import { codexSchema, openCodeSchema } from './fixtures/harness-schemas.js'
 
 describe('model-free command and schema diagnostics', () => {
@@ -40,10 +41,14 @@ describe('model-free command and schema diagnostics', () => {
     Reflect.deleteProperty(response.properties, 'thread')
     expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
   })
-  it('rejects Codex history fields that are declared optional despite being consumed unconditionally', () => {
+  it('accepts optional declarations while requiring consumed fields in observed Codex responses', () => {
     const broken = codexSchema()
     broken.definitions.v2.ThreadReadResponse.required = []
-    expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
+    expect(() => checkCodexSchema(broken)).not.toThrow()
+    const protocol = protocolFromBundle(broken, 'codex-cli 0.160.0')
+    expect(() => protocol.response('thread/read', { thread: { id: 'saved-thread', turns: [] } })).not.toThrow()
+    expect(() => protocol.response('thread/read', {})).toThrow('0.160.0')
+    expect(() => protocol.response('thread/read', {})).toThrow('ThreadReadResponse.thread')
   })
   it('rejects OpenCode session creation schemas that cannot return an unconditional session ID', () => {
     const broken = openCodeSchema()
@@ -57,6 +62,14 @@ describe('model-free command and schema diagnostics', () => {
     const broken = openCodeSchema()
     delete broken.paths['/permission/{requestID}/reply']
     expect(() => checkOpenCodeSchema(broken)).toThrow()
+  })
+  it('accepts compatible OpenCode fields even when their declarations are optional', () => {
+    const schema = openCodeSchema()
+    const response = schema.paths['/session']!.post!.responses as { '200': { content: {
+      'application/json': { schema: { required: string[] } }
+    } } }
+    response['200'].content['application/json'].schema.required = []
+    expect(() => checkOpenCodeSchema(schema)).not.toThrow()
   })
   it.each(['/session/status', '/question/{requestID}/reject', '/session/{sessionID}/message/{messageID}'])(
     'names a missing OpenCode reconciliation or cleanup contract: %s', path => {

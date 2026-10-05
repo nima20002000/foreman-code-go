@@ -264,7 +264,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         creationAccepted = true
         const response = object(value)
         if (typeof response.id !== 'string' || !response.id) {
-          throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session creation may have succeeded but did not return a native identity.', 'uncertain')
+          throw new OpenCodeNativeDeliveryError('OPENCODE_CONTRACT_UNSUPPORTED',
+            `OpenCode ${this.providerVersion} did not satisfy POST /session response.id; session creation may have succeeded.`, 'uncertain')
         }
         const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: this.providerVersion, nativeSessionId: response.id })
         // A returned provider identity is authoritative even if cancellation raced
@@ -1738,10 +1739,29 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return client(url, init)
   }
 
+  private assertReadResponse(path: string, value: unknown): void {
+    const shape = object(value)
+    const contracts: Record<string, Record<string, string>> = {
+      '/global/health': { healthy: 'boolean', version: 'string' },
+      '/provider': { all: 'array', connected: 'array' },
+    }
+    const sessionRead = /^\/session\/[^/]+$/.test(path) && path !== '/session/status'
+    const fields = sessionRead ? { id: 'string', directory: 'string' } : contracts[path]
+    if (!fields) return
+    for (const [name, type] of Object.entries(fields)) {
+      const field = shape[name]
+      const valid = type === 'array' ? Array.isArray(field) : typeof field === type
+      if (!valid) throw new HarnessExecutionError('OPENCODE_CONTRACT_UNSUPPORTED',
+        `OpenCode ${this.providerVersion || 'unknown version'} does not satisfy GET ${sessionRead ? '/session/{sessionID}' : path} response.${name}.`)
+    }
+  }
+
   private async json(path: string, directory: string | undefined, signal: AbortSignal): Promise<unknown> {
     const response = await this.clientRequest(directory ? withDirectory(path, directory) : path, { method: 'GET' }, signal, this.generation)
     if (!response.ok) throw await responseError(response, response.status === 404 ? 'OPENCODE_SESSION_NOT_FOUND' : 'OPENCODE_SERVER_REQUEST_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
-    return response.status === 204 ? undefined : this.sanitize(await readJson(response))
+    const value = response.status === 204 ? undefined : this.sanitize(await readJson(response))
+    this.assertReadResponse(path, value)
+    return value
   }
 
   private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true, notFoundCode?: string): Promise<unknown> {

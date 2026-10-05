@@ -69,7 +69,7 @@ export class FixtureServer implements OpenCodeServerController {
   mcpCredentialReferences: Record<string, string> = {}
   config: JsonObject = {}
   mcp: JsonObject = {}
-  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] }
+  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }], connected: [] }
   agents: unknown = [{ name: 'build' }, { name: 'plan' }]
   paths: JsonObject = { ...requiredPaths, ...openCodeSchema().paths }
   permissions: JsonObject[] = []
