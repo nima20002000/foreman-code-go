@@ -14,9 +14,13 @@ import type { ReviewJob } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { readJsonContinuation } from './jsonContinuation.js'
+import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 
 export interface RemoteNativeTransport {
-  request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'control-delivery' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
+  request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn'
+    | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'control-delivery'
+    | 'status' | 'reconcile-response' | 'renew-owner' | 'receipt-continuation',
+  payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
 const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
 const HistoryResponseSchema = z.object({
@@ -52,10 +56,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private historyCorrelation: string | undefined
   get retainsReviewerSession() { return this.receipt?.retainedReviewer !== undefined && !this.receipt.terminal }
   constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
-  private request(method: Parameters<RemoteNativeTransport['request']>[0], payload: Record<string, unknown>, signal?: AbortSignal) {
+  private async request(method: Parameters<RemoteNativeTransport['request']>[0], payload: Record<string, unknown>, signal?: AbortSignal) {
     const { operationId: _operationId, ...fields } = payload
     void _operationId
-    return this.options.transport.request(method, { method, intent: this.intent, placement: this.options.placement, ...fields }, signal)
+    return this.requestWithIntent(method, { method, intent: this.intent, placement: this.options.placement, ...fields },
+      this.intent, signal)
+  }
+  private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
+    payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
+    const response = await this.options.transport.request(method, payload, signal)
+    return readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
+      'receipt-continuation', { method: 'receipt-continuation', intent,
+        placement: this.options.placement, ...continuation }, signal), signal)
   }
   private async historyResponse(raw: unknown, signal?: AbortSignal) {
     const value = HistoryResponseSchema.parse(raw)
@@ -115,7 +127,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async renewOwner(transition: RemoteOwnerReconciliation, signal?: AbortSignal) {
     const next = { ...this.intent, owner: transition.nextOwner }
-    const raw = await this.options.transport.request('renew-owner', { method: 'renew-owner', intent: next, placement: this.options.placement, transition }, signal)
+    const raw = await this.requestWithIntent('renew-owner', {
+      method: 'renew-owner', intent: next, placement: this.options.placement, transition,
+    }, next, signal)
     const receipt = await this.status(raw, next)
     this.intent = next
     return receipt

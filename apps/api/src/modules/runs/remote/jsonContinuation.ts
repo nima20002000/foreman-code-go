@@ -6,12 +6,17 @@ const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest(
 
 export function pageJsonContinuation(value: unknown, request?: DeviceJsonContinuationRequest): DeviceJsonContinuation {
   const bytes = Buffer.from(JSON.stringify(value))
+  return pageJsonContinuationBytes(bytes, request)
+}
+
+export function pageJsonContinuationBytes(bytes: Uint8Array,
+  request?: DeviceJsonContinuationRequest): DeviceJsonContinuation {
   const contentDigest = digest(bytes)
   const offset = request?.offset ?? 0
   if (bytes.byteLength > DEVICE_JSON_CONTINUATION_LIMIT || offset >= bytes.byteLength
     || request && request.digest !== contentDigest) throw new Error('JSON continuation changed or exceeds its limit')
   return DeviceJsonContinuationSchema.parse({ digest: contentDigest, byteSize: bytes.byteLength,
-    offset, data: bytes.subarray(offset, offset + DEVICE_JSON_CONTINUATION_BYTES).toString('base64') })
+    offset, data: Buffer.from(bytes.subarray(offset, offset + DEVICE_JSON_CONTINUATION_BYTES)).toString('base64') })
 }
 
 export async function readJsonContinuation(first: DeviceJsonContinuation,

@@ -5,6 +5,7 @@ import { WorkspaceRootWorkerRequestSchema, WORKSPACE_ROOT_EXTENSION } from '@for
 import type { RootWorkerClient } from '../sources/rootHosts.js'
 import { sameWorkflowValue, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { RemoteNativeSessionManager, type RemoteNativeManagerOptions } from '../runs/remote/nativeManagerProxy.js'
+import { readRemoteReceiptResponse } from '../runs/remote/installedWorkflowResponsePages.js'
 import { VerifiedRemoteEvidence, type RemoteResultCommitPort } from '../runs/remote/resultBridge.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
@@ -87,12 +88,21 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         ...(preparesNative && options.preparationTimeoutMs ? { timeoutMs: options.preparationTimeoutMs } : {}) }
       const result = await connection.request(REMOTE_EXECUTION_EXTENSION, request, requestOptions)
       if (result.bytes !== undefined) throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
-      const receipt = receiptFromResponse(result.payload)
+      const response = await readRemoteReceiptResponse(result.payload, request.intent, async continuation => {
+        const next = await connection.request(REMOTE_EXECUTION_EXTENSION, {
+          method: 'receipt-continuation', intent: request.intent, placement: request.placement, ...continuation,
+        }, requestOptions)
+        if (next.bytes !== undefined) {
+          throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
+        }
+        return next.payload
+      }, signal)
+      const receipt = receiptFromResponse(response)
       if (receipt) {
         if (!sources.has(receiptKey(receipt)) && sources.size >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
-        sources.set(receiptKey(receipt), { connection: connection.identity, response: result.payload })
+        sources.set(receiptKey(receipt), { connection: connection.identity, response })
       }
-      return result.payload
+      return response
     } },
     observeReceipt: async receipt => {
       const key = receiptKey(receipt), original = sources.get(key)

@@ -4,9 +4,16 @@ import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, Approva
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema,
   RemoteReviewerRequestSchema } from './remoteExecution.js'
-import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema } from './deviceApplication.js'
+import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
+export const RemoteReceiptPageSchema = z.object({
+  kind: z.literal('receipt-page'), transferId: z.uuid(), receiptSequence: z.number().int().positive(),
+  metadata: DeviceJsonContinuationSchema,
+}).strict()
+export type RemoteReceiptPage = z.infer<typeof RemoteReceiptPageSchema>
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('receipt-continuation'), ...binding, transferId: z.uuid(),
+    receiptSequence: z.number().int().positive(), metadata: DeviceJsonContinuationRequestSchema }).strict(),
   z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),
     sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional() }).strict(),
   z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
