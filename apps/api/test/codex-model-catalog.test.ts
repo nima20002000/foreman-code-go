@@ -1,6 +1,6 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { afterEach, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { parseCodexModelCatalog, readNativeCodexModelCatalog, type CodexModelInspection } from '../src/modules/harnesses/codexModelCatalog.js'
 import { qualifyNativeCodexModel } from '../src/modules/harnesses/codexQualification.js'
 import { calls, fixture, fixtureQualification, fixtureProtocol } from './fixtures/codex-test-helpers.js'
@@ -56,9 +56,9 @@ async function native(models: unknown, refreshFlag?: string) {
 
 it('checks the exact model, effort and tier through validated stdio without creating an inference thread', async () => {
   const f = await native([model])
-  const configuration = { ...DEFAULT_HARNESS_DEFAULTS.codex, model: model.slug,
+  const configuration: CodexHarnessConfiguration = { ...DEFAULT_HARNESS_DEFAULTS.codex, model: model.slug,
     reasoningEffort: 'medium', serviceTier: 'priority' as const }
-  const qualify = (value: typeof configuration) => qualifyNativeCodexModel(value,
+  const qualify = (value: CodexHarnessConfiguration) => qualifyNativeCodexModel(value,
     f.binary, f.directory, {}, undefined, undefined, f.inspection)
   await qualify(configuration)
   await expect(qualify({ ...configuration, model: 'absent' }))
