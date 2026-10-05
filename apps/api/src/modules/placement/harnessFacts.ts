@@ -73,23 +73,27 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   const harness = payload.driverId as CompatibilityHarness
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint
   if (!binarySha256 || !suites[harness]) unavailable('binary_identity_missing')
+  let measuredQualification: unknown
   if (!installation.observedVersion) {
     if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable('worker_qualification_missing')
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
-    const measured = await sql.query<{ version: string; evidence: unknown }>(`select version,evidence from harness_qualifications
-      where harness=$1 and binary_sha256=$2 and suite_revision=$3 and status='passed' order by checked_at desc limit 20 for share`,
+    const measured = await sql.query<{ qualification: { status: string; version: string }; evidence: unknown }>(`select qualification,evidence from host_harness_measurements
+      where harness=$1 and binary_sha256=$2 and suite_revision=$3 for share`,
     [harness, binarySha256, suites[harness]])
-    const matching = measured.rows.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
+    const matching = measured.rows.filter(row => row.qualification.status === 'qualified'
+      && measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
     if (matching.length !== 1) unavailable('main_qualification_identity_missing')
-    installation.observedVersion = matching[0]!.version
+    installation.observedVersion = matching[0]!.qualification.version
+    measuredQualification = matching[0]!.qualification
   }
   const rows = await sql.query<Record<string, unknown>>(`select * from harness_qualifications where harness=$1 and version=$2
     and binary_sha256=$3 and suite_revision=$4 and status='passed' order by checked_at desc limit 1 for share`,
     [payload.driverId, installation.observedVersion, binarySha256, suites[harness]])
   const row = rows.rows[0]
   if (!row) unavailable('binary_qualification_missing')
-  const qualification = HarnessQualificationSchema.parse({ harness: row!.harness, version: row!.version,
+  const qualification = HarnessQualificationSchema.parse(measuredQualification
+    ?? profileProof.completedNativeQualification?.record ?? { harness: row!.harness, version: row!.version,
     binarySha256: row!.binary_sha256, suiteRevision: row!.suite_revision, profile: row!.profile, status: 'qualified',
     checks: row!.checks, failureReason: row!.failure_reason,
     startedAt: row!.started_at instanceof Date ? row!.started_at.toISOString() : row!.started_at,

@@ -48,6 +48,11 @@ function fixture() {
   const query = vi.fn(async (sql: string) => {
     if (sql.includes('from harness_instance_settings')) return { rows: [{ record: override }] }
     if (sql.includes('from harness_instance_profile_evidence')) return { rows: [{ record: proof }] }
+    if (sql.includes('from host_harness_measurements')) return { rows: records.map(row => ({
+      evidence: row.evidence, qualification: { harness: row.harness, version: row.version, binarySha256: row.binary_sha256,
+        suiteRevision: row.suite_revision, profile: row.profile, status: 'qualified', checks: row.checks,
+        failureReason: row.failure_reason, startedAt: row.started_at.toISOString(), checkedAt: row.checked_at.toISOString() },
+    })) }
     return { rows: records }
   })
   const placement: Pick<AcceptedNodePlacement, 'hostRef' | 'payload'> = { hostRef, payload: {
