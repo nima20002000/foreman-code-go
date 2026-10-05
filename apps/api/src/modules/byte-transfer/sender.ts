@@ -34,8 +34,14 @@ export class ResumableByteTransferSender {
           controller.abort(error); reject(error)
         }, Math.min(BYTE_TRANSFER_POLICY.maxIdleMs, Date.parse(intent.expiresAt) - Date.now()))
       })
-      try { return await Promise.race([action(controller.signal), interrupted]) }
-      finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
+      const work = action(controller.signal)
+      try { return await Promise.race([work, interrupted]) }
+      finally {
+        controller.abort(new Error('Transfer range closed'))
+        await Promise.allSettled([work])
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', abort)
+      }
     }
     const retry = (error: unknown) => {
       check()
@@ -45,7 +51,7 @@ export class ResumableByteTransferSender {
       for (;;) {
         check()
         try {
-          const progress = TransferProgressSchema.parse(await wait(async bounded => this.receiver.status(intent.transferId, await this.connection.current(bounded))))
+          const progress = TransferProgressSchema.parse(await wait(async bounded => this.receiver.status(intent.transferId, await this.connection.current(bounded), bounded)))
           if (progress.transferId !== intent.transferId || progress.durableOffset > intent.byteSize || progress.state === 'cancelled') throw new Error('Invalid receiver progress')
           return progress
         }
@@ -54,7 +60,7 @@ export class ResumableByteTransferSender {
     }
     for (;;) {
       check()
-      try { await wait(async bounded => this.receiver.start(intent, await this.connection.current(bounded))); break }
+      try { await wait(async bounded => this.receiver.start(intent, await this.connection.current(bounded), bounded)); break }
       catch (error) { retry(error) }
     }
     let progress = await recover()
@@ -68,7 +74,7 @@ export class ResumableByteTransferSender {
       const sha256 = createHash('sha256').update(bytes).digest('hex')
       try {
         check()
-        const ack = await wait(async bounded => this.receiver.append(intent.transferId, await this.connection.current(bounded), { offset, sha256, bytes }))
+        const ack = await wait(async bounded => this.receiver.append(intent.transferId, await this.connection.current(bounded), { offset, sha256, bytes }, bounded))
         if (ack.transferId !== intent.transferId || ack.durableOffset !== offset + length) throw new Error('Invalid receiver acknowledgment')
         progress = ack
       } catch (error) { retry(error); progress = await recover() }
@@ -76,7 +82,7 @@ export class ResumableByteTransferSender {
     for (;;) {
       check()
       try {
-        const receipt = VerifiedTransferReceiptSchema.parse(await wait(async bounded => this.receiver.finish(intent.transferId, await this.connection.current(bounded))))
+        const receipt = VerifiedTransferReceiptSchema.parse(await wait(async bounded => this.receiver.finish(intent.transferId, await this.connection.current(bounded), bounded)))
         if (receipt.transferId !== intent.transferId || receipt.sha256 !== intent.sha256 || receipt.byteSize !== intent.byteSize
           || JSON.stringify(receipt.intent) !== JSON.stringify(intent)) throw new Error('Verified receipt identity mismatch')
         return receipt

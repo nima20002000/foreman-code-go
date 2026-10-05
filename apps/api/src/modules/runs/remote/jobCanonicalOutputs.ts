@@ -1,9 +1,10 @@
+import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
+import { readDeclaredJobOutputs, readAvailableVerificationOutputs, JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import { createCanonicalJobArtifactPort } from '../../files/jobs/factory.js'
@@ -45,8 +46,14 @@ export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRo
     } } })
   return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecutionRecord, receipt: RemoteJobOperationReceiptRecord) => projectJobReceiptLocked(sql, execution, receipt, artifacts),
     collectOutputs: async (execution: JobExecutionRecord) => {
+      const signal = jobLifecycleSignal(execution, 'publication')
+      signal.throwIfAborted()
       if (execution.acceptedSpec.target.hostRef.kind !== 'main') throw new Error('Local output reader cannot change the accepted host')
-      for (const output of await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)) {
+      const outputs = execution.schemaVersion === 2
+        ? await readAvailableVerificationOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
+        : await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
+      for (const output of outputs) {
+        signal.throwIfAborted()
         const declared = execution.acceptedSpec.outputs.find(value => value.path === output.path)
         if (!declared) throw new Error('Undeclared local job output')
         const bytes = Buffer.from(output.bytes), sha256 = createHash('sha256').update(bytes).digest('hex')
@@ -56,6 +63,10 @@ export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRo
         if (sealed.size >= 4 || [...sealed.values()].reduce((sum,value) => sum+value.bytes.length,bytes.length) > 64*1024*1024) throw new Error('Main output sealing capacity exhausted')
         sealed.set(commandId, { input: request, specDigest: execution.acceptedSpec.specDigest, bytes })
         try { await artifacts.publishAccepted(request) } finally { sealed.delete(commandId) }
+      }
+      if (execution.acceptedSpec.outputs.some(output => output.required
+        && !outputs.some(available => available.path === output.path))) {
+        throw new JobOutputCollectionError('Available failure artifacts were published; required outputs remain incomplete.')
       }
     } }
 }

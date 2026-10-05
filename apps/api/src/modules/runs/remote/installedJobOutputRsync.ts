@@ -1,3 +1,4 @@
+import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
 import { isDeepStrictEqual } from 'node:util'
 import { VerifiedTransferReceiptSchema, BYTE_TRANSFER_POLICY, type TransferIntent, type TransferContext } from '@foreman-code/contracts/byte-transfer'
 import { JobArtifactSchema } from '@foreman-code/contracts/jobs'
@@ -70,7 +71,9 @@ export async function createInstalledJobOutputRsync(input:{providers:InstalledRs
   }}
   return {collector,owns:async(intent:TransferIntent)=>Boolean(await owner(intent)),resolveSource:(intent:TransferIntent,signal:AbortSignal)=>source.resolveSource(intent,signal),
     acknowledged:async(intent:TransferIntent,current:TransferContext)=>{
-      const signal=AbortSignal.timeout(30000)
+      const original = await owner(intent)
+      if (!original) throw new DomainError('JOB_OUTPUT_CLOSURE_MISSING', 'Original closed output owner missing.', 409)
+      const signal=jobLifecycleSignal(original.execution, 'cleanup')
       if(!isDeepStrictEqual(await context(signal),current))throw new DomainError('JOB_OUTPUT_CONNECTION_STALE','Canonical ACK requires the actual original worker frame.',403)
       if(!await published(intent,signal))throw new DomainError('JOB_PUBLICATION_PENDING','The original canonical output is not finalized.',409)
       if(!isDeepStrictEqual(await context(signal),current))throw new DomainError('JOB_OUTPUT_CONNECTION_STALE','The original publication channel changed.',403)

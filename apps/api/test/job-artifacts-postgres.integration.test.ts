@@ -11,6 +11,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { JobExecutionRecordSchema, type JobExecutionRecord, VerificationJobExecutionSchema,
   JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
+import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileToolsMigration } from '../src/modules/files/tools/migration.js'
@@ -61,7 +62,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       execution = VerificationJobExecutionRecordSchema.parse({ ...execution, schemaVersion: 2,
         acceptedSpec: { ...execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
           verification: facts.spec.verification, profile: facts.profile, reservationId: randomUUID(),
-          lifecycle: facts.lifecycle, outputs: [{ path: outputPath, required: true,
+          lifecycle: verificationJobLifecycle(new Date().toISOString(), facts.spec.policy), outputs: [{ path: outputPath, required: true,
             mediaType: 'application/json', kind: 'suite-summary', maxBytes: 4096 }] } })
       const spec = execution.acceptedSpec
       data = Buffer.from(JSON.stringify(JobVerificationReportSchema.parse({ schemaVersion: 1,
@@ -148,9 +149,9 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const expired=await app.inject({method:'GET',url:`${base}/${p.fileId}/revisions/${p.revisionId}/content`,headers:{authorization:`Bearer ${ownerToken}`}})
     expect(expired.statusCode).toBe(410)
   })
+  if (placementMode === 'verification') {
   it.each(['commit', 'attempt', 'failed', 'skipped', 'partial', 'oversized'] as const)(
     'rejects persisted verification %s reports despite exit zero', async change => {
-      if (placementMode !== 'verification') return
       await pool.query('update job_fixture_owner set revoked=false')
       const job = VerificationJobExecutionSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID() })
       await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
@@ -198,4 +199,5 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       } finally { data = originalBytes }
     })
 
+  }
 })
