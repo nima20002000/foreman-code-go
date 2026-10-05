@@ -95,8 +95,12 @@ it('delivers immutable worker copies and uses the persisted native ACK for file 
       tool: 'files_list', arguments: { scope: fileScope } })).toMatchObject({ success: true })
     await expect(turn!.call({ threadId: 'foreign', turnId: 'native-turn',
       tool: 'files_list', arguments: { scope: fileScope } })).rejects.toMatchObject({ status: 409 })
+    const invalid = await turn!.call({ threadId: f.session.nativeSessionId, turnId: 'native-turn',
+      tool: 'files_create_working_copy', arguments: { commandId: 'short', source: sourceRef, destination: fileScope } })
+    expect(invalid.success).toBe(false)
+    expect(f.ports.events).not.toContain('createWorkingCopy')
     const copy = await turn!.call({ threadId: f.session.nativeSessionId, turnId: 'native-turn',
-      tool: 'files_create_working_copy', arguments: { commandId: 'copy-1', source: sourceRef, destination: fileScope } })
+      tool: 'files_create_working_copy', arguments: { commandId: 'copy-command-1', source: sourceRef, destination: fileScope } })
     expect(copy.success).toBe(true)
     const publish = await turn!.call({ threadId: f.session.nativeSessionId, turnId: 'native-turn',
       tool: 'files_publish_result', arguments: { commandId: 'publish-1', artifactId: 'artifact-a',

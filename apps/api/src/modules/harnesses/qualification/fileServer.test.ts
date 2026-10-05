@@ -22,8 +22,10 @@ it('runs the shared authenticated file MCP tools with current scopes and a read-
     expect(read.isError).not.toBe(true)
     expect(read.structuredContent).toMatchObject({ status: 'ready',
       contentBase64: Buffer.from('# Native qualification input\n').toString('base64') })
+    const downloads = f.bytes.downloads
     const other = await client.callTool({ name: 'files.read', arguments: { ...foreign, offset: 0, length: 1024 } })
-    expect(other.isError).toBe(true)
+    expect(other.structuredContent).toEqual({ status: 'unavailable', ref: foreign, reason: 'forbidden' })
+    expect(f.bytes.downloads).toBe(downloads)
     f.revoke()
     const revoked = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}`,
       'content-type': 'application/json' }, body: '{}' })
