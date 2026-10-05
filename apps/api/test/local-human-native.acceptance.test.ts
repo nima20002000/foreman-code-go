@@ -93,7 +93,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         try { stdout = await readFile(report, 'utf8') }
         catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-          throw new Error(`Contained Codex did not complete its MCP startup probe: ${safeDiagnostics}`)
+          throw new Error(`Contained Codex did not complete its MCP startup probe: ${safeDiagnostics}`, { cause: error })
         }
         return { exitCode: outcome.exitCode, stdout, stderr: safeDiagnostics }
       } finally {
