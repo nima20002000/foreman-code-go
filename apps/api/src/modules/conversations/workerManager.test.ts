@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { unavailableSessionControls, SessionPreferencesSchema } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../harnesses/port.js'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { WorkerConversationHost } from './workerHost.js'
 import { WorkerConversationManager } from './workerManager.js'
@@ -172,7 +173,8 @@ it('retains recovered callback admission until native settlement and rechecks re
     nativeMessageId: 'original-native-message', clientCorrelationId: correlationId }
   const receipt: WorkerConversationReceipt = { binding: f.binding, connection: f.connection,
     revision: 1, closed: false, closing: false, session: f.session, nativeOwner: f.nativeOwner,
-    turns: [{ correlationId, inputHash: 'a'.repeat(64), status: 'submitted', nativeTurnId: null,
+    turns: [{ correlationId, inputHash: commandInputHash({ prompt: 'Accepted task', mode: 'regular', preferences: null }),
+      status: 'submitted', nativeTurnId: null,
       nativeSubmission: submission }], compactions: [], desiredPreferences: null, appliedPreferences: null }
   const bridge = new MainWorkerConversationBridge()
   const requests: WorkerConversationRpcRequest[] = []
