@@ -277,21 +277,29 @@ describe('durable native output installation budget, no qualification grants', (
     await original.release()
   }, 30_000)
 
-  it('recovers local owners without a remote dispatch identity and rejects cross-installation claims', async () => {
+  it.each([0, 1])('recovers local generation %s and rejects changed installation or generation', async (runtimeGeneration) => {
     const f = await budgetFixture()
     const installation = { kind: 'local' as const, mainId: f.input.owner.intent.mainId }
     const owner: LocalNativeOutputStorageOwner = { kind: 'local', mainId: installation.mainId,
       executionId: 'local-execution', attemptId: 'local-attempt', placementHash: 'a'.repeat(64),
-      session: f.input.owner.session, nativeTurnId: 'local-turn', runtimeGeneration: 1 }
+      session: f.input.owner.session, nativeTurnId: 'local-turn', runtimeGeneration }
     const input = { ...f.budgetInput, installation }
     const ledger = await createNativeOutputBudgetLedger(input)
     const allocation = { ...f.reservation, owner, artifactId: randomUUID() }
     const storage = await createInstalledNativeOutputStorage({ ...f.input, owner, limits: input.limits, budget: ledger })
     const original = await storage.reserve({ artifactId: allocation.artifactId, ...allocation.requested })
     const recovered = await createNativeOutputBudgetLedger(input)
-    await (await recovered.reserve(allocation)).assertCurrent()
+    const recoveredStorage = await createInstalledNativeOutputStorage({ ...f.input, owner,
+      limits: input.limits, budget: recovered })
+    await (await recoveredStorage.reserve({ artifactId: allocation.artifactId, ...allocation.requested })).assertCurrent()
+    await expect(recovered.reserve({ ...allocation, owner: { ...owner, runtimeGeneration: runtimeGeneration + 1 } }))
+      .rejects.toThrow()
     await expect(recovered.reserve({ ...allocation, owner: { ...owner, mainId: randomUUID() } })).rejects.toThrow()
     await expect(recovered.reserve({ ...allocation, owner: f.input.owner })).rejects.toThrow()
+    await expect(createInstalledNativeOutputStorage({ ...f.input, owner: { ...owner, runtimeGeneration: -1 },
+      limits: input.limits, budget: recovered })).rejects.toThrow()
+    await expect(createInstalledNativeOutputStorage({ ...f.input,
+      owner: { ...f.input.owner, runtimeGeneration: 0 } })).rejects.toThrow()
     await expect(createNativeOutputBudgetLedger(f.budgetInput)).rejects.toThrow()
     await original.release()
     await expect(original.assertCurrent()).rejects.toThrow()
