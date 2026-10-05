@@ -30,7 +30,6 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
-import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -167,12 +166,14 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         production.engine.start = async (runId) => {
           try { return await start(runId) }
           catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'start_run',
+              error: describeNativeFailure(error, [...secrets]) })
             let code = error instanceof Error ? error.name : 'unknown'
             if (error instanceof DomainError) code = error.code
             else if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? error.name
             const diagnostic: (typeof startupErrors)[number] = { code }
             if (error instanceof DomainError && error.code === 'APP_MCP_PREFLIGHT_FAILED') {
-              diagnostic.detail = error.message
+              diagnostic.detail = nativePersistenceRedactor([...secrets]).text(error.message)
             }
             startupErrors.push(diagnostic)
             throw error
