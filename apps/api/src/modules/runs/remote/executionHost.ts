@@ -128,6 +128,7 @@ export class RemoteExecutionHost {
     if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId, frame.review)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
     if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
+    if (frame.method === 'receipt-continuation') throw new Error('Receipt continuations require the installed response owner.')
     if (frame.method === 'get-application-access') throw new Error('Application lease recovery requires the installed physical owner')
     if (frame.method === 'history') {
       const result = await this.read(frame.intent.operationId, 'history', frame.correlationId) as {

@@ -54,6 +54,7 @@ import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../repeatResolution.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
+import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 
@@ -422,6 +423,33 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
 }
 
 describe('installed host resident execution continuity', () => {
+  it('pages original large terminal receipts from the installed handler and its retired readback', async () => {
+    const f = await runningInstalledFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: 'original 雪'.repeat(110_000) } }
+    const read = async (method: string, fields: Record<string, unknown> = {}) => {
+      const response = await f.call(method, fields)
+      expect(Buffer.byteLength(JSON.stringify(response.payload))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      return readRemoteReceiptResponse(response.payload, f.intent, async request =>
+        (await f.call('receipt-continuation', request)).payload)
+    }
+    try {
+      f.finish('succeeded')
+      f.history.terminalTurn!.result = result
+      await f.settled
+      expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      const history = await read('history') as { status: { receipt: { sequence: number; terminal: { result: unknown } } } }
+      expect(history.status.receipt.terminal.result).toEqual(result)
+      // A status reply refreshes the boundary retained for the same receipt.
+      await read('status')
+      await f.call('physical-ack', { receiptSequence: history.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+    } finally { await f.host.close() }
+  })
+
   it('retires a completed owner when Main acknowledges a bounded terminal history page', async () => {
     const f = await runningInstalledFixture()
     try {

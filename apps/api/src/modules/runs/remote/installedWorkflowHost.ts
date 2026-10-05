@@ -68,6 +68,7 @@ import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
 import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
 import { recoverInstalledWorkflowReply } from './installedWorkflowRecoveryHandler.js'
+import { InstalledWorkflowResponsePages } from './installedWorkflowResponsePages.js'
 import { hasPositiveRemoteEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
@@ -307,6 +308,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   const lifetime=new AbortController(),signal=AbortSignal.any([input.signal,lifetime.signal])
   const operations=new Map<string,InstalledOperation>(),hosts=new Map<string,RemoteExecutionHost>()
   const physical=new InstalledWorkflowPhysicalReadouts()
+  const responsePages = new InstalledWorkflowResponsePages()
   const recovery = new InstalledWorkflowRecovery(join(input.stateDirectory, 'workflow-recovery'), registry)
   const active=new Set<Promise<unknown>>()
   let journalOpening:Promise<RemoteOperationJournal>|undefined,closing=false,shutdown:Promise<void>|undefined
@@ -852,10 +854,20 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   const extensions:DeviceExtensionRegistration[]=[{namespace:'execution-v1',version:1,role:'duplex',maxJsonBytes:DEVICE_APPLICATION_JSON_BYTES,maxBinaryBytes:0,
     async handle(payload,context) {
       if(context.bytes!==undefined)unavailable('workflow_binary_payload_refused')
+      if(RemoteJobExecutionRpcRequestSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed workflow host has no Job runtime.',409)
+      const frame=RemoteExecutionRpcRequestSchema.parse(payload)
       const task=(async()=>{
-        if(RemoteJobExecutionRpcRequestSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed workflow host has no Job runtime.',409)
-        const frame=RemoteExecutionRpcRequestSchema.parse(payload)
         current(context.binding)
+        if (frame.method === 'receipt-continuation') {
+          const status = await(await journal()).status(frame.intent.operationId)
+          if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, frame.intent)) {
+            unavailable('original_receipt_transfer_owner_changed')
+          }
+          await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement,
+            status.receipt.stopFence ? 'stop' : 'read')
+          current(context.binding)
+          return { payload: responsePages.read(frame, context.binding) }
+        }
         if (!operations.has(frame.intent.executionId) && (journalOpening
           || recovery.hasCapture(frame.intent.operationId) || await hasRetainedJournal())) {
           const recovered = await recoverInstalledWorkflowReply({ frame, binding: context.binding,
@@ -953,11 +965,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               closure:()=>resident.physicalClosure??null})
           }
         }
-        if (response !== undefined && Buffer.byteLength(JSON.stringify(response)) > DEVICE_APPLICATION_JSON_BYTES) {
+        return {payload:response}
+      })().then(reply => {
+        current(context.binding)
+        const paged = responsePages.page(reply.payload, frame, context.binding)
+        if (paged !== undefined && Buffer.byteLength(JSON.stringify(paged)) > DEVICE_APPLICATION_JSON_BYTES) {
           unavailable('workflow_response_too_large')
         }
-        return {payload:response}
-      })()
+        return { ...reply, payload: paged }
+      })
       active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task))
       return task
     }},
@@ -997,6 +1013,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     closing=true;lifetime.abort(new Error('Installed workflow host is closing.'))
     for (const resident of operations.values()) if (resident.reviewTimer) clearTimeout(resident.reviewTimer)
     physical.clear()
+    responsePages.clear()
     const results=await Promise.allSettled([...hosts.values()].map(host=>host.shutdown()))
     await Promise.allSettled([...active])
     const failures:unknown[]=results.flatMap(result=>result.status==='rejected'?[result.reason]:[])
