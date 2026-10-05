@@ -1521,15 +1521,17 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const model = object(native.model)
     const [providerID, ...modelID] = configuration.model.split('/')
     let variant = model.variant ?? ''
-    if (model.variant === 'default' && configuration.variant === '') {
+    if (model.variant === 'default') {
       const user = await lastUser()
       const userModel = object(user.model)
-      if (user.role !== 'user' || userModel.providerID !== providerID || userModel.modelID !== modelID.join('/')) {
+      const hasUser = Object.keys(user).length > 0
+      if ((hasUser || configuration.variant !== 'default')
+        && (user.role !== 'user' || userModel.providerID !== providerID || userModel.modelID !== modelID.join('/'))) {
         throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH',
           'The persisted variant requires matching native user-message configuration.')
       }
       // Native metadata uses "default" for both an omitted variant and a named variant.
-      variant = userModel.variant ?? ''
+      if (hasUser) variant = userModel.variant ?? ''
     }
     if (Object.keys(model).length && (model.providerID !== providerID || model.id !== modelID.join('/') || variant !== configuration.variant)) {
       throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted native model or variant differs from its pinned configuration.')
