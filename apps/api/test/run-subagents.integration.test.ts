@@ -167,8 +167,9 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       reattached.markResident!()
       await pool.query(`update run_subagent_command_receipts set record=jsonb_set(record,'{state}','"uncertain"')
         where id=$1`, [receipt.id])
-      services.runs = { subagents: new RunSubagentService(pool, productionSubagentControls(replacementManagers)) }
-        as OperatorServices['runs']
+      services.runs = {
+        subagents: new RunSubagentService(pool, productionSubagentControls(replacementManagers)),
+      } as OperatorServices['runs']
       const replay = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
       const recovered = RunSubagentCommandReceiptSchema.parse(replay.structuredContent)
       expect(recovered).toMatchObject({ id: receipt.id, state: 'acknowledged', response: receipt.response })
