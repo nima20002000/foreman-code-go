@@ -40,6 +40,8 @@ export const opencodeQualificationSuite: QualificationSuite = {
     let mcpName: string | undefined
     let mcpReady = false
     let read = false, published = false
+    const publicationErrors: Array<{ code: string | null; message: string }> = []
+    evidence.filePublicationErrors = publicationErrors
     const marker = `QUALIFY_${randomUUID()}`
     const sourcePath = join(input.workDirectory, 'qualification-source.md')
     const outputPath = join(input.workDirectory, 'qualification-result.md')
@@ -73,19 +75,26 @@ export const opencodeQualificationSuite: QualificationSuite = {
       },
       createWorkingCopy: async () => { throw new Error('files.create_working_copy is not enabled.') },
       publish: async (_token: string, request: { artifactId: string; scope: FileToolContext['scope']; filename: string; mediaType: string }) => {
-        requireCondition(request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
-          && request.mediaType === 'text/markdown' && JSON.stringify(request.scope) === JSON.stringify(scope), 'Wrong publication target.')
-        const bytes = await readFile(outputPath)
-        requireCondition(bytes.toString('utf8').includes(marker) && bytes.toString('utf8').includes('QUALIFIED'),
-          'Published Markdown does not contain the source marker and edit.')
-        published = true
-        const createdAt = new Date().toISOString()
-        return { value: { file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt,
-          scope, state: 'ready' as const, retentionDurationSeconds: 3600,
-          expiresAt: new Date(Date.parse(createdAt) + 3_600_000).toISOString() },
-        revision: { fileId: outputId, revisionId: outputRevisionId, filename: 'qualification-result.md',
-          mediaType: 'text/markdown' as const, byteSize: bytes.length,
-          sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'agent_output' as const, createdAt } }, replayed: false }
+        try {
+          requireCondition(request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
+            && request.mediaType === 'text/markdown' && JSON.stringify(request.scope) === JSON.stringify(scope), 'Wrong publication target.')
+          const bytes = await readFile(outputPath)
+          requireCondition(bytes.toString('utf8').includes(marker) && bytes.toString('utf8').includes('QUALIFIED'),
+            'Published Markdown does not contain the source marker and edit.')
+          published = true
+          const createdAt = new Date().toISOString()
+          return { value: { file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt,
+            scope, state: 'ready' as const, retentionDurationSeconds: 3600,
+            expiresAt: new Date(Date.parse(createdAt) + 3_600_000).toISOString() },
+          revision: { fileId: outputId, revisionId: outputRevisionId, filename: 'qualification-result.md',
+            mediaType: 'text/markdown' as const, byteSize: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'agent_output' as const, createdAt } }, replayed: false }
+        } catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null
+          const message = error instanceof Error ? error.message : String(error)
+          publicationErrors.push({ code, message })
+          throw error
+        }
       },
     } as unknown as FileMcpService
     registerFileToolsMcp(app, fileService)

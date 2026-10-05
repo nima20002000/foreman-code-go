@@ -16,7 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Page complete public Activity rows within 128 KiB over HTTP and Operator MCP, with cursors for all retained history and heavier snapshots available through Run details.
 - Keep incremental Activity reads independent of full execution history, back off unchanged feeds, and batch authorized workspace Run summaries.
-- Preserve configured native acceptance evidence directories while the root runner creates and cleans up its disposable database.
+- Preserve configured native acceptance evidence directories and private qualification error details while the root runner creates and cleans up its disposable database.
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -86,6 +86,14 @@ export async function qualifyEng03OpenCode() {
       await delay(250)
       qualification = await repository.find('opencode', submitted.version, submitted.binarySha256,
         submitted.suiteRevision) ?? submitted
+    }
+    if (process.env.ENG03_A_EVIDENCE_DIR) {
+      const records = (await pool.query(`select harness,version,binary_sha256,suite_revision,status,checks,evidence,
+        failure_reason,started_at,checked_at from harness_qualifications order by started_at`)).rows
+      await mkdir(process.env.ENG03_A_EVIDENCE_DIR, { recursive: true, mode: 0o700 })
+      const artifact = join(process.env.ENG03_A_EVIDENCE_DIR, `opencode-qualification-${randomUUID()}.json`)
+      await writeFile(artifact, JSON.stringify(records, null, 2), { flag: 'wx', mode: 0o600 })
+      console.info(`OpenCode qualification evidence ${artifact}`)
     }
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
