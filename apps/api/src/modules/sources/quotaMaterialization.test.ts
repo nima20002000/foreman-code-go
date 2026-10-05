@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { sourceMaterializationParent, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { JobQuotaReader } from '../jobs/quotaOwnership.js'
-import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
+import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation, withClaimLock } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 
@@ -118,6 +118,62 @@ describe('per-Job source quota ownership', () => {
       .toEqual(closure)
     const prepared = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
     expect(prepared.quota!.projectId).toBe(f.quota.pool.slots[0]!.projectId)
+  })
+
+  it('stops initial recovery at the preparation signal while another owner retains the namespace lock', async () => {
+    const f = await fixture()
+    const root = await openPrivateRoot(f.root)
+    let entered!: () => void
+    let release!: () => void
+    const locked = new Promise<void>(resolve => { entered = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    const owner = withClaimLock(root, async () => { entered(); await released })
+    await locked
+    const attempt = f.attempt()
+    const controller = new AbortController()
+    const reason = new DOMException('Preparation cancelled.', 'AbortError')
+    const preparing = f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt,
+      signal: controller.signal }).then(() => null, error => error)
+    controller.abort(reason)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      expect(await Promise.race([preparing, new Promise<'still waiting'>(resolve => {
+        timer = setTimeout(() => resolve('still waiting'), 1000)
+      })])).toBe(reason)
+    } finally {
+      if (timer) clearTimeout(timer)
+      release()
+      await owner
+      await preparing
+      await root.close()
+    }
+    const recovered = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt })
+    expect(await readFile(join(sourceMaterializationParent(recovered), 'tree/src/index.ts'))).toEqual(f.bytes)
+  })
+
+  it('retains quota after cleanup interruption and resumes within the original absolute budget after restart', async () => {
+    const f = await fixture(1)
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    const deadlineAt = Date.now() + 60_000
+    const controller = new AbortController()
+    const reason = new DOMException('Worker generation closed.', 'AbortError')
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(deadlineAt - Date.now())])
+    const closed = async () => {
+      try { await readFile(join(sourceMaterializationParent(receipt), 'receipt.json')) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        controller.abort(reason)
+      }
+      return 'released' as const
+    }
+    await expect(releaseMaterializationClaim(receipt, closed, f.quota, signal)).rejects.toBe(reason)
+    await expect(f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() }))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY' })
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota,
+      AbortSignal.timeout(deadlineAt - Date.now()))
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.quota).toEqual(receipt.quota)
+    expect(await readFile(join(sourceMaterializationParent(successor), 'tree/src/index.ts'))).toEqual(f.bytes)
   })
 
   it('retains the original quota when closure or deleted-file accounting remains uncertain', async () => {

@@ -146,7 +146,7 @@ export class SourceOperationWorkerService {
       }
       if (request.operation === 'sources.prepare') {
         const materializer = new PrivateSourceMaterializer(reader, reauthorize, quotaPool)
-        const recovered = await materializer.recover(owner.root.binding, owner.attempt)
+        const recovered = await materializer.recover(owner.root.binding, owner.attempt, context.signal)
         if (recovered) { await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: recovered }) }
         const transferContext = await this.options.transferContext(context)
         for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const)
