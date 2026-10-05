@@ -73,7 +73,7 @@ it.each([
     await hook({ hook_event_name: event, session_id: session.nativeSessionId, transcript_path: '/transcript', cwd: '/work',
       tool_use_id: identity.toolUseId, tool_name: tool, mcp_server: identity.mcpServer,
       ...(event === 'PostToolUseFailure' ? { tool_input: {}, error: 'tool failed', is_interrupt: false }
-        : { tool_input: {}, permission_suggestions: [] }),
+        : { tool_input: {}, reason: 'The selected permission response canceled the tool.' }),
     } as HookInput, identity.toolUseId, { signal: new AbortController().signal })
     expect(f.bridge.deliveryEvidence(session)).toMatchObject([{ optionId: selected, semantic }])
   } finally { f.bridge.close() }

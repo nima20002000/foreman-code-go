@@ -31,13 +31,18 @@ export const deferred = <T>() => { let resolve!: (value: T) => void; const promi
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
-export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService) {
+export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService,
+  runtime?: { database: pg.Pool; binding: ClaudeDomainBinding; start: NativeSessionStart; sdk: ClaudeSdkClient }) {
   const kind = surface === 'selected-run' ? 'agent' : surface
   const target = { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
-  const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
+  const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
     configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
-    tools: [], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+    tools: ['mcp__graphql__workspace_list', 'mcp__graphql-files__files.read'], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+  const harness = runtime
+    ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)
+    : defaultHarness
+  if (harness.harness !== 'claude') throw new Error('The production fixture requires a Claude configuration.')
   const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: 'profile-1', revision: 1,
     target, presetId: 'recorded', enabled: true, driverId: 'claude', configuration: harness, configurationFingerprint: 'recorded-config', qualification: 'qualified' }
   const pin = { sdkVersion: '0.3.284', sdkIntegrity: 'recorded-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64),
@@ -45,7 +50,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const proof: HostHarnessProfileEvidence = { target, instanceRevision: override.instanceRevision, configurationFingerprint: override.configurationFingerprint,
     driverId: 'claude', driverRevision: '1', protocolRevision: 'recorded-protocol', suiteRevision: 'recorded-suite', environmentGeneration: 'recorded-env',
     connectionGeneration: 'recorded-connection', authenticated: true, compatible: true, qualified: true, checkedAt: createdAt,
-    claudeProof: { pin, checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check, { state: 'passed' as const,
+    claudeProof: { pin, observedTools: harness.tools.filter(tool => !tool.startsWith('mcp__')), checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check, { state: 'passed' as const,
       source: 'native_scenario' as const, evidenceId: `synthetic:${check}`, evidenceSha256: 'b'.repeat(64) }])) } }
   const instances = new HarnessInstanceRegistry(localHarnessDrivers)
   instances.reload([{ instanceId: override.instanceId, instanceRevision: override.instanceRevision, driverId: 'claude', enabled: true, configuration: harness }])
@@ -93,13 +98,13 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     if (!rows) throw new Error('Unexpected SQL in fixture: ' + sql.slice(0, 80))
     return { rows }
   })
-  const pool = { query } as unknown as pg.Pool
+  const pool = runtime?.database ?? { query } as unknown as pg.Pool
   const owner = { runId: 'run', client: pool, assertOwned: () => {}, readOneShotFence: async () => ({ ownerId: 'recorded-owner', fence: 'recorded-fence' }) } as unknown as RunOwnership
-  const domain: ClaudeDomainBinding = kind === 'workflow' ? { kind, runId: 'run', executionId: 'execution', attempt: 1, getOwner: () => owner }
+  const domain: ClaudeDomainBinding = runtime?.binding ?? (kind === 'workflow' ? { kind, runId: 'run', executionId: 'execution', attempt: 1, getOwner: () => owner }
     : kind === 'operator' ? { kind, conversationId: surface, repository: new PostgresOperatorConversationRepository(pool) }
-      : { kind: 'agent', conversationId: surface, workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) }
-  const start: NativeSessionStart = kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
-    : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } }
+      : { kind: 'agent', conversationId: surface, workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) })
+  const start: NativeSessionStart = runtime?.start ?? (kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
+    : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } })
   const queries: { frames: ClaudeBoundedQueue<unknown>; messages: AsyncIterator<ClaudeSdkUserMessage> }[] = []
   const initialFrames = new ClaudeBoundedQueue<unknown>(64)
   const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
@@ -111,16 +116,16 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     ready.resolve(messages)
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close: () => frames.close(), interrupt: async () => undefined,
       initializationResult: async () => ({}), setMcpServers,
-      mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql.url }, tools: [] }] }
+      mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql!.url }, tools: [] }] }
   })
   const sdk: ClaudeSdkClient = { sdkVersion: pin.sdkVersion, query: sdkQuery, getSessionInfo: async sessionId => ({ sessionId }),
     getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'recorded-fork' }) }
-  const loadClient = vi.fn(async () => sdk)
+  const loadClient = vi.fn(async () => runtime?.sdk ?? sdk)
   const factories = sharedFactories ?? new NativeHarnessFactories({ codexBinary: '/forbidden-codex', openCodeBinary: '/forbidden-opencode', instances, installations,
     installationDiscovery: async () => launcher })
   const result = productionClaudeManager({ pool, factories, registry: { pinOverride: () => binding } as unknown as ProductionHarnessRegistry,
     profiles, selector: { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target }, binding: domain,
-    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: '/recorded/work', ownerAgentId: surface,
+    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory, ownerAgentId: surface,
     recovery: { root: '/forbidden-native-recovery', owner: surface }, appMcpAccess: kind === 'agent' ? 'none' : 'scoped', mode: 'replay',
     inspectionStart: async () => start, loadClient,
     ...(fileService ? { files: { service: () => fileService, sdk: async () => ({ createSdkMcpServer, tool }) } } : {}) })
