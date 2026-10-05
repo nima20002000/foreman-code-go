@@ -80,10 +80,11 @@ function remoteSourceFixture() {
     rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: randomUUID(), reservationId: randomUUID(),
     sourceBindingHash: hash, finalDispatchBindingHash: hash, state: 'prepared',
   })
-  const pool = { query: async () => ({ rows: [{ record, execution }] }) } as unknown as Pick<pg.Pool, 'query'>
+  const settlement = { pending: false }
+  const pool = { query: async () => ({ rows: [{ record, execution, settlement_pending: settlement.pending }] }) } as unknown as Pick<pg.Pool, 'query'>
   const sources = { confirmClosed: vi.fn(async () => undefined) }
   const report = vi.fn()
-  return { pool, sources, report, record }
+  return { pool, sources, report, record, settlement }
 }
 
 it('retains the source claim for a verified original reviewer, then requires physical closure after retention ends', async () => {
@@ -135,4 +136,19 @@ it('reproduces unconfirmed physical closure and defers the actual source service
   await closeCompletedWorkflowSources(f.pool, sources, f.report)
   expect(f.report).toHaveBeenCalledWith(expect.objectContaining({ code: 'SOURCE_EXECUTION_UNCERTAIN' }))
   expect(releaseClaim).not.toHaveBeenCalled()
+})
+
+it('defers a completed Main node while its original native lifetime is still settling', async () => {
+  const f = remoteSourceFixture()
+  f.record.receipt.binding.deviceId = null
+  f.record.receipt.binding.workerInstallationId = null
+  f.record.receipt.keyRevision = null
+  f.record.receipt.authorizationRevision = null
+  f.settlement.pending = true
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+  f.settlement.pending = false
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
 })

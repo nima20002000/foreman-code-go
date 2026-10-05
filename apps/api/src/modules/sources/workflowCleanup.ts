@@ -24,9 +24,21 @@ export async function closeCompletedWorkflowSources(
   sources: Pick<PostgresSourceService, 'confirmClosed'>,
   report: (error: unknown) => void,
 ): Promise<void> {
-  const rows = await pool.query<{ record: unknown; execution: unknown }>(`select m.record,e.record as execution
+  const rows = await pool.query<{ record: unknown; execution: unknown; settlement_pending: boolean }>(`select m.record,e.record as execution,
+      (r.execution_state in ('running','waiting') and r.stop_requested_at is null
+        and e.record#>>'{result,outcome}'='succeeded'
+        and not exists(select 1 from run_cleanup_intents cleanup where cleanup.run_id=r.id and cleanup.pending)
+        and exists(select 1 from execution_native_sessions n
+          join execution_native_closures c on c.execution_id=n.execution_id
+          where n.execution_id=e.id and n.workflow_finalized_at is null
+            and n.reference->>'nativeSessionId'=e.record->>'nativeSessionId'
+            and c.closed_at is null and c.detached_at is null
+            and (c.expected_reference is null or c.expected_reference=n.reference)
+            and not exists(select 1 from execution_native_closures newer
+              where newer.execution_id=c.execution_id and newer.generation>c.generation))) as settlement_pending
     from source_execution_materializations m
     join harness_executions e on e.id=m.execution_id
+    join runs r on r.id=e.run_id
     join source_storage_reservations s on s.reservation_id=m.reservation_id
     where (m.state<>'closed' or (
         s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
@@ -36,6 +48,9 @@ export async function closeCompletedWorkflowSources(
     order by m.materialization_id limit 100`)
   for (const row of rows.rows) {
     try {
+      // Publishing the result precedes the native finalizer's closure commit.
+      // Keep its source until that owner has finished; confirmClosed still fences release.
+      if (row.settlement_pending) continue
       const record = SourceMaterializationRecordSchema.parse(row.record)
       if (record.receipt.binding.deviceId !== null) {
         const execution = HarnessExecutionSchema.parse(row.execution)
