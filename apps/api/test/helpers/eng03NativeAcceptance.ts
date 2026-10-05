@@ -477,6 +477,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     }
     const restartWaitingRuntime = () => restartRuntime('waiting')
     const restartRecoverableRuntime = () => restartRuntime('terminal_unaccepted')
+    evidence.runId = run.id
+    evidence.progressAt = new Date().toISOString()
+    await writeFile(artifactPath, JSON.stringify(evidence, null, 2), { mode: 0o600 })
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const work = options.control

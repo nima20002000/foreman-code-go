@@ -254,8 +254,14 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         ].join(' '),
           B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
         control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
+          const controlStarted = Date.now()
+          const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
+            runId, stage, elapsedMs: Date.now() - controlStarted,
+          })}\n`)
+          progress('control started')
           const deadline = Date.now() + 120_000
           let pending: ReturnType<typeof DurableInteractionSchema.parse> | undefined
+          let observedInterruptId: string | undefined
           while (Date.now() < deadline) {
             const row = (await pool.query<{ record: unknown }>(
               `select record from durable_interactions where run_id=$1 order by created_at limit 1`, [runId],
@@ -263,6 +269,10 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             if (row) {
               pending = DurableInteractionSchema.parse(row.record)
               interactionId = pending.id; sessionId = pending.nativeSessionId
+              if (pending.graphInterruptId && pending.graphInterruptId !== observedInterruptId) {
+                observedInterruptId = pending.graphInterruptId
+                progress('approval bound')
+              }
               const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
               const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
                 and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
@@ -274,6 +284,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             await delay(250)
           }
           expect(pending?.graphInterruptId).toBeTruthy()
+          progress('approval wait assertions')
           expect(pending!.request).toMatchObject({ permission: 'bash', metadata: { command } })
           expect(siblingActiveAtWait).toBe(true)
           expect((await runs.get(runId))?.executionState).toBe('waiting')
@@ -296,8 +307,10 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           const user = await access.issue({ name: 'C exact User', audience: 'user',
             expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
               scope: { runIds: [runId] } }] })
+          progress('response started')
           const response = await service.respond({ kind: 'user', principal: user.principal }, { interactionId: pending!.id,
             optionId: option!.optionId, expectedRevision: pending!.revision })
+          progress(`response returned ${response.interaction.deliveryState}`)
           const delivered = response.interaction.deliveryState === 'uncertain'
             ? await service.reconcile(response.interaction) : response.interaction
           if (delivered.deliveryState !== 'delivered') {
@@ -318,10 +331,13 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             }, null, 2))
           }
           expect(delivered.deliveryState).toBe('delivered')
+          progress('response delivered')
           await startTask.catch(() => undefined)
+          progress('original Run task joined')
           // The original Start may already have finished at the waiting
           // checkpoint. Join the exact current resumed/reconciled Run task.
           await engine.start(runId)
+          progress('continued Run task joined')
           expect((await runs.get(runId))?.outcome).toBe('succeeded')
           const effects = await pool.query<{ effect_kind: string; count: number }>(
             `select effect_kind,count(*)::int as count from run_graph_effects where run_id=$1
