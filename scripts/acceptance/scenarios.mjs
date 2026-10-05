@@ -6,7 +6,7 @@ export const OPEN_CODE_MODEL = 'opencode-go/deepseek-v4.1-flash'
 const COMMON = 'This is an isolated acceptance demo. Use only accepted workflow inputs. Do not read secrets, credentials, home directories or external services. Do not change files. Follow the node instruction exactly.'
 export function configuration(kind, codexModel, approval = false) {
   if (kind === 'codex') return {
-    harness: 'codex', model: codexModel, reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+    harness: 'codex', model: codexModel, reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
     advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'user', additionalWritableDirectories: [],
       sessionPersistence: 'persistent', shellEnvironment: { inherit: 'core', ignoreDefaultExcludes: false, filters: {}, set: {} },
       webSearch: 'disabled', mcpServers: {} },
