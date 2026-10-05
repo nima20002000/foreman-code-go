@@ -1,12 +1,11 @@
 import { NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
-import type { GraphSqlClient } from '../run-graph/connection.js'
+import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readExecutionPlacement } from '../placement/persistence.js'
 import { remoteReviewerPolicy, assertRemoteReviewerReceipt } from '../placement/remoteReviewerAuthority.js'
-import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireReviewerCredential } from './reviewerCredential.js'
 import { DomainError } from '../errors.js'
 
 export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecution) {
@@ -48,11 +47,29 @@ export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution:
   [execution.id, execution.runId, execution.agentId])).rows
   if (credentials.length !== 1) throw new DomainError('REMOTE_REVIEWER_DENIED', 'The original reviewer process lease is required.', 409)
   const principalId = credentials[0]!.principal_id
-  const principal = await readLiveManagementPrincipal(sql, principalId)
-  const scope = { workspaceId: policy.run.workspaceId, workflowId: policy.run.workflowId, runId: policy.run.id }
-  requireAuthorization(principal, 'interactions:read', scope)
-  requireAuthorization(principal, 'interactions:respond', scope)
+  await requireReviewerCredential(sql, principalId, { agentId: execution.agentId,
+    workspaceId: policy.run.workspaceId, workflowId: policy.run.workflowId, runId: policy.run.id })
   return { generation: lifetime.generation, principalId, session: policy.session }
+}
+
+/** Completion and credential retention commit together so terminal cleanup cannot revoke the original token. */
+export async function finalizeRetainedRemoteReviewerLocked(sql: GraphTransactionSql,
+  execution: HarnessExecution): Promise<void> {
+  const retained = await readRetainedRemoteReviewer(sql, execution)
+  if (!retained) return
+  const finalized = await sql.query(`update execution_native_sessions
+    set workflow_finalized_at=coalesce(workflow_finalized_at,clock_timestamp())
+    where execution_id=$1 and reference=$2::jsonb returning execution_id`,
+  [execution.id, JSON.stringify(retained.session)])
+  if (finalized.rowCount !== 1) {
+    throw new DomainError('REMOTE_REVIEWER_DENIED', 'The original reviewer session changed during retention.', 409)
+  }
+  await retainRemoteReviewerCredential(sql, execution, retained)
+  beforeGraphCommit(sql, async () => {
+    if (!sameWorkflowValue(await readRetainedRemoteReviewer(sql, execution), retained)) {
+      throw new DomainError('REMOTE_REVIEWER_DENIED', 'The original reviewer lifetime changed before retention committed.', 409)
+    }
+  })
 }
 
 export async function retainRemoteReviewerCredential(sql: GraphSqlClient, execution: HarnessExecution,

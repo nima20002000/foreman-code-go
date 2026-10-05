@@ -5,8 +5,7 @@ import { fail, isCurrentApprovalRun, runFor } from './context.js'
 import { credentialAuthority, assertWave25WorkerBinding } from './credentialAuthority.js'
 import { ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
 import type { SessionWriteLease } from '../sessionWriter.js'
-import { requireAuthorization } from '../../access/policy.js'
-import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
+import { requireReviewerCredential } from '../reviewerCredential.js'
 import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 type Purpose = 'workflow' | 'reviewer'
@@ -55,10 +54,8 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
     supplied: ReviewJob, lane?: SessionWriteLease): Promise<void> {
     await this.locked(executionId, async client => {
       const authority = await credentialAuthority(client, executionId, 'reviewer')
-      const principal = await readLiveManagementPrincipal(client, credential.principalId)
-      const scope = { workspaceId: authority.run.workspaceId, workflowId: authority.run.workflowId, runId: authority.run.id }
-      requireAuthorization(principal, 'interactions:read', scope)
-      requireAuthorization(principal, 'interactions:respond', scope)
+      await requireReviewerCredential(client, credential.principalId, { agentId: authority.execution.agentId,
+        workspaceId: authority.run.workspaceId, workflowId: authority.run.workflowId, runId: authority.run.id })
       const row = (await client.query<{ record: unknown; lease_fence: string; execution_id: string; live: boolean }>(
         `select record,lease_fence::text,execution_id,lease_expires_at>clock_timestamp() as live
          from review_jobs where id=$1 for update`, [supplied.id])).rows[0]

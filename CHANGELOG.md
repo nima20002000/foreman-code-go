@@ -26,6 +26,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Preserve original execution, process and journal ownership through reconnects, Main restart, worker crashes and credential renewal.
 - Continue verified original sessions after a host preset changes while retaining latest enabled settings for new launches.
 - Keep retained remote Orchestrator source claims active until the original process closes, preserving ownership and storage accounting during review turns.
+- Retain the original scoped Worker credential atomically when an Orchestrator finishes its initial turn, preserving authenticated review access through credential cleanup.
 - Start and recover fully placed Agent workflows using their accepted host directories while preserving the workspace selection and authorization checks.
 - Keep scoped cancellation available on saturated channels and retry original approval responses only when non-delivery is proven.
 - Initialize and recover worker output stores automatically; serialize budgets and reuse released reservation capacity.

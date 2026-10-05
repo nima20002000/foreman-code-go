@@ -20,6 +20,7 @@ import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBefore
 import { readWorkflowClosure, readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import { assertApprovalTerminalSettlement } from '../interactions/wave25/resume.js'
 import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
+import { finalizeRetainedRemoteReviewerLocked } from '../interactions/retainedRemoteReviewer.js'
 import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
 import { compileExecutionTopology } from './topology.js'
 import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissionLocked, requireRepeatNativeHooks,
@@ -679,6 +680,11 @@ export class RepeatRunRepository {
         // the actual raw provider source via existing native-event storage.
         native: original,
       }))
+      if (next.state === 'completed' && next.result?.outcome === 'succeeded'
+        && context.version.approval.handler === 'orchestrator'
+        && context.version.approval.designatedOrchestratorAgentId === next.agentId) {
+        await finalizeRetainedRemoteReviewerLocked(context.sql, next)
+      }
     })
   }
 
