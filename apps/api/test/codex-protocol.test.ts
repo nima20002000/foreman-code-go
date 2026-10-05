@@ -14,7 +14,7 @@ async function configure(schema = codexSchema()) {
   await writeFile(join(f.directory, 'schema.json'), JSON.stringify(schema))
 }
 async function qualify(authenticated = false) {
-  return qualifyCodex(f.binary, 'codex-cli 0.154.0', f.directory, { ...process.env }, authenticated)
+  return qualifyCodex(f.binary, f.directory, { ...process.env }, authenticated)
 }
 async function schemaCalls() {
   return (await calls(f.directory)).filter(entry => Array.isArray(entry.cli) && entry.cli.includes('generate-json-schema'))
