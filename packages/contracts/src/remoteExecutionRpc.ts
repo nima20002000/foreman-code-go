@@ -4,11 +4,11 @@ import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, Approva
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema,
   RemoteReviewerRequestSchema } from './remoteExecution.js'
-import { DeviceHistoryRequestFields } from './deviceApplication.js'
+import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema } from './deviceApplication.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),
-    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional() }).strict(),
   z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
   z.object({ method: z.literal('reattach'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
   z.object({ method: z.literal('prepare-review'), ...binding, review: RemoteReviewerRequestSchema }).strict(),
@@ -22,6 +22,7 @@ export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('reconcile-response'), ...binding, response: z.object({ nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1), option: z.lazy(() => ApprovalResponseOptionSchema) }).strict() }).strict(),
   z.object({ method: z.literal('renew-owner'), ...binding, transition: RemoteOwnerReconciliationSchema }).strict(),
   z.object({ method: z.literal('control'), ...binding, command: RemoteOwnerControlSchema }).strict(),
+  z.object({ method: z.literal('control-delivery'), ...binding, command: RemoteOwnerControlSchema }).strict(),
 ])
 export type RemoteExecutionRpcRequest = z.infer<typeof RemoteExecutionRpcRequestSchema>
 /** W07 authenticated extension kind. Frame bounds/operation grant remain carrier-owned. */

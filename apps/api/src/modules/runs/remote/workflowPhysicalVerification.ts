@@ -5,7 +5,7 @@ import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { RemoteWorkflowPhysicalReadoutSchema,RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
@@ -19,7 +19,8 @@ import type { RunOwnership } from '../ownership.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { repeatExecutionIdentity,repeatDigest } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest,remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
+import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory,
+  readPhysicalReadout, hasNativeClosure } from './workflowPhysicalReadout.js'
 import { DomainError } from '../../errors.js'
 import { assertRemoteReviewerReceipt } from '../../placement/remoteReviewerAuthority.js'
 import type { ReviewNativeProofRecord } from '../../interactions/reviewNativeProof.js'
@@ -62,9 +63,11 @@ const unavailable = (reason: string): never => {
 function same(left: unknown, right: unknown) { return isDeepStrictEqual(left, right) }
 function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource) {
   const { receipt, session, launch, observation } = readout
+  const launchIntent = readout.launchIntent ?? receipt.intent
+  if (!same({ ...launchIntent, owner: receipt.intent.owner }, receipt.intent)) return unavailable('launch_binding')
   if (!receipt.native || receipt.native.sessionId !== session.nativeSessionId || session.harness !== 'codex'
     || launch.owner !== `execution:${receipt.intent.executionId}` || launch.bootId !== receipt.connection.bootId
-    || launch.lifecycle !== 'active' || remoteWorkflowProcessDigest(receipt.connection, receipt.intent, launch) !== receipt.native.processIdentityDigest
+    || launch.lifecycle !== 'active' || remoteWorkflowProcessDigest(receipt.connection, launchIntent, launch) !== receipt.native.processIdentityDigest
     || observation.launchId !== launch.launchId || observation.owner !== launch.owner || observation.bootId !== launch.bootId
     || !same(observation.guardian, launch.guardian) || !same(observation.provider, launch.provider) || !same(observation.boundary, launch.boundary)) return unavailable('process_identity')
   if (source.type === 'session_created' && !same(source.session, session)) return unavailable('session_identity')
@@ -72,7 +75,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
   if (source.type === 'event' && (!readout.history || !readout.history.events.some(event => same({...event,executionId:receipt.intent.executionId}, source.event)))) return unavailable('event_identity')
   if (receipt.terminal) {
     const terminal = readout.history?.terminalTurn
-    if (!readout.closure || observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty'
+    if (!readout.closure || !hasNativeClosure(observation)
       || !same(readout.closure.launch, observation) || !readout.closure.ownerClosed
       || receipt.terminal.kind === 'not_started'
       || receipt.terminal.closureEvidenceDigest !== commandInputHash({ intent:receipt.intent,native:receipt.native,
@@ -87,7 +90,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
     } else if(receipt.terminal.kind!=='cancelled'||!receipt.stopFence||readout.output||(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable('cancellation_closure')
   } else {
     if (readout.output || (readout.closure
-      ? observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty' || !same(readout.closure.launch,observation)
+      ? !hasNativeClosure(observation) || !same(readout.closure.launch,observation)
       : observation.lifecycle !== 'active')) return unavailable('running_process')
   }
 }
@@ -145,7 +148,14 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const reply = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
         receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) }, signal ? { signal } : {})
       if (reply.bytes !== undefined) return unavailable('readout_binary')
-      const readout = RemoteWorkflowPhysicalReadoutSchema.parse(reply.payload)
+      const readout = await readPhysicalReadout(reply.payload, async metadata => {
+        assertCurrent()
+        const next = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
+          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata }, signal ? { signal } : {})
+        assertCurrent()
+        if (next.bytes !== undefined) return unavailable('readout_binary')
+        return next.payload
+      }, signal)
       expiresAt=Math.min(expiresAt,Date.parse(readout.expiresAt))
       assertCurrent()
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
@@ -319,6 +329,11 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       }
       check()
       const current = await readReconciledDispatchIntent(sql, intent.operationId, true)
+      if (readout.launchIntent) {
+        const originalDispatch = (await sql.query<{ record: unknown }>(
+          'select record from execution_dispatch_intents where operation_id=$1 for share', [intent.operationId])).rows[0]
+        if (!originalDispatch || !same(originalDispatch.record, readout.launchIntent)) return unavailable('launch_dispatch')
+      }
       if (lifetime.review) await assertRemoteReviewerReceipt(sql, receipt)
       const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
       const rawNative = await readNativePlacement(sql, intent.executionId)

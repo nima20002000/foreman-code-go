@@ -1,22 +1,39 @@
-import { DEVICE_HISTORY_PAGE_BYTES, type DeviceHistoryPage } from '@graphql/contracts/device-application'
+import { DEVICE_HISTORY_PAGE_BYTES, type DeviceHistoryPage,
+  type DeviceJsonContinuationRequest } from '@graphql/contracts/device-application'
 import type { NativeHarnessEvent } from '@graphql/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
+import { pageJsonContinuation } from './jsonContinuation.js'
+
+const historySource = Symbol('original native history page')
+export function nativeHistoryPageSource(reply: unknown): NativeHistory | undefined {
+  if (!reply || typeof reply !== 'object') return undefined
+  return (reply as { [historySource]?: NativeHistory })[historySource]
+}
 
 /** No cursor returns a recent window; a cursor returns the next chronological page. */
-export function pageNativeHistory(history: NativeHistory, afterSequence?: number): {
+export function pageNativeHistory(history: NativeHistory, afterSequence?: number,
+  metadataRequest?: DeviceJsonContinuationRequest): {
   history: NativeHistory
   page: DeviceHistoryPage
+  [historySource]: NativeHistory
 } {
   const events: NativeHarnessEvent[] = []
   const nextSequence = history.nextSequence ?? (history.events.at(-1)?.sequence ?? -1) + 1
   const firstSequence = history.firstRetainedSequence ?? history.events[0]?.sequence ?? nextSequence
-  const value: NativeHistory = { ...history, events, firstRetainedSequence: firstSequence, nextSequence }
+  let value: NativeHistory = { ...history, events, firstRetainedSequence: firstSequence, nextSequence }
   let bytes = Buffer.byteLength(JSON.stringify(value))
   // Reserve space for the sequence and gap fields before adding any events.
   const limit = DEVICE_HISTORY_PAGE_BYTES - 256
-  if (bytes > limit) {
-    throw new HarnessExecutionError('NATIVE_HISTORY_TOO_LARGE', 'Native history metadata exceeds the remote page limit.')
+  let metadata: DeviceHistoryPage['metadata']
+  if (bytes > limit || metadataRequest) {
+    const { events: _events, firstRetainedSequence: _first, nextSequence: _next, gap: _gap, ...fields } = history
+    metadata = pageJsonContinuation(fields, metadataRequest)
+    value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
+      ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
+      ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }) }
+    bytes = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(JSON.stringify(metadata))
+    if (bytes > limit) throw new HarnessExecutionError('NATIVE_HISTORY_TOO_LARGE', 'Native history identifiers exceed the page limit.')
   }
   let cursor = afterSequence ?? nextSequence - 1
   if (afterSequence !== undefined && afterSequence + 1 < firstSequence) {
@@ -42,5 +59,9 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
     bytes += eventBytes
   }
   if (afterSequence === undefined) value.firstRetainedSequence = events[0]?.sequence ?? nextSequence
-  return { history: value, page: { nextAfterSequence: cursor, hasMore: cursor < nextSequence - 1 } }
+  const original: NativeHistory = { ...history, events,
+    firstRetainedSequence: value.firstRetainedSequence ?? firstSequence, nextSequence,
+    ...(value.gap === undefined ? {} : { gap: value.gap }) }
+  return { history: value, page: { nextAfterSequence: cursor, hasMore: cursor < nextSequence - 1,
+    ...(metadata ? { metadata } : {}) }, [historySource]: original }
 }

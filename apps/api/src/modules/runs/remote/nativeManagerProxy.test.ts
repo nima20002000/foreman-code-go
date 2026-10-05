@@ -54,7 +54,7 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
     if (method === 'start-turn') return status
     if (frame.method !== 'history') throw new Error('Unexpected request')
     cursors.push(frame.afterSequence)
-    const reply = { ...pageNativeHistory(read(), frame.afterSequence), status }
+    const reply = { ...pageNativeHistory(read(), frame.afterSequence, frame.metadata), status }
     changeReply?.(reply)
     expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
     return reply
@@ -175,5 +175,20 @@ describe('remote native history streaming', () => {
     expect(recovered.gap).toEqual({ fromSequence: 0, toSequence: 0, reason: 'event_too_large' })
     expect(recovered.terminalTurn).toEqual(history.terminalTurn)
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+  it('streams and reconciles terminal answers larger than a history page using the original result', async () => {
+    const history = terminal([event(0)])
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }
+    history.terminalResult = result
+    history.terminalTurn!.result = result
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    expect((await stream.next()).value).toEqual(event(0))
+    expect((await stream.next()).done).toBe(true)
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn).toEqual(history.terminalTurn)
+    expect((await f.proxy.history(session)).terminalResult).toEqual(result)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+    expect(f.request.mock.calls.filter(([, raw]) => 'metadata' in (raw as object)).length).toBeGreaterThan(1)
   })
 })

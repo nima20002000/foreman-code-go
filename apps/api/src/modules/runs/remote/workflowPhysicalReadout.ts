@@ -7,7 +7,10 @@ import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
-import { RemoteWorkflowPhysicalReadoutSchema,RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteWorkflowPhysicalReadoutSchema, RemoteWorkflowPhysicalReadoutTransferSchema,
+  RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { DEVICE_HISTORY_PAGE_BYTES, type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
+import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
@@ -19,6 +22,26 @@ import { RuntimeLeafAttestationSchema,assertRuntimeLeafPath } from './runtimeLea
 import type { NativeHistory } from '../../harnesses/port.js'
 
 const unavailable = (): never => { throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original installed native source and physical observations are unavailable.', 409) }
+export function pagePhysicalReadout(readout: RemoteWorkflowPhysicalReadout, metadata?: DeviceJsonContinuationRequest) {
+  if (!metadata && Buffer.byteLength(JSON.stringify(readout)) <= DEVICE_HISTORY_PAGE_BYTES) return readout
+  return { kind: 'json-continuation' as const, metadata: pageJsonContinuation(readout, metadata) }
+}
+export async function readPhysicalReadout(raw: unknown,
+  read: (metadata: DeviceJsonContinuationRequest) => Promise<unknown>, signal?: AbortSignal) {
+  const transfer = RemoteWorkflowPhysicalReadoutTransferSchema.parse(raw)
+  if (!('kind' in transfer)) return transfer
+  const value = await readJsonContinuation(transfer.metadata, async metadata => {
+    const next = RemoteWorkflowPhysicalReadoutTransferSchema.parse(await read(metadata))
+    if (!('kind' in next)) throw new Error('Physical readout continuation changed')
+    return next.metadata
+  }, signal)
+  return RemoteWorkflowPhysicalReadoutSchema.parse(value)
+}
+export function hasNativeClosure(observation: NativeLaunchObservation): boolean {
+  return observation.lifecycle === 'closed' && (observation.closureEvidence === 'cgroup_v2_empty'
+    || observation.closureEvidence === 'linux_boot_changed'
+    || observation.closureEvidence === 'native_exit_removed_cgroup')
+}
 function freezeTree<T>(value:T):T {
   if(value!==null&&typeof value==='object') {Object.freeze(value);for(const child of Object.values(value))freezeTree(child)}
   return value
@@ -195,7 +218,7 @@ export class InstalledWorkflowPhysicalReadouts {
     try { await retained.assertCurrent() } catch (error) { this.purge(input.intent.operationId); throw error }
     const observation = retained.observe()
     const closure = retained.closure()
-    if (closure && (observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty' || !isDeepStrictEqual(observation,closure))) return unavailable()
+    if (closure && (!hasNativeClosure(observation) || !isDeepStrictEqual(observation,closure))) return unavailable()
     if (!closure && observation.lifecycle !== 'active') return unavailable()
     if (retained.expiresAt <= Date.now()) return unavailable()
     return RemoteWorkflowPhysicalReadoutSchema.parse({ ...retained.readout,expiresAt:new Date(retained.expiresAt).toISOString(), observation,

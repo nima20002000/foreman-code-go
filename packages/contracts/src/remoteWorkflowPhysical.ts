@@ -2,13 +2,13 @@ import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema,
   ExecutionResultSchema, AgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
-import { PlacementDigestSchema } from './nodePlacement.js'
+import { PlacementDigestSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOperationReceiptSchema } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
 import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
-import { DeviceHistoryGapSchema } from './deviceApplication.js'
+import { DeviceHistoryGapSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -16,7 +16,7 @@ export const RemoteNativeLaunchObservationSchema = z.object({ owner: z.string().
   guardian: ProcessIdentitySchema, provider: ProcessIdentitySchema,
   boundary: z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/'), device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
   lifecycle: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
-  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty']).optional(),
+  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup']).optional(),
 }).strict()
 export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.string().min(1), attemptId: z.string().min(1),
   operationId: z.string().min(1), bindingHash: PlacementDigestSchema, canonicalRuntimeDirectory: z.string().startsWith('/'),
@@ -59,6 +59,7 @@ export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
 export type RemoteWorkflowPhysicalOutput = z.infer<typeof RemoteWorkflowPhysicalOutputSchema>
 
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,
+  launchIntent: DispatchIntentSchema.optional(),
   session: z.lazy(() => NativeSessionReferenceSchema), launch: RemoteNativeLaunchObservationSchema,
   observation: RemoteNativeLaunchObservationSchema, runtimeLeaf: RemoteRuntimeLeafAttestationSchema,
   source: z.object({ record: SourceMaterializationRecordSchema, workingTree: VerifiedSourceWorkingTreeSchema.extend({ cwdAttestation: SourceCwdAttestationSchema }) }).strict(),
@@ -67,6 +68,10 @@ export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal
   output: RemoteWorkflowPhysicalOutputSchema.optional(),
 }).strict()
 export type RemoteWorkflowPhysicalReadout = z.infer<typeof RemoteWorkflowPhysicalReadoutSchema>
+export const RemoteWorkflowPhysicalReadoutTransferSchema = z.union([
+  RemoteWorkflowPhysicalReadoutSchema,
+  z.object({ kind: z.literal('json-continuation'), metadata: DeviceJsonContinuationSchema }).strict(),
+])
 /** Cleanup acknowledgment, never evidence of native execution or success. */
 export const RemoteWorkflowPhysicalAckSchema=z.object({version:z.literal(1),operationId:z.string().min(1),
   receiptSequence:z.number().int().positive(),sourceDigest:PlacementDigestSchema,status:z.enum(['retired','not_retained']),

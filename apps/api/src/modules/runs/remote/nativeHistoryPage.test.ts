@@ -3,6 +3,7 @@ import { DEVICE_APPLICATION_JSON_BYTES, DEVICE_HISTORY_PAGE_BYTES } from '@graph
 import type { NativeHarnessEvent } from '@graphql/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
+import { readJsonContinuation } from './jsonContinuation.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -74,11 +75,21 @@ describe('byte-bounded native history pages', () => {
     expect(reply.history.terminalTurn?.result).toEqual(result)
   })
 
-  it('fails explicitly when non-event metadata itself cannot fit a page', () => {
-    expect(() => pageNativeHistory({ events: [], pendingInteractions: [],
-      terminalResult: { outcome: 'succeeded', output: { text: 'x'.repeat(DEVICE_HISTORY_PAGE_BYTES) } } }))
-      .toThrowError(expect.objectContaining({ result: { outcome: 'failed', error: expect.objectContaining({
-        code: 'NATIVE_HISTORY_TOO_LARGE',
-      }) } }))
+  it('recovers terminal metadata through bounded UTF-8 continuations with its original result', async () => {
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀"\\'.repeat(40_000) } }
+    const history: NativeHistory = { events: [event(0)], pendingInteractions: [], terminalResult: result,
+      terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result } }
+    const first = pageNativeHistory(history, -1)
+    expect(first.page.metadata).toBeDefined()
+    expect(first.history.terminalResult).toBeUndefined()
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(DEVICE_HISTORY_PAGE_BYTES)
+    const recovered = await readJsonContinuation(first.page.metadata!, async metadata => {
+      const next = pageNativeHistory(history, 0, metadata)
+      expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThan(DEVICE_HISTORY_PAGE_BYTES)
+      return next.page.metadata!
+    })
+    expect(recovered).toMatchObject({ terminalResult: result, terminalTurn: history.terminalTurn })
+    expect(() => pageNativeHistory({ ...history, terminalResult: { outcome: 'failed' } }, 0,
+      { digest: first.page.metadata!.digest, offset: 65_536 })).toThrow('continuation changed')
   })
 })

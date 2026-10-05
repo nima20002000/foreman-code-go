@@ -40,8 +40,22 @@ export interface DeviceApplicationFailure {
 
 /** Leaves room for the original receipt and physical readout in the same carrier. */
 export const DEVICE_HISTORY_PAGE_BYTES = 262_144
+export const DEVICE_JSON_CONTINUATION_BYTES = 65_536
+export const DEVICE_JSON_CONTINUATION_LIMIT = 4_194_304
+export const DeviceJsonContinuationRequestSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().safe().nonnegative(),
+}).strict()
+export type DeviceJsonContinuationRequest = z.infer<typeof DeviceJsonContinuationRequestSchema>
+export const DeviceJsonContinuationSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  byteSize: z.number().int().safe().positive().max(DEVICE_JSON_CONTINUATION_LIMIT),
+  offset: z.number().int().safe().nonnegative(),
+  data: z.string().min(1).max(Math.ceil(DEVICE_JSON_CONTINUATION_BYTES / 3) * 4),
+}).strict()
+export type DeviceJsonContinuation = z.infer<typeof DeviceJsonContinuationSchema>
 export const DeviceHistoryRequestFields = {
   afterSequence: z.number().int().safe().min(-1).optional(),
+  metadata: DeviceJsonContinuationRequestSchema.optional(),
 }
 export const DeviceHistoryGapSchema = z.object({
   fromSequence: z.number().int().safe().nonnegative(),
@@ -52,6 +66,7 @@ export type DeviceHistoryGap = z.infer<typeof DeviceHistoryGapSchema>
 export const DeviceHistoryPageSchema = z.object({
   nextAfterSequence: z.number().int().safe().min(-1),
   hasMore: z.boolean(),
+  metadata: DeviceJsonContinuationSchema.optional(),
 }).strict()
 export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
 
