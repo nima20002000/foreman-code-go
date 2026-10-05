@@ -4,6 +4,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
+import { identityAlive } from '../../src/modules/harnesses/recovery/linuxIdentity.js'
 import { ProductionHostHarnessProfileQualifier } from '../../src/modules/harnesses/productionProfileQualifier.js'
 import type { ProductionHarnessRegistry } from '../../src/modules/harnesses/productionRegistry.js'
 import { HarnessInstanceSettingsRepository } from '../../src/modules/harnesses/instanceSettings/repository.js'
@@ -68,12 +69,19 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       throw new Error('Main-local qualification does not request a worker.')
     }, f.runtimeRoot))
   const failures: unknown[] = []
-  const observations = new Map<string, { lifecycle: string; guardian: boolean; provider: boolean }>()
+  const observationStarted = performance.now()
+  const observations = new Map<string, {
+    lifecycle: string; firstSeenMs: number; guardianAlive: boolean; providerAlive: boolean
+  }>()
   const observer = setInterval(() => {
     try {
       for (const launch of processes.snapshot().launches) {
-        observations.set(`${launch.owner}:${launch.lifecycle}`, {
-          lifecycle: launch.lifecycle, guardian: !!launch.guardian, provider: !!launch.provider,
+        const key = `${launch.owner}:${launch.lifecycle}`
+        observations.set(key, {
+          lifecycle: launch.lifecycle,
+          firstSeenMs: observations.get(key)?.firstSeenMs ?? Math.round(performance.now() - observationStarted),
+          guardianAlive: !!launch.guardian && identityAlive(launch.guardian),
+          providerAlive: !!launch.provider && identityAlive(launch.provider),
         })
       }
     } catch (error) {

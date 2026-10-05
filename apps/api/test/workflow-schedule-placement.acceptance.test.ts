@@ -7,6 +7,9 @@ import { readAcceptedPlacement } from '../src/modules/placement/persistence.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
 import { sch11Fixture, sch11DomainState, type Sch11Database } from './helpers/sch11Fixture.js'
 import { schedulePlacementFixture } from './helpers/schedulePlacementFixture.js'
+import { join } from 'node:path'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { spawnOwnedStdioProcess } from '../src/modules/harnesses/process.js'
 
 describe('native scheduled placement recovery', () => {
   let database: Sch11Database
@@ -14,6 +17,33 @@ describe('native scheduled placement recovery', () => {
     database = await agent3Database(process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL)
   }, 60_000)
   afterAll(async () => { await database?.close() })
+
+  it('closes an owned diagnostic process after its direct child exits', async () => {
+    const registry = new NativeProcessRegistry(join(database.directory, 'diagnostic-processes'))
+    const recovery = registry.reserveLaunch('version-diagnostic')
+    const errors: Error[] = []
+    const diagnostic = spawnOwnedStdioProcess({
+      binary: process.execPath, args: ['-e', 'process.stdout.write("diagnostic complete\\n")'],
+      cwd: database.directory, environment: {}, recovery, onError: error => { errors.push(error) },
+    })
+    let output = ''
+    diagnostic.child.stdout.on('data', chunk => { output += String(chunk) })
+    diagnostic.child.stderr.resume()
+    diagnostic.child.stdin.end()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('The owned diagnostic did not close after exiting.')), 5_000)
+    })
+    try {
+      expect(await Promise.race([diagnostic.closed, deadline])).toEqual({ exitCode: 0, exitSignal: null })
+      expect(output).toBe('diagnostic complete\n')
+      expect(errors).toEqual([])
+    } finally {
+      clearTimeout(timer)
+      await diagnostic.close()
+    }
+    expect(await registry.closeOwner(recovery.owner)).toBe(true)
+  }, 15_000)
 
   it('admits a pending Once once after restart, inventory recovery and native qualification', async () => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
