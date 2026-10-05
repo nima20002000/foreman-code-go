@@ -18,6 +18,7 @@ const probe = createServer()
 probe.listen(0, '127.0.0.1')
 await once(probe, 'listening')
 const port = probe.address().port
+const origin = `http://127.0.0.1:${port}`
 await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()))
 
 const manifest = JSON.parse(await readFile(new URL('../apps/api/package.json', import.meta.url), 'utf8'))
@@ -32,6 +33,7 @@ const child = spawn(process.execPath, args, {
     NODE_OPTIONS: '',
     HOST: '127.0.0.1',
     PORT: String(port),
+    GRAPHQL_BROWSER_ORIGIN: origin,
     DATABASE_URL: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
       ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
     DATABASE_CONNECTION_TIMEOUT_MS: '250',
@@ -54,8 +56,8 @@ const exited = new Promise((resolve) => {
 })
 
 async function request(path, options = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-    ...options, credentials: 'omit', signal: AbortSignal.timeout(2000),
+  const response = await fetch(`${origin}${path}`, {
+    ...options, headers: { origin, ...options.headers }, credentials: 'omit', signal: AbortSignal.timeout(2000),
   })
   return { status: response.status, body: await response.json() }
 }
@@ -112,6 +114,9 @@ try {
       assert.equal((await request(`${workspacePath}/${suffix}`, {
         headers: { authorization: 'Bearer invalid' },
       })).status, 401)
+      assert.equal((await request(`${workspacePath}/${suffix}`, {
+        headers: { origin: 'http://127.0.0.1:9999' },
+      })).status, 403)
     }
     console.log('Unauthenticated local HTTP: root-location=200, root-policies=200; invalid bearer=401')
   } finally {
