@@ -174,14 +174,42 @@ async function checkedProfile(row) {
   if (row.hostKind === 'device') assert.equal(checked.value.target.hostRef.deviceId, row.nativeHost)
   return checked.proof
 }
+async function freshControls(row) {
+  assert.deepEqual(messages(await transcript(row)), [], 'Each native matrix row must start with a fresh chat.')
+  const before = await read(row)
+  const plan = await update(row, { kind: 'mode', mode: 'plan' })
+  assert.equal(plan.desiredMode, 'plan', 'Fresh bare Plan was not admitted.')
+  assert.deepEqual(messages(await transcript(row)), [], 'Fresh bare Plan submitted a model message.')
+  const desired = row.harness === 'claude' ? { ...before.desired, autoCompact: 'off' } : before.desired
+  const configured = await update(row, { kind: 'preferences', preferences: desired })
+  assert.deepEqual(configured.desired, desired, 'Fresh preference admission did not persist.')
+  assert.deepEqual(messages(await transcript(row)), [], 'Preference admission submitted a model message.')
+  const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: configured.revision }
+  const admitted = await request(endpoint(row, '/session-controls'), row, command)
+  assert.equal(admitted.compaction?.requestId, command.requestId, 'Fresh compact was not durably admitted.')
+  const compacted = await settled(row, command.requestId)
+  // An empty provider session may report nothing to compact or a native refusal.
+  // The populated-context checks below still require a successful manual boundary.
+  assert.ok(['completed', 'no-op', 'failed'].includes(compacted.compaction.status))
+  assert.equal(compacted.compaction.dispatchPhase, 'dispatched', 'Fresh compact never reached the native owner.')
+  assert.ok(compacted.nativeSessionId, 'Fresh control admission did not retain its native session.')
+  assert.deepEqual(messages(await transcript(row)), [], 'Fresh compact changed application message history.')
+  const regular = await update(row, { kind: 'mode', mode: 'regular' })
+  assert.equal(regular.desiredMode, 'regular')
+  assert.deepEqual(messages(await transcript(row)), [], 'Plan off submitted a model message.')
+  return { before, plan, configured, compacted, regular }
+}
 for (const row of matrix.rows) {
   assert.ok(row.nativeHost && row.nativeProfile && row.nativeCliVersion && row.model,
     'Record the measured native host, profile, CLI version and selected model.')
   const nativeProof = await checkedProfile(row)
+  const fresh = await freshControls(row)
   assert.ok(Array.isArray(row.compactionInputs) && row.compactionInputs.length, 'Supply native context-building messages.')
   const marker = randomUUID()
   const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base), row) : null
   const normal = await send(row, `Remember this session marker and repeat it exactly once: ${marker}`)
+  assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
+    'The first message replaced the native session admitted by fresh controls.')
   for (const content of row.compactionInputs) await send(row, content)
   const before = await idle(row)
   assert.ok(before.nativeSessionId, 'A normal text turn must establish a native session.')
@@ -324,6 +352,7 @@ for (const row of matrix.rows) {
   assert.deepEqual(finalNativeProof.target, nativeProof.target)
   assert.equal(finalNativeProof.configurationFingerprint, nativeProof.configurationFingerprint)
   evidence.rows.push({ harness: row.harness, role: row.role, host: row.nativeHost, profile: row.nativeProfile,
+    freshControls: fresh,
     model: row.model, nativeCliVersion: row.nativeCliVersion, normalRequestId: normal.input.requestId,
     nativeSessionId: after.nativeSessionId, compactRequestId: command.requestId, compactResult: compacted.compaction,
     hostKind: row.hostKind, nativeProof, finalNativeProof, beforeContext: before.context, afterContext: after.context, planTaskRequestId: task.input.requestId,
