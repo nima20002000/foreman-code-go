@@ -5,6 +5,7 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { DomainError } from '../src/modules/errors.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
@@ -82,6 +83,71 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       `select 1 from workflow_native_proofs where execution_id=$1
        and record#>>'{original,event,type}'='native.notification'`, [rejectedExecutionId])
     expect(proofs.rowCount).toBe(0)
+  }, 60_000)
+
+  it('releases a silent stream after publication failure and recovers without another native submission', async () => {
+    const f = await checkpointRuntimeFixture(1, 1, { approvalNodeIds: [] })
+    closes.push(f.close)
+    const reading = deferred()
+    const release = deferred()
+    const detached = deferred()
+    const original = f.provider.startTurn.bind(f.provider)
+    let failedSessionId: string | undefined
+    vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
+      try {
+        for await (const event of original(session, input)) {
+          yield event
+          const execution = await f.runs.getExecution(session.nativeSessionId.slice('native-'.length))
+          if (event.type !== 'turn.started' || execution?.workflowNodeId === f.f.version.entryNodeId) continue
+          failedSessionId = session.nativeSessionId
+          yield { ...event, sequence: 10, type: 'native.notification', payload: { text: 'partial' } }
+          reading.resolve()
+          await release.promise
+        }
+      } finally {
+        if (session.nativeSessionId === failedSessionId) detached.resolve()
+      }
+    })
+    const failure = new DomainError('NATIVE_BATCH_PUBLICATION_FAILED', 'Injected batch publication failure.', 503)
+    const append = f.runs.appendNativeEvents.bind(f.runs)
+    vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (frames, ...args) => {
+      if (frames.some((frame) => frame.event.type === 'native.notification')) throw failure
+      return append(frames, ...args)
+    })
+    const cancel = vi.spyOn(f.provider, 'cancel')
+    let observed: unknown
+    let settled = false
+    const task = f.engine.start(f.f.run.id).catch((error: unknown) => { observed = error })
+      .finally(() => { settled = true })
+    try {
+      await reading.promise
+      await expect.poll(() => settled, { timeout: 2_000 }).toBe(true)
+      await task
+      expect(observed).toMatchObject({ code: failure.code })
+      const lane = await f.repository.coordination.getLane('codex', failedSessionId!)
+      expect(lane?.leaseToken).toBeUndefined()
+      expect(lane?.currentTurnOrMessageId).toBe(`turn-${failedSessionId!.slice('native-'.length)}`)
+      expect((await f.runs.get(f.f.run.id))?.outcome).toBe('pending')
+      expect(cancel).not.toHaveBeenCalled()
+      expect(f.provider.closedSessions.has(failedSessionId!)).toBe(false)
+      expect(f.provider.counts).toMatchObject({ sessions: 2, starts: 2 })
+      release.resolve()
+      await detached.promise
+      await f.engine.reconcile()
+      await f.engine.start(f.f.run.id)
+      expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
+      expect(f.provider.counts).toMatchObject({ sessions: 2, starts: 2, attaches: 0 })
+      expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
+      await (await graphParity(f.db.pool, f.f.scope)).compare()
+      await f.engine.shutdown()
+      const restarted = f.compose()
+      await restarted.engine.reconcile()
+      expect((await restarted.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
+      expect(f.provider.counts).toMatchObject({ sessions: 2, starts: 2, attaches: 0 })
+    } finally {
+      release.resolve()
+      await task
+    }
   }, 60_000)
 
   it('drains parallel output in bounded publications while Start and reconcile retain one task', async () => {

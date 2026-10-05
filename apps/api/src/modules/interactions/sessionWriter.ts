@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { nativeEventBatches } from './nativeEventBatches.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
+import { componentLogger } from '../../infrastructure/logger.js'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
 
@@ -74,37 +75,63 @@ export class LeaseGuard {
 }
 
 /** Stop requesting events as soon as ownership expires, even if the iterator ignores abort. */
-export async function* ownedEvents(events: AsyncIterable<NativeHarnessEvent>, guard: LeaseGuard, signal: AbortSignal = guard.signal): AsyncIterable<NativeHarnessEvent> {
+export function ownedEvents(events: AsyncIterable<NativeHarnessEvent>, guard: LeaseGuard, signal: AbortSignal = guard.signal): AsyncIterable<NativeHarnessEvent> {
   const ownedSignal = signal === guard.signal ? signal : AbortSignal.any([guard.signal, signal])
-  const iterator = events[Symbol.asyncIterator]()
-  let count = 0
-  try {
-    while (true) {
-      // An immediately resolved iterator must not starve lease/Stop timers.
-      if (count > 0 && count % 256 === 0) {
-        try { await yieldToEventLoop(undefined, { signal: ownedSignal }) }
-        catch (error) { ownedSignal.throwIfAborted(); throw error }
+  return observeEvents(events, ownedSignal, guard)
+}
+
+function observeEvents(events: AsyncIterable<NativeHarnessEvent>, signal: AbortSignal,
+  guard?: LeaseGuard): AsyncIterable<NativeHarnessEvent> {
+  const observer = new AbortController()
+  const observedSignal = AbortSignal.any([signal, observer.signal])
+  const reader = read()
+  return {
+    [Symbol.asyncIterator]: () => ({
+      next: () => reader.next(),
+      return: () => {
+        // Async-generator return queues behind next; wake that read before joining cleanup.
+        observer.abort(new Error('Native event observation closed.'))
+        return reader.return()
+      },
+    }),
+  }
+
+  async function* read(): AsyncGenerator<NativeHarnessEvent, void> {
+    const iterator = events[Symbol.asyncIterator]()
+    let count = 0
+    try {
+      while (true) {
+        // An immediately resolved iterator must not starve lease/Stop timers.
+        if (count > 0 && count % 256 === 0) {
+          try {
+            await yieldToEventLoop(undefined, { signal: observedSignal })
+          } catch (error) {
+            observedSignal.throwIfAborted()
+            throw error
+          }
+        }
+        await guard?.check()
+        const next = await waitForSignal(Promise.resolve().then(() => {
+          observedSignal.throwIfAborted()
+          return iterator.next()
+        }), observedSignal)
+        await guard?.check()
+        observedSignal.throwIfAborted()
+        if (next.done) return
+        count += 1
+        yield next.value
       }
-      await guard.check()
-      let abort: (() => void) | undefined
-      const next = await Promise.race([
-        Promise.resolve().then(() => { ownedSignal.throwIfAborted(); return iterator.next() }),
-        new Promise<never>((_resolve, reject) => {
-          abort = () => reject(ownedSignal.reason)
-          ownedSignal.addEventListener('abort', abort, { once: true })
-          if (ownedSignal.aborted) abort()
-        }),
-      ]).finally(() => { if (abort) ownedSignal.removeEventListener('abort', abort) })
-      await guard.check()
-      ownedSignal.throwIfAborted()
-      if (next.done) return
-      count += 1
-      yield next.value
+    } finally {
+      const closed = Promise.resolve(iterator.return?.())
+      if (observedSignal.aborted) {
+        // Provider generators can ignore return while silent; their closure remains observed.
+        void closed.catch(() => {
+          componentLogger('harness').warn('Native event iterator cleanup failed after detachment.')
+        })
+      } else {
+        await closed
+      }
     }
-  } finally {
-    const closed = Promise.resolve(iterator.return?.())
-    if (ownedSignal.aborted) void closed.catch(() => undefined)
-    else await closed
   }
 }
 
@@ -362,7 +389,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           await lease.guard.check()
         },
       }, initialSignal)
-      for await (const batch of batches(events)) {
+      for await (const batch of batches(observeEvents(events, initialSignal))) {
         if (!lease || !evidence) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Provider output preceded observed session persistence.', 409)
         await lease.guard.check()
         for (const event of batch) evidence.observeEvent(event)
