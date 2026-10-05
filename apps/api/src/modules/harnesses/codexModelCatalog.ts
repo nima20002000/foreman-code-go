@@ -63,7 +63,7 @@ export async function readNativeCodexModelCatalog(
   }
   try { await transport.close() }
   catch (cleanup) {
-    if (failed) throw new AggregateError([failure, cleanup], 'Native model inspection and cleanup failed.')
+    if (failed) throw new AggregateError([failure, cleanup], 'Native model inspection and cleanup failed.', { cause: cleanup })
     throw cleanup
   }
   if (failed) throw failure

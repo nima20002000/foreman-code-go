@@ -225,7 +225,7 @@ export class CodexStdioTransport {
     } finally { clearTimeout(timer) }
     try { await this.owned.close() }
     catch (cleanup) {
-      if (failed) throw new AggregateError([failure, cleanup], 'Native model diagnostics and cleanup failed.')
+      if (failed) throw new AggregateError([failure, cleanup], 'Native model diagnostics and cleanup failed.', { cause: cleanup })
       throw cleanup
     }
     if (failed) throw failure
