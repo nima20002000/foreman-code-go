@@ -35,6 +35,9 @@ import {
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
 import { translateCodexInteraction, unsupportedCodexInteraction } from './codexInteractions.js'
+import { CodexChildControls } from './codexChildControls.js'
+import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { harnessProfile } from './qualification/profiles.js'
@@ -380,6 +383,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private readonly runtimes = new Map<string, Runtime>()
   private readonly locks = new Set<string>()
   private readonly creations = new Map<string, Creation>()
+  private readonly childControls = new CodexChildControls()
   private loginControl: { transport: CodexTransport; loginId?: string; timer?: NodeJS.Timeout } | undefined
   private loginStarting = false
   private disposal: Promise<void> | undefined
@@ -1190,6 +1194,32 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return { events, nextCursor: response.nextCursor ? encodeChildHistoryCursor({ ...page, children: childIds, cursor: response.nextCursor as string })
         : nextTarget ? encodeChildHistoryCursor({ root: page.root, target: nextTarget, children: childIds, cursor: null }) : null }
     })
+  }
+
+  subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
+    const runtime = [...this.runtimes.values()].find((candidate) => {
+      const input = candidate.input
+      return input.kind !== 'operator' && input.request.executionId === child.parentExecutionId
+        && input.request.runId === child.runId && input.request.workspaceId === child.workspaceId
+        && input.request.configuration.agentId === child.parentAgentId
+    })
+    if (!runtime || runtime.closed || runtime.disposed || runtime.transport.isConnected?.() !== true) return undefined
+    const transport = runtime.transport
+    const generation = runtime.generation
+    return this.childControls.lease(child, {
+      rootThreadId: runtime.session.nativeSessionId,
+      generation: `${runtime.connectionId}:${generation}`,
+      qualified: runtime.qualified,
+      transport,
+      assertCurrent: () => {
+        this.shutdownController.signal.throwIfAborted()
+        if (this.runtimes.get(runtime.session.nativeSessionId) !== runtime || runtime.closed || runtime.disposed
+          || runtime.transport !== transport || runtime.generation !== generation || transport.isConnected?.() !== true) {
+          throw new HarnessExecutionError('SUBAGENT_OWNER_STALE', 'The admitted child control owner changed.')
+        }
+      },
+      exclusive: (work) => this.exclusive(runtime.session.nativeSessionId, work),
+    }, assertOwner)
   }
 
   async reconcileResponse(
