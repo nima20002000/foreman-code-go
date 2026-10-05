@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { channel } from 'node:diagnostics_channel'
-import { componentLogger, type LogComponent } from './logger.js'
+import type { LogComponent } from './logComponent.js'
 
 export interface RuntimeTimingFields {
   runId?: string
@@ -27,12 +27,11 @@ export interface RuntimeTimingRecord extends RuntimeTimingFields {
 
 export const runtimeTimingChannel = channel('foreman-code.runtime-timing')
 const scope = new AsyncLocalStorage<RuntimeTimingFields>()
-const log = componentLogger('engine')
 const noop = () => undefined
 
 /** Passive diagnostics carry identifiers and durations, never model content or SQL. */
 export function beginRuntimeTiming(component: LogComponent, phase: string, fields: RuntimeTimingFields = {}) {
-  if (!runtimeTimingChannel.hasSubscribers && !log.isLevelEnabled('debug')) return noop
+  if (!runtimeTimingChannel.hasSubscribers) return noop
   const identity = { ...scope.getStore(), ...fields }
   const started = performance.now()
   const startedAt = new Date().toISOString()
@@ -43,7 +42,6 @@ export function beginRuntimeTiming(component: LogComponent, phase: string, field
     const record: RuntimeTimingRecord = { ...identity, component, phase, startedAt,
       finishedAt: new Date().toISOString(), durationMs: performance.now() - started }
     if (runtimeTimingChannel.hasSubscribers) runtimeTimingChannel.publish(record)
-    log.debug({ diagnostic: 'runtime-timing', ...record }, 'workflow runtime timing')
   }
 }
 

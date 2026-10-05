@@ -1,9 +1,9 @@
 import { readdir, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
+import { runtimeTimingChannel, type RuntimeTimingRecord } from './runtimeTiming.js'
+import type { LogComponent } from './logComponent.js'
+export type { LogComponent } from './logComponent.js'
 import pino, { type Level, type Logger, type LevelWithSilent } from 'pino'
-
-/** Components that own a child logger. Keep this list short and stable: it is the `component` field operators filter on. */
-export type LogComponent = 'lifecycle' | 'http' | 'engine' | 'harness' | 'db' | 'devices' | 'jobs' | 'byte-transfer'
 
 // Secrets and model content never reach a log line, wherever they sit in a logged object.
 const REDACTED_KEYS = ['authorization', 'cookie', 'set-cookie', 'token', 'accessToken', 'refreshToken', 'apiKey', 'api_key',
@@ -47,6 +47,12 @@ export const logger: Logger = pino({
 }, streams)
 
 export const componentLogger = (component: LogComponent): Logger => logger.child({ component })
+
+if (logger.isLevelEnabled('debug')) {
+  runtimeTimingChannel.subscribe((message) => {
+    logger.debug({ diagnostic: 'runtime-timing', ...(message as RuntimeTimingRecord) }, 'workflow runtime timing')
+  })
+}
 
 /** Where file logs go, or undefined when only stdout is wanted. LOG_FILE wins over LOG_DIR. */
 export function logFilePath(env: NodeJS.ProcessEnv): string | undefined {
