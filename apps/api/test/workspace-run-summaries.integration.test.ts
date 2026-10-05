@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
+import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'

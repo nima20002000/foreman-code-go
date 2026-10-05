@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { currentWorkflowWriterMigration } from '../src/infrastructure/currentWorkflowWriterMigration.js'

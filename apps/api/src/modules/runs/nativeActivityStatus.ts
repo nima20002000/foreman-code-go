@@ -1,4 +1,4 @@
-import type { ActivityItem } from '@graphql/contracts'
+import type { ActivityItem } from '@foreman-code/contracts'
 
 export function nativeActivityStatus(value: string | null | undefined):
   Extract<ActivityItem, { kind: 'tool' }>['status'] | undefined {

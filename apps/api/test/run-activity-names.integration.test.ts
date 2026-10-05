@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import {
   CurrentWorkflowSaveResultSchema, RunActivitiesPageSchema, WorkflowDefinitionV3Schema, workflowNodeNames,
-} from '@graphql/contracts/wave25'
-import { RunBoardSnapshotGetResultSchema } from '@graphql/contracts/run-snapshots'
+} from '@foreman-code/contracts/wave25'
+import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'

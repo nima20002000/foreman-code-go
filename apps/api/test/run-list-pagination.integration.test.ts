@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
 type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>

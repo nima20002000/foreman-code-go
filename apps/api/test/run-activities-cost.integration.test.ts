@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, RunActivitiesPageSchema,
-  RUN_ACTIVITIES_PAGE_BYTES } from '@graphql/contracts/wave25'
+  RUN_ACTIVITIES_PAGE_BYTES } from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { buildApp } from '../src/app.js'
 import { RunActivitiesService } from '../src/modules/runs/activities.js'
