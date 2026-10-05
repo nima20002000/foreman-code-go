@@ -5,7 +5,7 @@ import { nonempty, object, requireCondition } from './checks.js'
 type NativeRequest = (path: string, body?: Record<string, unknown>) => Promise<unknown>
 
 /** Real native storage round trips qualify idle child input without application credentials. */
-export async function qualifyOpenCodeSubagentInput(request: NativeRequest, parentSessionId: string, selectedModel?: string) {
+export async function qualifyOpenCodeSubagentInput(request: NativeRequest, parentSessionId: string, selectedModel?: string | null) {
   const parentBefore = object(await request(`/session/${parentSessionId}`))
   const child = object(await request('/session', { parentID: parentSessionId, title: 'Child input qualification',
     permission: [{ permission: '*', pattern: '*', action: 'deny' }] }))
