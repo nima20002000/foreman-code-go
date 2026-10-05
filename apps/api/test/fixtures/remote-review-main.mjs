@@ -21,11 +21,13 @@ let reconciliationFailure
 process.on('message', async message => {
   if (message?.kind !== 'reconcile' || closing) return
   try {
-    await production.reconcile(error => { throw error })
+    await production.reconcile(error => { reconciliationFailure = error })
+    if (reconciliationFailure) throw reconciliationFailure
     process.send?.({ kind: 'reconciled', requestId: message.requestId })
   } catch (error) {
     reconciliationFailure = error
-    process.send?.({ kind: 'reconcile-failed', requestId: message.requestId, message: error.message })
+    process.send?.({ kind: 'reconcile-failed', requestId: message.requestId,
+      message: error.message, code: error.code })
   }
 })
 async function close() {

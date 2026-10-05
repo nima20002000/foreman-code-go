@@ -406,12 +406,21 @@ export async function remoteReviewProduction() {
         if (error) reject(error)
         else resolve()
       }
-      const exited = () => finish(new Error('Production Main exited during reconciliation.'))
+      const exited = () => {
+        const code = /\bcode: ['"]([A-Z][A-Z0-9_]{1,127})['"]/.exec(mainFailure)?.[1]
+        const detail = code ? ` (${code})` : ''
+        finish(new Error(`Production Main exited during reconciliation${detail}.`))
+      }
       const settled = (message: unknown) => {
         if (!message || typeof message !== 'object' || !('requestId' in message)
           || message.requestId !== requestId || !('kind' in message)) return
         if (message.kind === 'reconciled') finish()
-        else finish(new Error('message' in message ? String(message.message) : 'Main reconciliation failed.'))
+        else {
+          const code = 'code' in message && typeof message.code === 'string'
+            && /^[A-Z][A-Z0-9_]{1,127}$/.test(message.code) ? message.code : undefined
+          const detail = 'message' in message ? String(message.message) : 'Main reconciliation failed.'
+          finish(new Error(code ? `${code}: ${detail}` : detail))
+        }
       }
       const timer = setTimeout(() => finish(new Error('Production Main reconciliation timed out.')), 30_000)
       child.on('message', settled)
