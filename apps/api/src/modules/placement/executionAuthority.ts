@@ -6,7 +6,7 @@ import { readPlacement } from './binding.js'
 import { readExecutionPlacement, readNativePlacement } from './persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
-import { withExclusiveGraphConnection, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import { withExclusiveGraphConnection, beforeGraphCommit } from '../run-graph/connection.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 export interface ExecutionRunAuthorityPort {
   revalidateRunAuthorization(principalId: string, workspaceId: string, workflowId: string, client: GraphSqlClient, atCommit: boolean): Promise<void>
@@ -21,7 +21,7 @@ import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-executio
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Read-only admission fence. This NEVER issues an entry capability, command,
  * new grant, allocation or lease; main and worker entry guards remain mandatory. */
-export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
+export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   locations: ExecutionRunAuthorityPort,
   raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer): Promise<void> {
   const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
@@ -101,7 +101,14 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         if (!placement || !native || placement.payload.kind !== 'agent') denied()
         const configuration = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and agent_id=$2',
           [placement!.payload.kind === 'agent' ? placement!.payload.agentConfigurationVersionId : '', placement!.payload.kind === 'agent' ? placement!.payload.agentId : ''])).rows[0]?.record
-        const harness = await producer.harnessFacts(sql, placement!)
+        const origin = (await sql.query<{ connection: unknown }>(
+          'select connection from remote_dispatch_origins where operation_id=$1 for share',
+          [input.intent.operationId])).rows[0]
+        const originalConnection = DeviceConnectionIdentitySchema.parse(origin?.connection)
+        const reconnected = originalConnection.bootId === context.binding.bootId
+          && originalConnection.connectionGeneration !== context.binding.connectionGeneration
+        // verify() has qualified the original native receipt before allowing this generation to read its facts.
+        const harness = await producer.harnessFacts(sql, placement!, reconnected ? { purpose: 'resident' } : undefined)
         return { payload: ExecutionFactsResultSchema.parse({ version: 1, intent: input.intent, placement, executionPlacement: native, configuration, harness }) }
       }
       const policy = input.action === 'retain-reviewer' || input.action === 'review'

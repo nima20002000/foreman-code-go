@@ -34,7 +34,7 @@ import { RunPlacementReadService } from './modules/placement/readService.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
-import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
+import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
 import { MainWorkerMcpRelay, selectedMainMcpForward } from './modules/placement/workerMcpRelay.js'
 import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
@@ -702,8 +702,22 @@ export function buildProductionApp(
     async assertCurrent(binding, signal) {
       signal?.throwIfAborted()
       const sql = interactionConnection.getStore() ?? database.pool
+      if (!agentPlacement) {
+        throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
+      }
+      if (binding.placement.hostRef.kind === 'device') {
+        const authenticated = deviceRuntime.endpointForDomains().currentBinding(binding.placement.hostRef.deviceId)
+        if (!authenticated) {
+          throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The authenticated execution connection is unavailable.', 503)
+        }
+        await assertRemoteExecutionAuthority(sql, locations, {
+          version: 1, intent: binding.intent, placement: binding.placement, action: 'read',
+        }, authenticated, agentPlacement)
+        signal?.throwIfAborted()
+        return
+      }
       const row = (await sql.query<{ principal_id: string; workspace_id: string }>("select record->>'authorizationPrincipalId' as principal_id,workspace_id from runs where id=$1", [binding.intent.runId])).rows[0]
-      if (!row || !agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
+      if (!row) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
       await agentPlacement.assertPinsCurrent(sql, binding.placement, await readLiveManagementPrincipal(sql, row.principal_id), row.workspace_id)
       signal?.throwIfAborted()
     },

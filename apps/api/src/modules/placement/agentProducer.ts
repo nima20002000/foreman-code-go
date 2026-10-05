@@ -120,8 +120,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         } }) }
     }))
   }
-  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement) {
-    return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
+  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement, options?: { purpose: 'resident' }) {
+    return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
   }
   async assertPinsCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
     principal: ManagementPrincipal, workspaceId: string, options?: { purpose: 'resident' }): Promise<void> {
