@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { CurrentWorkflowSaveResultSchema, makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -26,7 +26,12 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
           [id, fixture.writer.principal.id])
         fixture.writer.principal.id = id
       }
-      const candidate = await fixture.create()
+      vi.mocked(fixture.locations.revalidateSnapshot).mockRestore()
+      const location = await fixture.locations.set(fixture.writer.principal, 'http', {
+        workspaceId: fixture.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
+        runnerId: fixture.locations.runnerId, rootPath: fixture.db.directory,
+      })
+      const candidate = { ...await fixture.create(), expectedLocationRevision: location.value.locationRevision }
       const save = await fetch(new URL(
         `/api/management/workspaces/${candidate.workspaceId}/workflows/${candidate.workflowId}/definition`,
         fixture.address), { method: 'PUT',
@@ -44,7 +49,7 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
         commandId: randomUUID(),
         expectedWorkflowRevision: saved.revision,
         expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-        expectedLocationRevision: 1,
+        expectedLocationRevision: location.value.locationRevision,
         input: { user: 'Original Start journal' },
       })
       const path = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/runs`
@@ -54,7 +59,7 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
       const response = await fetch(new URL(path, fixture.address), { method: 'POST',
         headers: { authorization: `Bearer ${fixture.writer.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(input) })
-      expect(response.status).toBe(202)
+      expect(response.status, response.status === 202 ? undefined : await response.text()).toBe(202)
       await response.body?.cancel()
       const readReceipt = async () => (await fixture.db.pool.query<{ result: { id: string } }>(
         "select result from management_command_receipts where principal_id=$1 and operation='run.start' and command_id=$2",
@@ -74,6 +79,7 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
       expect(await new PostgresLocalHumanAccess(fixture.db.pool, fixture.access).current())
         .toEqual(fixture.writer.principal)
       const runtime = fixture.compose()
+      vi.mocked(runtime.locations.revalidateSnapshot).mockRestore()
       const access = new PostgresAccessService(fixture.db.pool)
       const commands = new PostgresCommandCoordinator(fixture.db.pool)
       const binding = createCurrentNativeProductionFactory({ isRuntimeOpen: () => true,
