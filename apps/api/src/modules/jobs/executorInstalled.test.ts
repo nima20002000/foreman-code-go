@@ -70,7 +70,8 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
   const measurement = metadata.profile.measurement!
   const fingerprint = metadata.fingerprint
   const admission = JobRuntimeNativeAdmissionSchema.parse({ schemaVersion: 1, kind: 'job-runtime-qualification',
-    approvalId: measurement.approvalId, qualificationId: measurement.qualificationId, operationId: randomUUID(),
+    approvalId: measurement.approvalId, qualificationId: measurement.qualificationId,
+    operationId: measurement.qualificationId,
     workspaceId: execution.workspaceId, profileId: metadata.profile.id, profileRevision: metadata.profile.revision,
     fingerprintDigest: jobDigest(fingerprint), leaseId: randomUUID(), runCommandId: 'qualify', runPrincipalId: 'runner',
     approvedByPrincipalId: 'owner', hostRef: fingerprint.hostRef, registration: fingerprint.registration,
