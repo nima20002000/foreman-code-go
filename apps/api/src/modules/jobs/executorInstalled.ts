@@ -34,6 +34,10 @@ export type InstalledJobExecutionHostInput = Omit<RemoteJobExecutionHostPorts, '
  * The caller opens the ORIGINAL journal without initializeNewInstallation.
  */
 export function createInstalledJobExecutionHost(input: InstalledJobExecutionHostInput): RemoteJobExecutionHost {
+  return new RemoteJobExecutionHost(createInstalledJobExecutionPorts(input))
+}
+
+export function createInstalledJobExecutionPorts(input: InstalledJobExecutionHostInput): RemoteJobExecutionHostPorts {
   const admissions = new Map<string, { execution: JobExecutionRecord; filesystem: { device: string; mountId: string } }>()
   const supervisors = new Map<string, Promise<PodmanJobSupervisor<JobExecutionRecord>>>()
   const supervisor = (execution: JobExecutionRecord) => {
@@ -50,7 +54,7 @@ export function createInstalledJobExecutionHost(input: InstalledJobExecutionHost
   const systemInput = createVerificationSystemInput({ configuration: input.configuration,
     journal: async () => input.journal })
   const contexts = new Map<string, NonNullable<Awaited<ReturnType<typeof systemInput>>>>()
-  return new RemoteJobExecutionHost({ ...input, supervisor,
+  return { ...input, supervisor,
     async verification(execution) {
       const qualification = await input.journal.qualifiedJobRuntime(execution)
       const result = qualification.result
@@ -123,7 +127,7 @@ export function createInstalledJobExecutionHost(input: InstalledJobExecutionHost
       await assertCurrent()
     }
     return source
-  } } })
+  } } }
 }
 
 async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: JobExecutionRecord, admitted: (filesystem: { device: string; mountId: string }) => void): Promise<PodmanJobSupervisor<JobExecutionRecord>> {
