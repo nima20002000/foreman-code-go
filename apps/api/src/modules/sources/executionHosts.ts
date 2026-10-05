@@ -63,8 +63,8 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
       if (!this.remote.reconcilePreparation) throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'The original worker does not support preparation reconciliation.', 409)
       return this.remote.reconcilePreparation(reconciliationId, owner)
     }
-    if (!this.localPreparation || owner.preparationKind !== 'workflow') {
-      throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Original Main workflow cleanup authority is unavailable.', 409)
+    if (!this.localPreparation) {
+      throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Original Main cleanup authority is unavailable.', 409)
     }
     return reconcileSourcePreparation(reconciliationId, owner,
       () => this.localPreparation!.closed(owner),

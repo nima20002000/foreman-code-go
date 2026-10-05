@@ -26,6 +26,8 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourcePreparationReconciliation } from './preparationReconciliation.js'
 import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
 import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
@@ -51,6 +53,10 @@ interface SourceLifecycle {
 
 export class PostgresSourceService implements SourceAdmissionPort {
   readonly reservations = new PostgresSourceReservations()
+  closeQueuedPreparation(ticket: JobQueueTicket): Promise<void> {
+    return new QueuedSourcePreparationCleanup(this.pool, this.executions,
+      this.lifecycle.preparationClosed).close(ticket)
+  }
   preparationGet(principal: ManagementPrincipal, source: Transport, input: unknown) {
     return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions).get(principal, source, input)
   }

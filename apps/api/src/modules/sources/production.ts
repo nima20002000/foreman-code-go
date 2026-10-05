@@ -40,6 +40,7 @@ import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
+import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
 import { localWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
 import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
 
@@ -183,7 +184,16 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   } }
   const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
   const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession, {
-    closed: owner => localWorkflowPreparationClosed(input.pool, owner),
+    async closed(owner) {
+      if (owner.preparationKind === 'workflow') return localWorkflowPreparationClosed(input.pool, owner)
+      const row = (await input.pool.query<{ queue_ticket_id: string | null }>(
+        'select queue_ticket_id from source_preparation_reconciliations where operation_id=$1',
+        [owner.identity.operationId])).rows[0]
+      if (!row?.queue_ticket_id) return false
+      const ticket = await requireQueuedPreparationClosed(input.pool, row.queue_ticket_id)
+      return ticket.operationId === owner.identity.operationId && ticket.executionId === owner.attempt.executionId
+        && ticket.attemptId === owner.attempt.attemptId
+    },
     async authorize(reconciliationId, owner) {
       const sql = await input.pool.connect()
       try {

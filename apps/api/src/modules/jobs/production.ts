@@ -270,6 +270,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     artifacts,
     cancellationRecovery: new PostgresJobCancellationRecovery(input.pool, input.commands, dispatch),
     refreshRuntimeMetadata: () => metadataRecovery.request(),
+    closePreparation: ticket => source.sources.closeQueuedPreparation(ticket),
     ...(queue ? { queue } : {}),
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })

@@ -29,6 +29,17 @@ import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJour
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { jobSpec } from './helpers/jobFixture.js'
+import { buildQueueFixture } from './helpers/buildComputerFixture.js'
+import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
+import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
+import { JobDefinitionSchema, JobExecutionSchema } from '@graphql/contracts/jobs'
+import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
+import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
+import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
+import { RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
+import { releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
+import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
+import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 
 /** Actual SQL/HTTP/MCP, protected local filesystem and worker source service.
  * The paired W07 carrier is an in-memory boundary; no laptop/container proof. */
@@ -39,6 +50,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   const workspaceId = `source-reconcile-${randomUUID()}`, clients: Client[] = [], commandsToReconcile: string[] = []
   let root: ReturnType<typeof SourceRootRecordSchema.parse>, definitionId: string, worker: SourceOperationWorkerService, binding: DeviceSessionBinding
   let pause: { entered(): void; released: Promise<void> } | null = null
+  let closureDispatch: PostgresJobDispatch | undefined
+  let failSourceSettlement = false
+  let allowPreparationClosure = true
+  const queueServices: JobService[] = []
+  const dispatches: PostgresJobDispatch[] = []
   beforeAll(async () => {
     database = await agent3Database(); directory = await mkdtemp('/tmp/jobprep-reconcile-sql-')
     const runtime = join(directory, 'runtime'), project = join(directory, 'project'), policyId = randomUUID()
@@ -79,20 +95,39 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     journal = await RemoteOperationJournal.open(join(directory, 'job-journal.json'), { initializeNewInstallation: true })
     const unused = async (): Promise<never> => { throw new Error('No native execution or transfer in this fixture') }
     const attempts = { authorize: async () => {}, authorizeFinal: async () => {}, revalidate: async () => {}, revalidateMaterialization: async () => {} }
-    const owners = new PostgresSourceOperationAuthority(database.pool, attempts, async () => false)
+    const confirmedClosed = async (record: SourceMaterializationRecord) => {
+      if (!closureDispatch) return false
+      const row = (await database.pool.query<{ record: unknown }>(
+        'select record from job_executions where id=$1', [record.receipt.executionId])).rows[0]
+      if (!row) return false
+      const execution = JobExecutionSchema.parse(row.record)
+      return Boolean(await closureDispatch.readAcceptedClosureReceipt(database.pool, {
+        workspaceId, executionId: execution.id, attemptId: execution.attemptId,
+        operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner,
+      }))
+    }
+    const owners = new PostgresSourceOperationAuthority(database.pool, attempts, (_sql, record) => confirmedClosed(record))
     worker = new SourceOperationWorkerService({authenticate:async context=>{expect(context.binding).toEqual(binding)},approvedRoots:async()=>approved,
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
       transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
-      preparationNativeClosed:async operationId=>(await journal.jobNativeOwner(operationId))===null})
+      preparationNativeClosed:async operationId=>allowPreparationClosure && (await journal.jobNativeOwner(operationId))===null})
     const remote = new CarrierRemoteSourceMaterializationHost({capture:()=>({identity:DeviceConnectionIdentitySchema.parse({mainId,deviceId:binding.deviceId,
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
       request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{send:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
     const materializer = new PrivateSourceMaterializer({read:async()=>bytes},async()=>{})
     sources = new PostgresSourceService(database.pool,commands,{} as never,new PrivateSourceSnapshotStore(join(directory,'snapshots')),mainId,{} as never,
-      {authorize:async()=>{},authorizeFinal:async()=>{},prepare:(manifest,root,attempt)=>materializer.prepare({manifest,binding:root.binding,attempt}),verify:unused,verifyWorkingDirectory:unused,releaseClaim:unused,
-        reconcilePreparation:(id,owner)=>remote.reconcilePreparation(id,owner)}, {confirmedClosed:async()=>false})
+      {authorize:async()=>{},authorizeFinal:async()=>{},prepare:(manifest,root,attempt)=>materializer.prepare({manifest,binding:root.binding,attempt}),verify:unused,verifyWorkingDirectory:unused,
+        releaseClaim: async record => {
+          await releaseMaterializationClaim(record.receipt, async () => 'released')
+          return measureRetainedSourceDirectory(record.receipt.binding.canonicalPath,
+            record.receipt.materializationId, record.receipt.binding.filesystem)
+        }, reconcilePreparation:(id,owner)=>remote.reconcilePreparation(id,owner)}, {confirmedClosed}, {
+        closed: async () => {
+          if (failSourceSettlement) throw new Error('Interrupted after process and publication commit')
+        },
+      })
     const spec = jobSpec(); spec.source={...root.source,commit:manifest.git!.commit}
     spec.target={...spec.target,mainId,mainInstallationId:mainId,hostRef:root.selection.hostRef,registration:root.registration,
       destination:{...spec.target.destination,canonicalProjectRoot:namespace,canonicalCwd:namespace,managedRuntimeRoot:runtime,rootPolicyId:policyId,attestationId:root.attestationId,attestationHash:root.attestationDigest}}
@@ -116,7 +151,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const result=await start(commandId);expect(result.statusCode).toBeGreaterThanOrEqual(400)
     }
   },60000)
-  afterAll(async()=>{await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await journal?.close();await database?.close();if(directory)await rm(directory,{recursive:true,force:true})})
+  afterAll(async()=>{
+    await Promise.allSettled(queueServices.map(service => service.closeQueue()))
+    await Promise.allSettled(dispatches.map(dispatch => dispatch.close()))
+    await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await journal?.close();await database?.close();if(directory)await rm(directory,{recursive:true,force:true})
+  })
   const sourceUrl=()=>`/api/management/workspaces/${workspaceId}/source-preparations`
   const start=(commandId:string)=>app.inject({method:'POST',url:`/api/management/workspaces/${workspaceId}/jobs/executions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId,definitionId,expectedRevision:1}})
   async function client(token:string) {const value=new Client({name:'source-reconciliation-fixture',version:'1'});clients.push(value);await value.connect(new StreamableHTTPClientTransport(new URL('/mcp',address),{requestInit:{headers:{authorization:`Bearer ${token}`}}}));return value}
@@ -178,4 +217,175 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       expect(closed.statusCode,JSON.stringify(closed.json())).toBe(200);expect(closed.json().value.reservationState).toBe('retained')
     } finally {release();pause=null;await pending}
   },60000)
+
+  async function queuedFixture() {
+    const authority = await access.issue({ name: 'Queued source writer', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
+        'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'jobs:cancel',
+        'settings:read', 'settings:update'], scope: {} }] })
+    const f = await buildQueueFixture(database.pool, authority.principal, { workspaceId })
+    queueServices.push(f.jobs)
+    const saved = JobDefinitionSchema.parse((await database.pool.query<{ record: unknown }>(
+      'select record from job_definitions where id=$1', [definitionId])).rows[0]!.record)
+    const spec = jobSpec()
+    Object.assign(spec, saved.spec)
+    const computer = f.computers[0]!
+    const candidate = { ...computer.candidate, spec, ready: true, reasons: [],
+      profile: { ...computer.candidate.profile, root }, sourceReservation: {
+        scopeId: `${binding.mainId}:${binding.deviceId}:${binding.workerInstallationId}:${root.binding.filesystem.device}:${root.binding.filesystem.mountId}`,
+        reservedBytes: 2097152,
+      } }
+    const target = buildComputerTarget(spec.target)
+    const preference = await f.settings.read(authority.principal, { target })
+    await f.settings.update(authority.principal, 'http', { commandId: randomUUID(), target,
+      expectedRevision: preference.preference.revision, buildEnabled: true, buildPriority: 100 })
+    const executionPolicy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
+    const placement = new JobComputerSelection(f.settings, { candidates: async () => [candidate] }, executionPolicy)
+    let afterMaterialization: (() => Promise<void>) | undefined
+    const delivered: string[] = []
+    function create() {
+      const dispatch = new PostgresJobDispatch(database.pool, {
+        async deliver(intent, execution) {
+          delivered.push(execution.id)
+          const finishedAt = new Date().toISOString()
+          const terminal = { finishedAt, closureEvidenceDigest: '7'.repeat(64), outcome: 'preparation_failed',
+            exitCode: null, signal: null, processStopped: true, resultDigest: '8'.repeat(64),
+            logGapPossible: false, logsTruncated: false, outputCollectionError: false, artifactDigests: [] }
+          return { status: 'known', receipt: RemoteJobOperationReceiptSchema.parse({
+            schemaVersion: 1, kind: 'job', intent, execution: { ...execution,
+              process: { phase: 'terminal', outcome: 'preparation_failed', exitCode: null, signal: null,
+                processStopped: true }, publication: 'complete', finishedAt },
+            connection: binding, workerIncarnationId: randomUUID(), sequence: 1,
+            observedAt: finishedAt, phase: 'confirmed_terminal', entryAttempted: false, stopFence: false,
+            controls: [], terminal, publication: 'complete',
+          }) }
+        },
+        async reconcile() { throw new Error('Settled recovery must use the retained closure') },
+        async control() { throw new Error('Claimed cancellation must not reach execution control') },
+      }, {
+        revalidate: async () => {}, authorizeControl: async () => {},
+        observe: (sql, execution, receipt) => projectJobReceiptLocked(sql, execution, receipt,
+          { verifyRequiredOutputs: async () => {} }),
+        settleSource: async id => {
+          const row = (await database.pool.query<{ record: SourceMaterializationRecord }>(
+            'select record from source_execution_materializations where execution_id=$1', [id])).rows[0]!
+          await sources.confirmClosed(row.record)
+          await releaseClosedJobComputers(database.pool)
+        },
+      }, executionPolicy)
+      dispatches.push(dispatch)
+      closureDispatch = dispatch
+      const jobs = new JobService(database.pool, f.commands, { placement, queue: f.queue,
+        workerExecution: executionPolicy, dispatch,
+        closePreparation: ticket => sources.closeQueuedPreparation(ticket),
+        preparation: {
+          choices: async () => ({ targets: [], sources: [], policies: [] }),
+          validate: async () => ({ valid: true, reasons: [], sideEffects: false }),
+          revalidateAccepted: async () => {},
+          async adoptFinalBinding(sql, principal, execution) {
+            const row = (await sql.query<{ record: SourceMaterializationRecord }>(
+              'select record from source_execution_materializations where execution_id=$1', [execution.id])).rows[0]!
+            await sources.adoptFinalBinding(sql, principal, row.record, execution.acceptedSpec.bindingHash)
+          },
+          async accept(_sql, principal, _workspace, resolved, identity) {
+            const attempt = { executionId: identity.executionId, attemptId: identity.attemptId,
+              placementHash: '', keyRevision: 1, authorizationRevision: 1 }
+            attempt.placementHash = sourceBindingHash(root, attempt, identity.operationId)
+            const record = await sources.prepareExecution({ principal, workspaceId, rootId: root.binding.rootId,
+              bindingRevision: 1, source: root.source, attempt, operationId: identity.operationId })
+            await afterMaterialization?.()
+            return { ...resolved, source: { ...resolved.source, materializationId: record.receipt.materializationId,
+              materializationDigest: sourceMaterializationDigest(record) } }
+          },
+        }, artifacts: { list: async () => [], read: async () => { throw new Error('No declared output') } },
+      })
+      queueServices.push(jobs)
+      return { jobs, dispatch }
+    }
+    const runtime = create()
+    const definition = await runtime.jobs.saveDefinition(authority.principal, 'http', workspaceId, {
+      commandId: randomUUID(), expectedRevision: null, name: 'Source recovery build', spec })
+    async function enqueue(jobs = runtime.jobs, principal = authority.principal) {
+      const admission = await jobs.enqueue(principal, 'http', workspaceId, { commandId: randomUUID(),
+        definitionId: definition.id, expectedRevision: definition.revision })
+      if (admission.kind === 'retained-execution') throw new Error('Expected queue admission')
+      const ticketId = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
+      return jobs.getQueueTicket(principal, workspaceId, ticketId)
+    }
+    return { ...runtime, principal: authority.principal, create, enqueue, delivered,
+      pausePreparation: (callback?: () => Promise<void>) => { afterMaterialization = callback } }
+  }
+
+  it('recovers source settlement after terminal publication commits and lets the next Job use the slot', async () => {
+    const f = await queuedFixture()
+    failSourceSettlement = true
+    const ticket = await f.enqueue()
+    await expect(f.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
+    expect(await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId))
+      .toMatchObject({ process: { phase: 'terminal', processStopped: true }, publication: 'complete' })
+    const sourceState = () => database.pool.query<{ state: string }>(
+      'select state from source_execution_materializations where execution_id=$1', [ticket.executionId])
+    expect((await sourceState()).rows[0]!.state).toBe('prepared')
+    await f.jobs.closeQueue()
+    await f.dispatch.close()
+    failSourceSettlement = false
+    const restarted = f.create()
+    await restarted.jobs.wakeQueue()
+    expect((await sourceState()).rows[0]!.state).toBe('closed')
+    expect(f.delivered).toEqual([ticket.executionId])
+    const next = await f.enqueue(restarted.jobs)
+    await restarted.jobs.wakeQueue()
+    expect((await restarted.jobs.getQueueTicket(f.principal, workspaceId, next.id)).state).toBe('accepted')
+    expect(f.delivered).toEqual([ticket.executionId, next.executionId])
+  })
+
+  it.each(['cancelled', 'authorization_revoked', 'timed_out'] as const)(
+    'recovers %s preparation through worker closure after a service restart', async reason => {
+      const f = await queuedFixture()
+      let resume!: () => void
+      let entered!: () => void
+      const paused = new Promise<void>(resolve => { resume = resolve })
+      const preparing = new Promise<void>(resolve => { entered = resolve })
+      f.pausePreparation(async () => { entered(); await paused })
+      const ticket = await f.enqueue()
+      const pending = f.jobs.wakeQueue()
+      await preparing
+      allowPreparationClosure = false
+      try {
+        await expect(sources.closeQueuedPreparation(ticket)).rejects.toMatchObject({ code: 'SOURCE_PREPARATION_ACTIVE' })
+        const current = await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id)
+        if (reason === 'cancelled') {
+          await f.jobs.cancelQueued(f.principal, 'mcp', workspaceId, { commandId: randomUUID(),
+            ticketId: ticket.id, expectedRevision: current.revision })
+        } else if (reason === 'authorization_revoked') {
+          await access.revoke(f.principal.id)
+        } else {
+          await database.pool.query("update job_preparations set created_at=now()-interval '1 hour' where execution_id=$1",
+            [ticket.executionId])
+        }
+      } finally { resume() }
+      await expect(pending).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+      expect((await database.pool.query<{ record: { state: string; terminalReason: string } }>(
+        'select record from job_admission_queue where id=$1', [ticket.id])).rows[0]!.record)
+        .toMatchObject({ state: 'terminal', terminalReason: reason })
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(1)
+      await f.jobs.closeQueue()
+      await f.dispatch.close()
+      f.pausePreparation()
+      allowPreparationClosure = true
+      const restarted = f.create()
+      await restarted.jobs.wakeQueue()
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(0)
+      expect((await database.pool.query<{ status: string; closure: unknown }>(
+        'select status,closure from source_preparation_reconciliations where operation_id=$1',
+        [ticket.operationId])).rows[0]).toMatchObject({ status: 'closed', closure: expect.objectContaining({
+          executionId: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId,
+        }) })
+      expect(f.delivered).toEqual([])
+      const next = await f.enqueue(restarted.jobs, writer.principal)
+      await restarted.jobs.wakeQueue()
+      expect((await restarted.jobs.getQueueTicket(writer.principal, workspaceId, next.id)).state).toBe('accepted')
+    })
 })

@@ -111,6 +111,16 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         if(!scope)throw new DomainError('JOB_NOT_FOUND','The accepted job is missing.',404)
         const execution=await this.readExecutionLocked(sql,scope.workspace_id,executionId)
         const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
+        if (execution.process.phase === 'terminal' && execution.process.processStopped
+          && !['pending', 'collecting'].includes(execution.publication)) {
+          const fence = await owner.readFence(sql)
+          await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',
+            [executionId, fence.ownerId, fence.fence])
+          beforeGraphCommit(sql, () => this.requireOwner(sql, execution,
+            { attemptId: execution.attemptId, owner: execution.owner }))
+          return { execution, intent: RemoteJobDispatchIntentSchema.parse(row.intent),
+            action: 'none' as const, cancelCommandId: row.cancel_command_id }
+        }
         const accepted=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1',[executionId])).rows[0]!
         const cleanup=await readRunJobCleanup(sql,execution)
         if(!cleanup) {
@@ -122,7 +132,6 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         const fence=await owner.readFence(sql)
         await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',[executionId,fence.ownerId,fence.fence])
         beforeGraphCommit(sql,()=>cleanup?this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}):this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
-        if(execution.process.phase==='terminal'&& !['pending','collecting'].includes(execution.publication))return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:'none' as const,cancelCommandId:row.cancel_command_id}
         if(row.cancel_command_id&&!row.delivery_attempted) {
           execution.process={phase:'terminal',outcome:'cancelled',exitCode:null,signal:null,processStopped:true};execution.finishedAt=new Date().toISOString();execution.publication='complete';execution.updatedAt=execution.finishedAt
           await this.repository.putExecution(sql,execution)

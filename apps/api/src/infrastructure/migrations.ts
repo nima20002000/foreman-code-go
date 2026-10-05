@@ -8,6 +8,7 @@ import { harnessInstanceSettingsMigration } from '../modules/harnesses/instanceS
 import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/instanceSettings/profileMigration.js'
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
+import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
 import { workflowJobsMigration } from './workflowJobsMigration.js'
@@ -816,6 +817,7 @@ export const migrations = [
   compactCommandActivityMigration,
   runSubagentsMigration,
   jobAdmissionQueueMigration,
+  jobQueueCleanupMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

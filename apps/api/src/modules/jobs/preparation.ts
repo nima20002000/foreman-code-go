@@ -8,9 +8,10 @@ import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobPreparationPort, JobQueueConfiguration } from './ports.js'
 import type pg from 'pg'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
 import { JobOwnership } from './ownership.js'
-import { jobEligibilityReason, releaseUnstartedJobComputer, type JobComputerSelection } from './computerSelection.js'
+import { jobEligibilityReason, releaseClosedJobComputers, releaseUnstartedJobComputer,
+  type JobComputerSelection } from './computerSelection.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -33,6 +34,7 @@ interface QueuePreparationPorts {
   admit(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
     prepared: PreparedJobSpec, ticket: JobQueueTicket): Promise<JobExecution>
   wake(execution: JobExecution): Promise<void>
+  closePreparation?(ticket: JobQueueTicket): Promise<void>
 }
 
 /** Claims capacity in queue order, then prepares on the original attempt outside SQL locks. */
@@ -42,18 +44,30 @@ export class JobQueuePreparation {
   constructor(private readonly pool: pg.Pool, private readonly ports: QueuePreparationPorts,
     private readonly clock: () => Date) {}
 
-  async scan(): Promise<void> {
+  async scan(): Promise<Promise<void>[]> {
+    const tasks = [...this.work.values()]
     const order = await JobOwnership.acquire(this.pool, 'job-admission-order', () => {})
-    if (!order) return
+    if (!order) return tasks
     const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
+    const cleanups: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
     let recoveries: JobExecution[]
     const barriers: { id: string; hosts: string[]; claims: number }[] = []
     try {
-      const pending = await this.repository.pendingQueue(order.connection)
+      const terminal = await order.connection.query<{ record: unknown }>(`select q.record
+        from job_admission_queue q join job_computer_selections s on s.execution_id=q.execution_id
+        where q.record->>'state'='terminal' and s.released_at is null order by q.enqueue_sequence`)
+      const pending = [...terminal.rows.map(row => JobQueueTicketSchema.parse(row.record)),
+        ...await this.repository.pendingQueue(order.connection)]
       const accepted = await order.connection.query<{ record: unknown }>(`select e.record
         from job_admission_queue q join job_executions e on e.id=q.execution_id and e.workspace_id=q.workspace_id
         where q.record->>'state'='accepted' and
-          (e.record #>> '{process,phase}'<>'terminal' or e.record->>'publication' in ('pending','collecting'))`)
+          (e.record #>> '{process,phase}'<>'terminal'
+            or e.record #> '{process,processStopped}'<>'true'::jsonb
+            or e.record->>'publication' in ('pending','collecting')
+            or exists(select 1 from source_execution_materializations m
+              where m.operation_id=e.operation_id and m.state<>'closed')
+            or exists(select 1 from job_computer_selections s
+              where s.execution_id=e.id and s.released_at is null))`)
       recoveries = accepted.rows.map(row => JobExecutionSchema.parse(row.record))
       for (const pendingTicket of pending) {
         order.assertOwned()
@@ -65,7 +79,11 @@ export class JobQueuePreparation {
           const ticket = await owner.connection.transaction(async sql => {
             beforeGraphCommit(sql, async () => { order.assertOwned() })
             const ticket = await this.repository.queueTicket(sql, pendingTicket.workspaceId, pendingTicket.id, true)
-            if (ticket.state === 'accepted' || ticket.state === 'terminal') return null
+            if (ticket.state === 'accepted') return null
+            if (ticket.state === 'terminal') {
+              await this.fence(sql, owner, ticket)
+              return ticket
+            }
             if (ticket.cancelRequestedAt) {
               await this.finish(sql, ticket, 'cancelled')
               return null
@@ -89,7 +107,8 @@ export class JobQueuePreparation {
             return this.claim(sql, principal, ticket, owner, barriers)
           })
           if (ticket) {
-            claimed.push({ ticket, owner })
+            if (ticket.state === 'terminal') cleanups.push({ ticket, owner })
+            else claimed.push({ ticket, owner })
             retained = true
           }
         } finally {
@@ -97,29 +116,38 @@ export class JobQueuePreparation {
         }
       }
     } catch (error) {
-      await Promise.allSettled(claimed.map(({ owner }) => owner.release()))
+      await Promise.allSettled([...claimed, ...cleanups].map(({ owner }) => owner.release()))
       throw error
     } finally {
       await order.release()
     }
     for (const { ticket, owner } of claimed) {
-      this.track(ticket.executionId, () => this.prepare(ticket, owner))
+      tasks.push(this.track(ticket.executionId, () => this.prepare(ticket, owner)))
+    }
+    for (const { ticket, owner } of cleanups) {
+      tasks.push(this.track(ticket.executionId, async () => {
+        try { await this.closePreparation(ticket, owner) }
+        finally { await owner.release() }
+      }))
     }
     for (const execution of recoveries) {
-      this.track(execution.id, () => this.ports.wake(execution))
+      tasks.push(this.track(execution.id, () => this.ports.wake(execution)))
     }
+    return tasks
   }
 
-  private track(executionId: string, run: () => Promise<void>): void {
-    if (this.work.has(executionId)) return
+  private track(executionId: string, run: () => Promise<void>): Promise<void> {
+    const existing = this.work.get(executionId)
+    if (existing) return existing
     const task = run().finally(() => { this.work.delete(executionId) })
     this.work.set(executionId, task)
     // Scans continue while source I/O is pending; retain failures for callers awaiting this work.
     void task.catch(error => componentLogger('jobs').error({ err: error, executionId }, 'Job queue work failed'))
+    return task
   }
 
-  async waitForWork(): Promise<void> {
-    const results = await Promise.allSettled([...this.work.values()])
+  async waitForWork(tasks: readonly Promise<void>[] = [...this.work.values()]): Promise<void> {
+    const results = await Promise.allSettled(tasks)
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
   }
@@ -202,6 +230,22 @@ export class JobQueuePreparation {
     if (ticket.reservationId) await releaseUnstartedJobComputer(sql, ticket)
   }
 
+  private async closePreparation(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
+    const ticket = await owner.connection.transaction(async sql => {
+      const current = await this.repository.queueTicket(sql, original.workspaceId, original.id, true)
+      if (current.state !== 'terminal' || !current.reservationId) return null
+      await this.fence(sql, owner, current)
+      await releaseUnstartedJobComputer(sql, current)
+      const pending = await sql.query(`select 1 from job_computer_selections
+        where execution_id=$1 and released_at is null`, [current.executionId])
+      return pending.rowCount ? current : null
+    })
+    if (!ticket) return
+    await this.ports.closePreparation?.(ticket)
+    owner.assertOwned()
+    await owner.connection.transaction(sql => releaseClosedJobComputers(sql))
+  }
+
   private async prepare(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
     let executionToWake: JobExecution | null
     try {
@@ -244,7 +288,8 @@ export class JobQueuePreparation {
       componentLogger('jobs').error({ err: error, ticketId: original.id }, 'Queued Job preparation or dispatch failed')
       throw error
     } finally {
-      await owner.release()
+      try { await this.closePreparation(original, owner) }
+      finally { await owner.release() }
     }
     // Dispatch takes over the same session-lock identity after preparation releases it.
     if (executionToWake) await this.ports.wake(executionToWake)

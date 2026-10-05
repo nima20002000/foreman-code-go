@@ -19,8 +19,10 @@ import { sourceBindingHash } from './bindingHash.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { SourceExecutionHostPort } from './service.js'
 import { assertWorkflowPreparationClosed, loadWorkflowPreparation } from './workflowPreparationCleanup.js'
+import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
 
-async function load(sql: GraphSqlClient, workspaceId: string, operationId: string) {
+export async function loadSourcePreparation(sql: GraphSqlClient, workspaceId: string, operationId: string) {
   const row = (await sql.query<{ execution_id: string; attempt_id: string; principal_id: string; start_command_id: string; definition: unknown; created_at: Date; workflow_run_id: string | null;
     reservation_id: string; scope_id: string; reservation: SourceReservation; reservation_state: string; reserved_bytes: string; materialization: unknown | null;
     reconciliation_id: string | null; command_id: string | null; status: string | null; owner: unknown | null; closure: unknown | null }>(`with preparations as (
@@ -67,7 +69,32 @@ async function load(sql: GraphSqlClient, workspaceId: string, operationId: strin
     throw new DomainError('SOURCE_PIN_CONFLICT', 'The original preparation does not own this exact root/source.', 409)
   return { ...row, kind: 'job' as const, root, attempt, record, definition, operationId, workspaceId }
 }
-type State = Awaited<ReturnType<typeof load>>
+type State = Awaited<ReturnType<typeof loadSourcePreparation>>
+export function validateQueuedSourcePreparation(ticket: JobQueueTicket, state: State): void {
+  if (state.kind !== 'job' || state.workflow_run_id || state.principal_id !== ticket.principalId
+    || state.workspaceId !== ticket.workspaceId || state.operationId !== ticket.operationId
+    || state.attempt.executionId !== ticket.executionId || state.attempt.attemptId !== ticket.attemptId
+    || state.definition.versionId !== ticket.definition.versionId) {
+    throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Queued cleanup differs from its original preparation.', 409)
+  }
+}
+export function validateSourcePreparationClosure(reconciliationId: string, owner: SourceOperationOwner,
+  raw: unknown): SourcePreparationClosure {
+  const closure = SourcePreparationClosureSchema.parse(raw)
+  const root = owner.root
+  const attempt = owner.attempt
+  if (closure.reconciliationId !== reconciliationId || closure.operationId !== owner.identity.operationId
+    || closure.executionId !== attempt.executionId || closure.attemptId !== attempt.attemptId
+    || closure.rootId !== root.binding.rootId || closure.bindingRevision !== root.binding.bindingRevision
+    || closure.mainId !== root.binding.mainId || closure.deviceId !== root.binding.deviceId
+    || closure.workerInstallationId !== root.binding.workerInstallationId
+    || closure.keyRevision !== attempt.keyRevision || closure.authorizationRevision !== attempt.authorizationRevision
+    || !isDeepStrictEqual(closure.filesystem, root.binding.filesystem)
+    || owner.record && closure.materializationId !== owner.record.receipt.materializationId) {
+    throw new DomainError('SOURCE_CLOSURE_CONFLICT', 'Worker closure does not match the original source owner.', 409)
+  }
+  return closure
+}
 function metadata(state: State) {
   return SourcePreparationSchema.parse({ workspaceId: state.workspaceId, operationId: state.operationId,
     hostRef: state.root.selection.hostRef,
@@ -89,6 +116,18 @@ async function admissionClosed(sql: GraphSqlClient, state: State) {
     }
     return
   }
+  const queued = (await sql.query<{ record: unknown }>(
+    'select record from job_admission_queue where execution_id=$1 for share', [state.attempt.executionId])).rows[0]
+  if (queued) {
+    const ticket = JobQueueTicketSchema.parse(queued.record)
+    validateQueuedSourcePreparation(ticket, state)
+    const lock = (await sql.query<{ locked: boolean }>(
+      'select pg_try_advisory_xact_lock(810038,hashtext($1)) as locked', [ticket.executionId])).rows[0]
+    if (ticket.state !== 'terminal' || !lock?.locked) {
+      throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'The original queued preparation is still active.', 409)
+    }
+    return
+  }
   const lock = (await sql.query<{locked: boolean}>('select pg_try_advisory_xact_lock(hashtext($1)) as locked',
     [`command:${state.principal_id}:job.start:${state.start_command_id}`])).rows[0]
   if (!lock?.locked) throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'The original Job Start command is still active.', 409)
@@ -106,7 +145,7 @@ async function authorize(sql: GraphSqlClient, principal: ManagementPrincipal, wo
   await authorizeSource(sql, principal, 'source_roots:read', workspaceId)
   return write ? (await authorizeSource(sql, principal, 'sources:reconcile', workspaceId)).principal : principal
 }
-async function hostAuthority(sql: GraphSqlClient, state: State) {
+export async function requireSourcePreparationHost(sql: GraphSqlClient, state: State) {
   const root = state.root
   const policy = await sql.query('select 1 from workspace_root_policies where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3 and revoked_at is null for share',
     [state.workspaceId, root.selection.rootPolicyId, root.selection.rootPolicyRevision])
@@ -119,19 +158,33 @@ async function hostAuthority(sql: GraphSqlClient, state: State) {
 
 /** Cleanup authority is separate from the host's physical closure confirmation. */
 export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient, reconciliationId: string) {
-  const row = (await sql.query<{ workspace_id: string; operation_id: string; principal_id: string; status: string; owner: unknown }>(
-    'select workspace_id,operation_id,principal_id,status,owner from source_preparation_reconciliations where reconciliation_id=$1 for share', [reconciliationId])).rows[0]
+  const row = (await sql.query<{ workspace_id: string; operation_id: string; principal_id: string;
+    status: string; owner: unknown; queue_ticket_id: string | null }>(
+    'select workspace_id,operation_id,principal_id,status,owner,queue_ticket_id from source_preparation_reconciliations where reconciliation_id=$1 for share', [reconciliationId])).rows[0]
   if (!row || row.status !== 'reconciling') throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'The original cleanup command has no active reconciliation authority.', 409)
-  const principal = await readLiveManagementPrincipal(sql, row.principal_id)
-  await authorize(sql, principal, row.workspace_id, true)
-  const state = await load(sql, row.workspace_id, row.operation_id)
-  await admissionClosed(sql, state); await hostAuthority(sql, state)
+  let principalId = row.principal_id
+  if (row.queue_ticket_id) {
+    const ticket = await requireQueuedPreparationClosed(sql, row.queue_ticket_id)
+    if (ticket.operationId !== row.operation_id || ticket.workspaceId !== row.workspace_id
+      || ticket.principalId !== row.principal_id) {
+      throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Queued cleanup belongs to another original preparation.', 409)
+    }
+  } else {
+    const principal = await readLiveManagementPrincipal(sql, row.principal_id)
+    await authorize(sql, principal, row.workspace_id, true)
+    principalId = principal.id
+  }
+  const state = await loadSourcePreparation(sql, row.workspace_id, row.operation_id)
+  if (row.queue_ticket_id) {
+    validateQueuedSourcePreparation(await requireQueuedPreparationClosed(sql, row.queue_ticket_id), state)
+  } else await admissionClosed(sql, state)
+  await requireSourcePreparationHost(sql, state)
   const owner = SourceOperationOwnerSchema.parse(row.owner)
   if ((owner.preparationKind === 'workflow') !== (state.kind === 'workflow')
     || state.kind === 'workflow' && !isDeepStrictEqual(owner.preparationNativeSession ?? null, state.nativeSession)
     || !isDeepStrictEqual(owner.root, state.root) || !isDeepStrictEqual(owner.attempt, state.attempt)
     || !isDeepStrictEqual(owner.record, state.record) || owner.identity.operationId !== state.operationId
-    || owner.identity.ownerPrincipalId !== principal.id || Date.parse(owner.identity.expiresAt) <= Date.now())
+    || owner.identity.ownerPrincipalId !== principalId || Date.parse(owner.identity.expiresAt) <= Date.now())
     throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original reconciliation authority changed.', 409)
   return owner
 }
@@ -155,7 +208,7 @@ export class PostgresSourcePreparationReconciliation {
         if (rows.length !== 1) throw new DomainError('SOURCE_PREPARATION_NOT_FOUND', 'The original Start command is missing or ambiguous; use its exact operationId.', 404)
         operationId = rows[0]!.operation_id
       }
-      return metadata(await load(sql, input.workspaceId, operationId))
+      return metadata(await loadSourcePreparation(sql, input.workspaceId, operationId))
     })
   }
   async reconcile(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
@@ -169,11 +222,11 @@ export class PostgresSourcePreparationReconciliation {
       prepare: async () => {
         const pending = await this.transaction(async sql => {
           await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
-          const live = await authorize(sql, principal, input.workspaceId, true), state = await load(sql, input.workspaceId, input.operationId)
+          const live = await authorize(sql, principal, input.workspaceId, true), state = await loadSourcePreparation(sql, input.workspaceId, input.operationId)
           if (state.root.selection.hostRef.kind !== 'device' && state.kind !== 'workflow') {
             throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Job preparation cleanup requires its original worker journal.', 409)
           }
-          await admissionClosed(sql, state); await hostAuthority(sql, state)
+          await admissionClosed(sql, state); await requireSourcePreparationHost(sql, state)
           if (state.status === 'closed') { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
           if (state.owner) {
             const owner = SourceOperationOwnerSchema.parse(state.owner)
@@ -191,30 +244,22 @@ export class PostgresSourcePreparationReconciliation {
         })
         if (pending) {
           if (!this.executions.reconcilePreparation) throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'The installed source host does not support preparation reconciliation.', 409)
-          closure = SourcePreparationClosureSchema.parse(await this.executions.reconcilePreparation(pending.reconciliationId, pending.owner))
-          const root = pending.owner.root, attempt = pending.owner.attempt
-          if (closure.reconciliationId !== pending.reconciliationId || closure.operationId !== input.operationId
-            || closure.executionId !== attempt.executionId || closure.attemptId !== attempt.attemptId
-            || closure.rootId !== root.binding.rootId || closure.bindingRevision !== root.binding.bindingRevision
-            || closure.mainId !== root.binding.mainId || closure.deviceId !== root.binding.deviceId || closure.workerInstallationId !== root.binding.workerInstallationId
-            || closure.keyRevision !== attempt.keyRevision || closure.authorizationRevision !== attempt.authorizationRevision
-            || !isDeepStrictEqual(closure.filesystem, root.binding.filesystem)
-            || pending.owner.record && closure.materializationId !== pending.owner.record.receipt.materializationId)
-            throw new DomainError('SOURCE_CLOSURE_CONFLICT', 'Worker closure does not match the exact original cleanup/source owner.', 409)
+          closure = validateSourcePreparationClosure(pending.reconciliationId, pending.owner,
+            await this.executions.reconcilePreparation(pending.reconciliationId, pending.owner))
         }
         if (closure) await this.options.retireTransfers?.(closure)
       },
       perform: async sql => {
         await authorize(sql, principal, input.workspaceId, true)
-        const state = await load(sql, input.workspaceId, input.operationId)
-        await admissionClosed(sql, state); await hostAuthority(sql, state)
+        const state = await loadSourcePreparation(sql, input.workspaceId, input.operationId)
+        await admissionClosed(sql, state); await requireSourcePreparationHost(sql, state)
         if (!closure || closure.reconciliationId !== state.reconciliation_id) throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'Worker closure was not positively confirmed.', 409)
         await new PostgresSourceReservations().retainClosedPreparation(
           sql, state.reservation, closure, Number(state.reserved_bytes),
         )
         await sql.query("update source_execution_materializations set state='closed' where operation_id=$1", [input.operationId])
         await sql.query("update source_preparation_reconciliations set status='closed',closure=$2::jsonb where operation_id=$1", [input.operationId,JSON.stringify(closure)])
-        return metadata(await load(sql, input.workspaceId, input.operationId))
+        return metadata(await loadSourcePreparation(sql, input.workspaceId, input.operationId))
       } })
   }
 }

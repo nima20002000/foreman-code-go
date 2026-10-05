@@ -38,7 +38,7 @@ export class JobService {
   private readonly workerExecution: WorkerExecutionPolicy
   private readonly queuePreparation: JobQueuePreparation | undefined
   private queueTimer: ReturnType<typeof setInterval> | undefined
-  private queueWake: Promise<void> | undefined
+  private queueWake: Promise<Promise<void>[]> | undefined
   private queueRescanRequested = false
   private queueClosing = false
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
@@ -51,6 +51,7 @@ export class JobService {
       cancellationRecovery?: PostgresJobCancellationRecovery
       queue?: JobQueueConfiguration
       refreshRuntimeMetadata?(): void
+      closePreparation?(ticket: JobQueueTicket): Promise<void>
     },
     private readonly clock: () => Date = () => new Date()) {
     this.workerExecution = ports.workerExecution ?? new WorkerExecutionPolicy()
@@ -67,6 +68,7 @@ export class JobService {
           return this.admitPrepared(sql, principal, definition, null, null, prepared, ticket)
         },
         wake: execution => this.wakeAccepted(execution),
+        ...(ports.closePreparation ? { closePreparation: ports.closePreparation } : {}),
       }, clock)
     }
   }
@@ -320,14 +322,16 @@ export class JobService {
     } else if (!this.queueClosing) {
       const preparation = this.queuePreparation
       this.queueWake = (async () => {
+        const tasks = new Set<Promise<void>>()
         do {
           this.queueRescanRequested = false
-          await preparation.scan()
+          for (const task of await preparation.scan()) tasks.add(task)
         } while (this.queueRescanRequested && !this.queueClosing)
+        return [...tasks]
       })().finally(() => { this.queueWake = undefined })
     }
-    await this.queueWake
-    await this.queuePreparation.waitForWork()
+    const tasks = await this.queueWake
+    await this.queuePreparation.waitForWork(tasks)
   }
   requestQueueWake(): void {
     if (this.queueClosing) return
@@ -346,8 +350,8 @@ export class JobService {
     if (this.queueTimer) clearInterval(this.queueTimer)
     this.queueTimer = undefined
     this.queueClosing = true
-    await this.queueWake
-    await this.queuePreparation?.waitForWork()
+    const tasks = await this.queueWake
+    await this.queuePreparation?.waitForWork(tasks)
   }
   async start(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobStart) {
     const input=parse(JobStartSchema,raw)
