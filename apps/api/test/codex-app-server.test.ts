@@ -1,7 +1,7 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -23,6 +23,7 @@ import {
   calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
   input, nativeThread, processesForRequests, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
 // below runs the repository implementation, including the pinned native schema gate.
@@ -187,9 +188,23 @@ describe('Codex fixture user-message contract', () => {
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  beforeEach(async () => { f = await fixture(); manager = makeManager(); source = input(f.directory) })
-  afterEach(async () => {
+  beforeEach(async () => {
+    f = await fixture()
+    await flag('record-wire-timing')
+    manager = makeManager()
+    source = input(f.directory)
+  })
+  afterEach(async context => {
     const results = await Promise.allSettled(managers.splice(0).map((value) => value.shutdown()))
+    if (context.task.result?.state === 'fail' || results.some(value => value.status === 'rejected')) {
+      let timing = ''
+      try { timing = await readFile(join(f.directory, 'wire-timing.jsonl'), 'utf8') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      await writeNativeAcceptanceEvidence(`codex-fixture-${randomUUID()}.json`, {
+        test: context.task.name, calls: await calls(f.directory),
+        wireTiming: timing.split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown),
+      })
+    }
     await rm(f.directory, { recursive: true, force: true })
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
