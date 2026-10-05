@@ -40,7 +40,6 @@ import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/process
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
-import { DomainError } from '../src/modules/errors.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 const appServerName = process.env.NATIVE_ACCEPTANCE_APP_MCP_SERVER ?? APP_MCP_SERVER_NAME
