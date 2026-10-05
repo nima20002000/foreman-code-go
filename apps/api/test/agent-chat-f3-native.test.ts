@@ -33,6 +33,11 @@ function scopedCodexEntry(enabled = true) {
   const entry = appLauncherConnection()
   return { name: APP_MCP_SERVER_NAME, enabled, transport: { type: 'stdio', command: entry.executable, args: entry.arguments, env_vars: entry.environmentVariables } }
 }
+function scopedCodexCommand(args: readonly string[]) {
+  if (args[1] === 'get' && args[2] !== APP_MCP_SERVER_NAME) return { exitCode: 1, stdout: '',
+    stderr: `Error: No MCP server named '${args[2]}' found.` }
+  return { exitCode: 0, stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }
+}
 function code(expected: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === expected
 }
@@ -56,8 +61,7 @@ const openCodeSource: NativeSessionReference = { harness: 'opencode', providerVe
 describe('F3 safe native boundaries (mock command output and HTTP only)', () => {
   for (const operation of ['create', 'attach', 'fork'] as const) {
     it(`A-R01: Codex ${operation} refuses injected scoped credentials before opening a transport`, async () => {
-      vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-        stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
+      vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args))
       const { manager, transport } = codex(), input = codexInput()
       input.environment = { agentId: input.request.configuration.agentId, variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } }
       const snapshot = structuredClone(input)
@@ -91,8 +95,7 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     assert.equal(prepared.environment.GRAPHQL_MCP_TOKEN, undefined)
     assert.deepEqual(prepared.harnessConfiguration, input.request.configuration.harness)
     const ordinary = codex(false).manager
-    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args))
     await assert.rejects(ordinary['prepareInput'](input), code('CODEX_SCOPED_ENVIRONMENT_REQUIRED'))
     await assert.rejects(manager['prepareInput']({ ...input, environment: { agentId: input.request.configuration.agentId,
       variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } } }), code('CODEX_APP_MCP_UNAVAILABLE'))
