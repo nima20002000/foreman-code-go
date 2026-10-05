@@ -38,6 +38,22 @@ export async function qualifyCodexOutputProtection(input: {
   const descendantPath = join(protectedDirectory, `.native-descendant-${marker}`)
   const witnessPath = join(selected.expectedSandbox.cwd, `.native-witness-${marker}.json`)
   const hostPath = join(protectedDirectory, `.host-witness-${marker}`)
+  let failure: { error: unknown } | undefined
+  const cleanupProbe = async () => {
+    const errors: unknown[] = []
+    try { await transport?.close() } catch (error) { errors.push(error) }
+    try {
+      await registry.abandonReservedLaunch(recovery)
+      if (!await registry.closeOwner(recovery.owner)) throw unavailable()
+    } catch (error) { errors.push(error) }
+    if (errors.length) throw new AggregateError(errors, 'Native output qualification closure was incomplete.')
+    // Own probe markers only, after positive diagnostic closure.
+    for (const path of [hostPath, directPath, descendantPath, witnessPath]) {
+      await unlink(path).catch((error: unknown) => {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+      })
+    }
+  }
   try {
     const environment = inheritedAgentEnvironment()
     if (selected.expectedSandbox.tmpdir) environment.TMPDIR = selected.expectedSandbox.tmpdir
@@ -53,8 +69,7 @@ export async function qualifyCodexOutputProtection(input: {
       || servers.some((entry) => typeof entry?.name !== 'string')) throw unavailable()
     const disabled = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
       .filter((name) => servers.some((entry) => entry.name === name))
-    let threadId: string | undefined
-    let turnId: string | undefined
+    const observedTurn: { id?: string } = {}
     const commands: Array<{ threadId: string; turnId: string; item: JsonObject }> = []
     const terminals = new Map<string, string>()
     let complete!: () => void
@@ -74,7 +89,7 @@ export async function qualifyCodexOutputProtection(input: {
           const turn = object(params.turn)
           if (typeof turn.id === 'string' && typeof turn.status === 'string') {
             terminals.set(turn.id, turn.status)
-            if (turn.id === turnId) complete()
+            if (turn.id === observedTurn.id) complete()
           }
         }
       }, fail, 30_000, recovery, disabled)
@@ -87,7 +102,7 @@ export async function qualifyCodexOutputProtection(input: {
         sandbox_workspace_write: { writable_roots: [...policy.writableRoots], network_access: policy.networkAccess,
           exclude_tmpdir_env_var: policy.excludeTmpdirEnvVar, exclude_slash_tmp: policy.excludeSlashTmp } },
     }, signal))
-    threadId = object(started.thread).id as string
+    const threadId = object(started.thread).id as string
     const actual = object(started.sandbox)
     const roots = actual.writableRoots
     if (!threadId || started.cwd !== policy.cwd || actual.type !== 'workspaceWrite'
@@ -103,7 +118,8 @@ export async function qualifyCodexOutputProtection(input: {
     const turn = object(await transport.request('turn/start', { threadId, clientUserMessageId: randomUUID(),
       input: [{ type: 'text', text: `Run this exact command once with the native shell tool. Do not change it, request broader permissions, or use other tools. Then finish.\n${command}`, text_elements: [] }],
     }, signal))
-    turnId = object(turn.turn).id as string
+    const turnId = object(turn.turn).id as string
+    observedTurn.id = turnId
     if (!turnId) throw unavailable()
     if (!terminals.has(turnId)) {
       let aborted!: () => void
@@ -134,19 +150,14 @@ export async function qualifyCodexOutputProtection(input: {
     }
     await assertCodexUnchanged(qualified)
     await input.assertCurrent(signal)
+  } catch (error) {
+    failure = { error }
+    throw error
   } finally {
-    const errors: unknown[] = []
-    try { await transport?.close() } catch (error) { errors.push(error) }
-    try {
-      await registry.abandonReservedLaunch(recovery)
-      if (!await registry.closeOwner(recovery.owner)) throw unavailable()
-    } catch (error) { errors.push(error) }
-    if (errors.length) throw new AggregateError(errors, 'Native output qualification closure was incomplete.')
-    // Own probe markers only, after positive diagnostic closure.
-    for (const path of [hostPath, directPath, descendantPath, witnessPath]) {
-      await unlink(path).catch((error: unknown) => {
-        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
-      })
-    }
+    await cleanupProbe().catch((error: unknown) => {
+      if (failure) throw new AggregateError([failure.error, error],
+        'Native output qualification and cleanup both failed.', { cause: error })
+      throw error
+    })
   }
 }

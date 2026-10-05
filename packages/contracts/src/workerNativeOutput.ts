@@ -59,6 +59,6 @@ export function parseNativeOutputToolCommand(toolName: string, raw: unknown): Wo
 
 export function nativeOutputToolArguments(command: WorkerNativeOutputCommand) {
   if (command.operation === 'publish') return command.publication
-  const { operation: _operation, ...input } = command
-  return input
+  const { operation, ...input } = command
+  return WorkerNativeOutputToolInputSchemas[operation].parse(input)
 }

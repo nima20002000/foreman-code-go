@@ -19,6 +19,12 @@ describe.skipIf(!enabled)('original native output store protection', () => {
     const registry = new NativeProcessRegistry(join(directory, 'processes'))
     const admission = registry.reserveLaunch('output-test-installation-read')
     const signal = AbortSignal.timeout(120_000)
+    let failure: { error: unknown } | undefined
+    const cleanup = async () => {
+      await registry.abandonReservedLaunch(admission)
+      if (!await registry.closeOwner(admission.owner)) throw new Error('Native qualification owner did not close.')
+      await rm(directory, { recursive: true, force: true })
+    }
     try {
       const environment = inheritedAgentEnvironment()
       const qualified = await qualifyCodex(process.env.CODEX_BINARY ?? 'codex', undefined, workspace,
@@ -37,10 +43,15 @@ describe.skipIf(!enabled)('original native output store protection', () => {
       expect(await readdir(protectedDirectory)).toEqual([])
       expect(await readdir(workspace)).toEqual([])
       expect(registry.snapshot().launches.every((launch) => launch.lifecycle === 'closed')).toBe(true)
+    } catch (error) {
+      failure = { error }
+      throw error
     } finally {
-      await registry.abandonReservedLaunch(admission)
-      if (!await registry.closeOwner(admission.owner)) throw new Error('Native qualification owner did not close.')
-      await rm(directory, { recursive: true, force: true })
+      await cleanup().catch((error: unknown) => {
+        if (failure) throw new AggregateError([failure.error, error],
+          'Native qualification and cleanup both failed.', { cause: error })
+        throw error
+      })
     }
   }, 180000)
 })

@@ -154,18 +154,19 @@ export class LocalWorkflowNativeOutputRepository {
       await this.save(sql, caller, commandId, inputHash, null)
       return original
     })
-    const repository = this
+    const pool = this.pool
+    const readChunks = () => this.chunks(pool, output)
     const result = await publish(publication, { sha256: output.sha256!, byteSize: output.byte_size,
       open: async () => Readable.from((async function* () {
-        await authorize(repository.pool)
+        await authorize(pool)
         const hash = createHash('sha256')
-        for await (const bytes of repository.chunks(repository.pool, output)) {
-          await authorize(repository.pool)
+        for await (const bytes of readChunks()) {
+          await authorize(pool)
           hash.update(bytes)
           yield bytes
         }
         if (hash.digest('hex') !== output.sha256) throw conflict()
-        await authorize(repository.pool)
+        await authorize(pool)
       })()) })
     const reply: WorkerNativeOutputReply = { operation: 'publish', result }
     await this.transaction(caller, authorize, async sql => { await this.save(sql, caller, commandId, inputHash, reply) })
