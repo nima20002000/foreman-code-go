@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+  readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -173,9 +173,18 @@ export function testEnvironment(environment, resource) {
     ['FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
   ]) {
     if (!environment[variable]) continue
+    const source = realpathSync(environment[variable])
+    const sourceStat = lstatSync(source)
+    if (!sourceStat.isFile() || sourceStat.uid !== process.getuid() || (sourceStat.mode & 0o077) !== 0) {
+      throw new Error('Explicit test authentication must be a private file owned by the current user')
+    }
     mkdirSync(join(destination, '..'), { recursive: true, mode: 0o700 })
-    copyFileSync(environment[variable], destination)
-    chmodSync(destination, 0o600)
+    if (existsSync(destination)) {
+      const destinationStat = lstatSync(destination)
+      if ((destinationStat.isSymbolicLink() || source === destination) && realpathSync(destination) === source) continue
+      throw new Error('Test authentication reference changed')
+    }
+    symlinkSync(source, destination)
   }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`

@@ -1,4 +1,4 @@
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { assertTestPath, assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
@@ -97,8 +97,8 @@ describe('disposable test resources', () => {
     const resource = createTestRoot()
     const auth = join(resource.directory, 'test-auth.json')
     const opencodeAuth = join(resource.directory, 'test-opencode-auth.json')
-    await writeFile(auth, '{"test":"credential"}')
-    await writeFile(opencodeAuth, '{"test":"opencode-credential"}')
+    await writeFile(auth, '{"test":"credential"}', { mode: 0o600 })
+    await writeFile(opencodeAuth, '{"test":"opencode-credential"}', { mode: 0o600 })
     try {
       const source = { HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
         OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
@@ -134,6 +134,11 @@ describe('disposable test resources', () => {
       expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"credential"}')
       expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
         .toBe('{"test":"opencode-credential"}')
+      await writeFile(auth, '{"test":"renewed-credential"}')
+      await writeFile(opencodeAuth, '{"test":"renewed-opencode-credential"}')
+      expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"renewed-credential"}')
+      expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
+        .toBe('{"test":"renewed-opencode-credential"}')
     } finally { removeTestRoot(resource) }
   })
 
@@ -143,6 +148,24 @@ describe('disposable test resources', () => {
       expect(() => testEnvironment({ FOREMAN_CODE_APP_MCP_DIRECTORY: '/canonical',
         GRAPHQL_APP_MCP_DIRECTORY: '/legacy' }, { ...resource, name: 'graphql_test_unit',
         databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })).toThrow('conflicts')
+    } finally { removeTestRoot(resource) }
+  })
+
+  it('rejects shared authentication files and changed authentication bindings', async () => {
+    const resource = createTestRoot()
+    const first = join(resource.directory, 'first-auth.json')
+    const second = join(resource.directory, 'second-auth.json')
+    const database = { ...resource, name: 'graphql_test_unit',
+      databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() }
+    try {
+      await writeFile(first, '{}', { mode: 0o644 })
+      expect(() => testEnvironment({ FOREMAN_CODE_TEST_CODEX_AUTH_FILE: first }, database))
+        .toThrow('private file')
+      await chmod(first, 0o600)
+      await writeFile(second, '{}', { mode: 0o600 })
+      testEnvironment({ FOREMAN_CODE_TEST_CODEX_AUTH_FILE: first }, database)
+      expect(() => testEnvironment({ FOREMAN_CODE_TEST_CODEX_AUTH_FILE: second }, database))
+        .toThrow('authentication reference changed')
     } finally { removeTestRoot(resource) }
   })
 })

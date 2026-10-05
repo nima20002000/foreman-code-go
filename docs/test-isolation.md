@@ -45,7 +45,11 @@ migrations. Other integration files use the configured disposable slots.
 
 Native acceptance uses dedicated authentication. Set `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`
 and/or `FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
-these are copied into private homes. API-key authentication can use
+only those files are referenced from private homes; credentials are not copied.
+Each supplied file must be private and owned by the current user. The native CLI
+uses its normal authentication store, including token refresh, so use dedicated
+test credentials and verify the supplied stores before and after live runs.
+API-key authentication can use
 `FOREMAN_CODE_TEST_OPENAI_API_KEY`, `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY`, or
 `FOREMAN_CODE_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
 not reused. Do not commit credential files. Acceptance fails when its native
