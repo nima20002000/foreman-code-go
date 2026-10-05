@@ -622,16 +622,16 @@ export class PostgresOperatorConversationRepository {
     result: ExecutionResult): Promise<boolean> {
     return recordNativeNonSubmission(this.pool, id, requestId, operation, result)
   }
-  async pending(id: string, requestId: string, value?: PendingNativeInteraction): Promise<void> {
+  async pending(id: string, requestId: string | null, value?: PendingNativeInteraction): Promise<void> {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,
       response_delivery=case when $3::jsonb is null then null
         when pending_interaction->'turn'->>'nativeRequestId'=$3::jsonb->'turn'->>'nativeRequestId' then coalesce(response_delivery,'offered')
         else 'offered' end,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2`, [id, requestId, value ? JSON.stringify(value) : null])
+      where id=$1 and active_request_id is not distinct from $2`, [id, requestId, value ? JSON.stringify(value) : null])
   }
-  async claimResponse(id: string, requestId: string, nativeRequestId: string): Promise<boolean> {
+  async claimResponse(id: string, requestId: string | null, nativeRequestId: string): Promise<boolean> {
     return (await this.pool.query(`update operator_conversations set response_delivery='submitted',revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and not cancel_requested and record->>'status' is distinct from 'archived' and response_delivery='offered'
+      where id=$1 and active_request_id is not distinct from $2 and not cancel_requested and record->>'status' is distinct from 'archived' and response_delivery='offered'
         and pending_interaction->'turn'->>'nativeRequestId'=$3`, [id, requestId, nativeRequestId])).rowCount === 1
   }
   async responseFailed(id: string, requestId: string, nativeRequestId: string): Promise<void> {

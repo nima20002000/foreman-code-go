@@ -58,6 +58,7 @@ export function registerAgentChatTools(server: McpServer, context: OperatorReque
     async () => ({ state: await chat.cancelQueued(context.principal, workspaceId, conversationId, turnRequestId, request, 'mcp') })))
   if (operatorToolAvailable(context, 'agent_chat_respond')) server.registerTool('agent_chat_respond', {
     description: 'Answer the pending native approval or input request in an Agent chat with an offered option. '
+      + 'Standalone Codex forms are bound to their native session and request, without a turn ID. '
       + 'For questions and forms, supply response matching the option input schema. Reuse requestId with the same '
       + 'choice and response after a lost response; uncertain delivery is never resent. Requires agent_chat:respond and agent_chat:read.',
     inputSchema: RespondAgentChatInteractionRequestSchema.extend({ workspaceId: workspace, conversationId: conversation }),

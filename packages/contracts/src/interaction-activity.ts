@@ -43,7 +43,9 @@ export const AcceptedChatResponseControlSchema = z.object({
     if (!native.messageId || !native.generation || native.turnId !== undefined) {
       context.addIssue({ code: 'custom', path: ['native'], message: 'Claude control requires its observed message identity and callback generation.' })
     }
-  } else if (!native.turnId || native.messageId !== undefined || native.generation !== undefined) {
+  } else if ((!native.turnId && !(native.harness === 'codex'
+    && native.requestType === 'mcpServer/elicitation/request'))
+    || native.messageId !== undefined || native.generation !== undefined) {
     context.addIssue({ code: 'custom', path: ['native'], message: 'This native provider requires its observed turn identity.' })
   }
   if (!['operator_chat', 'agent_chat', 'selected_run_chat'].includes(value.scope.kind)

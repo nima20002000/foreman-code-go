@@ -23,7 +23,8 @@ export function registerOperatorControlTools(server: McpServer, context: Operato
   })))
   if (operatorToolAvailable(context, 'operator_chat_respond')) server.registerTool('operator_chat_respond', {
     description: 'Answer the pending native request in your Operator conversation using offered nativeRequestId and '
-      + 'optionId plus active model requestId from operator_chat_get. For questions and forms, supply response matching '
+      + 'optionId plus active model requestId from operator_chat_get. For a standalone session request with no active '
+      + 'model request, use nativeRequestId as requestId. For questions and forms, supply response matching '
       + 'the option input schema. Check responseAvailability.available and its message first. Reuse commandId and '
       + 'identical input after response loss. An uncertain response is never resent. Requires operator_chat:respond and operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1), request: RespondOperatorInteractionRequestSchema }).strict(),

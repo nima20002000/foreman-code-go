@@ -3,7 +3,7 @@ import { chatBackgroundWork } from '../conversations/chatWorkStatus'
 import type { OperatorChatConnection } from '../../shared/api/operatorChatStream'
 
 export function operatorNeedsAttention(state: OperatorConversationState): boolean {
-  return Boolean(state.activeRequestId && state.pendingInteraction && state.responseDelivery === 'offered'
+  return Boolean(state.pendingInteraction && state.responseDelivery === 'offered'
     && state.turnState !== 'canceling')
 }
 

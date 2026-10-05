@@ -594,11 +594,14 @@ export const NativeSessionReferenceSchema = z.object({
   nativeSessionId: IdSchema,
 }).strict();
 export type NativeSessionReference = z.infer<typeof NativeSessionReferenceSchema>;
-export const NativeTurnReferenceSchema = z.object({
+const NativeInteractionIdentitySchema = z.object({
   nativeTurnId: IdSchema.optional(),
   nativeMessageId: IdSchema.optional(),
   nativeRequestId: IdSchema.optional(),
-}).strict().refine((value) => (value.nativeTurnId !== undefined) !== (value.nativeMessageId !== undefined), { message: "Exactly one observed native turn or message identity is required." });
+}).strict();
+export const NativeTurnReferenceSchema = NativeInteractionIdentitySchema.refine(
+  (value) => (value.nativeTurnId !== undefined) !== (value.nativeMessageId !== undefined),
+  { message: "Exactly one observed native turn or message identity is required." });
 export type NativeTurnReference = z.infer<typeof NativeTurnReferenceSchema>;
 export const NativeHarnessEventSchema = z.object({
   connectionId: IdSchema.optional(),
@@ -610,14 +613,23 @@ export const NativeHarnessEventSchema = z.object({
 export type NativeHarnessEvent = z.infer<typeof NativeHarnessEventSchema>;
 export const PendingNativeInteractionSchema = z.object({
   session: NativeSessionReferenceSchema,
-  turn: NativeTurnReferenceSchema,
+  turn: NativeInteractionIdentitySchema,
   nativeRequestType: z.string().trim().min(1),
   request: z.json(),
   responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
 }).strict().superRefine((value, context) => {
+  if (value.session.harness === 'codex' && value.nativeRequestType === 'mcpServer/elicitation/request'
+    && value.turn.nativeRequestId && !value.turn.nativeTurnId && !value.turn.nativeMessageId) return;
+  if ((value.turn.nativeTurnId !== undefined) === (value.turn.nativeMessageId !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['turn'], message: 'An observed turn or message identity is required.' });
+  }
   if (value.session.harness !== "claude" && !value.turn.nativeTurnId) context.addIssue({ code: "custom", path: ["turn", "nativeTurnId"], message: "This native provider requires its observed turn identity." });
 });
 export type PendingNativeInteraction = z.infer<typeof PendingNativeInteractionSchema>;
+export function isSessionNativeInteraction(value: PendingNativeInteraction): boolean {
+  return value.session.harness === 'codex' && value.nativeRequestType === 'mcpServer/elicitation/request'
+    && !value.turn.nativeTurnId && !value.turn.nativeMessageId && Boolean(value.turn.nativeRequestId);
+}
 
 export const ActiveTimeBudgetSchema = z.object({
   activeTimeoutMs: z.number().int().positive(),

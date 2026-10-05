@@ -1,5 +1,5 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
-import { withInteractionResponse } from '@foreman-code/contracts'
+import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
@@ -258,11 +258,19 @@ export class OperatorChatService {
   }
   async get(id: string, principal: ManagementPrincipal) {
     await this.assertAccess(id, principal)
-    const state = await this.repository.getWithActivity(id)
+    let state = await this.repository.getWithActivity(id)
     if (!state) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     const current = await this.authority.current(principal.id)
     requireAuthorization(current, 'operator_chat:read')
     const runtime = this.runtimes.get(id)
+    if (!state.activeRequestId && !state.pendingInteraction && runtime?.session && !runtime.disposal) {
+      const pending = await runtime.manager.pending(runtime.session)
+      if (pending && isSessionNativeInteraction(pending)) {
+        await this.repository.pending(id, null, pending)
+        state = await this.repository.getWithActivity(id)
+        if (!state) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+      }
+    }
     const responseAvailability = state.pendingInteraction ? await nativeInteractionAvailability(state.pendingInteraction,
       isAuthorized(current, 'operator_chat:respond'), runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
       { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
@@ -853,7 +861,9 @@ export class OperatorChatService {
       const row = await this.repository.active(id)
       const pending = row?.pending_interaction
       const offered = pending?.responseOptions.find((item) => item.optionId === input.optionId)
-      if (!row || row.active_request_id !== input.requestId || row.pending_interaction?.turn.nativeRequestId !== input.nativeRequestId || !offered) {
+      const standalone = pending && isSessionNativeInteraction(pending)
+      const requestId = row?.active_request_id ?? (standalone ? pending.turn.nativeRequestId : undefined)
+      if (!row || requestId !== input.requestId || pending?.turn.nativeRequestId !== input.nativeRequestId || !offered) {
         throw new DomainError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'This approval is no longer offered for this turn.', 409)
       }
       const option = withInteractionResponse(offered, input.response)
@@ -863,7 +873,7 @@ export class OperatorChatService {
       requireAuthorization(owner, 'operator_chat:write')
       requireAuthorization(owner, 'operator_chat:respond')
       const runtime = await this.observationRuntime(id, row, configuration, this.lifetime.signal)
-      if (!runtime.session || !await this.repository.claimResponse(id, input.requestId, input.nativeRequestId)) {
+      if (!runtime.session || !await this.repository.claimResponse(id, row.active_request_id, input.nativeRequestId)) {
         throw new DomainError('NATIVE_RESPONSE_UNCERTAIN', 'A response was already submitted. Reconcile it before retrying.', 409)
       }
       let delivered = false
@@ -881,8 +891,8 @@ export class OperatorChatService {
             && proof.providerVersion === runtime.session!.providerVersion && proof.nativeRequestType === pending.nativeRequestType
             && proof.optionId === option.optionId && proof.semantic === option.semantic)) recordEvidence(proofs[0]!)
         }
-        await this.repository.pending(id, input.requestId)
-        await this.observe(id, input.requestId, runtime)
+        await this.repository.pending(id, row.active_request_id)
+        if (row.active_request_id) await this.observe(id, input.requestId, runtime)
       } catch (error) {
         const code = error && typeof error === 'object' && 'result' in error
           ? (error as { result?: ExecutionResult }).result?.error?.code : undefined

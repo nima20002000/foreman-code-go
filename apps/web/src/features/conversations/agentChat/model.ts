@@ -1,5 +1,5 @@
 import { activityScopeKey, reconcileActivitySnapshot, sourceVectorIsStale, sourceVectorHasAdvance } from './activityMerge'
-import type { Message } from '@foreman-code/contracts'
+import { isSessionNativeInteraction, type Message } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@foreman-code/contracts/agent-chat'
 
 /** A draft exists before a conversation does. Never key it by Agent alone or by a native id. */
@@ -138,5 +138,6 @@ export function approvalReplyAvailable(state: AgentChatState): boolean {
   return !!pending?.turn.nativeRequestId && !!state.conversation?.nativeSession
     && pending.session.nativeSessionId === state.conversation.nativeSession.nativeSessionId
     && pending.session.harness === state.conversation.harness
-    && (!state.activeTurn?.nativeTurnId || pending.turn.nativeTurnId === state.activeTurn.nativeTurnId)
+    && (isSessionNativeInteraction(pending) || !state.activeTurn?.nativeTurnId
+      || pending.turn.nativeTurnId === state.activeTurn.nativeTurnId)
 }

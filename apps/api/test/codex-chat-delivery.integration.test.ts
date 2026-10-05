@@ -675,7 +675,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     assert.equal((await native.wire('thread/start')).length, 1)
     assert.equal((await native.wire('turn/start')).length, 1)
   })
-  for (const kind of ['questions', 'form'] as const) {
+  for (const kind of ['questions', 'form', 'standalone-form'] as const) {
     it(`Agent ${kind} responses validate through HTTP and MCP, persist, and never replay native input`, async () => {
       const admitted = await sendAgent({ ...request('input-turn', null), content: 'wait' })
       const id = admitted.state.conversation!.id
@@ -692,9 +692,11 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
       const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
       await emit(native.directory, { id: 5101, method, params: {
-        threadId: active.conversation!.nativeSession!.nativeSessionId, turnId: active.activeTurn!.nativeTurnId, ...params,
+        threadId: active.conversation!.nativeSession!.nativeSessionId,
+        turnId: kind === 'standalone-form' ? null : active.activeTurn!.nativeTurnId, ...params,
       } })
       const pending = await until(async () => (await readAgent()).pendingInteraction)
+      if (kind === 'standalone-form') assert.equal(pending.turn.nativeTurnId, undefined)
       const response: InteractionResponseValue = kind === 'questions'
         ? { answer: { answers: ['User-entered answer'] } } : { count: 2 }
       const input = { requestId: 'input-response', nativeRequestId: pending.turn.nativeRequestId!,
@@ -760,9 +762,11 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
       const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
       await emit(native.directory, { id: 5102, method, params: {
-        threadId: submission.nativeSessionId, turnId: submission.nativeTurnId, ...params,
+        threadId: submission.nativeSessionId,
+        turnId: kind === 'standalone-form' ? null : submission.nativeTurnId, ...params,
       } })
       const pending = await until(async () => (await readOperator(id)).pendingInteraction)
+      if (kind === 'standalone-form') assert.equal(pending.turn.nativeTurnId, undefined)
       const response: InteractionResponseValue = kind === 'questions'
         ? { answer: { answers: ['User-entered answer'] } } : { count: 2 }
       const input = { commandId: 'input-response', requestId: 'input-turn', nativeRequestId: pending.turn.nativeRequestId!,

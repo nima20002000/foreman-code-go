@@ -13,6 +13,7 @@ import {
   type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
   type ExecutionResult, type McpDetection, type NativeHarnessCapabilities, type NativeHarnessEvent,
   type NativeSessionReference, type PendingNativeInteraction,
+  isSessionNativeInteraction,
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
@@ -34,7 +35,7 @@ import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
-import { resolveCodexInteractionResponse, translateCodexInteraction, unsupportedCodexInteraction } from './codexInteractions.js'
+import { resolveCodexInteractionResponse, translateCodexInteraction } from './codexInteractions.js'
 import { CodexChildControls } from './codexChildControls.js'
 import type { RunSubagent } from '@graphql/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
@@ -1066,11 +1067,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return { ...unavailable('callback_lost'), state: 'recovery_required' }
     }
     if (waiting.conflictingIdentity) return { ...unavailable('identity_mismatch'), state: 'recovery_required' }
-    if (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult) return unavailable('identity_mismatch')
-    if (runtime.phase !== 'active' || runtime.starting || !runtime.qualified.schemaManifestSha256
+    const standalone = isSessionNativeInteraction(waiting.pending)
+    if (!standalone && (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult)) return unavailable('identity_mismatch')
+    if ((!standalone && runtime.phase !== 'active') || runtime.starting || !runtime.qualified.schemaManifestSha256
       || runtime.qualified.providerVersion !== session.providerVersion) return unavailable('unqualified')
     if (!this.transports.has(runtime.transport) || runtime.transport.isConnected?.() !== true) return unavailable('callback_lost')
-    const current = { ...unavailable('callback_lost'), nativeTurnId: turnId,
+    const current = { ...unavailable('callback_lost'), ...(turnId ? { nativeTurnId: turnId } : {}),
       generation: `${runtime.connectionId}:${runtime.generation}`, qualified: true }
     if (waiting.delivery !== 'pending') return { ...current, state: 'recovery_required', reason: 'response_in_flight' }
     return { ...current, state: 'available', path: 'live_callback', reason: 'live_callback' }
@@ -2165,16 +2167,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
       await runtime.transport.reject(request.id, -32000, 'Native pending-interaction limit exceeded.'); return
     }
-    if (request.method === 'mcpServer/elicitation/request' && (params.turnId === null || params.turnId === undefined)) {
-      await this.settleUnsupportedRequest(runtime, request, signature)
-      return
-    }
-    if (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult) {
+    const standalone = request.method === 'mcpServer/elicitation/request' && params.turnId == null
+    if (!standalone && (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult)) {
       await runtime.transport.reject(request.id, -32602, 'The request does not belong to the active turn.'); return
     }
     const translated = this.translateRequest(runtime, request, signature)
     if (!translated) {
-      if (await this.settleUnsupportedRequest(runtime, request, signature)) return
       await runtime.transport.reject(request.id, -32601, 'This native approval request has no supported response mapping.')
       return
     }
@@ -2189,40 +2187,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       nativeRequestId: translated.pending.turn.nativeRequestId, nativeRequestType: request.method,
       turnId: translated.pending.turn.nativeTurnId,
     })
-  }
-
-  private async settleUnsupportedRequest(runtime: Runtime, request: RpcRequest, signature: string): Promise<boolean> {
-    const unsupported = unsupportedCodexInteraction(request)
-    if (!unsupported) return false
-    const key = requestKey(runtime.generation, request.id)
-    const transport = runtime.transport
-    const params = request.params ?? {}
-    if ([...runtime.resolvedRequests.values()].filter((entry) => entry.pending).length >= MAX_INTERACTIONS) {
-      this.handleDisconnect(runtime)
-      await transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
-      return true
-    }
-    const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
-      nativeTurnId: text(params.turnId), method: request.method, generation: runtime.generation, pending: true }
-    // Reserve before writing so duplicate/conflicting callbacks cannot send again.
-    this.rememberResolvedRequest(runtime, key, reservation)
-    const activityId = `unsupported-${createHash('sha256').update(canonical([runtime.connectionId, key])).digest('hex')}`
-    this.record(runtime, 'interaction.unsupported', { threadId: runtime.session.nativeSessionId,
-      turnId: params.turnId ?? null, activityId, nativeMethod: request.method,
-      ...(text(params.itemId) ? { itemId: params.itemId } : {}),
-      code: unsupported.code, message: unsupported.message })
-    try {
-      await transport.respond(request.id, request.method, unsupported.nativeResponse)
-      reservation.pending = false
-      this.record(runtime, 'interaction.unsupported_settlement', { threadId: runtime.session.nativeSessionId,
-        turnId: params.turnId ?? null, activityId, code: unsupported.code, state: 'submitted' })
-    } catch {
-      this.record(runtime, 'interaction.unsupported_settlement', { activityId, code: unsupported.code, state: 'uncertain' })
-      // A possibly written response stays reserved; close rather than send a second response.
-      this.handleDisconnect(runtime)
-      await transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
-    }
-    return true
   }
 
   private async handleFileCall(runtime: Runtime, request: RpcRequest, nativeOutputCall = false): Promise<void> {

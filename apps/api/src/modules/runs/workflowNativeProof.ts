@@ -1,7 +1,8 @@
 import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
-import { DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type HarnessNativeEvent } from '@foreman-code/contracts'
+import { DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, isSessionNativeInteraction,
+  type HarnessExecution, type HarnessNativeEvent } from '@foreman-code/contracts'
 import { canonicalGraphJson, type GraphEvidence, type NativeGraphProjectionKey, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -181,7 +182,8 @@ export class WorkflowNativeProofServices {
       if (!history.pendingInteractions.length || incoming.result || incoming.finishedAt
         || history.correlationId !== undefined && history.correlationId !== command
         || history.pendingInteractions.some((pending) => !sameRepeatValue(pending.session, capture.session)
-          || !capture.lane!.providerId || pending.turn.nativeTurnId !== capture.lane!.providerId)) return fail('NATIVE_APPROVAL_EVIDENCE_MISMATCH')
+          || !isSessionNativeInteraction(pending)
+            && (!capture.lane!.providerId || pending.turn.nativeTurnId !== capture.lane!.providerId))) return fail('NATIVE_APPROVAL_EVIDENCE_MISMATCH')
     } else return fail('NATIVE_OBSERVATION_UNSUPPORTED')
   }
 

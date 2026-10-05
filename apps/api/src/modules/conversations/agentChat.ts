@@ -1,5 +1,5 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
-import { withInteractionResponse } from '@foreman-code/contracts'
+import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
@@ -427,8 +427,17 @@ export class AgentChatService {
         qualificationKey: commandInputHash({ principal: livePrincipal, configurationId: resolution.configuration?.id ?? null,
           availability, capabilities }).slice(7) })
     }
-    const loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
+    let loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+    const resident = this.runtimes.get(loaded.row.id)
+    if (!loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session) {
+      const pending = await resident.manager.pending(resident.session)
+      if (pending && isSessionNativeInteraction(pending)) {
+        await this.repository.pending(loaded.row.id, null, pending)
+        loaded = await this.repository.state(loaded.row.id, { recoverOverflow: true })
+        if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+      }
+    }
     const { row } = loaded
     if (loaded.hasMoreTurns) {
       availability.canSend = false
@@ -692,7 +701,8 @@ export class AgentChatService {
           const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
           const pending = row.pending_interaction
           const runtime = this.runtimes.get(id)
-          if (!pending || pending.turn.nativeRequestId !== input.nativeRequestId || !runtime?.session || !row.active_request_id) {
+          if (!pending || pending.turn.nativeRequestId !== input.nativeRequestId || !runtime?.session
+            || !row.active_request_id && !isSessionNativeInteraction(pending)) {
             throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
           }
           const offered = pending.responseOptions.find((entry) => entry.optionId === input.optionId)

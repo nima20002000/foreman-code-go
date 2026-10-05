@@ -21,12 +21,12 @@ export const CODEX_INTERACTION_SUPPORT: NativeInteractionSupport[] = [
   },
   {
     kind: 'mcp_elicitation', nativeMethod: 'mcpServer/elicitation/request', label: 'MCP forms and confirmations',
-    supported: 'Requests belonging to the active turn: URL authorization confirmations with a URL and '
+    supported: 'Session-bound requests, including standalone requests without a turn: URL authorization confirmations with a URL and '
       + 'elicitation ID, or form, openai/form and openaiForm data-entry forms validated against the requested JSON schema. '
       + 'User input is never generated automatically. '
       + 'Session or persistent allowances require explicit MCP tool approval metadata; '
       + 'ephemeral sessions do not offer session allowances.',
-    unsupported: 'Standalone elicitations without an active turn cannot be addressed by the active callback.',
+    unsupported: 'Requests without the original owned session and request callback cannot be answered.',
   },
 ]
 

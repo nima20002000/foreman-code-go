@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
-  ApprovalResponseOptionSchema, CODEX_UNSUPPORTED_INTERACTION_ERRORS,
+  ApprovalResponseOptionSchema,
   CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   PendingNativeInteractionSchema, type ApprovalResponseOption, type CodexHarnessConfiguration,
-  type NativeSessionReference, type CodexUnsupportedInteractionCode,
+  type NativeSessionReference,
   NativeQuestionSchema, NativeInteractionInputSchema, withInteractionResponse,
 } from '@foreman-code/contracts'
 import { canonical } from './codexProtocol.js'
@@ -21,7 +21,8 @@ export function translateCodexInteraction(context: {
 }, request: RpcRequest) {
   const params = request.params ?? {}
   const turnId = text(params.turnId)
-  if (!turnId || params.threadId !== context.session.nativeSessionId) return undefined
+  const standalone = request.method === 'mcpServer/elicitation/request' && params.turnId == null
+  if ((!turnId && !standalone) || params.threadId !== context.session.nativeSessionId) return undefined
   // Native RPC IDs may repeat after cold attach; connection identity fences new opaque IDs.
   const nativeRequestId = `${context.session.nativeSessionId}:${turnId}:${request.method}:${context.connectionId}:${codexRequestKey(context.generation, request.id)}`
   const responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }> = new Map()
@@ -105,7 +106,7 @@ export function translateCodexInteraction(context: {
   const options = [...responses.values()].map((value) => value.option)
   CodexSessionCompatibilitySchema.parse({ configuration: context.configuration, responseOptions: options })
   const pending = PendingNativeInteractionSchema.parse({
-    session: context.session, turn: { nativeTurnId: turnId, nativeRequestId },
+    session: context.session, turn: { ...(turnId ? { nativeTurnId: turnId } : {}), nativeRequestId },
     nativeRequestType: request.method, request: params, responseOptions: options,
   })
   return { pending, responses }
@@ -119,19 +120,6 @@ export function resolveCodexInteractionResponse(
   if (option.input?.kind === 'questions') return { answers: option.response }
   if (option.input?.kind === 'form') return { ...stored.nativeResponse, content: option.response }
   return stored.nativeResponse
-}
-
-/** Called only after translation has found no supported response. */
-export function unsupportedCodexInteraction(request: RpcRequest): {
-  code: CodexUnsupportedInteractionCode; message: string; nativeResponse: JsonObject
-} | undefined {
-  const params = request.params ?? {}
-  if (request.method !== 'mcpServer/elicitation/request' || params.turnId !== null && params.turnId !== undefined) {
-    return undefined
-  }
-  const code = 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED'
-  const nativeResponse = { action: 'decline', content: null, _meta: null }
-  return { code, message: CODEX_UNSUPPORTED_INTERACTION_ERRORS[code], nativeResponse }
 }
 
 function addCommandDecision(

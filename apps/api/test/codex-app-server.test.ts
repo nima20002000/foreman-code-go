@@ -1043,18 +1043,24 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await finish(f.directory, session.nativeSessionId); await result
   })
 
-  it('declines standalone elicitations without attaching them to an old turn', async () => {
+  it('answers standalone elicitations explicitly without attaching them to an old turn', async () => {
     const session = await manager.createSession(source)
     for (const afterTurn of [false, true]) {
       if (afterTurn) await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' }))
       const id = afterTurn ? 4001 : 4000
       await emit(f.directory, { id, method: 'mcpServer/elicitation/request', params: { threadId: session.nativeSessionId, turnId: null,
         mode: 'url', url: 'https://example.invalid/', elicitationId: 'standalone', serverName: 'app', message: 'Authorize', _meta: null } })
-      await until(async () => (await wire()).some((entry) => entry.id === id && isObject(entry.result)))
+      const value = await pending(session)
+      assert.equal(value.turn.nativeTurnId, undefined)
+      assert.equal((await wire()).filter((entry) => entry.id === id && entry.result).length, 0)
+      const availability = await manager.inspectResponseAvailability(session, {
+        nativeRequestId: value.turn.nativeRequestId!, nativeRequestType: value.nativeRequestType,
+      })
+      assert.equal(availability.state, 'available')
+      await respond(session, value)
       assert.deepEqual((await wire()).find((entry) => entry.id === id && entry.result)!.result,
-        { action: 'decline', content: null, _meta: null })
-      assert((await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'
-        && event.payload.code === 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED'))
+        { action: 'accept', content: null, _meta: null })
+      assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
       assert.equal(await manager.pending(session), undefined)
     }
   })

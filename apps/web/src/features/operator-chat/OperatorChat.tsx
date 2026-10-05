@@ -362,7 +362,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
     && Boolean(setup.data.configurationVersionId)
   const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
-  const requestId = conversation?.activeRequestId
+  const requestId = conversation?.activeRequestId ?? conversation?.pendingInteraction?.turn.nativeRequestId
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message

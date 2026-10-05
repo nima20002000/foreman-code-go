@@ -505,9 +505,10 @@ export class PostgresAgentChatRepository {
       where conversation_id=$1 and intent='steer' and native_turn_id=$2 and delivery='accepted'`, [id, nativeTurnId, delivery])
   }
 
-  async pending(id: string, requestId: string, pending: PendingNativeInteraction | undefined): Promise<void> {
+  async pending(id: string, requestId: string | null, pending: PendingNativeInteraction | undefined): Promise<void> {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and pending_interaction is distinct from $3::jsonb`, [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
+      where id=$1 and active_request_id is not distinct from $2 and pending_interaction is distinct from $3::jsonb`,
+    [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
   }
   async requestCancel(id: string, requestId: string, query: Queryable = this.pool): Promise<boolean> {
     return (await query.query(`update operator_conversations set cancel_requested=true,turn_state='canceling',revision=revision+1,updated_at=now()
