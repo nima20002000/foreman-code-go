@@ -26,6 +26,8 @@ import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
+import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
@@ -152,6 +154,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       try {
         await database.migrate()
         await checkpoints.setup()
+        const settings = new PostgresSettingsRepository(pool)
+        const defaults = await settings.getHarnessDefaults()
+        await settings.saveHarnessDefaults({ ...defaults, claude: {
+          harness: 'claude', model: 'claude-haiku-4-5-20251001', authMode: 'subscription',
+          configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
+          tools: [], permissionRules: [], instructions: '', mcpServers: {},
+        } })
         const production = buildProductionApp(config, database, checkpoints, false)
         const startupErrors: Array<{ code: string; detail?: string }> = []
         const start = production.engine.start.bind(production.engine)
@@ -171,6 +180,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         app = production.app
         await production.initialize()
+        expect((await settings.getHarnessDefaults()).claude?.model).toBe('claude-haiku-4-5-20251001')
         await app.listen({ host: config.host, port: config.port })
         const fixture = makeCurrentWorkflowFixture(`nim2691-native-${randomUUID()}`, scenario.form)
         const configurations = fixture.configurations.map((original, index) => AgentConfigurationVersionSchema.parse({

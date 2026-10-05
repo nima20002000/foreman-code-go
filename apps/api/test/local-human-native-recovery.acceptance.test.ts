@@ -38,7 +38,7 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
     const operators = new PostgresOperatorRepository(db.pool)
     const initial = await operators.ensure()
     const { operator, configuration } = await operators.update({ harness: 'codex',
-      model: process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna', reasoningEffort: 'medium', sandbox: 'read-only',
+      model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only',
       serviceTier: 'standard', advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
     }, initial.configuration.id)
     const repository = new PostgresOperatorConversationRepository(db.pool)
