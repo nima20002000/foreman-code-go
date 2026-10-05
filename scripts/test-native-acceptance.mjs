@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
 
@@ -24,14 +25,24 @@ export function nativeAcceptanceConfiguration(environment) {
   }
 }
 
-export function nativeAcceptanceFiles(args) {
-  if (args.length === 0) return ['test/eng03-c-native.acceptance.test.ts']
-  const [option, ...files] = args
-  if (option !== '--files' || files.length === 0 || files.some((file) =>
-    !/^test\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.acceptance\.test\.ts$/.test(file))) {
+export function nativeAcceptanceFiles(arguments_) {
+  if (!arguments_.length) return [
+    'test/eng03-c-native.acceptance.test.ts',
+    'test/local-human-native.acceptance.test.ts',
+    'test/local-human-native-recovery.acceptance.test.ts',
+  ]
+  if (arguments_[0] !== '--files' || arguments_.length < 2) {
     throw new Error('Use --files followed by explicit API acceptance test paths.')
   }
-  return [...new Set(files)]
+  const files = [...new Set(arguments_.slice(1).map(file =>
+    file.startsWith('apps/api/') ? file.slice('apps/api/'.length) : file))]
+  for (const file of files) {
+    if (!/^test\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.acceptance\.test\.ts$/.test(file)
+      || posix.normalize(file) !== file || !statSync(join(root, 'apps/api', file)).isFile()) {
+      throw new Error(`Invalid acceptance test file: ${file}`)
+    }
+  }
+  return files
 }
 
 export function nativeAcceptanceVitestArguments(files, environment) {
@@ -82,15 +93,19 @@ async function main() {
     configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
       const environment = { ...nativeAcceptanceEnvironment(process.env),
         RUN_ENG03_C_NATIVE_TESTS: '1',
+        RUN_REAL_HARNESS_TESTS: '1',
         ENG03_A_TEST_DATABASE_URL: databaseUrl,
         ENG03_A_OPENCODE_BINARY: opencode,
         ENG03_A_EVIDENCE_DIR: evidence,
+        NIM2691_REAL_NATIVE: '1',
+        NIM2691_POSTGRES: '1',
+        NIM2691_ADMIN_DATABASE_URL: databaseUrl,
       }
       delete environment.TEST_DATABASE_URL
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
           'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-          'vitest', ...nativeAcceptanceVitestArguments(files, environment),
+          'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
         ], { cwd: root, env: environment, stdio: 'inherit' })
         child.once('error', reject)
         child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))

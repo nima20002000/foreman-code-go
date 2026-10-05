@@ -1,7 +1,7 @@
 # Local production on Linux
 
 From a desktop session, with Node 22+, the pinned Corepack/pnpm runtime, Docker
-Compose, user systemd, and `/usr/bin/google-chrome` installed:
+Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
 
 ```sh
 corepack pnpm production:install
@@ -34,9 +34,10 @@ application menu has a **Foreman Code** launcher, with the same SVG used for its
 icon, browser favicon, web manifest, and the Companion launcher. Chrome remains
 owned by the user; closing its window does not stop the API.
 
-This installer creates no browser account or login secret. Integrate the implicit
-local-user change before verifying ready-to-work startup. MCP still requires its
-existing bearer credentials, roles, grants, and harness security. Host installation
+The dashboard opens with implicit local human access, without a browser account
+or login secret. The API attributes credential-free requests to their local
+socket and process owners; agent clients still need their MCP credentials.
+MCP retains its bearer credentials, roles, grants, and harness security. Host installation
 is an OS-user operation, outside Operator MCP. The installer selects
 `FOREMAN_CODE_LOCAL_PRODUCTION=1` (legacy `GRAPHQL_LOCAL_PRODUCTION=1` remains supported): loopback production enables local harnesses through
 the same provider, account, model, approval and sandbox qualification used at

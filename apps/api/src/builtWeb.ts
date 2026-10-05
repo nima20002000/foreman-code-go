@@ -21,7 +21,7 @@ export async function registerBuiltWeb(app: FastifyInstance, root: string): Prom
   })
   const shellRoutes = [
     '/', '/workspaces', '/workspaces/*', '/settings', '/settings/*',
-    '/account', '/terminal', '/approvals', '/sign-in', '/setup',
+    '/account', '/terminal', '/approvals',
   ]
   for (const path of shellRoutes) {
     app.get(path, async (_request, reply) => reply.sendFile('index.html'))

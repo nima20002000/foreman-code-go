@@ -56,9 +56,30 @@ test('acceptance retains the general test database fallback when no native datab
   assert.equal(configuration.opencodeBinary, undefined)
 })
 
-test('acceptance selects explicit files and retains the default lifecycle gate', () => {
+test('the native gate includes local-human isolation and production recovery by default', () => {
+  assert.deepEqual(nativeAcceptanceFiles([]), [
+    'test/eng03-c-native.acceptance.test.ts',
+    'test/local-human-native.acceptance.test.ts',
+    'test/local-human-native-recovery.acceptance.test.ts',
+  ])
+})
+
+test('an explicit native gate selects only its requested files', () => {
+  const file = 'test/local-human-native-recovery.acceptance.test.ts'
+  assert.deepEqual(nativeAcceptanceFiles(['--files', file, `apps/api/${file}`]), [file])
+})
+
+test('native selection rejects empty, unknown and non-acceptance inputs', () => {
+  for (const arguments_ of [
+    ['--files'], ['--start-at', 'test/local-human-native.acceptance.test.ts'],
+    ['--files', 'apps/api/test/../test/local-human-native.acceptance.test.ts'],
+    ['--files', 'apps/api/test/local-human.integration.test.ts'],
+    ['--files', 'apps/api/test/missing.acceptance.test.ts'],
+  ]) assert.throws(() => nativeAcceptanceFiles(arguments_))
+})
+
+test('acceptance selects explicit API qualification files', () => {
   const file = 'test/opencode-qualification.acceptance.test.ts'
-  assert.deepEqual(nativeAcceptanceFiles([]), ['test/eng03-c-native.acceptance.test.ts'])
   assert.deepEqual(nativeAcceptanceFiles(['--files', file, file]), [file])
 })
 
@@ -73,6 +94,6 @@ test('acceptance runs a selected case and leaves the complete gate as its defaul
 test('acceptance rejects empty selections, broad filters and paths outside API tests', () => {
   for (const args of [['--files'], ['--files', 'opencode'], ['--files', '../test/opencode.acceptance.test.ts'],
     ['--files', 'test/../opencode.acceptance.test.ts'], ['--testNamePattern', 'qualification']]) {
-    assert.throws(() => nativeAcceptanceFiles(args), /explicit API acceptance test paths/)
+    assert.throws(() => nativeAcceptanceFiles(args))
   }
 })

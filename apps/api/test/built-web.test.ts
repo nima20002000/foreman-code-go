@@ -31,7 +31,7 @@ describe('built web hosting', () => {
     for (const url of [
       '/', '/workspaces', '/workspaces/workspace-1/workflows', '/workspaces/workspace-1/jobs',
       '/settings/harnesses',
-      '/account', '/terminal', '/approvals', '/sign-in', '/setup',
+      '/account', '/terminal', '/approvals',
     ]) {
       const response = await app.inject({ url })
       expect(response.statusCode).toBe(200)
@@ -56,7 +56,8 @@ describe('built web hosting', () => {
   it('preserves API, MCP and missing asset errors and rejects traversal', async () => {
     const app = await fixture()
     expect((await app.inject({ url: '/health/ready' })).json()).toMatchObject({ status: 'ok' })
-    for (const url of ['/api/missing', '/mcp', '/health/missing', '/assets/missing.js', '/assets/%2e%2e/%2e%2e/package.json']) {
+    for (const url of ['/api/missing', '/mcp', '/health/missing', '/sign-in', '/setup',
+      '/assets/missing.js', '/assets/%2e%2e/%2e%2e/package.json']) {
       const response = await app.inject({ url, headers: { accept: 'text/html' } })
       expect(response.statusCode).toBe(404)
       expect(response.json()).toMatchObject({ error: { code: 'NOT_FOUND' } })

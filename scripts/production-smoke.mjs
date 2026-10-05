@@ -83,6 +83,16 @@ let postgresStopped = false
 try {
   await waitForReady()
   assert.equal((await request('/health/live')).status, 200)
+  if (process.env.GRAPHQL_WEB_DIST) {
+    const dashboard = await fetch(`http://127.0.0.1:${port}/workspaces`, {
+      credentials: 'omit', signal: AbortSignal.timeout(2000),
+    })
+    assert.equal(dashboard.status, 200)
+    assert.match(dashboard.headers.get('content-type'), /text\/html/)
+    assert.match(await dashboard.text(), /\/assets\//)
+    for (const path of ['/sign-in', '/setup']) assert.equal((await request(path)).status, 404)
+    console.log('Compiled local dashboard: /workspaces=200; retired authentication pages=404')
+  }
   const human = await request('/api/local-human')
   assert.equal(human.status, 200)
   assert.equal(human.body.principal.id, 'principal-local-human')
