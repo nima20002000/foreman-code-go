@@ -24,7 +24,8 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
     exit: () => undefined, send: (value: unknown, callback?: () => void) => {
       ipc.push(value)
       if (callback && (value as { operation: string }).operation === 'native_exit') flushed.push(callback)
-    }, stdout: { write: (chunk: unknown) => output.push(chunk) }, stderr: { write: (chunk: unknown) => output.push(chunk) },
+    }, stdout: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
+    stderr: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
   })
   records.set('/private/intent.json', JSON.stringify({ format: 1, id, boot, owner: 'same-lease', controlKey: 'a'.repeat(64) }))
   function stat(pid: number, ticks: string) {
@@ -103,6 +104,8 @@ describe('guardian actual child observation receipts', () => {
     expect(f.records.get('/private/restart-detached.json')).toBe(detached)
     f.process.connected = false
     f.process.emit('disconnect')
+    f.process.stdout.emit('error', { code: 'EPIPE' })
+    f.process.stderr.emit('error', { code: 'EPIPE' })
     f.native.stdout.emit('data', 'detached-output')
     f.native.stderr.emit('data', 'detached-error')
     expect(f.output).toEqual(['original-output'])

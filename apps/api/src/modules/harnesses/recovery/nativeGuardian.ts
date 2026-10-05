@@ -115,6 +115,8 @@ function stopAfterNativeExit() {
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
 process.on('disconnect',()=>{if(!detached)stop()})
+process.stdout.on('error',error=>{if(!detached||error.code!=='EPIPE')stop()})
+process.stderr.on('error',error=>{if(!detached||error.code!=='EPIPE')stop()})
 process.on('uncaughtException',stop)
 process.on('unhandledRejection',stop)
 process.on('message',input=>{
