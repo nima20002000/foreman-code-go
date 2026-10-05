@@ -70,5 +70,5 @@ export async function interruptActiveQualification(input: {
   }
   await exited
   if (failure) throw failure
-  return { outcome: input.outcome, exitCode: null, signal: 'SIGKILL', finishedAt: new Date().toISOString() }
+  return { outcome: input.outcome, exitCode: null, signal: null, finishedAt: new Date().toISOString() }
 }
