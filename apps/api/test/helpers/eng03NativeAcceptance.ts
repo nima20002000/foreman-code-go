@@ -333,12 +333,31 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
         if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
-        return config.harness === 'codex'
-          ? new CodexAppServerSessionManager(codexBinary, undefined, undefined, registry.scope(`execution:${context.executionId}`))
-          : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
-            processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
-            ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
-            ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
+        if (config.harness === 'codex') {
+          const manager = new CodexAppServerSessionManager(codexBinary, undefined, undefined,
+            registry.scope(`execution:${context.executionId}`))
+          const measure = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
+            const began = performance.now()
+            const startedAt = new Date().toISOString()
+            try { return await operation() }
+            finally {
+              const entries = (evidence.nativePreparation ??= []) as unknown[]
+              if (entries.length < 64) entries.push({ executionId: context.executionId, phase, startedAt,
+                elapsedMs: Math.round(performance.now() - began) })
+            }
+          }
+          const capabilities = manager.capabilities.bind(manager)
+          manager.capabilities = (signal) => measure('capabilities', () => capabilities(signal))
+          const inspect = manager.inspectMcpConfiguration.bind(manager)
+          manager.inspectMcpConfiguration = (cwd, signal) => measure('mcp_configuration', () => inspect(cwd, signal))
+          const create = manager.createSession.bind(manager)
+          manager.createSession = (source, signal) => measure('session_create', () => create(source, signal))
+          return manager
+        }
+        return new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
+          processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
+          ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
+          ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
       })
       const validateContinuation = continuationValidator(livePool, locations)
       const workerCredentials = new WorkerCredentialService(livePool, new PostgresAccessService(livePool))
@@ -617,8 +636,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
           result: execution.result, nativeSessionId: execution.nativeSessionId }
       })
-      const events = await pool.query<{ execution_id: string; type: string; occurred_at: string }>(
-        `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at
+      const events = await pool.query<{ execution_id: string; type: string; occurred_at: string; item_type: string | null }>(
+        `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at,
+           record#>>'{payload,item,type}' as item_type
          from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
          order by execution_id,sequence`, [runId]).catch(() => undefined)
       evidence.failureNativeEvents = events?.rows

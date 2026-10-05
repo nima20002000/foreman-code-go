@@ -256,7 +256,8 @@ export async function qualifyCodex(
     && normalizeHarnessVersion('codex', actual) !== normalizeHarnessVersion('codex', expectedVersion))) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'The installed Codex version has no qualified protocol profile.')
   }
-  if (requireAuthentication) {
+  const authenticate = async () => {
+    if (!requireAuthentication) return
     const auth = await command(['login', 'status'])
     if (auth.exitCode !== 0 || !`${auth.stdout}\n${auth.stderr}`.includes('Logged in using ChatGPT')) {
       throw new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED', 'Managed ChatGPT authentication is required for execution, not for device-code login.')
@@ -266,8 +267,19 @@ export async function qualifyCodex(
   try {
     const stable = join(directory, 'stable')
     const experimental = join(directory, 'experimental')
-    const stableResult = await command(['app-server', 'generate-json-schema', '--out', stable])
-    if (stableResult.exitCode !== 0) throw new Error('Codex schema generation failed.')
+    // Independent diagnostics share no files. Drain all processes before removing their directories.
+    const checks = await Promise.allSettled([
+      authenticate(),
+      command(['app-server', 'generate-json-schema', '--out', stable]).then((result) => {
+        if (result.exitCode !== 0) throw new Error('Codex schema generation failed.')
+      }),
+      command(['app-server', 'generate-json-schema', '--experimental', '--out', experimental]).then((result) => {
+        if (result.exitCode !== 0) throw new Error('Codex experimental schema generation failed.')
+      }),
+    ])
+    for (const check of checks) {
+      if (check.status === 'rejected') throw check.reason
+    }
     const stableBytes = await readFile(join(stable, BUNDLE))
     // Codex precomputed exports can differ only in harmless JSON formatting.
     const sorted = JSON.parse(canonical(JSON.parse(stableBytes.toString('utf8')))) as unknown
@@ -276,8 +288,6 @@ export async function qualifyCodex(
     if (schema && !candidates.some((bytes) => gitBlob(bytes) === schema.stableGitBlob)) {
       throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', `The installed stable protocol does not match upstream ${actual}.`)
     }
-    const generated = await command(['app-server', 'generate-json-schema', '--experimental', '--out', experimental])
-    if (generated.exitCode !== 0) throw new Error('Codex experimental schema generation failed.')
     const measuredManifest = await manifest(experimental)
     const bundle = object(JSON.parse(await readFile(join(experimental, BUNDLE), 'utf8')), 'CODEX_SCHEMA_INVALID')
     const protocol = protocolFromBundle(bundle)

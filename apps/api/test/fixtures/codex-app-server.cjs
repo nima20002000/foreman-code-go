@@ -19,6 +19,11 @@ const processDisabledMcp = new Set(args.flatMap((argument, index) => {
 }))
 log({ cli: args })
 if (args[0] === '--version') { console.log(read('version.json', 'codex-cli 0.154.0')); process.exit(0) }
+if (flag('diagnostic-barrier') && (args[0] === 'login' || args[1] === 'generate-json-schema')) {
+  const wait = new Int32Array(new SharedArrayBuffer(4))
+  while (!flag('release-diagnostics')) Atomics.wait(wait, 0, 0, 10)
+  log({ diagnosticCompleted: args })
+}
 if (args[0] === 'login') {
   if (flag('logged-out')) { console.error('Not logged in'); process.exit(1) }
   console.log('Logged in using ChatGPT'); process.exit(0)

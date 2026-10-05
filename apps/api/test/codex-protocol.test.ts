@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, it } from 'vitest'
 
 import { assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION, type QualifiedCodex } from '../src/modules/harnesses/codexProtocol.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { calls, errorCode, fixture, fixtureProtocol, type Fixture } from './fixtures/codex-test-helpers.js'
+import { calls, errorCode, fixture, fixtureProtocol, until, type Fixture } from './fixtures/codex-test-helpers.js'
 
 let f: Fixture
 
@@ -22,6 +22,24 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope),
       (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
     assert.equal(await registry.closeOwner(owner), true)
+  })
+
+  it('starts independent authentication and schema checks together and drains them before rejecting a schema', async () => {
+    await writeFile(join(f.directory, 'diagnostic-barrier'), '')
+    const checking = qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true)
+    const rejected = assert.rejects(checking, (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
+    try {
+      const started = await until(async () => {
+        const diagnostics = (await calls(f.directory)).filter((entry) => Array.isArray(entry.cli)
+          && (entry.cli[0] === 'login' || entry.cli.includes('generate-json-schema')))
+        return diagnostics.length === 3 && diagnostics
+      })
+      assert.equal(started.length, 3)
+    } finally {
+      await writeFile(join(f.directory, 'release-diagnostics'), '')
+      await rejected
+    }
+    assert.equal((await calls(f.directory)).filter((entry) => Array.isArray(entry.diagnosticCompleted)).length, 3)
   })
 
   it.each([QUALIFIED_CODEX_VERSION, '0.154.0'])('keeps schema verification after matching version %s', async expectedVersion => {
