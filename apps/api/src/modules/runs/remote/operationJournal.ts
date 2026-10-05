@@ -24,6 +24,7 @@ import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } fr
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 import { acquireJournalOwner } from './journalOwner.js'
+import { hasPositiveRemoteEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
 
 const ControlDeliverySchema = z.object({
   operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),
@@ -592,7 +593,9 @@ export class RemoteOperationJournal {
       const receipt = await this.archivedReceipt(data, operationId) ?? this.receipt(data, operationId)
       evidence = RemoteTerminalEvidenceSchema.parse(evidence)
       if (receipt.terminal) { if (!same(receipt.terminal, evidence)) throw new Error('Conflicting terminal evidence'); return receipt }
-      if (evidence.kind !== 'not_started' && !receipt.native) throw new Error('Native ownership evidence required')
+      const entryClosed = hasPositiveRemoteEntryClosure({ ...receipt, terminal: evidence })
+      if (evidence.entryClosure && !entryClosed) throw new Error('Original native entry closure evidence required')
+      if (evidence.kind !== 'not_started' && !receipt.native && !entryClosed) throw new Error('Native ownership evidence required')
       if (evidence.kind === 'not_started' && (receipt.entryAttempted || receipt.native || !receipt.stopFence || !['received', 'stop_requested'].includes(receipt.phase))) throw new Error('Non-entry not proven')
       receipt.terminal = evidence; receipt.phase = 'confirmed_terminal'; receipt.sequence++; return receipt
     })

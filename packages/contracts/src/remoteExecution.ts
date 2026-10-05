@@ -5,6 +5,7 @@ export { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 import { ExecutionResultSchema, NativeSessionReferenceSchema } from './index.js'
 import { DispatchIntentSchema, OwnerControlSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import { RemoteEntryClosureSchema } from './remoteExecutionEntryClosure.js'
 
 /** Ephemeral exact main-owned worker MCP lease; never journaled or logged. */
 export const RemoteApplicationAccessSchema = z.object({
@@ -29,6 +30,7 @@ export const RemoteTerminalEvidenceSchema = z.object({
   closureEvidenceDigest: PlacementDigestSchema,
   resultDigest: PlacementDigestSchema.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(), artifactDigests: z.array(PlacementDigestSchema).max(128).optional(),
+  entryClosure: RemoteEntryClosureSchema.optional(),
 }).strict()
 export type RemoteTerminalEvidence = z.infer<typeof RemoteTerminalEvidenceSchema>
 export const RemoteInteractionTargetSchema = z.object({ interactionId: z.string().min(1), interactionRevision: z.string().regex(/^[1-9][0-9]*$/), nativeInteractionId: z.string().min(1), native: RemoteNativeIdentitySchema }).strict()

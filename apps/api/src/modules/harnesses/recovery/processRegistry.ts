@@ -15,6 +15,7 @@ import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
 import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
+import { NativeProcessObservationSchema } from '@graphql/contracts/remote-execution-entry-closure'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
 export interface NativeProcessRecovery {
@@ -159,6 +160,7 @@ function closedRecord(directory: string, launch: LaunchRecord): boolean {
 }
 
 function retiredOwner(directory: string, owner: string, id?: string): boolean {
+  if (id && closedObservation(directory, owner, id)) return true
   const value = readRecord(join(directory, 'retired.json'))
   if (value === undefined) return false
   const row = recordObject(value)
@@ -166,6 +168,15 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
     throw new Error('Invalid native retirement receipt.')
   }
   return id === undefined || row.id === id
+}
+
+function closedObservation(directory: string, owner: string, id: string): NativeLaunchObservation | undefined {
+  const raw = readRecord(join(directory, `closed-${id}.json`))
+  if (raw === undefined) return undefined
+  const observation = NativeProcessObservationSchema.parse(raw)
+  if (observation.owner !== owner || observation.launchId !== id || observation.lifecycle !== 'closed'
+    || !observation.closureEvidence) throw new Error('Invalid original native close observation.')
+  return Object.freeze(raw as NativeLaunchObservation)
 }
 
 function retireRegistration(directory: string, launch: LaunchRecord): void {
@@ -190,7 +201,12 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
   }
   const ownerDirectory = dirname(directory)
   // One compact receipt preserves "known closed" versus "no evidence" after GC.
-  writeRecord(join(ownerDirectory, 'retired.json'), { format: 2, owner: launch.owner, id: launch.id })
+  const observation = nativeRegistryProjection(dirname(ownerDirectory)).retirementObservation(directory)
+  if (!observation || observation.lifecycle !== 'closed') throw new Error('Native closure observation is unavailable.')
+  writeRecord(join(ownerDirectory, `closed-${launch.id}.json`), observation)
+  writeRecord(join(ownerDirectory, 'retired.json'), {
+    format: 2, owner: launch.owner, id: launch.id, observation,
+  })
   const retired = join(ownerDirectory, `.retired-${launch.id}`)
   renameSync(directory, retired)
   syncDirectory(ownerDirectory)
@@ -212,6 +228,7 @@ function inventory(directory: string, owner: string): string[] {
     const ids: string[] = []
     for (const id of readdirSync(directory)) {
       if (id === 'retired.json') { retiredOwner(directory, owner); continue }
+      if (/^closed-[0-9a-f-]{36}\.json$/.test(id)) continue
       if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
         privateDirectory(join(directory, id))
         rmSync(join(directory, id), { recursive: true })
@@ -254,6 +271,11 @@ export class NativeProcessRegistry {
   scope(owner: string): NativeProcessRecovery {
     if (!owner.trim() || owner.length > 4096) throw new Error('Invalid process owner.')
     return { root: this.root, owner }
+  }
+  closedRegistration(owner: string, launchId: string): NativeLaunchObservation | undefined {
+    const scope = this.scope(owner)
+    if (!/^[0-9a-f-]{36}$/.test(launchId)) throw new Error('Invalid native registration.')
+    return closedObservation(join(scope.root, key(owner)), owner, launchId)
   }
   /** Allocate before authorizing native submission, not at child_process.spawn.
    * A dead original parent plus this durable intent and no dispatch is positive

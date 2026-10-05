@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile, access,rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -15,7 +17,12 @@ import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
 import * as installedInspection from '../../harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
-import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { bootIdentity, processIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { writeRecord } from '../../harnesses/recovery/storage.js'
+import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
+import { remoteWorkflowProcessDigest } from './workflowPhysicalReadout.js'
+import { hasPositiveRemoteEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { readInstalledWorkflowConfiguration } from './installedWorkflowConfiguration.js'
 import { captureInstalledWorkflowNativeOwner, settleInstalledWorkflowNativeOwner, closeInstalledNativeOutputWriters,
@@ -38,7 +45,8 @@ import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
-import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
+import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,
+  assertOriginalPhysicalDirectories, pagePhysicalReadout } from './workflowPhysicalReadout.js'
 import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifetime } from './workflowPhysicalVerification.js'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
@@ -46,6 +54,8 @@ import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../repeatResolution.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
+import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
+import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
@@ -559,6 +569,168 @@ describe('actual anchored runtime leaf filesystem',()=>{
     await expect(access(f.request.runtimeDirectory)).rejects.toThrow()
   })
 })
+
+async function restartedInstalledFixture(options: { acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
+  const f = await sourceFixture()
+  const runtimeLeaf = await attestInstalledWorkflowRuntimeLeaf(f)
+  const originalConnection = DeviceConnectionIdentitySchema.strip().parse({ ...f.context.binding, bootId: randomUUID() })
+  const registryRoot = join(f.root, 'workflow-native-processes')
+  const registry = new NativeProcessRegistry(registryRoot)
+  const owner = `execution:${f.intent.executionId}`
+  const launchId = randomUUID()
+  const parent = processIdentity(process.pid)!
+  const guardian = { pid: 50001, startTicks: '101', group: 50001, session: 50001, state: 'S' }
+  const provider = { pid: 50002, startTicks: '102' }
+  const boundary = { kind: 'cgroup-v2' as const, path: `/sys/fs/cgroup/graphql-native-${launchId}`, device: '1', inode: '2' }
+  const path = join(registryRoot, createHash('sha256').update(owner).digest('hex'), launchId)
+  const shared = { format: 1, id: launchId, owner, boot: originalConnection.bootId }
+  writeRecord(join(path, 'intent.json'), { ...shared, parent, controlKey: 'a'.repeat(64) })
+  writeRecord(join(path, 'birth.json'), { ...shared, guardian, containment: boundary })
+  writeRecord(join(path, 'provider.json'), { ...shared, guardian, provider, capture: 'captured' })
+  const launch: NativeLaunchObservation = { owner, launchId, bootId: originalConnection.bootId,
+    guardian: { pid: guardian.pid, startTicks: guardian.startTicks }, provider, boundary, lifecycle: 'active' }
+  const session: NativeSessionReference = { harness: 'codex', nativeSessionId: 'original-session', providerVersion: '0.154.0' }
+  const native = { sessionId: session.nativeSessionId,
+    processIdentityDigest: remoteWorkflowProcessDigest(originalConnection, f.intent, launch) }
+  const journalPath = join(f.root, 'workflow-operations.json')
+  const journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
+  journals.push(journal)
+  await journal.accept(f.intent, originalConnection, randomUUID())
+  await journal.reserveEntry(f.intent.operationId)
+  if (options.acknowledged !== false) {
+    await journal.acknowledgeStart(f.intent.operationId, native)
+    await journal.reserveTurn(f.intent.operationId, { correlationId: `execution:${f.intent.executionId}`, promptDigest: 'b'.repeat(64) })
+    await journal.acknowledgeTurn(f.intent.operationId, 'original-turn')
+    await journal.markRunning(f.intent.operationId)
+  }
+  const recovery = new InstalledWorkflowRecovery(join(f.root, 'workflow-recovery'), registry)
+  recovery.rememberEntry({ version: 1, intent: f.intent, connection: originalConnection, owner, initialLaunchId: launchId })
+  if (options.sessionCaptured !== false) {
+    recovery.remember({ version: 1, intent: f.intent, connection: originalConnection, native, session,
+      launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(launch), runtimeLeaf,
+      approvedRoots: f.approvedRoots,
+      source: { record: f.nativePlacement.materialization, workingTree: f.nativePlacement.workingTree } })
+  }
+  const file = join(f.root, 'workflow.json')
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, codexBinary: '/unit/codex', appMcpLauncher: '/unit/launcher.mjs',
+    expectedVersion: '0.154.0', payloadPaths: [] }), { mode: 0o600 })
+  let authorized = true
+  const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, bootId: f.context.binding.bootId,
+    pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
+      workerInstallationId: f.context.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      endpoint: 'wss://unit.invalid/device', mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64),
+      expiresAt: '2099-01-01T00:00:00.000Z' }, configuration: { path: file, ownerUid: process.getuid!() },
+    currentBinding: () => f.context.binding, captureRequest: () => ({ binding: f.context.binding,
+      request: async payload => {
+        if (!authorized) throw new Error('Main denied recovery')
+        const request = ExecutionAuthorityRequestSchema.parse(payload)
+        return { payload: { version: 1, action: request.action, operationId: request.intent.operationId,
+          attemptId: request.intent.attemptId, bindingHash: request.intent.bindingHash, owner: request.intent.owner } }
+      } }), sources: f.sources, approvedRoots: async () => f.approvedRoots,
+    codexSuiteRevision: 'codex-live-4', signal: new AbortController().signal }
+  const startHost = async () => {
+    const host = await createInstalledWorkflowHost(options)
+    if (host.kind !== 'configured') throw new Error('Installed recovery host is unavailable')
+    return host
+  }
+  return { ...f, journal, journalPath, registry, recovery, native, launch, session, startHost,
+    deny: () => { authorized = false }, allow: () => { authorized = true } }
+}
+
+describe('installed worker cold recovery', () => {
+  it.each([false, true])('closes entry interrupted before ACK with session capture %s, retaining the same outcome after restart', async sessionCaptured => {
+    const f = await restartedInstalledFixture({ acknowledged: false, sessionCaptured })
+    await f.journal.close()
+    const host = await f.startHost()
+    let payload: unknown
+    try {
+      payload = (await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload
+      expect(payload).toMatchObject({ status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true,
+        turnEntryAttempted: false, terminal: { kind: 'cancelled' } } })
+      const receipt = RemoteOperationReceiptSchema.parse((payload as { receipt: unknown }).receipt)
+      if (sessionCaptured) expect(receipt.native).toEqual(f.native)
+      else {
+        expect(receipt.native).toBeUndefined()
+        expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)
+        expect(receipt.terminal?.entryClosure?.launches).toEqual([{ ...f.launch, lifecycle: 'closed', closureEvidence: 'linux_boot_changed' }])
+      }
+    } finally { await host.close() }
+    const restarted = await f.startHost()
+    try {
+      expect((await restarted.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload)
+        .toEqual(payload)
+    } finally { await restarted.close() }
+  })
+  it('requires authenticated Main authority before closing the retained original owner', async () => {
+    const f = await restartedInstalledFixture()
+    await f.journal.close()
+    const host = await f.startHost()
+    const launch = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex')
+    f.deny()
+    try {
+      await expect(host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .rejects.toThrow('Main denied recovery')
+      expect(f.registry.snapshot().launches[0]?.lifecycle).toBe('closure-unconfirmed')
+      f.allow()
+      const completedRequest = new AbortController()
+      const reply = await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement },
+        { ...f.context, signal: completedRequest.signal })
+      completedRequest.abort(new Error('Carrier request completed'))
+      expect(reply.payload).toMatchObject({ status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true,
+        native: { ...f.native, turnId: 'original-turn' }, terminal: { kind: 'cancelled' } } })
+      const status = reply.payload as { receipt: { sequence: number } }
+      const physical = await host.extensions[0]!.handle!({ method: 'physical-readout', intent: f.intent, placement: f.placement,
+        receiptSequence: status.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) }, f.context)
+      expect(physical.payload).toMatchObject({ session: f.session, launch: f.launch,
+        observation: { lifecycle: 'closed', closureEvidence: 'linux_boot_changed' },
+        closure: { ownerClosed: true }, launchIntent: f.intent })
+      expect(launch).not.toHaveBeenCalled()
+      expect(inspect).not.toHaveBeenCalled()
+      const registryModule = new URL('../../harnesses/recovery/processRegistry.ts', import.meta.url).href
+      const script = `
+        const { NativeProcessRegistry } = await import(${JSON.stringify(registryModule)});
+        process.stdout.write(JSON.stringify(new NativeProcessRegistry(process.argv[1]).snapshot()));
+      `
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script,
+        f.registry.scope(f.launch.owner).root], { stdio: ['ignore', 'pipe', 'pipe'] })
+      let serialized = ''
+      let errors = ''
+      child.stdout.on('data', chunk => { serialized += String(chunk) })
+      child.stderr.on('data', chunk => { errors += String(chunk) })
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      expect(exitCode, errors).toBe(0)
+      expect(JSON.parse(serialized).launches).toContainEqual({ ...f.launch,
+        lifecycle: 'closed', closureEvidence: 'linux_boot_changed' })
+      await host.close()
+      const restarted = await f.startHost()
+      try {
+        expect((await restarted.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload)
+          .toEqual(reply.payload)
+      } finally { await restarted.close() }
+    } finally { await host.close() }
+  })
+  it('preserves the original completed result while reconciling registry closure after restart', async () => {
+    const f = await restartedInstalledFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: 'original provider answer' } }
+    const terminal = { kind: 'completed' as const, result, resultDigest: commandInputHash(result).slice('sha256:'.length),
+      closureEvidenceDigest: commandInputHash({ intent: f.intent, native: { ...f.native, turnId: 'original-turn' },
+        launch: f.launch, physicalOwnerClosed: true }).slice('sha256:'.length) }
+    await f.recovery.rememberOutput(f.intent.operationId, { kind: 'text-only', result })
+    await f.journal.terminal(f.intent.operationId, terminal)
+    const before = await f.journal.status(f.intent.operationId)
+    await f.journal.close()
+    const host = await f.startHost()
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'history', intent: f.intent, placement: f.placement }, f.context)
+      expect(reply.payload).toMatchObject({ status: before, history: { terminalResult: result,
+        terminalTurn: { correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } } })
+    } finally { await host.close() }
+  })
+})
 describe('lazy installed worker host qualification boundary',()=>{
   it('cannot turn a local version selection into Main qualification, journal entry or native launch',async()=>{
     const f=await sourceFixture(),binary=join(f.root,'codex'),file=join(f.root,'installed-workflow.json')
@@ -720,19 +892,22 @@ async function constructionFixture() {
   const n = nativeFixture()
   const currentBinding = vi.fn(() => binding)
   const openJournal = vi.fn(async () => journal)
+  let applicationChannel: DeviceApplicationChannel | undefined
   const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, bootId: binding.bootId,
     pairing: { formatVersion: 1, mainId: binding.mainId, deviceId: binding.deviceId,
       workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision,
       authorizationRevision: binding.authorizationRevision, endpoint: 'wss://unit.invalid/device',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' },
     configuration: { path: file, ownerUid: process.getuid!() }, currentBinding,
-    captureRequest: () => ({ binding, request: readMain }), sources: f.sources, approvedRoots: async () => f.approvedRoots,
+    captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding, request: readMain },
+    sources: f.sources, approvedRoots: async () => f.approvedRoots,
     codexSuiteRevision: 'codex-live-4', signal: new AbortController().signal, registry: n.registry, journal: openJournal }
   const host = await createInstalledWorkflowHost(options)
   if (host.kind !== 'configured') throw new Error('Expected configured installed host')
   const handler = host.extensions[0]!.handle!
   return { ...f, registry: n.registry, session: n.session, launch: n.launch, snapshot: n.snapshot,
     host, handler, journal, readMain, inspect, currentBinding, openJournal,
+    setApplicationChannel: (channel: DeviceApplicationChannel) => { applicationChannel = channel },
     deny: () => { authorized = false } }
 }
 
@@ -753,6 +928,116 @@ function delayedFacts(readMain: Awaited<ReturnType<typeof constructionFixture>>[
 }
 
 describe('installed workflow construction concurrency', () => {
+  it('authorizes and delivers Stop through the installed handler while all worker-to-Main ordinary slots are occupied', async () => {
+    const f = await constructionFixture()
+    class Socket extends EventEmitter {
+      bufferedAmount = 0
+      peer?: Socket
+      closed = false
+      send(text: string) {
+        queueMicrotask(() => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) })
+      }
+      close() {
+        if (this.closed) return
+        this.closed = true
+        this.emit('close')
+        this.peer?.close()
+      }
+    }
+    const rawMain = new Socket()
+    const rawWorker = new Socket()
+    rawMain.peer = rawWorker
+    rawWorker.peer = rawMain
+    const mainSocket = adaptDeviceSocket(rawMain)
+    const workerSocket = adaptDeviceSocket(rawWorker)
+    const occupied = deferred()
+    const release = deferred()
+    let entered = 0
+    const authority = vi.fn(async (payload: unknown) => {
+      if (payload === 'occupied') {
+        if (++entered === 8) occupied.resolve()
+        await release.promise
+        return { payload: null }
+      }
+      return f.readMain(payload)
+    })
+    const mainRegistrations: DeviceExtensionRegistration[] = [
+      { namespace: 'execution-v1', version: 1, role: 'client', maxJsonBytes: DEVICE_APPLICATION_JSON_BYTES, maxBinaryBytes: 0 },
+      { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server', handle: authority },
+      { ...WORKER_MCP_EXTENSION, role: 'server', handle: payload => f.readMain(payload) },
+    ]
+    const extensions = negotiateDeviceExtensions(extensionDescriptors(mainRegistrations), extensionDescriptors(f.host.extensions))
+    const parent = new AbortController()
+    const main = new DeviceApplicationChannel({ side: 'main', binding: f.context.binding, socket: mainSocket,
+      signal: parent.signal, extensions, registrations: mainRegistrations })
+    const worker = new DeviceApplicationChannel({ side: 'worker', binding: f.context.binding, socket: workerSocket,
+      signal: parent.signal, extensions, registrations: f.host.extensions })
+    f.setApplicationChannel(worker)
+    const readers = [main.run(mainSocket.messages[Symbol.asyncIterator](), 2000),
+      worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+    for (const reader of readers) void reader.catch(() => {})
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
+      residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
+      assertCurrent: () => {},
+    })
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue({ events: [], pendingInteractions: [],
+      correlationId: `execution:${f.intent.executionId}` })
+    const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+      f.snapshot.mockReturnValue({ revision: 'snapshot:closed', launches: [{ ...f.launch,
+        lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      return true
+    })
+    const pending: Promise<unknown>[] = []
+    try {
+      await main.request('execution-v1', { method: 'prepare', intent: f.intent, placement: f.placement,
+        request: f.request, executionPlacement: f.nativePlacement, applicationAccess: { kind: 'scoped-worker-mcp',
+          token: 'unit-main-owned-token', executionId: f.intent.executionId, agentId: f.request.configuration.agentId,
+          operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash } })
+      pending.push(...Array.from({ length: 8 }, () => worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'occupied')))
+      for (const request of pending) void request.catch(() => {})
+      await occupied.promise
+      await expect(worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'ordinary')).rejects.toThrow('backpressure')
+      const status = await f.journal.status(f.intent.operationId)
+      if (status.status !== 'known') throw new Error('Expected original operation')
+      const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
+        operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+        bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: status.receipt.native, action: { kind: 'stop' } }
+      const frame = { method: 'control', intent: f.intent, placement: f.placement, command }
+      const originalAuthority = authority.getMockImplementation()!
+      authority.mockImplementation(async payload => {
+        const parsed = ExecutionAuthorityRequestSchema.safeParse(payload)
+        if (parsed.success && parsed.data.action === 'stop') throw new Error('Original grant revoked')
+        return originalAuthority(payload)
+      })
+      await expect(main.request('execution-v1', frame)).rejects.toThrow()
+      expect(cancel).not.toHaveBeenCalled()
+      authority.mockImplementation(originalAuthority)
+      await expect(main.request('execution-v1', frame)).resolves.toMatchObject({ payload: { status: 'known',
+        receipt: { phase: 'confirmed_terminal', terminal: { kind: 'cancelled' } } } })
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(create).toHaveBeenCalledOnce()
+      expect(authority.mock.calls.filter(([raw]) => {
+        const parsed = ExecutionAuthorityRequestSchema.safeParse(raw)
+        return parsed.success && parsed.data.action === 'stop'
+      }).length).toBeGreaterThan(1)
+    } finally {
+      release.resolve()
+      await Promise.allSettled(pending)
+      parent.abort()
+      await Promise.allSettled(readers)
+      await f.host.close()
+    }
+  })
+
   it('delivers original history, ACK and Stop while another execution waits for Main facts', async () => {
     const f = await constructionFixture()
     const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
@@ -1025,6 +1310,68 @@ async function physicalFixture(relativeCwd='') {
     entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs}
 }
 describe('original physical source selectors and Main SQL consumer',()=>{
+  it.each(['closed', 'live', 'wrong owner', 'different closure'] as const)(
+    'admits reboot readback only for original boot closure: %s', async state => {
+      const f = await physicalFixture()
+      if (state !== 'live') {
+        await f.journal.revokeFence(f.intent.operationId)
+        const original = await f.journal.status(f.intent.operationId)
+        if (original.status !== 'known') throw new Error('Expected original native owner')
+        await f.journal.terminal(f.intent.operationId, { kind: 'cancelled',
+          closureEvidenceDigest: commandInputHash({ intent: f.intent, native: original.receipt.native,
+            launch: f.captured.launch, physicalOwnerClosed: true }).slice('sha256:'.length) })
+        const terminal = await f.journal.status(f.intent.operationId)
+        if (terminal.status !== 'known') throw new Error('Expected terminal original owner')
+        f.readout.receipt = terminal.receipt
+        f.readout.observation = { ...f.captured.launch, lifecycle: 'closed',
+          closureEvidence: state === 'different closure' ? 'cgroup_v2_empty' : 'linux_boot_changed' }
+        f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
+      }
+      f.context.binding = { ...f.context.binding, bootId: randomUUID(), connectionGeneration: 10,
+        connectionEpoch: randomUUID() }
+      f.currentBinding.mockReturnValue(f.context.binding)
+      if (state === 'wrong owner') {
+        f.readout.observation = { ...f.readout.observation, owner: 'execution:foreign' }
+        f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
+      }
+      try {
+        if (state === 'closed') {
+          const original = await f.bind()
+          await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+          expect(f.producer.passiveNativeOwner(original)).toBeUndefined()
+          expect(f.readout.receipt.connection.bootId).not.toBe(f.context.binding.bootId)
+          expect(f.readout.receipt.native).toMatchObject({ sessionId: f.session.nativeSessionId })
+        } else {
+          await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source))
+            .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        }
+        expect(f.request).toHaveBeenCalledOnce()
+      } finally {
+        await f.sqlConnection.close()
+      }
+    })
+  it('verifies the complete original terminal metadata after bounded physical readout continuation', async () => {
+    const f = await physicalFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }
+    Object.assign(f.source.history, { terminalResult: result, terminalTurn: {
+      correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } })
+    f.readout.history = f.source.history
+    const offsets: number[] = []
+    f.request.mockImplementation(async payload => {
+      const frame = payload as { metadata?: { digest: string; offset: number } }
+      offsets.push(frame.metadata?.offset ?? 0)
+      const value = pagePhysicalReadout(f.readout, frame.metadata)
+      expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThan(DEVICE_APPLICATION_JSON_BYTES)
+      return { payload: value }
+    })
+    const original = await f.bind()
+    expect(original.source).toEqual(f.source)
+    expect(offsets[0]).toBe(0)
+    expect(offsets.length).toBeGreaterThan(1)
+    expect(offsets.slice(1).every((offset, index) => offset > offsets[index]!)).toBe(true)
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+    await f.sqlConnection.close()
+  })
   it('retains byte-bounded page and event selectors without copying the entire native history', async () => {
     const f = await physicalFixture()
     const events = Array.from({ length: 80 }, (_, sequence) => ({ sequence, type: 'native.notification',
