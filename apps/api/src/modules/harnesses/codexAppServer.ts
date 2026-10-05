@@ -37,6 +37,9 @@ import {
 } from './codexProtocol.js'
 import { resolveCodexInteractionResponse, translateCodexInteraction } from './codexInteractions.js'
 import { CodexChildControls } from './codexChildControls.js'
+import { codexInputDeliveryEvidence } from './codexResponseDelivery.js'
+import { responseValueDigest, type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import type { RunSubagent } from '@graphql/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
@@ -181,6 +184,9 @@ interface Runtime extends TurnSnapshot {
   interactions: Map<string, WaitingRequest>
   resolvedRequests: Map<string, ResolvedRequest>
   rejectedStarts: Map<string, ExecutionResult>
+  responseDecisions: Map<string, { pending: PendingNativeInteraction; option: ApprovalResponseOption;
+    nativeResponse: JsonObject }>
+  responseDeliveries: Map<string, NativeResponseDeliveryEvidence>
   events: NativeHarnessEvent[]
   eventSizes: number[]
   eventBytes: number
@@ -406,6 +412,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     dependencies: CodexSessionDependencies = { mode: 'native' },
     private readonly inspection: CodexInspectionOptions = {},
     private readonly nativeOutputs?: CodexNativeOutputs,
+    private readonly responseJournal?: NativeResponseJournal,
   ) {
     const defaults: CodexSessionOperations = {
       transport: (...args) => new CodexStdioTransport(...args),
@@ -1093,11 +1100,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     // Synchronous reservation prevents two competing responses from both writing.
     waiting.delivery = 'submitting'
     waiting.selectedOptionId = stored.option.optionId
+    runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse })
+    this.record(runtime, 'interaction.submitting', { nativeRequestId, optionId: option.optionId })
     try {
       await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
+      this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId,
+        semantic: stored.option.semantic, responseDigest: responseValueDigest(option.response) })
       if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
         waiting.delivery = 'submitted'
-        this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId, semantic: stored.option.semantic })
       }
       const resolved = await deadline(waiting.resolution, signal, undefined, this.dependencies)
       if (resolved === 'cleared') throw new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'The native request was cleared; acceptance of the selected response was not confirmed.')
@@ -1128,6 +1138,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
+    this.captureResponseDeliveries(runtime)
     const all = [...runtime.interactions.values()]
     const first = all.find((entry) => entry.delivery === 'pending')
     return structuredClone({
@@ -1143,6 +1154,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         nativeRequestId: entry.pending.turn.nativeRequestId!, state: entry.delivery,
         ...(entry.selectedOptionId ? { selectedOptionId: entry.selectedOptionId } : {}),
       })),
+      responseDeliveries: [...runtime.responseDeliveries.values()],
     })
   }
 
@@ -1234,7 +1246,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal?: AbortSignal,
   ): Promise<NativeHistory> {
     signal?.throwIfAborted()
+    const durable = this.responseJournal?.read(session, response)
     const history = await this.history(session)
+    if (durable) return { ...history, responseDeliveries: [...(history.responseDeliveries ?? []), durable] }
+    if (history.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return history
     // The pinned Codex protocol's serverRequest/resolved also covers cleared
     // requests. It is NOT an acknowledgement of an exact permission choice.
     // Keep that uncertainty visible; do not synthesize a receipt or replay.
@@ -1744,6 +1759,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       finalAnswerId: undefined, lastAgentMessageId: undefined,
       interactions: new Map(), resolvedRequests: new Map(), rejectedStarts: new Map(),
+      responseDecisions: new Map(), responseDeliveries: new Map(),
       events: [], eventSizes: [], eventBytes: 0, sequence: 0,
       seenNotifications: new Set(), wake: new Set(), closed: false, disposed: false,
     }
@@ -2375,7 +2391,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.events.shift()
       runtime.eventBytes -= runtime.eventSizes.shift()!
     }
+    this.captureResponseDeliveries(runtime)
     this.wake(runtime)
+  }
+  private captureResponseDeliveries(runtime: Runtime): void {
+    for (const [id, decision] of runtime.responseDecisions) {
+      if (runtime.responseDeliveries.has(id)) continue
+      const proof = codexInputDeliveryEvidence(decision.pending, decision.option, decision.nativeResponse,
+        { events: runtime.events, pendingInteractions: [] })
+      if (!proof) continue
+      this.responseJournal?.record(proof)
+      runtime.responseDeliveries.set(id, proof)
+    }
   }
   private wake(runtime: Runtime): void {
     for (const resolve of runtime.wake) resolve()

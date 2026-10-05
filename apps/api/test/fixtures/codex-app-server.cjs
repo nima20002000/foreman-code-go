@@ -249,7 +249,19 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const started = () => {
       const persistedTurn = loadThread(owner.id).turns.find((entry) => entry.id === nativeTurn.id)
       if (!flag('hold-turn-start-ack')) result(message.id, { turn: persistedTurn })
-      if (prompt === 'approval' || prompt === 'multi') {
+      const inputRequest = read('workflow-input.json', null)
+      if (inputRequest) {
+        const id = 900 + turnNumber
+        outstanding.set(id, { threadId: owner.id, turnId: nativeTurn.id, remaining: 1, inputRequest })
+        if (inputRequest.method === 'mcpServer/elicitation/request') {
+          const item = { type: 'mcpToolCall', id: 'form-tool', server: inputRequest.params.serverName,
+            tool: 'enter_details', status: 'inProgress', arguments: {}, appContext: null, pluginId: null,
+            readOnlyHint: true, result: null, error: null, durationMs: null }
+          send({ method: 'item/started', params: { threadId: owner.id, turnId: nativeTurn.id, item, startedAtMs: 1 } })
+        }
+        send({ id, method: inputRequest.method, params: { ...inputRequest.params,
+          threadId: owner.id, turnId: nativeTurn.id } })
+      } else if (prompt === 'approval' || prompt === 'multi') {
         const pending = { threadId: owner.id, turnId: nativeTurn.id, remaining: prompt === 'multi' ? 2 : 1 }
         approval(pending, 900 + turnNumber)
         if (prompt === 'multi') { approval(pending, 900 + turnNumber); approval(pending, 1900 + turnNumber) }
@@ -290,6 +302,21 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       if (!flag('no-resolution')) send({ method: 'serverRequest/resolved', params: {
         threadId: found.threadId, requestId: message.id,
       } })
+      if (found.inputRequest && !flag('no-resolution')) {
+        const inputRequest = found.inputRequest
+        const item = inputRequest.method === 'item/tool/requestUserInput'
+          ? { type: 'functionCallOutput', id: inputRequest.params.itemId, name: 'request_user_input',
+            namespace: null, output: JSON.stringify(message.result) }
+          : { type: 'mcpToolCall', id: 'form-tool', server: inputRequest.params.serverName,
+            tool: 'enter_details', status: 'completed', arguments: {}, appContext: null, pluginId: null,
+            readOnlyHint: true, result: { content: [], structuredContent: { saved: true }, _meta: null },
+            error: null, durationMs: 1 }
+        const owner = loadThread(found.threadId)
+        owner.turns.find(value => value.id === found.turnId).items.push(item)
+        store(owner)
+        send({ method: 'item/completed', params: { threadId: found.threadId, turnId: found.turnId,
+          item, completedAtMs: 2 } })
+      }
       if (found.remaining > 0 && --found.remaining === 0 && !flag('no-resolution')) {
         complete(found.threadId, found.turnId, 'completed', `approved-${agent}`)
       }

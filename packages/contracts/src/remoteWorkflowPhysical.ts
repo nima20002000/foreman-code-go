@@ -30,7 +30,8 @@ export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() 
   interactionDeliveries: z.array(z.object({ nativeRequestId: z.string(), state: z.enum(['pending','submitting','submitted','uncertain']), selectedOptionId: z.string().optional() }).strict()).max(128).optional(),
   responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: z.lazy(() => AgentHarnessSchema),
     providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(),
-    semantic: z.lazy(() => ApprovalResponseSemanticSchema) }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),
+    semantic: z.lazy(() => ApprovalResponseSemanticSchema), responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional()
+  }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),
 }).strict()
 /** Original terminal result and its declared command association only. Canonical
  * publication receipts, saved declarations and original lifetime ownership must

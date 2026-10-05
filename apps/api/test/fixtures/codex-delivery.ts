@@ -5,6 +5,7 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../
 import { CodexStdioTransport, isObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import type { CodexChatFiles } from '../../src/modules/harnesses/codexFiles/runtime.js'
 import { calls, fixture, fixtureQualification } from './codex-test-helpers.js'
+import type { NativeResponseJournal } from '../../src/modules/harnesses/recovery/responseJournal.js'
 
 /** Native I/O uses the executable fault fixture and production stdio transport. */
 export async function deliveryFixture() {
@@ -17,8 +18,10 @@ export async function deliveryFixture() {
     "process.on('exit', () => { log({ exited: process.pid }) })\nsetInterval(() => { if (flag('idle-exit')) process.exit(19) }, 10)"))
   const managers: CodexAppServerSessionManager[] = []
   const makeManager = (files?: CodexChatFiles,
-    overrides: Omit<Partial<Extract<CodexSessionDependencies, { mode: 'native' }>>, 'mode'> = {}) => {
-    const manager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none', files, {
+    overrides: Omit<Partial<Extract<CodexSessionDependencies, { mode: 'native' }>>, 'mode'> = {},
+    options: { appMcpAccess?: 'scoped' | 'none'; responseJournal?: NativeResponseJournal } = {}) => {
+    const manager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined,
+      options.appMcpAccess ?? 'none', files, {
       mode: 'native',
       qualify: fixtureQualification,
       assertUnchanged: async () => undefined,
@@ -28,7 +31,7 @@ export async function deliveryFixture() {
       },
       id: randomUUID,
       ...overrides,
-    })
+    }, undefined, undefined, options.responseJournal)
     managers.push(manager)
     return manager
   }

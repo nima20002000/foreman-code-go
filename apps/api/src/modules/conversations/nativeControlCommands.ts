@@ -7,6 +7,7 @@ import type { ActivityScope, NativeSessionReference } from '@foreman-code/contra
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
+import { responseValueDigest } from '../interactions/delivery.js'
 
 type Outcome<State> = { acceptedControl?: AcceptedChatResponseControl; providerAcknowledgment?: ChatResponseAcknowledgment } & (
   | { status: 'pending' | 'uncertain' }
@@ -26,7 +27,8 @@ function exactAcknowledgment(control: AcceptedChatResponseControl, raw: unknown)
   return proof.success && proof.data.harness === control.native.harness && proof.data.providerVersion === control.native.providerVersion
     && proof.data.nativeSessionId === control.native.sessionId && proof.data.nativeRequestId === control.native.requestId
     && proof.data.nativeRequestType === control.native.requestType && proof.data.optionId === control.choice.optionId
-    && proof.data.semantic === control.choice.semantic ? proof.data : undefined
+    && proof.data.semantic === control.choice.semantic && (proof.data.responseDigest === undefined
+      || proof.data.responseDigest === responseValueDigest(control.choice.response)) ? proof.data : undefined
 }
 
 /**

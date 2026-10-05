@@ -59,5 +59,6 @@ export const ChatResponseAcknowledgmentSchema = z.object({
   source: z.enum(['provider_acknowledgement', 'provider_history']), harness: z.string().min(1), providerVersion: z.string().min(1),
   nativeSessionId: z.string().min(1), nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1),
   optionId: z.string().min(1), semantic: z.string().min(1),
+  responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict()
 export type ChatResponseAcknowledgment = z.infer<typeof ChatResponseAcknowledgmentSchema>

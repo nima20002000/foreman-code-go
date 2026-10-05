@@ -240,7 +240,8 @@ export class NativeHarnessFactories {
         throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output requires the original scoped workflow allocation.', 403)
       }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
-        recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs)
+        recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs,
+        this.config.responseJournal)
       this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {

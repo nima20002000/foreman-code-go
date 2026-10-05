@@ -1,4 +1,6 @@
 import { withInteractionResponse, type DurableInteraction, type NativeSessionReference } from '@foreman-code/contracts'
+import { createHash } from 'node:crypto'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */
@@ -35,6 +37,11 @@ export interface NativeResponseDeliveryEvidence {
   nativeRequestType: string
   optionId: string
   semantic: NonNullable<DurableInteraction['selectedSemantic']>
+  responseDigest?: string
+}
+
+export function responseValueDigest(value: unknown): string {
+  return createHash('sha256').update(canonicalGraphJson(value ?? null)).digest('hex')
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -121,7 +128,9 @@ export function matchingDeliveryEvidence(
     && proof.providerVersion === interaction.providerVersion
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId)
   if (sameRequest.some((proof) => proof.nativeRequestType !== interaction.nativeRequestType
-    || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic)) return undefined
+    || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic
+    || proof.responseDigest !== undefined
+      && proof.responseDigest !== responseValueDigest(object(interaction.nativeResponse)?.response))) return undefined
   const explicit = sameRequest.find((proof) =>
     (proof.source === 'provider_acknowledgement' || proof.source === 'provider_history')
     && proof.harness === interaction.harness && proof.providerVersion === interaction.providerVersion
