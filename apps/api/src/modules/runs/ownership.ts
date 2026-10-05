@@ -13,6 +13,8 @@ import { DomainError } from '../errors.js'
 export class RunOwnership {
   private lost = false
   private released = false
+  private releaseRequested = false
+  private readonly retained = new Set<{ onLost(): void }>()
 
   private graphConnection: ExclusiveGraphConnection | undefined
   private queryClient: pg.Client | undefined
@@ -85,6 +87,7 @@ export class RunOwnership {
     if (this.released || this.lost) return
     this.lost = true
     this.onLost()
+    for (const retained of this.retained) retained.onLost()
   }
 
   assertOwned(): void {
@@ -93,7 +96,26 @@ export class RunOwnership {
     }
   }
 
+  /** An admitted native review keeps this same database session until its own work drains. */
+  retain(onLost: () => void): () => Promise<void> {
+    this.assertOwned()
+    const retained = { onLost }
+    this.retained.add(retained)
+    let active = true
+    return async () => {
+      if (!active) return
+      active = false
+      this.retained.delete(retained)
+      if (this.releaseRequested && this.retained.size === 0) await this.close()
+    }
+  }
+
   async release(): Promise<void> {
+    this.releaseRequested = true
+    if (this.retained.size === 0) await this.close()
+  }
+
+  private async close(): Promise<void> {
     if (this.released) return
     this.released = true
     const finished = beginRuntimeTiming('db', 'owner.release', { runId: this.runId })

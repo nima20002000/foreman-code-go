@@ -78,6 +78,7 @@ interface OwnedNativeSession {
   reviewFinalizer?: symbol
   reviewFinishing?: boolean
   reviewOwner?: RunOwnership
+  releaseReviewOwner?: () => Promise<void>
   runOwner?: RunOwnership
   stopReviewerRenewal?: () => Promise<void>
   retainedObservationError?: unknown
@@ -309,8 +310,9 @@ export class ApprovalExecutionCoordinator {
       check()
       this.managerCredentials.delete(owned.manager)
       await owned.stopReviewerRenewal?.()
-      await owned.reviewOwner?.release()
+      await owned.releaseReviewOwner?.()
       delete owned.reviewOwner
+      delete owned.releaseReviewOwner
       this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager,
         owned.failed ? 'failed' : 'released')
       if (this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
@@ -912,11 +914,14 @@ export class ApprovalExecutionCoordinator {
 
   async releaseReviewSession(executionId: string): Promise<void> {
     const owned = this.ownedSessions.get(executionId)
-    const owner = owned?.reviewOwner
+    const release = owned?.releaseReviewOwner
     try { await this.afterReviewCommit(executionId) }
     finally {
-      if (owned) delete owned.reviewOwner
-      await owner?.release()
+      if (owned) {
+        delete owned.reviewOwner
+        delete owned.releaseReviewOwner
+      }
+      await release?.()
     }
   }
   afterReviewCommit(executionId: string): Promise<void> {
@@ -1121,20 +1126,41 @@ export class ApprovalExecutionCoordinator {
       const placementContext = await this.managerContext(execution, configuration)
       if (placementContext.acceptedPlacement?.hostRef.kind === 'device') {
         const controller = new AbortController()
-        const owner = await this.runs.acquireOwnership(execution.runId, () => controller.abort())
+        let owner = this.ownedSessions.get(execution.id)?.runOwner
+        try { owner?.assertOwned() }
+        catch (error) {
+          if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+          owner = undefined
+        }
+        let releaseOwner: () => Promise<void>
+        if (owner) releaseOwner = owner.retain(() => controller.abort())
+        else {
+          owner = await this.runs.acquireOwnership(execution.runId, () => controller.abort())
+          releaseOwner = () => owner!.release()
+        }
         if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still completing its current native operation.', 409)
         try {
           await this.recoverRetainedReviewer(execution, owner, signal, context.reviewJob)
           const owned = this.ownedSessions.get(execution.id)
           if (!owned?.session || !owned.manager.retainsReviewerSession) throw new DomainError('REVIEWER_AUTHORITY_LOST',
             'The original remote reviewer is no longer resident.', 409)
+          if (owned.reviewOwner) throw new DomainError('SESSION_LANE_BUSY', 'The reviewer already owns an active review.', 409)
           this.assertSessionIdentity(owned.session, sessionReference)
           owned.reviewOwner = owner
-          this.managers.adoptOwner?.(execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+          owned.releaseReviewOwner = releaseOwner
+          this.adoptRunOwner(owner)
           const combined = AbortSignal.any([owned.controller.signal, controller.signal, ...(signal ? [signal] : [])])
           await this.validateReviewer(owned, sessionReference, combined)
           return { manager: owned.manager, session: sessionReference, signal: combined }
-        } catch (error) { await owner.release(); throw error }
+        } catch (error) {
+          const owned = this.ownedSessions.get(execution.id)
+          if (owned?.releaseReviewOwner === releaseOwner) {
+            delete owned.reviewOwner
+            delete owned.releaseReviewOwner
+          }
+          await releaseOwner()
+          throw error
+        }
       }
     }
     // The delivery reconciler can race the Run reconciler after API restart.
@@ -1226,12 +1252,22 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  private adoptRunOwner(owner: RunOwnership): void {
+    owner.assertOwned()
+    for (const owned of this.ownedSessions.values()) {
+      if (owned.execution.runId !== owner.runId) continue
+      owned.runOwner = owner
+      this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+    }
+  }
+
   /** Cold non-terminal work selects conservative interruption, not closure.
    * A durable terminal needs only physical recovery here: its original source,
    * ACKs and finite technical retry are checked by normal same-slot re-entry.
    * Never turn missing close evidence alone into a negative Run intent. */
   async requestColdRunCleanup(owner: RunOwnership): Promise<boolean> {
     owner.assertOwned()
+    this.adoptRunOwner(owner)
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
