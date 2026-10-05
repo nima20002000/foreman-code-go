@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { isAutoJobSpec, type JobDefinition, type JobExecution } from '@foreman-code/contracts/jobs'
+import { isAutoJobSpecRecord, type JobDefinitionRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { Alert, Button, Card, CardBody, EmptyState, PageHeader } from '../../shared/ui/nocturne'
 import { jobKeys, useJobDefinitions, useJobHistory, useJobQueue } from './query'
@@ -15,13 +15,13 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
   const definitions = useJobDefinitions(workspaceId)
   const history = useJobHistory(workspaceId)
   const queue = useJobQueue(workspaceId)
-  const [editor, setEditor] = useState<{ definition?: JobDefinition } | null>(null)
-  const [launch, setLaunch] = useState<JobDefinition | null>(null)
-  return <div className="jobs-page"><PageHeader title="Jobs" description="Saved standalone build Jobs can wait for an authorized computer with capacity." actions={<Button variant="primary" onClick={() => setEditor({})}>New job</Button>} />
+  const [editor, setEditor] = useState<{ definition?: JobDefinitionRecord } | null>(null)
+  const [launch, setLaunch] = useState<JobDefinitionRecord | null>(null)
+  return <div className="jobs-page"><PageHeader title="Jobs" description="Saved builds and repository verification can wait for an authorized computer with capacity." actions={<Button variant="primary" onClick={() => setEditor({})}>New job</Button>} />
     <section aria-label="Saved jobs"><h2>Saved jobs</h2>{Boolean(definitions.error) && <Alert title="Saved jobs unavailable" tone="danger">{jobError(definitions.error)}</Alert>}
       {definitions.isPending && <p role="status">Loading jobs…</p>}
       {definitions.data?.length === 0 && <EmptyState title="No jobs saved" description="Choose a pinned source and runtime requirements. Auto selects a participating build computer at Start." />}
-      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {isAutoJobSpec(definition.spec) ? 'Auto' : definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
+      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {isAutoJobSpecRecord(definition.spec) ? 'Auto' : definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
     </section>
     <section aria-label="Job queue"><h2>Job queue</h2>
       <p>All active requests and recent completed requests in this workspace.</p>
@@ -94,7 +94,7 @@ function JobQueueRow({ ticket, onSelectExecution }: {
   </CardBody></Card>
 }
 
-export function JobRerun({ workspaceId, execution, onClose, onAccepted }: { workspaceId: string; execution: JobExecution; onClose: () => void; onAccepted: (execution: JobExecution) => void }) {
+export function JobRerun({ workspaceId, execution, onClose, onAccepted }: { workspaceId: string; execution: JobExecutionRecord; onClose: () => void; onAccepted: (execution: JobExecutionRecord) => void }) {
   const definition = useQuery({ queryKey: ['jobs', workspaceId, 'definition', execution.acceptedSpec.definitionId], queryFn: ({ signal }) => jobsClient.definition(workspaceId, execution.acceptedSpec.definitionId, { signal }), retry: jobReadRetry })
   if (definition.error) return <Alert title="Job status" tone="danger">{jobError(definition.error)} <Button onClick={onClose}>Close rerun review</Button></Alert>
   if (!definition.data) return <p role="status">Loading saved definition for rerun…</p>

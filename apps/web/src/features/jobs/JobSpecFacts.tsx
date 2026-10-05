@@ -1,7 +1,7 @@
-import { isAutoJobSpec, type JobDefinitionSpec, type AcceptedJobSpec } from '@foreman-code/contracts/jobs'
+import { isAutoJobSpecRecord, type JobDefinitionSpecRecord, type JobAcceptedSpecRecord } from '@foreman-code/contracts/job-verification'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { CodeBlock } from '../../shared/ui/nocturne'
-import { queueLabel } from './model'
+import { jobNetworkLabel, queueLabel } from './model'
 
 export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   const awaitingAssignment = ticket.placement.kind === 'auto' && ['waiting', 'blocked'].includes(ticket.state)
@@ -38,9 +38,9 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   </dl>
 }
 
-export function JobSpecFacts({ spec }: { spec: JobDefinitionSpec | AcceptedJobSpec }) {
+export function JobSpecFacts({ spec }: { spec: JobDefinitionSpecRecord | JobAcceptedSpecRecord }) {
   const policy = spec.policy
-  const target = isAutoJobSpec(spec) ? undefined : spec.target
+  const target = isAutoJobSpecRecord(spec) ? undefined : spec.target
   return <div className="job-spec">
     <h3>Exact command</h3><CodeBlock code={JSON.stringify(spec.argv)} language="json" />
     <dl className="job-facts">
@@ -48,10 +48,15 @@ export function JobSpecFacts({ spec }: { spec: JobDefinitionSpec | AcceptedJobSp
       <dt>Validated root</dt><dd>{target?.destination.canonicalProjectRoot ?? 'Resolved at Start'}</dd>
       <dt>Working directory</dt><dd>{spec.relativeCwd ?? '(materialized repository root)'}</dd>
       <dt>Source commit</dt><dd>{spec.source.commit}</dd>
-      <dt>Network</dt><dd>{policy.network}</dd>
+      <dt>Network</dt><dd>{jobNetworkLabel(policy.network)}</dd>
       <dt>Execution timeout</dt><dd>{policy.executionTimeoutMs} ms</dd>
       <dt>Inputs</dt><dd>{spec.inputs.length === 0 ? 'None' : spec.inputs.map(input => `${input.path} / ${input.fileId} / ${input.revisionId} / ${input.sha256} / ${input.byteSize} bytes`).join('\n')}</dd>
       <dt>Outputs</dt><dd>{spec.outputs.length === 0 ? 'None' : spec.outputs.map(output => `${output.path} (${output.required ? 'required' : 'optional'})`).join('\n')}</dd>
+      {'verification' in spec && <>
+        <dt>Verification suite</dt><dd>{spec.verification.suite}</dd>
+        <dt>Test workers</dt><dd>{spec.verification.parameters.unitWorkers}</dd>
+        <dt>Reserved resources</dt><dd>{spec.verification.resources.limits.cpuLimit} CPU · {Math.round(spec.verification.resources.limits.memoryBytes / 1048576)} MiB memory · {spec.verification.resources.limits.diskBytes} bytes storage</dd>
+      </>}
     </dl>
     {'computerSelection' in spec && spec.computerSelection && <p>Computer selection: {spec.computerSelection.mode === 'auto'
       ? `Auto chose an eligible computer at priority ${spec.computerSelection.buildPriority}` : 'Saved fixed computer'}.

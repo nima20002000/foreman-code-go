@@ -18,11 +18,14 @@ import {
   PreparedJobSpecRecordSchema,
   isAutoJobSpecRecord,
   jobPolicyRequirementsRecord,
+  JobOrdinaryVerificationSuiteSchema,
+  jobVerificationTemplate,
   type JobDefinitionSpecRecord,
   type ResolvedJobDefinitionSpecRecord,
   type JobExecutionRecord,
 } from '@foreman-code/contracts/job-verification'
 import { JobRuntimeProfileRecordSchema, jobRuntimeProfilePolicy, jobRuntimeProfileLimits } from '@foreman-code/contracts/job-verification-runtime'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import type { JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 import type { JobComputerCandidate, JobComputerDiscovery } from './computerSelection.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
@@ -72,7 +75,22 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     const autoPolicies = profiles.filter(profile => profile.status !== 'revoked').map(profile => ({
       policy: jobPolicyRequirementsRecord(jobRuntimeProfilePolicy(profile)), limits: jobRuntimeProfileLimits(profile),
     }))
-    return {sources,targets,policies,autoPolicies}
+    const verificationTemplates = profiles.flatMap(profile => {
+      if (profile.schemaVersion !== 2 || profile.status === 'revoked') return []
+      return profile.spec.suites.flatMap(value => {
+        const suite = JobOrdinaryVerificationSuiteSchema.safeParse(value)
+        if (!suite.success) return []
+        const measurement = profile.measurement
+        const measuredSuite = measurement?.suites.find(item => item.suite === suite.data)
+        const ready = profile.status === 'qualified' && Boolean(measurement
+          && Date.parse(measurement.expiresAt) > Date.now())
+        return [jobVerificationTemplate({ profileId: profile.id, profileRevision: profile.revision,
+          suite: suite.data, ready, policy: profile.spec.policy, resources: profile.spec.resources,
+          maxUnitWorkers: Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,
+            measuredSuite?.maxUnitWorkers ?? 1) })]
+      })
+    })
+    return {sources,targets,policies,autoPolicies,verificationTemplates}
   }
   async validateAuto(sql: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpecRecord) {
     await this.inputs.validateDeclaredJobInputs(sql, principal, workspaceId, spec.inputs)

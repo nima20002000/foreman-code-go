@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import { JobsDirectory, JobRerun } from '../features/jobs/JobsDirectory'
 import { JobResult } from '../features/jobs/JobResult'
@@ -17,7 +17,7 @@ export function JobExecutionRouteEntry() {
   const params = useParams({ strict: false })
   const workspaceId = 'workspaceId' in params ? String(params.workspaceId) : ''
   const executionId = 'jobExecutionId' in params ? String(params.jobExecutionId) : ''
-  const [rerun, setRerun] = useState<JobExecution | null>(null)
+  const [rerun, setRerun] = useState<JobExecutionRecord | null>(null)
   const navigate = useNavigate()
   return <WorkspaceShell workspaceId={workspaceId} activeSection="jobs" slots={{ main: <>
     <JobResult key={`${workspaceId}:${executionId}`} workspaceId={workspaceId} executionId={executionId} onRerun={setRerun} />

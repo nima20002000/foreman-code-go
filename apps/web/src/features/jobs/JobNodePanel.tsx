@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
-import type { JobDefinition } from '@foreman-code/contracts/jobs'
+import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Button, Card, CardBody } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
 import { useJobDefinitions } from './query'
@@ -19,7 +19,7 @@ export function JobNodePanel({ workspaceId, definitionId, definitionRevision, de
   return <Card><CardBody><h3 className="job-wrap">{definition.data.name}</h3><p>Noninteractive job · saved definition revision {definitionRevision}. No agent or provider session.</p><JobSpecFacts spec={definition.data.spec} /></CardBody></Card>
 }
 
-export function JobNodePicker({ workspaceId, onChoose }: { workspaceId: string; onChoose: (definition: JobDefinition) => void }) {
+export function JobNodePicker({ workspaceId, onChoose }: { workspaceId: string; onChoose: (definition: JobDefinitionRecord) => void }) {
   const definitions = useJobDefinitions(workspaceId)
   return <section className="job-node-picker" aria-label="Choose a saved job for this node"><h3>Saved job</h3>{Boolean(definitions.error) && <Alert title="Jobs unavailable" tone="danger">{jobError(definitions.error)}</Alert>}
     {definitions.isPending && <p role="status">Loading saved jobs…</p>}
