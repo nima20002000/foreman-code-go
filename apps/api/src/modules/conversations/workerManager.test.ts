@@ -191,8 +191,10 @@ it('retains recovered callback admission until native settlement and rechecks re
       conversationId: f.binding.owner.conversationId, workflowId: f.binding.owner.workflowId,
       workflowNodeId: f.binding.owner.workflowNodeId, workingDirectory: f.binding.workingDirectory,
       correlationId, instructionsDelivered: true })
-    await manager.reconcile(f.session, correlationId)
-    const recovery = requests.at(-1)!
+    await manager.respond(f.session, 'original-tool-request', { optionId: 'allow_once', label: 'Allow once',
+      semantic: 'approve_once', persistence: 'request', affectsOtherPendingRequests: false,
+      interruptsCurrentTurn: false, mutatesPersistentPolicy: false })
+    const recovery = requests.at(-2)!
     const callback = { method: 'conversation.claude-authority', binding: f.binding,
       admissionId: recovery.admissionId, request: { phase: 'validate', identity: {
         ownerPrincipalId: 'original-sender', attemptId: 'original-request',
@@ -211,7 +213,7 @@ it('retains recovered callback admission until native settlement and rechecks re
     await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000)))
       .rejects.toMatchObject({ status: 403 })
     expect(requests.map(request => request.method)).toEqual([
-      'conversation.open', 'conversation.reconcile', 'conversation.reconcile',
+      'conversation.open', 'conversation.reconcile', 'conversation.respond', 'conversation.reconcile',
     ])
   } finally { await manager.dispose(); bridge.close() }
 })

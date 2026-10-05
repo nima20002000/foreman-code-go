@@ -341,14 +341,25 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   async historyPage(session: NativeSessionReference, before?: string, signal?: AbortSignal) {
     return this.readHistory(session, before ? { before } : {}, signal)
   }
+  private async recoverPendingCallbacks(session: NativeSessionReference, signal?: AbortSignal) {
+    if (this.harness !== 'claude') return
+    const turns = this.receipt?.turns.filter(turn => turn.status !== 'completed' && turn.nativeSubmission) ?? []
+    if (turns.length > 1) conflict('The active native message is ambiguous.')
+    const turn = turns[0]
+    if (turn && !this.recoveredCallbacks.has(turn.correlationId)) {
+      await this.reconcile(session, turn.correlationId, signal)
+    }
+  }
   async pending(session: NativeSessionReference, signal?: AbortSignal) {
     this.assertSession(session)
+    await this.recoverPendingCallbacks(session, signal)
     const raw = await this.request({ method: 'conversation.pending', session }, signal)
     return raw == null ? undefined : PendingNativeInteractionSchema.parse(raw)
   }
   async respond(session: NativeSessionReference, nativeRequestId: string,
     option: Parameters<NativeHarnessSessionManager['respond']>[2], signal?: AbortSignal) {
     this.assertSession(session)
+    await this.recoverPendingCallbacks(session, signal)
     this.adopt(await this.request({ method: 'conversation.respond', session, nativeRequestId, option }, signal))
   }
   async reconcileResponse(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal) {
@@ -357,6 +368,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery, signal?: AbortSignal) {
     this.assertSession(session)
+    await this.recoverPendingCallbacks(session, signal)
     const value = WorkerResponseAvailabilitySchema.parse(await this.request({
       method: 'conversation.response-availability', session, query }, signal))
     return normalizeResponseAvailability(session, query, { nativeSessionId: value.nativeSessionId,
