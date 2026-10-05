@@ -36,9 +36,11 @@ it('F3/F6: live reviewer-native approval fails durably, records exact request, c
     && job.error?.code === 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED' && job.cleanup))
 })
 
-it('cold pending native approval on an unbound lane preserves cleanup without prompt replay', async () => {
+it.each(['list', 'single'] as const)('cold pending native approval on an unbound lane preserves cleanup without prompt replay: %s', async source => {
   const fixture = await reviewerFixture({ recovering: true, recoveredLane: 'unbound' })
-  fixture.setHistory({ correlationId, nativeTurnId: providerId, events: [], pendingInteractions: [permission()] })
+  fixture.setHistory({ correlationId, nativeTurnId: providerId, events: [],
+    pendingInteractions: source === 'list' ? [permission()] : [],
+    ...(source === 'single' ? { pendingInteraction: permission() } : {}) })
   const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
   assert.equal(result?.state, 'failed')
   assert.equal(result.providerTurnOrMessageId, providerId)
@@ -49,6 +51,7 @@ it('cold pending native approval on an unbound lane preserves cleanup without pr
   assert.deepEqual(fixture.cancellations, [])
   assert.equal(result.cleanup?.nativeState, 'pending')
   assert.equal(result.cleanup?.interruptState, 'not_sent')
+  assert.equal((await fixture.coordination.getLane(session.harness, session.nativeSessionId))?.currentTurnOrMessageId, undefined)
   assertNoSecrets(fixture.saved)
 })
 

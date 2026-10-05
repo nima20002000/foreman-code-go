@@ -234,7 +234,8 @@ export class ReviewerDispatcher {
           const principalId = maintenance?.principalId ?? credential?.principalId
           // Persist business failure and cleanup identity BEFORE any native side effect.
           // The failed job remains claimable until both independent cleanup duties settle.
-          await transition('failed', { error, releaseLease: false, cleanup: {
+          await transition('failed', { error, releaseLease: false,
+            ...(!evidence.identityConflict && evidence.providerId ? { providerTurnOrMessageId: evidence.providerId } : {}), cleanup: {
             nativeState: submitted ? 'pending' : 'not_started',
             credentialState: credential?.required === false ? 'not_required' : 'pending',
             ...(principalId ? { credentialPrincipalId: principalId } : {}), interruptState: 'not_sent',
@@ -337,7 +338,18 @@ export class ReviewerDispatcher {
           const trackedHistory = { ...originalHistory, events: normalizedEvents }
           delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
           tracker.observeHistory(trackedHistory)
-          const observedProviderId = tracker.snapshot().providerId
+          const historyEvidence = tracker.snapshot()
+          const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+          const requests = new Map<string, PendingNativeInteraction>()
+          for (const request of [...(pending ? [pending] : []), ...history.pendingInteractions]) {
+            requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
+          }
+          // An unbound recovered lane can report an unsupported approval, but
+          // its historical observation cannot establish native control ownership.
+          if (pending && recovering && !lane.previous.correlationId && !historyEvidence.identityConflict) {
+            return await approvalFailure(pending, [...requests.values()])
+          }
+          const observedProviderId = historyEvidence.providerId
           if (observedProviderId) await recordProviderTurn(observedProviderId)
           const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
             { type: 'history', history: originalHistory })
@@ -355,14 +367,7 @@ export class ReviewerDispatcher {
           if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
             message: 'Native history conflicts with the durable review identity. No further native response will be sent.' })
           if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
-          const pending = history.pendingInteraction ?? history.pendingInteractions[0]
-          if (pending) {
-            const requests = new Map<string, PendingNativeInteraction>()
-            for (const request of [pending, ...history.pendingInteractions]) {
-              requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
-            }
-            return await approvalFailure(pending, [...requests.values()])
-          }
+          if (pending) return await approvalFailure(pending, [...requests.values()])
           if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
             return await failReview({ code: 'REVIEW_NO_DECISION',
               message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
