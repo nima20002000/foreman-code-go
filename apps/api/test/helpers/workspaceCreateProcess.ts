@@ -14,7 +14,7 @@ interface Request {
   parentPath: string
   token: string
   input: WorkspaceCreateInput
-  interrupt: boolean
+  interrupt: boolean | 'staged'
 }
 
 process.once('message', async (request: Request) => {
@@ -34,9 +34,16 @@ process.once('message', async (request: Request) => {
         (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
       // Hold a real uncommitted command after its directory is published.
       pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
-        if (typeof args[0] === 'string' && args[0].includes('insert into workspaces')) {
+        if (request.interrupt === true && typeof args[0] === 'string' && args[0].includes('insert into workspaces')) {
           process.send!({ phase: 'provisioned' })
           return new Promise(() => {})
+        }
+        if (request.interrupt === 'staged' && typeof args[0] === 'string'
+          && args[0].startsWith('update workspace_project_provisioning set identity')) {
+          return query.apply(this, args).then(() => {
+            process.send!({ phase: 'staged' })
+            return new Promise(() => {})
+          })
         }
         return query.apply(this, args)
       } as never

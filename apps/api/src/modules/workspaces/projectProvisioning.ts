@@ -77,7 +77,8 @@ export class WorkspaceProjectProvisioning {
         where principal_id=$2 and operation='workspace.create' and command_id=$3
           and result->'workspace'->>'id'=$4 limit 1`,
       [attempt.root_path, attempt.principal_id, attempt.command_id, attempt.workspace_id])
-      if (!committed.rows.length && attempt.identity) await this.remove(attempt.root_path, attempt.identity)
+      const staged = await details(attempt.staging_path)
+      if (!committed.rows.length && attempt.identity && !staged) await this.remove(attempt.root_path, attempt.identity)
       // No final rename can occur before identity is committed. A missing
       // identity therefore refers only to the reserved internal staging name.
       await this.remove(attempt.staging_path, attempt.identity)
