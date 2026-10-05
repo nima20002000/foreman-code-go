@@ -1,4 +1,4 @@
-import { SessionPreferencesSchema, type CompactionState } from '@graphql/contracts'
+import { SessionPreferencesSchema, type CompactionState } from '@foreman-code/contracts'
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'

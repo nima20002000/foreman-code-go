@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { SessionControlRequestSchema, compactionBlocksSend, type SessionControlState, type SessionControlRequest } from '@graphql/contracts'
+import { SessionControlRequestSchema, compactionBlocksSend, type SessionControlState, type SessionControlRequest } from '@foreman-code/contracts'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionSignal } from '../../../shared/api/sessionBoundary'
 import { useConversationDraftStore } from '../conversationDraftStore'

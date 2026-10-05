@@ -4,7 +4,7 @@ import { open, readdir, realpath } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ClaudePersistedSession } from './port.js'
-import type { CompactionState } from '@graphql/contracts'
+import type { CompactionState } from '@foreman-code/contracts'
 
 export class ClaudeCompactionHistoryUnavailableError extends Error {}
 

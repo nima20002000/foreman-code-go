@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from 'node:util'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import {
   WorkerConversationRpcRequestSchema, type WorkerConversationBinding, type WorkerConversationConfiguration,
   type WorkerConversationReceipt, type WorkerConversationRpcRequest,
-} from '@graphql/contracts/remote-execution-rpc'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { NativeSessionReference } from '@graphql/contracts'
-import type { RemoteNativeIdentity } from '@graphql/contracts/remote-execution'
+} from '@foreman-code/contracts/remote-execution-rpc'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { NativeSessionReference } from '@foreman-code/contracts'
+import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../harnesses/port.js'
 import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'

@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { SessionPreferencesSchema } from '@graphql/contracts'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeSessionStart } from '../port.js'
 import { ClaudeBoundedQueue } from './queue.js'
@@ -854,7 +854,7 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
     cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
   await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
   const abort = new AbortController()
-  let state: import('@graphql/contracts').CompactionState | undefined
+  let state: import('@foreman-code/contracts').CompactionState | undefined
   const compact = f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'compact-correlation',
     onProgress: async value => { state = value } }, abort.signal)
   const message = await f.nextMessage()

@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
 import { SessionPreferencesSchema, pendingSessionControls,
-  type AgentHarness, type CompactionState, type NativeSessionReference, type SessionPreferences } from '@graphql/contracts'
-import { WorkerConversationReceiptSchema } from '@graphql/contracts/remote-execution-rpc'
+  type AgentHarness, type CompactionState, type NativeSessionReference, type SessionPreferences } from '@foreman-code/contracts'
+import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeHarnessSessionManager, NativeHistory, NativeInitialTurnInput, NativeSessionStart,
   NativeTurnInput, NativeCompactInput } from '../harnesses/port.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -15,7 +15,7 @@ import { WorkerConversationHost, type WorkerConversationHostPorts } from './work
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
-import { negotiateDeviceExtensions } from '@graphql/contracts/device-application'
+import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 
 /** Provider I/O fixture only; these cases do not qualify native installations. */
 class ProviderFixture implements NativeHarnessSessionManager {

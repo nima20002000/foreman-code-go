@@ -6,7 +6,6 @@ import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import { parseSessionCommand, sessionTaskContent } from '@foreman-code/contracts'
-import type { SessionControlRequest } from '@foreman-code/contracts'
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -72,8 +71,8 @@ export interface AgentChatManagerFactory {
   (conversationId: string, configuration: AgentConfigurationVersion, workingDirectory: string): NativeHarnessSessionManager
   recoverCompaction?(configuration: AgentConfigurationVersion, conversationId: string,
     session: NativeSessionReference, start: NativeSessionStart,
-    state: import('@graphql/contracts').CompactionState, principalId: string, signal: AbortSignal):
-    Promise<import('@graphql/contracts').CompactionState>
+    state: import('@foreman-code/contracts').CompactionState, principalId: string, signal: AbortSignal):
+    Promise<import('@foreman-code/contracts').CompactionState>
   release?(conversationId: string): void
 }
 
@@ -189,7 +188,7 @@ export class AgentChatService {
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
   private readonly sessionControls: SessionControlStore
-  private async nativeTurnSettings(id: string, mode?: import('@graphql/contracts').SessionMode) {
+  private async nativeTurnSettings(id: string, mode?: import('@foreman-code/contracts').SessionMode) {
     const settings = await this.sessionControls.turnSettings(id, mode)
     return { ...settings, onSettingsApplied: async () => {
       if (settings.sessionMode) await this.control(id, () => this.sessionControls.appliedMode(id, settings.sessionMode!))
@@ -533,7 +532,7 @@ export class AgentChatService {
         ? 'Wait for the active and queued turns and their approvals to finish.' : null,
       session, manager: runtime?.manager,
       ...(session && configuration && this.managers.recoverCompaction ? {
-        recoverCompaction: (state: import('@graphql/contracts').CompactionState) => this.managers.recoverCompaction!(
+        recoverCompaction: (state: import('@foreman-code/contracts').CompactionState) => this.managers.recoverCompaction!(
           configuration, id, session, this.startInput(row, configuration, `session-control:${id}`, true),
           state, principal.id, this.lifetime.signal),
       } : {}),

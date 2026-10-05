@@ -1,7 +1,7 @@
 import { DomainError } from '../../errors.js'
 import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteJobExecutionHost } from './jobExecutionHost.js'
-import { WorkerConversationRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
+import { WorkerConversationRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 /** Workflow, Job and chat operations share the authenticated execution-v1 carrier. */
 export function createRemoteExecutionHandler(workflows: { handle(raw: unknown): Promise<unknown> },
   jobs?: RemoteJobExecutionHost, conversations?: { handle(raw: unknown): Promise<unknown> }) {

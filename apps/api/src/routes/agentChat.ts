@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { SessionControlRequestSchema, SessionControlStateSchema } from '@graphql/contracts'
+import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import type { FastifyInstance } from 'fastify'
 
 import {

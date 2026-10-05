@@ -1,4 +1,4 @@
-import { CompactionStateSchema, type CompactionState } from '@graphql/contracts'
+import { CompactionStateSchema, type CompactionState } from '@foreman-code/contracts'
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'

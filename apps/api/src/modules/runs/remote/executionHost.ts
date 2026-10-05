@@ -1,4 +1,4 @@
-import type { SessionMode } from '@graphql/contracts'
+import type { SessionMode } from '@foreman-code/contracts'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -171,10 +171,10 @@ export class RemoteExecutionHost {
       return await resolved.manager[method](controller.signal)
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
-  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@graphql/contracts').SessionPreferences | undefined }) {
+  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
     return this.track(() => this.prepareOwned(raw))
   }
-  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@graphql/contracts').SessionPreferences | undefined }) {
+  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
       ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined

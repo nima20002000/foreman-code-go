@@ -1,5 +1,5 @@
 import { openCodeCompactionResult, openCodeContextSnapshot, openCodeSessionAgent } from './opencodeSessionControls.js'
-import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@graphql/contracts'
+import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@foreman-code/contracts'
 import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'

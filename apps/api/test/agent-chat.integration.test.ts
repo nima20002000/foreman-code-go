@@ -1,4 +1,4 @@
-import { SessionControlStateSchema, unavailableSessionControls } from '@graphql/contracts'
+import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

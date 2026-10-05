@@ -89,8 +89,8 @@ export interface NativeManagerResolver {
   /** Resolve the accepted receipt, not the caller's current route or upload owner. */
   recoverCompaction?(configuration: OperatorConfigurationVersion, conversationId: string,
     session: NativeSessionReference, start: import('../harnesses/port.js').NativeSessionStart,
-    state: import('@graphql/contracts').CompactionState, principalId: string, signal: AbortSignal):
-    Promise<import('@graphql/contracts').CompactionState>
+    state: import('@foreman-code/contracts').CompactionState, principalId: string, signal: AbortSignal):
+    Promise<import('@foreman-code/contracts').CompactionState>
   hasFileInputs?(conversationId: string, requestId: string): Promise<boolean>
   /** After durable native acknowledgement, before either file bridge issues authority. */
   recordFileSubmission?(conversationId: string, requestId: string, nativeTurnId: string): Promise<void>
@@ -173,7 +173,7 @@ export class OperatorChatService {
   private sessionControlsStore: SessionControlStore | undefined
   private sessionControls() { return this.sessionControlsStore ??= this.repository.createSessionControls() }
 
-  private async nativeTurnSettings(id: string, mode?: import('@graphql/contracts').SessionMode) {
+  private async nativeTurnSettings(id: string, mode?: import('@foreman-code/contracts').SessionMode) {
     const settings = await this.sessionControls().turnSettings(id, mode)
     return { ...settings, onSettingsApplied: async () => {
       if (settings.sessionMode) await this.control(id, () => this.sessionControls().appliedMode(id, settings.sessionMode!))
@@ -340,7 +340,7 @@ export class OperatorChatService {
     return { conversationId: id, principalId: principal.id, defaultSubject: 'application-operator', profileKey: configuration.contentHash,
       busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
       session, manager: runtime?.manager,
-      ...(session && this.managers.recoverCompaction ? { recoverCompaction: (state: import('@graphql/contracts').CompactionState) =>
+      ...(session && this.managers.recoverCompaction ? { recoverCompaction: (state: import('@foreman-code/contracts').CompactionState) =>
         this.managers.recoverCompaction!(configuration, id, session, { kind: 'operator',
           correlationId: `session-control:${id}`, configuration, workingDirectory: this.workingDirectory },
         state, principal.id, this.lifetime.signal) } : {}), pendingCapabilities: pendingSessionControls(configuration.harness) }

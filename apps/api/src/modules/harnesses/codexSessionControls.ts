@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { CompactionState, ContextSnapshot, SessionMode } from '@graphql/contracts'
+import type { CompactionState, ContextSnapshot, SessionMode } from '@foreman-code/contracts'
 
 export function codexCollaborationMode(mode: SessionMode, model: string, effort: string) {
   return { mode: mode === 'plan' ? 'plan' : 'default',

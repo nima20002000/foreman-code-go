@@ -1,4 +1,4 @@
-import type { ContextSnapshot } from '@graphql/contracts'
+import type { ContextSnapshot } from '@foreman-code/contracts'
 
 export function mergeContextSnapshot(previous: ContextSnapshot | null, incoming: ContextSnapshot,
   sessionId: string, model: string | null): ContextSnapshot | null {

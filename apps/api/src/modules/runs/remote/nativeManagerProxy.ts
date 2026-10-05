@@ -1,4 +1,4 @@
-import { CompactionStateSchema, ContextSnapshotSchema, SessionControlCapabilitiesSchema, SessionPreferencesSchema, type ContextSnapshot, type SessionPreferences } from '@graphql/contracts'
+import { CompactionStateSchema, ContextSnapshotSchema, SessionControlCapabilitiesSchema, SessionPreferencesSchema, type ContextSnapshot, type SessionPreferences } from '@foreman-code/contracts'
 import type { NativeCompactInput } from '../../harnesses/port.js'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -123,7 +123,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     await input.onProgress(value.compaction)
     return value.compaction
   }
-  async reconcileCompaction(session: NativeSessionReference, state: import('@graphql/contracts').CompactionState, signal?: AbortSignal) {
+  async reconcileCompaction(session: NativeSessionReference, state: import('@foreman-code/contracts').CompactionState, signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
     const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(

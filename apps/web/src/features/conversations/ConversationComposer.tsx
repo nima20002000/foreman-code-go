@@ -1,4 +1,4 @@
-import { parseSessionCommand, type SessionMode } from '@graphql/contracts'
+import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { SessionControls } from './sessionControls/SessionControls'
 import { useSlashCommandMenu } from './sessionControls/useSlashCommandMenu'
 import type { ComposerSessionControls } from './sessionControls/useSessionControls'

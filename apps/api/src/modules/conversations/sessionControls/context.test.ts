@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { ContextSnapshot } from '@graphql/contracts'
+import type { ContextSnapshot } from '@foreman-code/contracts'
 import { mergeContextSnapshot } from './context.js'
 const context: ContextSnapshot = { nativeSessionId: 'session', model: 'model', generation: 'connection', sequence: 4,
   source: 'codex', accuracy: 'native', usedTokens: 100, capacityTokens: null, lifetimeTokens: 400, cost: null,

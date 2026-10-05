@@ -1,6 +1,6 @@
-import type { AgentChatContext } from '@graphql/contracts/agent-chat'
+import type { AgentChatContext } from '@foreman-code/contracts/agent-chat'
 import { agentChatRoot } from './agentChat'
-import { SessionControlRequestSchema, SessionControlStateSchema, type SessionControlRequest } from '@graphql/contracts'
+import { SessionControlRequestSchema, SessionControlStateSchema, type SessionControlRequest } from '@foreman-code/contracts'
 import { apiClient, type RequestOptions } from './client'
 import { agentChatConversationPath } from './agentChat'
 

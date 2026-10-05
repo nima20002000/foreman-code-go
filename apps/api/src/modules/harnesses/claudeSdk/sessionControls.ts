@@ -1,5 +1,5 @@
-import type { ContextSnapshot, SessionPreferences } from '@graphql/contracts'
-import { SessionPreferencesSchema } from '@graphql/contracts'
+import type { ContextSnapshot, SessionPreferences } from '@foreman-code/contracts'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../errors.js'
 
 export class ClaudePreferenceError extends HarnessExecutionError {

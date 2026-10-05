@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { SessionControlStateSchema, unavailableSessionControls, type CompactionState } from '@graphql/contracts'
+import { SessionControlStateSchema, unavailableSessionControls, type CompactionState } from '@foreman-code/contracts'
 import { afterEach, describe, it } from 'vitest'
 import { agentChatCorrelation } from '../src/modules/conversations/agentChatRepository.js'
 import { context, deferred, eventually, fixture } from './helpers/agentChatF1.js'

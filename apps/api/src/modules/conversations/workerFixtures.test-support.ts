@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS,
-  type AgentHarness } from '@graphql/contracts'
-import { WorkerConversationBindingSchema } from '@graphql/contracts/remote-execution-rpc'
+  type AgentHarness } from '@foreman-code/contracts'
+import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 
 /** Protocol data only; it contains no installed/native qualification. */
 export function workerConversationFixture(kind: 'operator' | 'agent' = 'operator', harness: AgentHarness = 'codex') {

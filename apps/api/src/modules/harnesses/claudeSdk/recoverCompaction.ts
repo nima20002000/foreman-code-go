@@ -1,4 +1,4 @@
-import type { CompactionState } from '@graphql/contracts'
+import type { CompactionState } from '@foreman-code/contracts'
 import { readClaudeCompactionResult } from './compactionResults.js'
 import { readClaudeCompactionHistory, recoveredClaudeCompaction, ClaudeCompactionHistoryUnavailableError } from './compactionHistory.js'
 

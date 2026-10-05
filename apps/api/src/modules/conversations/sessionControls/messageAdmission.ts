@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { SessionControlStateSchema, compactionBlocksSend, parseSessionCommand, type SessionMode } from '@graphql/contracts'
+import { SessionControlStateSchema, compactionBlocksSend, parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { DomainError } from '../../errors.js'
 
 /** Called under the existing conversation row lock, in the message transaction. */

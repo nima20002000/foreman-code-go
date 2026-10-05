@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { pendingSessionControls } from './sessionControlDefaults.js'
 it('offers first-turn Plan without claiming native application or model capacity', () => {
   const controls = pendingSessionControls(DEFAULT_HARNESS_DEFAULTS.codex)

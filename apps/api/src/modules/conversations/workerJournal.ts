@@ -1,9 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences } from '@graphql/contracts'
-import type { NativeMessageSubmission } from '@graphql/contracts/claude'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { RemoteNativeIdentity } from '@graphql/contracts/remote-execution'
-import type { WorkerConversationBinding, WorkerConversationReceipt } from '@graphql/contracts/remote-execution-rpc'
+import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences } from '@foreman-code/contracts'
+import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
+import type { WorkerConversationBinding, WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
 
 interface ConversationStore {

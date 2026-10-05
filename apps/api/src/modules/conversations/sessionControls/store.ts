@@ -6,8 +6,8 @@ import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
   compactionBlocksSend, unavailableSessionControls,
   type SessionControlState, type SessionControlRequest, type NativeSessionReference, type SessionControlCapabilities,
-} from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+} from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { DomainError } from '../../errors.js'
 import { NativeConversationControlCommands } from '../nativeControlCommands.js'

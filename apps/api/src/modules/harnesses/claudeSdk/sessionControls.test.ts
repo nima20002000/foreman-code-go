@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { SessionPreferencesSchema } from '@graphql/contracts'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { claudeSessionEnvironment, claudeContextSnapshot, claudeContextProfiles } from './sessionControls.js'
 
 it('compiles Off locally without disabling manual compaction and removes overrides on Default', () => {

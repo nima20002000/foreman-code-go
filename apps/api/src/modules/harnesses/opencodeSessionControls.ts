@@ -1,4 +1,4 @@
-import type { CompactionState, ContextSnapshot, SessionMode } from '@graphql/contracts'
+import type { CompactionState, ContextSnapshot, SessionMode } from '@foreman-code/contracts'
 import type { OpenCodeMessage } from './opencodeProtocol.js'
 
 export function openCodeSessionAgent(mode: SessionMode | undefined, regularAgent: string): string {

@@ -1,4 +1,4 @@
-import { unavailableSessionControls, type HarnessConfiguration, type SessionControlCapabilities } from '@graphql/contracts'
+import { unavailableSessionControls, type HarnessConfiguration, type SessionControlCapabilities } from '@foreman-code/contracts'
 
 /** Preferences for a not-yet-created native session are desired, never applied. */
 export function pendingSessionControls(configuration: HarnessConfiguration): SessionControlCapabilities {

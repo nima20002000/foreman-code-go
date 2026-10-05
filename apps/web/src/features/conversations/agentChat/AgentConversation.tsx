@@ -1,6 +1,6 @@
 import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSessionControls } from '../sessionControls/useSessionControls'
-import { parseSessionCommand, type SessionMode } from '@graphql/contracts'
+import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'

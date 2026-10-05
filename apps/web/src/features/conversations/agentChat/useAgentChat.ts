@@ -1,4 +1,4 @@
-import type { SessionMode } from '@graphql/contracts'
+import type { SessionMode } from '@foreman-code/contracts'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient, type MutationFilters } from '@tanstack/react-query'
 import type { ManagementAction } from '@foreman-code/contracts/management'

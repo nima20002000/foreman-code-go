@@ -1,5 +1,5 @@
 import { pendingSessionControls } from '../../harnesses/sessionControlDefaults.js'
-import { SessionPreferencesSchema } from '@graphql/contracts'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'

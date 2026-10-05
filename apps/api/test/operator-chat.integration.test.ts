@@ -1,6 +1,6 @@
 import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
-import { SessionPreferencesSchema } from '@graphql/contracts'
-import { SessionControlStateSchema, unavailableSessionControls } from '@graphql/contracts'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
+import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
@@ -271,7 +271,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       let reads = 0
       const resolver = Object.assign(() => { throw new Error('Read allocated an execution manager') }, {
         recoverCompaction: async (_configuration: unknown, _id: string, session: NativeSessionReference,
-          _start: unknown, state: import('@graphql/contracts').CompactionState) => {
+          _start: unknown, state: import('@foreman-code/contracts').CompactionState) => {
           reads++
           expect(session.nativeSessionId).toBe(before.nativeSessionId)
           return { ...state, status: 'completed' as const, message: 'Context compacted' }

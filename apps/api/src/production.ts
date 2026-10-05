@@ -824,9 +824,9 @@ export function buildProductionApp(
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
   const recoverChatCompaction = async (
-      configuration: import('@graphql/contracts').OperatorConfigurationVersion | import('@graphql/contracts').AgentConfigurationVersion,
-      conversationId: string, session: import('@graphql/contracts').NativeSessionReference,
-      start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@graphql/contracts').CompactionState,
+      configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
+      conversationId: string, session: import('@foreman-code/contracts').NativeSessionReference,
+      start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@foreman-code/contracts').CompactionState,
       principalId: string, signal: AbortSignal,
     ) => {
       if (session.harness === 'claude') return recoverPersistedClaudeCompaction(state)

@@ -1,4 +1,4 @@
-import { SessionControlRequestSchema, SessionControlStateSchema } from '@graphql/contracts'
+import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import {
   OperatorChatSetupSchema, OperatorChatSetupQuerySchema, OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,

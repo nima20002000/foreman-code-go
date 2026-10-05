@@ -1,7 +1,7 @@
-import { AgentChatQuerySchema } from '@graphql/contracts/agent-chat'
+import { AgentChatQuerySchema } from '@foreman-code/contracts/agent-chat'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { SessionControlRequestSchema, SessionControlStateSchema } from '@graphql/contracts'
+import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -17,7 +17,7 @@ export function registerSessionControlTools(server: McpServer, context: Operator
     })
     const get = `${role}_chat_controls_get` as const
     const update = `${role}_chat_controls_update` as const
-    const read = async (conversationId: string | undefined, workspaceId?: string, selector?: import('@graphql/contracts/agent-chat').AgentChatQuery, executionId?: string) => {
+    const read = async (conversationId: string | undefined, workspaceId?: string, selector?: import('@foreman-code/contracts/agent-chat').AgentChatQuery, executionId?: string) => {
       if (role === 'operator') return context.services.operatorChat!.readSessionControls(id.parse(conversationId), context.principal)
       if (!conversationId && selector) return context.services.agentChat!.readContextControls(context.principal, { workspaceId: id.parse(workspaceId), ...selector }, executionId)
       return context.services.agentChat!.readSessionControls(context.principal, id.parse(workspaceId), id.parse(conversationId))
