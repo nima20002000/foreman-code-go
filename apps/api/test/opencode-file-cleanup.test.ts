@@ -13,6 +13,7 @@ import { OpenCodeFileCleanupError } from '../src/modules/harnesses/opencodeFiles
 import { object } from '../src/modules/harnesses/opencodeProtocol.js'
 import { FixtureServer, json } from './opencode-fixtures.js'
 import { createChatFileBackend, fileContext, fileSignal, hasFileCode } from './support/opencodeChatFileFixture.js'
+import { fileToolFixture } from './support/fileTools.js'
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'opencode-cleanup-'))
@@ -157,6 +158,9 @@ describe('OpenCode owned file cleanup', () => {
 })
 
 it('retains a native write between snapshot validation and replacement, including writes through an open descriptor', async () => {
+  const files = await fileToolFixture()
+  const preserveVersion = (input: Parameters<typeof files.service.preserveAccepted>[1], signal: AbortSignal) =>
+    files.service.preserveAccepted(files.context, input, signal)
   const root = await mkdtemp(join(tmpdir(), 'opencode-replacement-'))
   const original = Buffer.from('base')
   const revision: FileRevision = { fileId: randomUUID(), revisionId: randomUUID(), filename: 'working.md',
@@ -171,6 +175,7 @@ it('retains a native write between snapshot validation and replacement, includin
     }
   }
   const host = new RacingHost({ root, executionHostId: 'runner', maxFileBytes: 1024,
+    preserveVersion,
     assertSourceIsolation: async () => undefined })
   const handle = randomUUID()
   try {
@@ -183,6 +188,7 @@ it('retains a native write between snapshot validation and replacement, includin
     await host.remove(handle)
 
     const ordinary = new LocalOpenCodeExecutionFiles({ root, executionHostId: 'runner', maxFileBytes: 1024,
+      preserveVersion,
       assertSourceIsolation: async () => undefined })
     const file = await ordinary.materialize({ handle, revision, bytes: original, writable: true }, fileSignal())
     const writer = await open(file.path, 'r+')

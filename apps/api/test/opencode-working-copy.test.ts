@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -12,6 +12,7 @@ async function workingCopy() {
   const f = await fileToolFixture()
   const root = await mkdtemp(join(tmpdir(), 'opencode-working-copy-'))
   const host = new LocalOpenCodeExecutionFiles({ executionHostId: 'fixture-host', root,
+    preserveVersion: (input, signal) => f.service.preserveAccepted(f.context, input, signal),
     maxFileBytes: MAX_FILE_BYTES, async assertSourceIsolation() {
       // The real domain services keep all source bytes in memory in this fixture.
       expect(f.bytes.objects.size).toBeGreaterThan(0)
@@ -36,7 +37,7 @@ async function workingCopy() {
     expiresAt: new Date(f.clock().getTime() + 60_000) }, signal())
   const copy = await turn.createWorkingCopy(token, { commandId: randomUUID(), source, destination: f.scope }, signal())
   const path = await turn.workingCopyLocation(token, copy.value.artifactId)
-  return { ...f, host, turn, token, path, artifactId: copy.value.artifactId, signal,
+  return { ...f, host, turn, token, readerToken: f.token, root, path, artifactId: copy.value.artifactId, signal,
     async close() {
       try { await turn.finish('terminal', signal()) }
       finally { await rm(root, { recursive: true, force: true }) }
@@ -77,6 +78,44 @@ it('preserves a concurrent native edit and does not expose a path with unsynchro
   } finally {
     release()
     await Promise.allSettled([pending])
+    await f.close()
+  }
+})
+
+it('keeps edits through a displaced descriptor readable after publication and terminal cleanup', async () => {
+  const f = await workingCopy()
+  const writer = await open(f.path, 'r+')
+  try {
+    await f.turn.writeWorkingCopy(f.token, { artifactId: f.artifactId,
+      contentBase64: Buffer.from('# file-tool edit\n').toString('base64') })
+    await writer.truncate(0)
+    await writer.write(Buffer.from('# late native edit\n'), 0, Buffer.byteLength('# late native edit\n'), 0)
+    const published = await f.turn.publish(f.token, { artifactId: f.artifactId, commandId: randomUUID(),
+      scope: f.scope, filename: 'result.md', mediaType: 'text/markdown' }, f.signal())
+    const primary = await f.service.read(f.readerToken,
+      { fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId })
+    expect(primary.status).toBe('ready')
+    if (primary.status === 'ready') expect(Buffer.from(primary.contentBase64, 'base64').toString())
+      .toBe('# file-tool edit\n')
+    await writer.truncate(0)
+    await writer.write(Buffer.from('# native edit after publish\n'), 0,
+      Buffer.byteLength('# native edit after publish\n'), 0)
+    await writer.close()
+    await f.turn.finish('terminal', f.signal())
+    expect(await readdir(f.root)).toEqual([])
+    await expect(f.sessions.authenticate(f.token)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
+    const files = await f.service.list(f.readerToken, { scope: f.scope, limit: 100 })
+    const contents: string[] = []
+    for (const file of files.items) {
+      const read = await f.service.read(f.readerToken,
+        { fileId: file.file.fileId, revisionId: file.revision.revisionId })
+      if (read.status === 'ready') contents.push(Buffer.from(read.contentBase64, 'base64').toString())
+    }
+    expect(contents).toContain('# file-tool edit\n')
+    expect(contents).toContain('# late native edit\n')
+    expect(contents).toContain('# native edit after publish\n')
+  } finally {
+    await writer.close()
     await f.close()
   }
 })

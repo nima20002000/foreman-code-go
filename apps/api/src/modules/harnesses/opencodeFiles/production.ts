@@ -16,6 +16,7 @@ import { OpenCodeFileCleanupJournal } from './cleanupJournal.js'
 import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from './cleanup.js'
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from './postgres.js'
 import { OpenCodeFileError } from './types.js'
+import { recoverOpenCodeVersions } from './recoverVersions.js'
 
 export interface OpenCodeFileAdmissions {
   resolve: typeof resolveOpenCodeFileAdmission
@@ -32,9 +33,10 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
   server.bindFileConversation(conversationId)
   const journal = new OpenCodeFileCleanupJournal(config.fileStorageRoot ?? defaultFileStorageRoot(), conversationId)
   return {
-    recover: (signal, retainedTurnIds) => journal.recover(async context => {
+    recover: (signal, retainedTurnIds) => journal.recover(async (context, directory) => {
       await pool.query(`update file_tool_sessions set revoked_at=coalesce(revoked_at,now())
         where record->>'binding'=$1`, [bindingIdentity(context)])
+      await recoverOpenCodeVersions(productionFileTools(app()), context, directory, MAX_FILE_BYTES, signal)
       await admissions.adoptPublished(pool, context)
     }, signal, retainedTurnIds),
     async resolve(identity, signal) {
@@ -62,6 +64,7 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
     const root = join(server.ownedFileRoot, mountId)
     const host = new LocalOpenCodeExecutionFiles({
       executionHostId: 'runner-local', root, maxFileBytes: MAX_FILE_BYTES,
+      preserveVersion: (input, signal) => service.preserveAccepted(admission.context, input, signal),
       assertSourceIsolation: async (checkSignal) => {
         if (!server.assertFileSourceIsolation) {
           throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server has no isolated file host.')

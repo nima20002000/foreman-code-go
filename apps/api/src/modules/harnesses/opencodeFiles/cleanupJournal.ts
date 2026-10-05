@@ -47,7 +47,7 @@ export class OpenCodeFileCleanupJournal {
     syncDirectory(this.root)
   }
 
-  recover(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal,
+  recover(onClosed: (context: FileToolContext, directory: OpenCodeDirectoryOwnership) => Promise<void>, signal: AbortSignal,
     retainedTurnIds: ReadonlySet<string> = new Set()): Promise<void> {
     const previous = recoveries.get(this.root) ?? Promise.resolve()
     // The previous caller receives its failure; subsequent recovery can retry independently.
@@ -59,7 +59,8 @@ export class OpenCodeFileCleanupJournal {
     return task
   }
 
-  private async recoverReady(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal,
+  private async recoverReady(onClosed: (context: FileToolContext, directory: OpenCodeDirectoryOwnership) => Promise<void>,
+    signal: AbortSignal,
     retainedTurnIds: ReadonlySet<string>): Promise<void> {
     const errors: unknown[] = []
     for (const name of await readdir(this.root)) {
@@ -82,7 +83,7 @@ export class OpenCodeFileCleanupJournal {
           continue
         }
         // A registry closure or an empty, exited Bubblewrap session closes its PID namespace descendants.
-        await onClosed(record.context)
+        await onClosed(record.context, record.directory)
         await cleanupOpenCodeDirectory(record.directory)
         await this.forget(name.slice(0, -5))
       } catch (error) {
