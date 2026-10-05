@@ -67,8 +67,9 @@ async function boundedText(path: string) {
   return readFile(path, 'utf8')
 }
 /** Default resolution is passive require.resolve; it does not load SDK code or select a CLI. */
-export function installedClaudeSdkEntrypoint(installedLockPath: string, selectedExecutable?: string): ClaudeSdkEntrypoint {
-  return { entrypoint: createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'), installedLockPath,
+export function installedClaudeSdkEntrypoint(installedLockPath: string, selectedExecutable?: string,
+  selectedSdkEntrypoint?: string): ClaudeSdkEntrypoint {
+  return { entrypoint: selectedSdkEntrypoint ?? createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'), installedLockPath,
     ...(selectedExecutable === undefined ? {} : { selectedExecutable }) }
 }
 

@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import type { ChildProcess } from 'node:child_process'
 import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from '../recovery/processRegistry.js'
@@ -18,11 +19,16 @@ function assertHelperProfile(profilePath: string): void {
 }
 
 /** Loading occurs only at admitted startup, never at synchronous factory allocation. */
-export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string): Promise<ClaudeSdkClient> {
+export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string,
+  sdkEntrypoint?: string): Promise<ClaudeSdkClient> {
   const require = createRequire(import.meta.url)
-  const manifest = JSON.parse(await readFile(join(dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), 'package.json'), 'utf8')) as { version?: unknown }
-  if (manifest.version !== CLAUDE_SDK_CANDIDATE_VERSION) throw new Error('Installed Claude SDK differs from the exact qualification candidate')
-  const sdk = await import('@anthropic-ai/claude-agent-sdk')
+  const entrypoint = sdkEntrypoint ?? require.resolve('@anthropic-ai/claude-agent-sdk')
+  if (!isAbsolute(entrypoint) || entrypoint.includes('\0')) throw new Error('Claude SDK requires its qualified absolute entrypoint')
+  const manifest = JSON.parse(await readFile(join(dirname(entrypoint), 'package.json'), 'utf8')) as { name?: unknown; version?: unknown }
+  if (manifest.name !== '@anthropic-ai/claude-agent-sdk' || manifest.version !== CLAUDE_SDK_CANDIDATE_VERSION) {
+    throw new Error('Installed Claude SDK differs from the exact qualification candidate')
+  }
+  const sdk: typeof import('@anthropic-ai/claude-agent-sdk') = await import(pathToFileURL(entrypoint).href)
   return {
     sdkVersion: manifest.version,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),

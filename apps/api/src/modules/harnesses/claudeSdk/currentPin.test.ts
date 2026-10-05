@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, type ClaudeCurrentPinContext } from './currentPin.js'
+import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, installedClaudeSdkEntrypoint,
+  type ClaudeCurrentPinContext } from './currentPin.js'
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 async function fixture() {
@@ -19,6 +20,14 @@ async function fixture() {
   return { directory, launcher, sdk, context }
 }
 describe('current installed Claude qualification pin', () => {
+  it('discovers the installer-selected SDK and lock without resolving relative to the caller bundle', async () => {
+    const value = await fixture()
+    const selected = installedClaudeSdkEntrypoint(value.sdk.installedLockPath, value.launcher, value.sdk.entrypoint)
+    const metadata = await discoverInstalledClaudeSdk(selected, value.context)
+    expect(metadata.sdkVersion).toBe('0.3.284')
+    expect(metadata.sdkIntegrity).toBe('sha512-aGVsbG8=')
+    expect(metadata.launcher.status).toBe('installed')
+  })
   it('passively declares actual SDK modules and selected launcher without executing either', async () => {
     const value = await fixture(); const metadata = await discoverInstalledClaudeSdk(value.sdk, value.context)
     expect(metadata.sdkVersion).toBe('0.3.284'); expect(metadata.sdkIntegrity).toBe('sha512-aGVsbG8=')

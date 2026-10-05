@@ -40,7 +40,8 @@ export async function inspectInstalledClaude(input: {
     platform: process.platform, architecture: process.arch, nodeOptions: input.environment.NODE_OPTIONS ?? '' })
   const environment: TargetEnvironment = { path: input.environment.PATH ?? '', cwd: input.cwd,
     provenance: 'worker', generation: generation() }
-  const sdk = installedClaudeSdkEntrypoint(configuration.claude.installedLockPath, configuration.claude.binary)
+  const sdk = installedClaudeSdkEntrypoint(configuration.claude.installedLockPath, configuration.claude.binary,
+    configuration.claude.sdkEntrypoint)
   const harnessInstallationId = commandInputHash({ hostRef, driverId: 'claude', launcher: configuration.claude.binary })
   const context = { harnessInstallationId, environment }
   const before = await discoverInstalledClaudeSdk(sdk, context, input.signal)

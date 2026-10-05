@@ -104,7 +104,7 @@ export async function allocateInstalledWorkerClaude(input: {
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
     reserve()
-    return loadOfficialClaudeSdk(compiled.configuration.configDirectory, recovery, binary)
+    return loadOfficialClaudeSdk(compiled.configuration.configDirectory, recovery, binary, original.sdk.entrypoint)
   } })
   const callbacks = createClaudeSdkCallbacks({ manager: () => manager, bridge: authority.bridge })
   const sdkOptions: Record<string, unknown> = { ...compiled,

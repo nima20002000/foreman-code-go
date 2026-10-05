@@ -60,7 +60,7 @@ export function createInstalledClaudeConversationProfile(input: {
       environmentGeneration: after.installation.environmentGeneration, connectionGeneration: after.installation.connectionGeneration })
     const pin = installedClaudeProfilePin(facts.override, selected, facts.profile)
     input.signal.throwIfAborted()
-    return { installation: after.installation, accepted: { override: facts.override, persistedProof: facts.profile,
+    return { installation: after.installation, sdk: after.sdk, accepted: { override: facts.override, persistedProof: facts.profile,
       currentBinding: { ...facts.profile, instanceId: facts.override.instanceId, pin } } }
   } }
 }
