@@ -51,6 +51,27 @@ function deferred<T>() {
 async function drain<T>(input: AsyncIterable<T>) { const values: T[] = []; for await (const value of input) values.push(value); return values }
 
 describe('Claude native session manager admission', () => {
+  it.each(['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD'])(
+    'rejects scoped %s before SDK inspection or resume', async key => {
+      const selected = { ...start, environment: { agentId: 'operator', variables: { [key]: 'test-only-credential' } } }
+      for (const operation of ['inspection', 'resume']) {
+        const f = fixture()
+        try {
+          const opening = operation === 'inspection' ? f.manager.prepareInspection(selected)
+            : f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+              nativeSessionId: 'native-session' }, selected)
+          await expect(opening).rejects.toMatchObject({ code: 'CLAUDE_ENVIRONMENT_INVALID' })
+          expect(f.queries).not.toHaveBeenCalled()
+          expect(f.offers).not.toHaveBeenCalled()
+          const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'native-session' }
+          expect(await f.manager.attachSession(session, start)).toEqual(session)
+          expect(f.queries).toHaveBeenCalledOnce()
+          expect(f.offers).not.toHaveBeenCalled()
+        } finally { await f.manager.dispose?.() }
+      }
+    },
+  )
+
   it('freezes the accepted terminal message identity while persistence is retried after delayed replies', async () => {
     const f = fixture()
     try {

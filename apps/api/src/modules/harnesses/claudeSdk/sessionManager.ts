@@ -2,7 +2,7 @@ import { claudeNativeEvent } from './nativeEvents.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { appMcpServerName } from '../appMcpLauncher.js'
-import { appMcpTokenEnvironment } from '../secrets.js'
+import { appMcpTokenEnvironment, isDatabaseCredentialVariable } from '../secrets.js'
 import { createClaudeEventNormalizer } from './normalization.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../../subagents/nativeReadback.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -154,6 +154,15 @@ export function createClaudeNativeSessionManager(options: {
   const rollovers = new Map<string, Promise<NativeSessionReference>>()
   let disposed = false
   const now = options.now ?? (() => new Date().toISOString())
+  function queryOptions(start: NativeSessionStart) {
+    const environment = { ...(options.sdkOptions.env as Record<string, string> | undefined),
+      ...start.environment?.variables }
+    if (Object.keys(environment).some(isDatabaseCredentialVariable)) {
+      throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
+        'The Claude environment cannot contain database credentials.')
+    }
+    return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment) }
+  }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
     if (!options.qualification[capability]) throw new HarnessExecutionError('CLAUDE_CAPABILITY_UNQUALIFIED', `Claude ${capability} has not been qualified on the selected installation.`)
   }
@@ -312,6 +321,7 @@ export function createClaudeNativeSessionManager(options: {
     if (disposed) throw new HarnessExecutionError('CLAUDE_MANAGER_DISPOSED', 'Claude manager is disposed.')
     const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Inspection differs from the pinned working directory.')
+    const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(start)
     if (prepared) {
       if (prepared.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'The owned SDK query already has another immutable inspection context.')
@@ -322,7 +332,7 @@ export function createClaudeNativeSessionManager(options: {
     const opening = (async () => {
       try {
         runtime.sdk = await options.runner.open({ scope: options.scope,
-          options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...appMcpTokenEnvironment(start.environment?.variables ?? {}) } },
+          options: nativeOptions,
           ...(startup.signal ? { signal: startup.signal } : {}), onObservation: (observation) => observed(runtime, observation),
           ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}) })
         runtime.pumping = pump(runtime)
@@ -349,6 +359,7 @@ export function createClaudeNativeSessionManager(options: {
     qualified(resume ? 'resume' : 'basicTurns')
     const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Claude working directory differs from the pinned scope.')
+    const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(start)
     const inspected = prepared
     if (inspected && inspected.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
@@ -389,7 +400,7 @@ export function createClaudeNativeSessionManager(options: {
     const startup = startupSignal(signal)
     try {
       if (!runtime.sdk) runtime.sdk = await options.runner.open({
-        scope: options.scope, options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...appMcpTokenEnvironment(start.environment?.variables ?? {}) } },
+        scope: options.scope, options: nativeOptions,
         ...(startup.signal ? { signal: startup.signal } : {}),
         ...(resume ? { resume: { ...options.scope, nativeSessionId: resume.nativeSessionId } } : {}),
         onObservation: (observation) => observed(runtime, observation),
