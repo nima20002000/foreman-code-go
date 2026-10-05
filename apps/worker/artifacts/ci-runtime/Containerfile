@@ -1,4 +1,24 @@
-FROM docker.io/library/node@sha256:17b7fd60fd812617654c64b95f9b2dde94f103313073b672bc40fdad6dccbaa2
+FROM docker.io/library/node@sha256:17b7fd60fd812617654c64b95f9b2dde94f103313073b672bc40fdad6dccbaa2 AS toolchain
+RUN test "$(node --version)" = v22.23.3 \
+ && test "$(corepack --version)" = 0.36.0 \
+ && git --version && flock --version
+
+FROM toolchain AS verification
+COPY source-lock/ /opt/graphql-ci/source-lock/
+COPY seed/ /opt/graphql-ci/seed/
+COPY seed-receipt.json /opt/graphql-ci/seed-receipt.json
+COPY seed-policy.mjs verification-policy.mjs verification-observation.mjs /opt/graphql-ci/
+RUN --network=none node /opt/graphql-ci/seed-policy.mjs /opt/graphql-ci/seed /opt/graphql-ci/seed-receipt.json \
+ && chmod -R a+rX /opt/graphql-ci \
+ && rm /usr/local/bin/corepack
+COPY corepack /usr/local/bin/corepack
+RUN --network=none chmod 0755 /usr/local/bin/corepack \
+ && test "$(corepack pnpm --version)" = 11.27.0
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["node"]
+
+FROM toolchain AS build
 WORKDIR /opt/graphql-ci/source-lock
 COPY source-lock/ ./
 RUN test "$(node --version)" = v22.23.3 \
