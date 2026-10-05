@@ -1,3 +1,4 @@
+import { matchingChatResponseAcknowledgment, AcceptedChatResponseControlSchema } from '@graphql/contracts/interaction-activity'
 import type pg from 'pg'
 import { DurableInteractionSchema, PendingNativeInteractionSchema, type ApprovalResponseOption, type NativeSessionReference } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -97,6 +98,35 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
         || receipt.nativeSessionId !== identity.nativeSessionId || receipt.nativeMessageId !== identity.nativeMessageId
         || receipt.clientCorrelationId !== actual.clientCorrelationId) denied('CLAUDE_NATIVE_MESSAGE_NOT_ADMITTED')
     }
+  }
+  async deliveryPersisted(identity: ClaudeCallbackIdentity, optionId: string): Promise<boolean> {
+    if (this.binding.kind === 'workflow') {
+      const rows = (await this.database.query<{ record: unknown }>(`select record from durable_interactions
+        where execution_id=$1 and native_session_id=$2 and native_request_id=$3 and record->>'deliveryState'='delivered'`,
+      [this.binding.executionId, identity.nativeSessionId, identity.nativeRequestId])).rows
+      return rows.some(row => {
+        const parsed = DurableInteractionSchema.safeParse(row.record)
+        if (!parsed.success) return false
+        const interaction = parsed.data
+        const request = interaction.request as Record<string, unknown>
+        return interaction.selectedOptionId === optionId && request.nativeMessageId === identity.nativeMessageId
+          && request.generation === identity.generation && request.toolUseId === identity.toolUseId
+      })
+    }
+    const rows = (await this.database.query<{ result: { acceptedControl?: unknown; providerAcknowledgment?: unknown } }>(`
+      select result from management_command_receipts where operation=$1 and target_key=$2
+        and result#>>'{acceptedControl,modelRequestId}'=$3
+        and result#>>'{acceptedControl,native,requestId}'=$4`,
+    [this.binding.kind === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
+      this.binding.conversationId, identity.attemptId, identity.nativeRequestId])).rows
+    return rows.some(row => {
+      const parsed = AcceptedChatResponseControlSchema.safeParse(row.result.acceptedControl)
+      if (!parsed.success) return false
+      const control = parsed.data
+      return control.native.sessionId === identity.nativeSessionId && control.native.messageId === identity.nativeMessageId
+        && control.native.generation === identity.generation && control.choice.optionId === optionId
+        && Boolean(matchingChatResponseAcknowledgment(control, row.result.providerAcknowledgment))
+    })
   }
   async request(identity: ClaudeCallbackIdentity, toolName: string, _input: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeInteractionAnswer> {
     await this.validate(identity)

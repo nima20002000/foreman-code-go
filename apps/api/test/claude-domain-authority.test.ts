@@ -85,9 +85,9 @@ it('retains compact consumed decisions without granting a second callback or res
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow()
 })
 
-it('bounds consumed permission records and rejects overflow without replaying an earlier callback', async () => {
+it('admits later permission callbacks while retaining replay protection for earlier callbacks', async () => {
   const f = fixture()
-  for (let index = 0; index < 256; index += 1) {
+  for (let index = 0; index < 300; index += 1) {
     const callback = { ...identity, toolUseId: `tool-${index}`, nativeRequestId: `permission-${index}` }
     const decision = f.bridge.canUseTool(callback, 'Read', { path: 'owned' }, new AbortController().signal)
     await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: callback.nativeRequestId } }))
@@ -97,8 +97,12 @@ it('bounds consumed permission records and rejects overflow without replaying an
     expect(await decision).toMatchObject({ behavior: 'allow' })
   }
   const extra = { ...identity, toolUseId: 'overflow-tool', nativeRequestId: 'overflow-permission' }
-  expect(await f.bridge.canUseTool(extra, 'Read', { path: 'owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
-  expect(await f.interactionPort.pending(session)).toBeUndefined()
+  const next = f.bridge.canUseTool(extra, 'Read', { path: 'owned' }, new AbortController().signal)
+  await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: extra.nativeRequestId } }))
+  const pending = (await f.interactionPort.pending(session))!
+  await f.claim('allow_once', identity.generation, extra)
+  await f.interactionPort.respond(session, extra.nativeRequestId, pending.responseOptions[0]!)
+  expect(await next).toMatchObject({ behavior: 'allow' })
   const first = { ...identity, toolUseId: 'tool-0', nativeRequestId: 'permission-0' }
   expect(await f.bridge.canUseTool(first, 'Read', { path: 'owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
 }, 30_000)

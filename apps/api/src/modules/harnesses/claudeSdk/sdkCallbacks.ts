@@ -4,7 +4,7 @@ import type { ClaudeNativeSessionManager } from './sessionManager.js'
 
 /** The existing B bridge is injected, never replaced by another response/interaction store. */
 export interface ClaudeSdkPolicyBridge {
-  observeToolResult?(identity: ClaudeCallbackIdentity, toolName: string, outcome: 'executed' | 'permission_denied'): Promise<void>
+  observeToolResult?(identity: ClaudeCallbackIdentity, toolName: string, outcome: 'executed' | 'failed' | 'permission_denied'): Promise<void>
   beforeToolUse(identity: {
     ownerPrincipalId: string; attemptId: string; nativeSessionId: string; nativeMessageId: string
     generation: string; toolUseId: string; agentId?: string; mcpServer?: { name: string; source: string }
@@ -47,14 +47,16 @@ export function createClaudeSdkCallbacks(input: {
     } catch { return deny }
   }
   const afterToolUse: HookCallback = async (hook, suppliedToolId, options) => {
-    if (hook.hook_event_name !== 'PostToolUse' && hook.hook_event_name !== 'PermissionDenied') return {}
+    if (hook.hook_event_name !== 'PostToolUse' && hook.hook_event_name !== 'PostToolUseFailure'
+      && hook.hook_event_name !== 'PermissionDenied') return {}
     if (!hook.tool_use_id
       || suppliedToolId && suppliedToolId !== hook.tool_use_id) return {}
     const context = await input.manager().waitNativeCallbackContext(hook.tool_use_id, options.signal, hook.session_id)
     const authority = input.manager().callbackAuthority(context)
     if (authority) await input.bridge.observeToolResult?.({ ...context, ...authority, toolUseId: hook.tool_use_id,
       ...(hook.mcp_server ? { mcpServer: hook.mcp_server } : {}) }, hook.tool_name,
-      hook.hook_event_name === 'PostToolUse' ? 'executed' : 'permission_denied')
+      hook.hook_event_name === 'PostToolUse' ? 'executed'
+        : hook.hook_event_name === 'PostToolUseFailure' ? 'failed' : 'permission_denied')
     return {}
   }
   const observeChild: HookCallback = async (hook) => {
@@ -63,5 +65,5 @@ export function createClaudeSdkCallbacks(input: {
     }
     return {}
   }
-  return { canUseTool, hooks: { PreToolUse: [{ hooks: [beforeToolUse] }], PostToolUse: [{ hooks: [afterToolUse] }], PermissionDenied: [{ hooks: [afterToolUse] }], SubagentStart: [{ hooks: [observeChild] }], SubagentStop: [{ hooks: [observeChild] }] } }
+  return { canUseTool, hooks: { PreToolUse: [{ hooks: [beforeToolUse] }], PostToolUse: [{ hooks: [afterToolUse] }], PostToolUseFailure: [{ hooks: [afterToolUse] }], PermissionDenied: [{ hooks: [afterToolUse] }], SubagentStart: [{ hooks: [observeChild] }], SubagentStop: [{ hooks: [observeChild] }] } }
 }

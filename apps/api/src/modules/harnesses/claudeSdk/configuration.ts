@@ -95,8 +95,7 @@ export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfigu
   if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
   // AskUserQuestion is a real available tool; allowedTools only configures approval, not availability.
   const tools = configuration.tools.filter(tool => !tool.startsWith('mcp__'))
-  const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion'
-    && !rule.tool.startsWith('mcp__')).map((rule) => rule.tool)
+  const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion').map((rule) => rule.tool)
   const disallowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool)
   return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
     ...(configuration.effort ? { effort: configuration.effort } : {}),
