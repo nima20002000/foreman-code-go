@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] - 2026-10-05
+
+### Fixed
+
+- Keep ready native output in bounded publications when database lease checks are slow, so parallel stream drains preserve progress, output order and writer ownership.
+
 ## [0.0.13] - 2026-10-05
 
 ### Added
