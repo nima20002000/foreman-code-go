@@ -64,7 +64,8 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const terminal = () => { state.run = { ...state.run, executionState: 'completed', outcome: 'canceled',
     result: { outcome: 'canceled' }, finishedAt: f.createdAt } }
   lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
-  const native = { cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
+  const native = { adoptRunOwner: vi.fn(),
+    cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
     closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
@@ -92,6 +93,17 @@ test('ENG04 A1 simultaneous Start notifications allocate only one owner/runtime 
   const one = h.engine.start(h.run.id), two = h.engine.start(h.run.id)
   assert.equal(one, two); release(); await one
   assert.equal(calls.entries.length, 1); assert.equal(h.state.released, 1)
+})
+
+test('publishes the acquired Run owner to native managers before awaiting its snapshot', async () => {
+  const h = await fixture()
+  const snapshot = h.runs.getRepeatSnapshot
+  h.runs.getRepeatSnapshot = async () => {
+    assert.deepEqual(h.native.adoptRunOwner.mock.calls, [[h.owner]])
+    return snapshot()
+  }
+  await h.engine.start(h.run.id)
+  assert.equal(h.state.released, 1)
 })
 
 test('reconciliation defers a Run held by its reviewer and starts it after the owner is released', async () => {

@@ -159,6 +159,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     let stopObservingInterrupts: (() => void) | undefined
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
+      this.nativeExecutions.adoptRunOwner(owner)
       let snapshot = await this.runs.getRepeatSnapshot(runId, owner)
       if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') {
         await this.cleanupOwned(owner)

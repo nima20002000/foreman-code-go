@@ -15,6 +15,7 @@ export class RunOwnership {
   private released = false
   private releaseRequested = false
   private readonly retained = new Set<{ onLost(): void }>()
+  private closing: Promise<void> | undefined
 
   private graphConnection: ExclusiveGraphConnection | undefined
   private queryClient: pg.Client | undefined
@@ -115,19 +116,22 @@ export class RunOwnership {
     if (this.retained.size === 0) await this.close()
   }
 
-  private async close(): Promise<void> {
-    if (this.released) return
+  private close(): Promise<void> {
+    if (this.closing) return this.closing
     this.released = true
     const finished = beginRuntimeTiming('db', 'owner.release', { runId: this.runId })
     // Closing, rather than returning this session to a pool, always releases
     // its advisory lock, including after a failed query or lost connection.
-    try {
-      await this.graphConnection?.close()
-    } finally {
-      await this.rawClient.end().catch(() => undefined)
-      this.rawClient.removeListener('error', this.handleLoss)
-      this.rawClient.removeListener('end', this.handleLoss)
-      finished()
-    }
+    this.closing = (async () => {
+      try {
+        await this.graphConnection?.close()
+      } finally {
+        await this.rawClient.end().catch(() => undefined)
+        this.rawClient.removeListener('error', this.handleLoss)
+        this.rawClient.removeListener('end', this.handleLoss)
+        finished()
+      }
+    })()
+    return this.closing
   }
 }

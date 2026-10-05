@@ -17,6 +17,26 @@ const pool = databaseUrl ? new pg.Pool({ connectionString: databaseUrl, max: 3 }
 afterAll(async () => { await pool?.end() })
 
 describe.skipIf(!databaseUrl)('Agent 3 dedicated PostgreSQL publication ownership', () => {
+  it('joins an already-started release until the original database connection has drained', async () => {
+    const owner = (await RunOwnership.acquire(pool!, `release-drain-${randomUUID()}`, () => undefined))!
+    let entered!: () => void
+    let finish!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const paused = new Promise<void>(resolve => { finish = resolve })
+    const work = owner.oneShotConnection().transaction(async () => { entered(); await paused }).catch(error => error)
+    await started
+    const first = owner.release()
+    let duplicateFinished = false
+    const duplicate = owner.release().then(() => { duplicateFinished = true })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      expect(duplicateFinished).toBe(false)
+    } finally {
+      finish()
+      await Promise.all([first, duplicate, work])
+    }
+  })
+
   it('keeps the same PostgreSQL owner for a retained native review after the engine releases its use', async () => {
     const runId = `retained-review-${randomUUID()}`
     const owner = (await RunOwnership.acquire(pool!, runId, () => undefined))!

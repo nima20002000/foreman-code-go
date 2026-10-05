@@ -168,12 +168,13 @@ export class ApprovalExecutionCoordinator {
     try { owner?.assertOwned() }
     catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+      await owner?.release()
       owner = undefined
     }
     const acquired = !owner
     owner ??= await this.runs.acquireOwnership(owned.execution.runId, () => owned.controller.abort())
     if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still draining its native owner.', 409)
-    this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+    this.adoptRunOwner(owner)
     try { await this.closeWorkflowSessionOwned(owned, restart) }
     finally { if (acquired) await owner.release() }
   }
@@ -942,18 +943,14 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
         this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
         if (!owned.reviewOwner && owned.session) {
-          let owner = owned.runOwner
-          try { owner?.assertOwned() } catch { owner = undefined }
-          const borrowed = !owner
-          owner ??= await this.runs.acquireOwnership(owned.execution.runId, () => {})
-          if (owner) {
+          try {
+            const retained = await this.retainRunOwner(owned.execution, () => {})
             try {
-              this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+              this.adoptRunOwner(retained.owner)
               await owned.manager.observeBoundary(owned.session, owned.controller.signal)
               delete owned.retainedObservationError
-            } catch (error) { owned.retainedObservationError = error }
-            finally { if (borrowed) await owner.release() }
-          }
+            } finally { await retained.release() }
+          } catch (error) { owned.retainedObservationError = error }
         }
       },
       onFailure: error => owned.controller.abort(error),
@@ -1262,6 +1259,7 @@ export class ApprovalExecutionCoordinator {
     try { owner?.assertOwned() }
     catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+      await owner?.release()
       owner = undefined
     }
     if (owner) return { owner, release: owner.retain(onLost) }
@@ -1270,7 +1268,7 @@ export class ApprovalExecutionCoordinator {
     return { owner: acquired, release: () => acquired.release() }
   }
 
-  private adoptRunOwner(owner: RunOwnership): void {
+  adoptRunOwner(owner: RunOwnership): void {
     owner.assertOwned()
     for (const owned of this.ownedSessions.values()) {
       if (owned.execution.runId !== owner.runId) continue
@@ -1344,10 +1342,8 @@ export class ApprovalExecutionCoordinator {
     this.stoppingRuns.add(runId)
     this.pendingCleanupRuns.add(runId)
     if (owner) {
-      for (const owned of this.ownedSessions.values()) {
-        if (owned.execution.runId !== runId) continue
-        this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
-      }
+      if (owner.runId !== runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'The cancellation owner belongs to another Run.', 409)
+      this.adoptRunOwner(owner)
     }
     let task = this.cancellations.get(runId)
     if (!task) {
