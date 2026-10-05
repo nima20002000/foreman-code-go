@@ -224,4 +224,90 @@ describe('workspace project folder compensation through authenticated MCP', () =
       await f.close()
     }
   }, 30_000)
+
+  it.each([true, false])('settles a surviving rename during %s-name recovery before releasing ownership', async explicit => {
+    const f = await workspaceMcpFixture()
+    const children: ChildProcess[] = []
+    const gate = join(f.parentPath, 'publication-gate')
+    let publisherPid: number | undefined
+    try {
+      await mkdir(gate)
+      await writeFile(join(gate, 'mv'), `#!/usr/bin/env node
+const { writeFile, stat } = require('node:fs/promises')
+const { join } = require('node:path')
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
+async function publish() {
+  const gate = process.env.WORKSPACE_PUBLICATION_GATE
+  await writeFile(join(gate, 'started'), String(process.pid))
+  while (true) {
+    try { await stat(join(gate, 'release')); break }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      await new Promise(done => setTimeout(done, 10))
+    }
+  }
+  await promisify(execFile)('/usr/bin/mv', process.argv.slice(2))
+  await writeFile(join(gate, 'published'), '')
+}
+publish().catch(error => { console.error(error); process.exitCode = 1 })
+`, { mode: 0o700 })
+      const name = 'Recovered during publication'
+      await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+      const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicit ? { name } : {}) }
+      const launch = (recover: boolean) => {
+        const child = fork(fileURLToPath(new URL('./helpers/workspaceCreateProcess.ts', import.meta.url)), [], {
+          cwd: fileURLToPath(new URL('..', import.meta.url)), execArgv: ['--import', 'tsx'], silent: true,
+          env: recover ? process.env : { ...process.env, PATH: `${gate}:${process.env.PATH}`,
+            WORKSPACE_PUBLICATION_GATE: gate },
+        })
+        children.push(child)
+        child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token, input,
+          interrupt: false, ...(recover ? { reconcilePublication: gate } : {}) })
+        return child
+      }
+      const interrupted = launch(false)
+      for (let attempt = 0; ; attempt++) {
+        try { publisherPid = Number(await readFile(join(gate, 'started'), 'utf8')); break }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt >= 1000) throw error
+          await new Promise(done => setTimeout(done, 10))
+        }
+      }
+      expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
+        .toEqual([{ identity: { device: expect.any(String), inode: expect.any(String) } }])
+      const exited = once(interrupted, 'exit')
+      interrupted.kill('SIGKILL')
+      await exited
+      const restarted = launch(true)
+      const completion = once(restarted, 'exit')
+      const [message] = await once(restarted, 'message')
+      expect(message.phase).toBe('completed')
+      expect(message.result.isError).not.toBe(true)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      expect(saved.value.workspace.name).toBe(name)
+      expect(await completion).toEqual([0, null])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+      expect((await readdir(f.parentPath)).sort()).toEqual(['publication-gate', name].sort())
+      const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+        { workspaceId: saved.value.workspace.id })
+      expect(readback.executionLocation?.rootPath).toBe(join(f.parentPath, name))
+      expect(readback.locationValidation.status).toBe('ready')
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, 'exit')
+          child.kill('SIGKILL')
+          await exited
+        }
+      }
+      if (publisherPid) {
+        try { process.kill(publisherPid, 'SIGKILL') }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+      }
+      await f.close()
+    }
+  }, 30_000)
 })

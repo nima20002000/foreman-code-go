@@ -1,6 +1,9 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type { WorkspaceCreateInput } from '@graphql/contracts/management'
 import pg from 'pg'
+import filesystem from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { join } from 'node:path'
 import { buildApp } from '../../src/app.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
@@ -15,6 +18,7 @@ interface Request {
   token: string
   input: WorkspaceCreateInput
   interrupt: boolean | 'staged'
+  reconcilePublication?: string
 }
 
 process.once('message', async (request: Request) => {
@@ -29,6 +33,24 @@ process.once('message', async (request: Request) => {
     services: { commands, locations, workspaces } as unknown as OperatorServices } })
   const client = new Client({ name: 'workspace-recovery-process', version: '1' })
   try {
+    if (request.reconcilePublication) {
+      const gate = request.reconcilePublication
+      const remove = filesystem.rmdir
+      filesystem.rmdir = async (...args: Parameters<typeof remove>) => {
+        if (String(args[0]).includes('.graphql-project-')) {
+          await filesystem.writeFile(join(gate, 'release'), '')
+          for (let attempt = 0; ; attempt++) {
+            try { await filesystem.stat(join(gate, 'published')); break }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt >= 1000) throw error
+              await new Promise(done => setTimeout(done, 10))
+            }
+          }
+        }
+        return remove(...args)
+      }
+      syncBuiltinESMExports()
+    }
     if (request.interrupt) {
       const query = pg.Client.prototype.query as unknown as
         (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>

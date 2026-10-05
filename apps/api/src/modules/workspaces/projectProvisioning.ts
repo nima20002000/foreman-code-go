@@ -77,24 +77,36 @@ export class WorkspaceProjectProvisioning {
         where principal_id=$2 and operation='workspace.create' and command_id=$3
           and result->'workspace'->>'id'=$4 limit 1`,
       [attempt.root_path, attempt.principal_id, attempt.command_id, attempt.workspace_id])
-      const staged = await details(attempt.staging_path)
-      if (!committed.rows.length && attempt.identity && !staged) await this.remove(attempt.root_path, attempt.identity)
       // No final rename can occur before identity is committed. A missing
       // identity therefore refers only to the reserved internal staging name.
       await this.remove(attempt.staging_path, attempt.identity)
+      // Removing the stage settles a surviving rename: it either published the
+      // owned inode or no longer has a source. Recheck the destination afterward.
+      if (!committed.rows.length && attempt.identity) {
+        const published = await details(attempt.root_path)
+        if (published && String(published.dev) === attempt.identity.device
+          && String(published.ino) === attempt.identity.inode) {
+          await this.remove(attempt.root_path, attempt.identity)
+        }
+      }
       await this.journal.query('delete from workspace_project_provisioning where id=$1', [attempt.id])
     }
   }
 
   private async remove(path: string, identity: FolderIdentity | null) {
-    const current = await details(path)
-    if (!current) return
-    if (!current.isDirectory() || await realpath(path) !== path
-      || identity && (String(current.dev) !== identity.device || String(current.ino) !== identity.inode)
-      || !identity && current.uid !== BigInt(process.getuid!())) {
-      throw new Error('The provisioned directory was replaced; it was not removed.')
+    try {
+      const current = await details(path)
+      if (!current) return
+      if (!current.isDirectory() || await realpath(path) !== path
+        || identity && (String(current.dev) !== identity.device || String(current.ino) !== identity.inode)
+        || !identity && current.uid !== BigInt(process.getuid!())) {
+        throw new Error('The provisioned directory was replaced; it was not removed.')
+      }
+      // Preserve content added outside provisioning, including after a process crash.
+      await rmdir(path)
+    } catch (error) {
+      // Publication can move the stage between inspection and removal.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-    // Preserve content added outside provisioning, including after a process crash.
-    await rmdir(path)
   }
 }
