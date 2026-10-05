@@ -136,30 +136,38 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         return result
       }
       let expiresAt=Date.now()+60_000
-      const assertCurrent = () => {
+      let rebootClosed = false
+      const assertRegisteredConnection = () => {
         signal?.throwIfAborted()
         const current = endpoint.currentBinding(placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : '')
         if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
           || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
             workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
-            bootId:current.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
+            bootId:receipt.connection.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
       }
-      assertCurrent()
+      const assertCurrent = () => {
+        assertRegisteredConnection()
+        if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
+      }
+      assertRegisteredConnection()
       const reply = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
         receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) }, signal ? { signal } : {})
       if (reply.bytes !== undefined) return unavailable('readout_binary')
       const readout = await readPhysicalReadout(reply.payload, async metadata => {
-        assertCurrent()
+        assertRegisteredConnection()
         const next = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
           receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata }, signal ? { signal } : {})
-        assertCurrent()
+        assertRegisteredConnection()
         if (next.bytes !== undefined) return unavailable('readout_binary')
         return next.payload
       }, signal)
       expiresAt=Math.min(expiresAt,Date.parse(readout.expiresAt))
-      assertCurrent()
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
       assertSource(readout, source)
+      rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
+        && readout.observation.closureEvidence === 'linux_boot_changed'
+        && same(readout.closure.launch, readout.observation))
+      assertCurrent()
       const assertAcknowledgmentCurrent = () => {
         const current = endpoint.currentBinding(captured.binding.deviceId)
         if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
