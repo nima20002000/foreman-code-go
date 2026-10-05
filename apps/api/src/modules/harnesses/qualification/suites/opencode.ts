@@ -3,6 +3,7 @@ import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import Fastify from 'fastify'
 import type { File, FileRevision } from '@foreman-code/contracts/files'
 import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/mcp.js'
@@ -97,10 +98,17 @@ export const opencodeQualificationSuite: QualificationSuite = {
       createWorkingCopy: async () => { throw new Error('files.create_working_copy is not enabled.') },
       publish: async (_token: string, request: { artifactId: string; scope: FileToolContext['scope']; filename: string; mediaType: string }) => {
         try {
-          requireCondition(request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
-            && request.mediaType === 'text/markdown' && JSON.stringify(request.scope) === JSON.stringify(scope), 'Wrong publication target.')
+          const targetMatches = request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
+            && request.mediaType === 'text/markdown' && isDeepStrictEqual(request.scope, scope)
+          const publication = { targetMatches, outputAvailable: false, markerMatches: false, editMatches: false }
+          const attempts = (evidence.mcpPublications ??= []) as unknown[]
+          attempts.push(publication)
+          requireCondition(targetMatches, 'Wrong publication target.')
           const bytes = await readFile(outputPath)
-          requireCondition(bytes.toString('utf8').includes(marker) && bytes.toString('utf8').includes('QUALIFIED'),
+          publication.outputAvailable = true
+          publication.markerMatches = bytes.toString('utf8').includes(marker)
+          publication.editMatches = bytes.toString('utf8').includes('QUALIFIED')
+          requireCondition(publication.markerMatches && publication.editMatches,
             'Published Markdown does not contain the source marker and edit.')
           published = true
           const createdAt = new Date().toISOString()
@@ -118,6 +126,7 @@ export const opencodeQualificationSuite: QualificationSuite = {
           publicationErrors.push({ code, message })
           throw error
         }
+
       },
     } as unknown as FileMcpService
     registerFileToolsMcp(app, fileService)
