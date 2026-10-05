@@ -20,6 +20,22 @@ it('groups a burst without dropping, changing or reordering its frames', async (
   expect(batches.flat()).toEqual(events)
 })
 
+it('keeps ready frames together when the process resumes after the partial-batch deadline', async () => {
+  vi.useFakeTimers()
+  const events = Array.from({ length: NATIVE_EVENT_BATCH_SIZE * 2 + 3 }, (_, index) => event(index))
+  async function* provider() {
+    for (const frame of events) {
+      // Model process suspension: time passes while ready reads and timers cannot run.
+      vi.setSystemTime(Date.now() + 30)
+      yield frame
+    }
+  }
+  const batches = []
+  for await (const batch of nativeEventBatches(provider())) batches.push(batch)
+  expect(batches.map((batch) => batch.length)).toEqual([16, 16, 3])
+  expect(batches.flat()).toEqual(events)
+})
+
 it('flushes reliability and approval frames immediately with preceding transcript frames', async () => {
   const events = [event(0), event(1, 'turn.started'), event(2), event(3, 'interaction.pending'),
     event(4, 'transport.disconnected'), event(5, 'turn.completed')]
