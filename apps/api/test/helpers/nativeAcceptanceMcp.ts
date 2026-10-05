@@ -21,12 +21,20 @@ export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: str
   try { await writeFile(file, '', { mode: 0o600, flag: 'wx' }) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
   const registry = new NativeProcessRegistry(join(directory, 'native-process-registry'))
+  const selected = [...new Set(harnesses)]
   const owners = { codex: `acceptance-mcp:codex:${randomUUID()}`, opencode: `acceptance-mcp:opencode:${randomUUID()}` }
+  const scopes = {
+    codex: selected.includes('codex') ? registry.reserveLaunch(owners.codex) : registry.scope(owners.codex),
+    opencode: selected.includes('opencode') ? registry.reserveLaunch(owners.opencode) : registry.scope(owners.opencode),
+  }
   const service = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), {
-    codex: new CodexMcpConnections(binaries.codex, directory, registry.scope(owners.codex)),
-    opencode: new OpenCodeMcpConnections(binaries.opencode, directory, registry.scope(owners.opencode)),
+    codex: new CodexMcpConnections(binaries.codex, directory, scopes.codex),
+    opencode: new OpenCodeMcpConnections(binaries.opencode, directory, scopes.opencode),
   }, () => undefined, async () => {
-    const closed = await Promise.all(Object.values(owners).map(owner => registry.closeOwner(owner)))
+    const closed = await Promise.all(selected.map(async harness => {
+      await registry.abandonReservedLaunch(scopes[harness])
+      return registry.closeOwner(owners[harness])
+    }))
     assert.ok(closed.every(Boolean), 'Native MCP setup closure is unconfirmed.')
   }, endpoint)
   try {
@@ -35,7 +43,7 @@ export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: str
       expiresAt: new Date(Date.now() + 600_000),
       grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
     })
-    for (const harness of new Set(harnesses)) {
+    for (const harness of selected) {
       const before = await service.list(authority.principal, harness)
       if (before.presets?.graphql === 'installed') continue
       const plan = await service.applyManaged(authority.principal, {

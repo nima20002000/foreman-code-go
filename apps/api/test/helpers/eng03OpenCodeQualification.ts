@@ -27,6 +27,7 @@ import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvid
 import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
+import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -152,7 +153,7 @@ export async function qualifyEng03OpenCode() {
     service = new HarnessQualificationService(repository, registry, suites, binaries,
       commands, settings, undefined, undefined,
       (_harness, binary, timeoutMs) => nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory,
-        process.env, timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
+        inheritedAgentEnvironment(), timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
           beforeCommand: async (current, signal) => {
             const original = current === process.execPath ? checker : selected
             assert.equal((await registry.inspectBinary(current)).binary, original.binary)

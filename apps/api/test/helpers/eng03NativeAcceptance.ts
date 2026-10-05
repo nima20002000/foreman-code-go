@@ -63,6 +63,7 @@ import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { configureNativeAcceptanceMcp } from './nativeAcceptanceMcp.js'
 import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
 import { runCommand as runNativeCommand } from '../../src/modules/harnesses/process.js'
 import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
@@ -158,7 +159,7 @@ async function version(binary: string, directory: string, registry: NativeProces
   let observed = ''
   try {
     const result = await runNativeCommand(binary, ['--version'], directory, AbortSignal.timeout(10_000),
-      process.env, { recovery: scope })
+      inheritedAgentEnvironment(), { recovery: scope })
     if (result.exitCode !== 0) throw new Error('Native acceptance version probe failed')
     observed = result.stdout.trim()
   } catch (error) { errors.push(error) }
