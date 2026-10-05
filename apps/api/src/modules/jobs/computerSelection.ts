@@ -19,7 +19,7 @@ import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } fro
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
-import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
+import { SOURCE_AGGREGATE_LIMITS, verificationSourceStorageBytes } from '../sources/reservations.js'
 import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
@@ -240,16 +240,23 @@ export class JobComputerSelection {
   }
   private fitsEmptyComputer(candidate: JobComputerCandidate): boolean {
     const capacity = jobComputerCapacity(candidate.profile)
-    if (candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes) return false
+    const sourceBytes = candidate.profile.schemaVersion === 2
+      ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
+    if (candidate.sourceReservation.reservedBytes > sourceBytes) return false
     return (Object.keys(capacity) as (keyof typeof capacity)[])
       .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
   private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<JobComputerCapacityDecision> {
-    const storage = (await sql.query<{ bytes: string; materializations: string }>(`select coalesce(sum(bytes),0)::text as bytes,
+    const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string }>(`select
+      coalesce(sum(bytes) filter(where not verification),0)::text as bytes,
+      coalesce(sum(bytes) filter(where verification),0)::text as verification_bytes,
       coalesce(sum(materializations),0)::text as materializations from (
-        select reserved_bytes as bytes, case when owner_kind='materialization' and state in ('preparing','owned','uncertain')
-          then 1 else 0 end as materializations from source_storage_reservations where scope_id=$1 and state<>'reclaimed'
-        union all select source_bytes,1 from job_computer_selections s where s.source_scope=$1 and s.released_at is null
+        select r.reserved_bytes as bytes,case when r.owner_kind='materialization' and r.state in ('preparing','owned','uncertain')
+          then 1 else 0 end as materializations,exists(select 1 from job_computer_selections owner
+            where r.owner_kind='materialization' and owner.operation_id=r.owner_id and owner.spec ? 'verification') as verification
+          from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed'
+        union all select source_bytes,1,s.spec ? 'verification' from job_computer_selections s
+          where s.source_scope=$1 and s.released_at is null
           and not exists(select 1 from source_storage_reservations r where r.owner_kind='materialization' and r.owner_id=s.operation_id)
       ) usage`, [candidate.sourceReservation.scopeId])).rows[0]!
     let sourceSlots: number = SOURCE_AGGREGATE_LIMITS.materializations
@@ -257,7 +264,10 @@ export class JobComputerSelection {
       sourceSlots = candidate.profile.root.selection.hostRef.kind === 'main'
         ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
     }
-    if (Number(storage.bytes) + candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes
+    const sourceBytes = candidate.profile.schemaVersion === 2
+      ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
+    const usedBytes = candidate.profile.schemaVersion === 2 ? Number(storage.verification_bytes) : Number(storage.bytes)
+    if (usedBytes + candidate.sourceReservation.reservedBytes > sourceBytes
       || Number(storage.materializations) >= sourceSlots) return { fits: false, reason: 'busy' }
     return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory)
   }
