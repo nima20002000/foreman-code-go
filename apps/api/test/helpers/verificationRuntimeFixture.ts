@@ -82,4 +82,3 @@ export function verificationRuntimeFixture() {
     rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none' }
   return { spec, measurement, runtime }
 }
-
