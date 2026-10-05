@@ -35,6 +35,10 @@ if (args[0] === 'debug') {
   process.exit(0)
 }
 if (args[0] === 'mcp') {
+  if (args[1] === 'get' && args[2] !== mcpName) {
+    process.stderr.write(`Error: No MCP server named '${args[2]}' found.\n`)
+    process.exit(1)
+  }
   send(args[1] === 'list' ? [{ name: mcpName }] : mcp)
   process.exit(0)
 }
