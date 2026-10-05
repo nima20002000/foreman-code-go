@@ -98,7 +98,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
       const placed = orderedTimeline ? new Set(orderedTimeline.filter((entry) => entry.kind === 'activity').map((entry) => entry.id)) : undefined
       let truncation = message?.truncation
       if (streamed !== undefined && nativePartKey) truncation = timeline?.truncations?.[nativePartKey] ?? truncation
-      if (live && timeline?.requestId === requestId) {
+      if (live && timeline && timeline.requestId === requestId) {
         truncation = Object.entries(timeline.truncations ?? {}).find(([partId, value]) => value.truncated
           && !partId.startsWith('thinking:') && !savedIds.has(partId))?.[1]
       }
