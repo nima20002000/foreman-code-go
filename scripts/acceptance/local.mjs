@@ -33,9 +33,29 @@ process.once('SIGTERM', () => finish())
 // forwarded to the terminal. stdout is captured only for non-secret identity probes.
 async function command(file, args, { cwd = root, capture = false, timeout = 90_000 } = {}) {
   interrupted()
-  const result = await exec(file, args, { cwd, env: toolEnv, encoding: 'utf8',
-    maxBuffer: 1024 * 1024, timeout, signal: abort.signal, killSignal: 'SIGTERM' })
-  return capture ? result.stdout.trim() : undefined
+  try {
+    const result = await exec(file, args, { cwd, env: toolEnv, encoding: 'utf8',
+      maxBuffer: 1024 * 1024, timeout, signal: abort.signal, killSignal: 'SIGTERM' })
+    return capture ? result.stdout.trim() : undefined
+  } catch (error) {
+    if (state) {
+      const secrets = Object.entries({ ...process.env, ...toolEnv }).filter(([key, value]) => value
+        && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).flatMap(([, value]) => [
+        value, JSON.stringify(value).slice(1, -1),
+      ]).sort((left, right) => right.length - left.length)
+      const redact = (text) => secrets.reduce((result, secret) => result.replaceAll(secret, '[REDACTED]'),
+        String(text ?? ''))
+      const diagnostic = { stage, code: error.code, signal: error.signal,
+        stdout: redact(error.stdout), stderr: redact(error.stderr) }
+      try {
+        await writeFile(join(state, 'command-failure.json'), JSON.stringify(diagnostic, null, 2),
+          { mode: 0o600, flag: 'wx' })
+      } catch {
+        console.error('ENG07 private command diagnostic unavailable.')
+      }
+    }
+    throw error
+  }
 }
 function ownedChild(name, file, args, env, ipc = false) {
   interrupted()
@@ -288,12 +308,15 @@ main().catch(async (error) => {
   if (archive && state) {
     try {
       await mkdir(archive, { recursive: true, mode: 0o700 })
-      for (const kind of ['api', 'web']) {
+      for (const kind of ['api', 'web', 'command']) {
         const file = join(state, `${kind}-failure.json`)
         try {
           const diagnostic = await readFile(file, 'utf8')
-          await writeFile(join(archive, `local-${kind}-failure-${randomUUID()}.json`), diagnostic,
+          const extension = kind === 'command' ? 'log' : 'json'
+          const archived = join(archive, `local-${kind}-failure-${randomUUID()}.${extension}`)
+          await writeFile(archived, diagnostic,
             { flag: 'wx', mode: 0o600 })
+          if (kind === 'command') console.error(`ENG07 private command diagnostic log: ${archived}`)
         } catch (failure) {
           if (failure.code !== 'ENOENT') throw failure
         }
