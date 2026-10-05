@@ -97,18 +97,17 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     }
   } catch (error) {
     failures.push(error)
-  } finally {
-    factories.stopAuxiliaries()
-    const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
-    for (const result of closed) {
-      if (result.status === 'rejected') cleanupFailures.push(result.reason)
-    }
-    for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
-      try {
-        if (!await processes.closeOwner(owner)) throw new Error('Native schedule qualification closure is unconfirmed.')
-      } catch (error) {
-        cleanupFailures.push(error)
-      }
+  }
+  factories.stopAuxiliaries()
+  const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
+  for (const result of closed) {
+    if (result.status === 'rejected') cleanupFailures.push(result.reason)
+  }
+  for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
+    try {
+      if (!await processes.closeOwner(owner)) throw new Error('Native schedule qualification closure is unconfirmed.')
+    } catch (error) {
+      cleanupFailures.push(error)
     }
   }
   if (!cleanupFailures.length) {
