@@ -1,12 +1,14 @@
 import { spawn } from 'node:child_process'
 import { lstatSync } from 'node:fs'
 import { posix } from 'node:path'
+import { nativeAcceptanceEnvironment } from './test-native-acceptance.mjs'
 
 const [mode, ...files] = process.argv.slice(2)
 const modes = ['scripts', 'unit', 'integration', 'acceptance']
 if (!modes.includes(mode) || !files.length) {
   throw new Error('Usage: test-files.mjs scripts|unit|integration|acceptance <test files...>')
 }
+const environment = mode === 'acceptance' ? nativeAcceptanceEnvironment(process.env) : process.env
 const suffixes = { scripts: '.test.mjs', unit: '.test.ts',
   integration: '.integration.test.ts', acceptance: '.acceptance.test.ts' }
 for (const file of files) {
@@ -21,7 +23,7 @@ for (const file of files) {
 }
 
 async function run(command, args) {
-  const child = spawn(command, args, { stdio: 'inherit', env: process.env })
+  const child = spawn(command, args, { stdio: 'inherit', env: environment })
   const code = await new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (value, signal) => resolve(value ?? (signal === 'SIGINT' ? 130 : 143)))
