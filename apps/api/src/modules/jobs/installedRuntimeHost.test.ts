@@ -11,6 +11,13 @@ import { jobSpec } from '../../../test/helpers/jobFixture.js'
 import { captureInstalledRuntimeConfiguration, createInstalledJobRuntimeHost, inspectInstalledJobRuntime, inspectInstalledJobRuntimeCandidate, InstalledJobRuntimeCaptureInputSchema, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
 import * as qualification from './qualification.js'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
+import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
+import { JobVerificationInstalledRuntimeDescriptorSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { createVerificationProfile } from './verificationProfiles.js'
+import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
+import { InstalledVerificationRuntimeCaptureInputSchema, captureInstalledVerificationRuntimeConfiguration }
+  from './installedVerificationRuntime.js'
 
 const id = '11111111-1111-4111-8111-111111111111'
 const digest = '1'.repeat(64)
@@ -44,6 +51,77 @@ async function fixture() {
 }
 
 describe('protected installed runtime reader, no DB or native runtime execution', () => {
+  it('captures verification binaries, seed and approved source; a restarted host restores the same fingerprint', async () => {
+    const f = await fixture()
+    const measured = verificationRuntimeFixture()
+    const directory = join(f.root, 'snapshot')
+    const runtimeRoot = join(f.root, 'managed-runtime')
+    await mkdir(directory, { mode: 0o700 })
+    await mkdir(runtimeRoot, { mode: 0o700 })
+    const entries = []
+    for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
+      const bytes = Buffer.from(`approved ${path}`)
+      await writeFile(join(directory, path), bytes, { mode: 0o600 })
+      entries.push({ path, kind: 'file' as const, executable: false, byteSize: bytes.length, sha256: sourceSha256(bytes) })
+    }
+    const manifest = createSourceManifest({ version: 1, approvedSourceId: id, snapshotId: id,
+      capturePolicy: 'git-tree-v1', executablePolicy: 'strip', deletions: [], entries,
+      git: { commit: '2'.repeat(40), tree: '3'.repeat(40), objectFormat: 'sha1' } })
+    const root = { ...f.profile.root, source: { approvedSourceId: id, snapshotId: id, manifestDigest: manifest.manifestDigest },
+      binding: { ...f.profile.root.binding, snapshotId: id, manifestDigest: manifest.manifestDigest } }
+    const profile = createVerificationProfile({ id: 'verification', workspaceId: id, revision: 1,
+      name: 'Protected verification capture', root, sourceCommit: manifest.git!.commit,
+      spec: { rootId: id, bindingRevision: 1, resources: measured.measurement.fingerprint.resources,
+        policy: jobPolicyRequirementsRecord(measured.spec.policy), suites: ['install'],
+        approvalConfig: { approvalLifetimeMs: 24 * 60 * 60 * 1000 } }, previous: null, now: new Date().toISOString() })
+    const recorded = measured.measurement.fingerprint
+    const descriptor = JobVerificationInstalledRuntimeDescriptorSchema.parse({
+      target: f.configuration.target, runtimeExecutable: f.binary, ociExecutable: f.binary,
+      findmntExecutable: f.binary, findmntBinarySha256: digest, runtimeRoot, backingFile: null,
+      controllerEnvironment: f.configuration.controllerEnvironment, volumeCapacityBytes: recorded.quota.volumeCapacityBytes,
+      quota: recorded.quota, quotaPool: recorded.quotaPool, resources: profile.spec.resources,
+      network: profile.spec.policy.network, approvalConfig: profile.approvalConfig,
+      aggregateCgroupIdentityDigest: recorded.aggregateCgroupIdentityDigest,
+      resourcePolicyRevision: recorded.resourcePolicyRevision, resourcePolicyDigest: recorded.resourcePolicyDigest,
+      runtimeApprovalId: recorded.runtimeApprovalId, runtimeApprovalRevision: recorded.runtimeApprovalRevision,
+    })
+    const seedReceiptPath = join(f.root, 'seed-receipt.json')
+    await writeFile(seedReceiptPath, JSON.stringify({ schemaVersion: 1, packageManager: 'pnpm@11.27.0',
+      platform: { os: 'linux', arch: 'x64', libc: 'glibc' }, minimumReleaseAge: 2880,
+      minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false,
+      capturedAt: '2026-01-01T00:00:00Z', provenanceDigest: digest,
+      review: { reviewedByPrincipalId: 'installer', reviewedAt: '2026-01-01T00:00:00Z', decisionDigest: digest },
+      maxBytes: 3, maxInodes: 3, packages: [],
+      dependencyInputs: entries.map(({ path, sha256 }) => ({ path, sha256 })),
+      files: ['corepack-cache/pinned', 'pnpm-store/pinned', 'registry-cache/pinned']
+        .map(path => ({ path, bytes: 1, sha256: digest })) }), { mode: 0o600 })
+    const omitted = new Set(['schemaVersion', 'profileId', 'profileRevision', 'specDigest', 'hostRef',
+      'registration', 'mainInstallationId', 'root', 'bootId', 'runtimeBinarySha256', 'ociBinarySha256',
+      'configurationDigest', 'seedReceiptSha256', 'tools'])
+    const machine = Object.fromEntries(Object.entries(recorded).filter(([key]) => !omitted.has(key)))
+    const input = InstalledVerificationRuntimeCaptureInputSchema.parse({ schemaVersion: 2, root, descriptor,
+      machine: { ...machine, runtimeExecutable: f.binary, ociExecutable: f.binary,
+        resources: profile.spec.resources, approvalConfig: profile.approvalConfig, sourceCommit: profile.sourceCommit },
+      seedReceiptPath, qualificationSource: { directory, manifest }, toolSources: [
+        { kind: 'codex', executable: '/opt/graphql-ci/tools/codex', sourceExecutable: f.binary, version: 'passive fixture' },
+      ] })
+    const configuration = await captureInstalledVerificationRuntimeConfiguration(input)
+    expect(configuration.machine.runtimeBinarySha256).toBe(f.configuration.pins.runtimeBinarySha256)
+    expect(configuration.machine.tools[0]?.binarySha256).toBe(f.configuration.pins.runtimeBinarySha256)
+    expect(configuration.machine.bootId).toBe(f.configuration.pins.bootId)
+    expect('measurement' in configuration).toBe(false)
+    await writeFile(f.location.path, JSON.stringify(configuration), { mode: 0o600 })
+    const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
+    expect(await host.currentMetadata(f.sql, profile)).toBeNull()
+    const fingerprint = await host.capture!(profile)
+    expect(fingerprint).toMatchObject({ schemaVersion: 3, sourceCommit: profile.sourceCommit, profileId: profile.id })
+    const restarted = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
+    expect(await restarted.currentMetadata(f.sql, profile)).toBeNull()
+    expect(await restarted.capture!(profile)).toEqual(fingerprint)
+    expect(await restarted.currentMetadata(f.sql, profile)).toEqual(fingerprint)
+    await writeFile(seedReceiptPath, 'changed seed')
+    await expect(restarted.capture!(profile)).rejects.toThrow('seed receipt changed')
+  })
   it('installer capture computes host pins instead of accepting supplied digests or readiness', async () => {
     const f = await fixture()
     const { pins, ...installation } = f.configuration

@@ -8,6 +8,8 @@ import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import { JobQualificationCandidateRecordSchema, type JobQualificationCandidateRecord, type JobRuntimeQualificationResultRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
@@ -19,7 +21,7 @@ export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as c
 export { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
 export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@foreman-code/contracts/job-runtime'
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
-export function jobQualificationFingerprint(candidate: JobQualificationCandidate): string { return hash(candidate.fingerprint) }
+export function jobQualificationFingerprint(candidate: JobQualificationCandidateRecord): string { return hash(candidate.fingerprint) }
 export interface JobQualificationRecord {
   suite: typeof CI_QUALIFICATION_SUITE
   candidate: JobQualificationCandidate
@@ -34,6 +36,8 @@ export interface JobQualificationRecord {
   profile: QualifiedJobProfile | null
 }
 export interface QualificationNativeOwner {
+  completedResult?: JobRuntimeQualificationResultRecord
+  recordResult?(result: JobRuntimeQualificationResultRecord): Promise<void>
   /** Existing admission journals the exact native launch before the physical Node spawn. */
   reserveProcess(binary: string, argv: string[]): Promise<string>
   /** HRT's guarded spawn primitive receives original reserved scope BEFORE native entry. */
@@ -49,16 +53,19 @@ export interface QualificationNativeOwner {
 }
 export interface JobQualificationAuthority {
   readApproval(id: string): Promise<{ status: 'approved' | 'denied' | 'revoked'; fingerprint: string; expiresAt: string } | null>
-  assertCurrent(candidate: JobQualificationCandidate): Promise<void>
-  reserve(candidate: JobQualificationCandidate, signal: AbortSignal): Promise<QualificationNativeOwner>
+  assertCurrent(candidate: JobQualificationCandidateRecord): Promise<void>
+  reserve(candidate: JobQualificationCandidateRecord, signal: AbortSignal): Promise<QualificationNativeOwner>
 }
 
 /** Compose real existing guarded process ownership with exact OCI/cgroup ownership. */
-export function createQualificationNativeOwner(candidate: JobQualificationCandidate,
-  native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'>,
+export function createQualificationNativeOwner(candidate: JobQualificationCandidateRecord,
+  native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
+    | 'completedResult' | 'recordResult'>,
   ownership: OCIContainerOwnership, authority: JobQualificationAuthority): QualificationNativeOwner {
   let container: OwnedOCIContainer | null = null
   const composite: QualificationNativeOwner = {
+    ...(native.completedResult ? { completedResult: native.completedResult } : {}),
+    ...(native.recordResult ? { recordResult: (result: JobRuntimeQualificationResultRecord) => native.recordResult!(result) } : {}),
     reserveProcess: (binary, argv) => native.reserveProcess(binary, argv),
     spawnProcess: (reservation, binary, argv, options) => native.spawnProcess(reservation, binary, argv, options),
     readNativeExit: (reservation, child, wrapper) => native.readNativeExit(reservation, child, wrapper),
@@ -150,7 +157,11 @@ export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntim
 }
 
 /** Concrete physical command runner, never a caller-supplied observation/ready result. */
-export async function runQualificationCommand(owner: QualificationNativeOwner, binary: string, argv: string[], environment: Record<string, string>, signal: AbortSignal) {
+export async function runQualificationCommand(owner: QualificationNativeOwner, binary: string, argv: string[],
+  environment: Record<string, string>, signal: AbortSignal, timeoutMs = 30000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86400000) {
+    throw new Error('Bounded qualification command deadline required.')
+  }
   const reservation = await owner.reserveProcess(binary, argv)
   signal.throwIfAborted()
   const child = owner.spawnProcess(reservation, binary, argv, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
@@ -165,7 +176,7 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
       void owner.stopProcess(reservation).then(stopped => reject(new Error(stopped ? 'Diagnostic interrupted.' : 'Diagnostic physical stop unconfirmed.')), reject)
     }
     signal.addEventListener('abort', interrupt, { once: true })
-    const timeout = setTimeout(interrupt, 30000)
+    const timeout = setTimeout(interrupt, timeoutMs)
     const read = (chunk: Buffer, stdout: boolean) => {
       bytes += chunk.length
       if (bytes > 65536) interrupt()
@@ -228,9 +239,9 @@ export async function fingerprintQualificationPath(path: string, executable = fa
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const before = await handle.stat({ bigint: true })
-    if (executable && (!before.isFile() || before.size > 67108864n || (before.mode & 0o022n) || !(before.mode & 0o111n))) throw new Error('Executable trust boundary rejected.')
+    if (executable && (!before.isFile() || before.size > 268435456n || (before.mode & 0o022n) || !(before.mode & 0o111n))) throw new Error('Executable trust boundary rejected.')
     if (!executable && !before.isDirectory()) throw new Error('Canonical directory required.')
-    const digest = executable ? createHash('sha256').update(await boundedFile(handle, 67108864)).digest('hex') : null
+    const digest = executable ? createHash('sha256').update(await boundedFile(handle, 268435456)).digest('hex') : null
     const after = await handle.stat({ bigint: true })
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error('Path changed during qualification.')
     return { path: canonical, device: String(before.dev), inode: String(before.ino), mode: String(before.mode), uid: String(before.uid), gid: String(before.gid), sha256: digest }
@@ -297,7 +308,7 @@ async function boundedFile(handle: Awaited<ReturnType<typeof open>>, maximum: nu
 
 /** Explicit POST capture may read metadata; GET never calls this helper. No native probe. */
 export async function captureJobRuntimeConfiguration(runtimeRoot: string, environment: JobQualificationCandidate['controllerEnvironment'],
-  diagnostics: Pick<JobQualificationCandidate, 'findmntBinary' | 'findmntBinarySha256' | 'backingFile' | 'backingBytes'>) {
+  diagnostics: Pick<JobQualificationCandidateRecord, 'findmntBinary' | 'findmntBinarySha256' | 'backingFile' | 'backingBytes'>) {
   const userConfig = join(userInfo().homedir, '.config/containers')
   const files = ['/usr/share/containers/containers.conf', '/etc/containers/containers.conf', join(userConfig, 'containers.conf'),
     '/etc/containers/storage.conf', join(userConfig, 'storage.conf'), '/usr/share/containers/mounts.conf', '/etc/containers/mounts.conf', join(userConfig, 'mounts.conf')]
@@ -324,7 +335,8 @@ export async function captureJobRuntimeConfiguration(runtimeRoot: string, enviro
   if (binary.sha256 !== diagnostics.findmntBinarySha256) throw new Error('Approved diagnostic binary changed.')
   return { suite: CI_QUALIFICATION_SUITE,workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, probeDigest: hash(QUALIFICATION_PROBE), environment,
     runtimeRoot: await fingerprintQualificationPath(runtimeRoot), hooksDirectory: join(runtimeRoot, 'ci-empty-oci-hooks'), configuration,
-    diagnosticBinary: binary, backingFile: await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes) }
+    diagnosticBinary: binary, backingFile: diagnostics.backingFile === null || diagnostics.backingBytes === null
+      ? null : await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes) }
 
 }
 
@@ -472,7 +484,15 @@ async function measureContext(candidate: JobQualificationCandidate) {
 }
 
 /** Actual entry recheck outside SQL. GET never invokes this function. */
-export async function assertJobRuntimeEntryContext(candidate: JobQualificationCandidate): Promise<void> { await measureContext(JobQualificationCandidateSchema.parse(candidate)) }
+export async function assertJobRuntimeEntryContext(raw: JobQualificationCandidateRecord): Promise<void> {
+  const candidate = JobQualificationCandidateRecordSchema.parse(raw)
+  if (candidate.fingerprint.schemaVersion === 3) {
+    const { assertVerificationRuntimeEntryContext } = await import('./installedVerificationRuntime.js')
+    await assertVerificationRuntimeEntryContext(candidate)
+    return
+  }
+  await measureContext(JobQualificationCandidateSchema.parse(candidate))
+}
 
 export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string; containerId?: string; containerHostname?: string|undefined }) {
   const toolchain = probe.toolchain as Record<string, unknown> | undefined

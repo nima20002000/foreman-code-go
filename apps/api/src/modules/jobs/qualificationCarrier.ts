@@ -1,7 +1,9 @@
 import type pg from 'pg'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
-import { JOB_RUNTIME_QUALIFICATION_EXTENSION, JobRuntimeQualificationRpcRequestSchema, JobRuntimeQualificationRpcResponseSchema,
-  type JobRuntimeProfile, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
+import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeQualificationRpcRequestRecordSchema, JobRuntimeQualificationRpcResponseRecordSchema,
+  type JobRuntimeProfileRecord, type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
@@ -17,13 +19,13 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
   endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost; workerExecution?: WorkerExecutionPolicy }) {
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const snapshots = new Map<string, {
-    response: Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseSchema.parse>, { operation: 'inspect' }>
+    response: Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseRecordSchema.parse>, { operation: 'inspect' }>
     binding: NonNullable<ReturnType<DeviceEndpoint['currentBinding']>>
   }>()
-  const key = (profile: JobRuntimeProfile) => `${profile.id}:${profile.revision}`
-  const exchange = async (profile: JobRuntimeProfile, payload: unknown, signal?: AbortSignal) => {
+  const key = (profile: JobRuntimeProfileRecord) => `${profile.id}:${profile.revision}`
+  const exchange = async (profile: JobRuntimeProfileRecord, payload: unknown, signal?: AbortSignal) => {
     const target = profile.root.selection.hostRef
-    const request = JobRuntimeQualificationRpcRequestSchema.parse(payload)
+    const request = JobRuntimeQualificationRpcRequestRecordSchema.parse(payload)
     if (request.operation === 'run') workerExecution.requireEnabled(target)
     if (target.kind !== 'device' || !profile.root.registration) throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The real installed worker is required.', 409)
     const endpoint = input.endpoint(), captured = endpoint.captureRequest(target.deviceId, JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace)
@@ -36,13 +38,13 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
         throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original installed qualification connection is unavailable or changed.', 409)
     }
     check()
-    const reply = await captured!.request(JobRuntimeQualificationRpcRequestSchema.parse(payload), signal ? { signal } : {})
+    const reply = await captured!.request(JobRuntimeQualificationRpcRequestRecordSchema.parse(payload), signal ? { signal } : {})
     check()
     if (reply.bytes !== undefined) throw new DomainError('JOB_RUNTIME_RESPONSE_INVALID', 'Physical qualification metadata cannot contain arbitrary binary data.', 409)
-    return { response: JobRuntimeQualificationRpcResponseSchema.parse(reply.payload), binding: captured!.binding }
+    return { response: JobRuntimeQualificationRpcResponseRecordSchema.parse(reply.payload), binding: captured!.binding }
   }
-  const inspect = async (profile: JobRuntimeProfile) => {
-    const { response, binding } = await exchange(profile, { version: 1, operation: 'inspect', profile })
+  const inspect = async (profile: JobRuntimeProfileRecord) => {
+    const { response, binding } = await exchange(profile, { version: profile.schemaVersion === 2 ? 3 : 1, operation: 'inspect', profile })
     if (response.operation !== 'inspect' || response.fingerprint.profileId !== profile.id || response.fingerprint.profileRevision !== profile.revision
       || response.fingerprint.specDigest !== profile.specDigest || response.fingerprint.bootId !== binding.bootId
       || !sameWorkflowValue(response.fingerprint.root, profile.root) || !sameWorkflowValue(response.fingerprint.hostRef, profile.root.selection.hostRef)
@@ -83,9 +85,14 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
     },
     reserveQualification: request => input.local.reserveQualification(request),
     runAdmitted: async request => {
-      if (request.profile.root.selection.hostRef.kind !== 'device') throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The remote qualifier cannot replace the Main-local native owner.', 409)
+      if (request.profile.root.selection.hostRef.kind === 'main') {
+        if (!input.local.runAdmitted) {
+          throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'Installed Main qualification is unavailable.', 503)
+        }
+        return input.local.runAdmitted(request)
+      }
       await request.assertAdmission()
-      const { response, binding } = await exchange(request.profile, { version: 1, operation: 'run', admission: request.nativeAdmission, candidate: request.candidate }, request.signal)
+      const { response, binding } = await exchange(request.profile, { version: request.nativeAdmission.schemaVersion === 3 ? 3 : request.nativeAdmission.schemaVersion, operation: 'run', admission: request.nativeAdmission, candidate: request.candidate }, request.signal)
       await request.assertAdmission()
       if (response.operation !== 'run' || !sameWorkflowValue(response.admission, request.nativeAdmission)
         || !sameWorkflowValue(response.candidate, request.candidate) || !sameWorkflowValue(binding, request.nativeAdmission.connection))
@@ -93,7 +100,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
       return response.result
     },
   }
-  const authorize = async (admission: JobRuntimeNativeAdmission, candidate: JobQualificationCandidate, context: DeviceExtensionContext) => {
+  const authorize = async (admission: JobRuntimeNativeAdmissionRecord, candidate: JobQualificationCandidateRecord, context: DeviceExtensionContext) => {
     context.signal.throwIfAborted()
     if (!admission.connection || !sameWorkflowValue(admission.connection, context.binding)
       || !sameWorkflowValue(input.endpoint().currentBinding(context.binding.deviceId), context.binding))
@@ -116,10 +123,10 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
     } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
   const extension: DeviceExtensionRegistration = { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(raw, context) {
-    const request = JobRuntimeQualificationRpcRequestSchema.parse(raw)
+    const request = JobRuntimeQualificationRpcRequestRecordSchema.parse(raw)
     if (context.bytes !== undefined || request.operation !== 'authorize') throw new DomainError('JOB_RUNTIME_REQUEST_INVALID', 'Main serves actual diagnostic authority only.', 403)
     await authorize(request.admission, request.candidate, context)
-    return { payload: JobRuntimeQualificationRpcResponseSchema.parse({ version: 1, operation: 'authorize', admission: request.admission, candidate: request.candidate,
+    return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: request.version, operation: 'authorize', admission: request.admission, candidate: request.candidate,
       approval: { status: 'approved', fingerprint: request.admission.fingerprintDigest, expiresAt: request.admission.expiresAt } }) }
   } }
   return { host, extension }

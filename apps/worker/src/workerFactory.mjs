@@ -21,7 +21,7 @@ export { approvedRootExtensions, createWorkerExecutionDomains };
 // Read-only qualification helper for the explicit human installation gate only.
 // Startup consumes and verifies the approved facts; it never calls this helper.
 export { qualifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
-export { captureInstalledRuntimeConfiguration } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
+export { captureInstalledRuntimeConfiguration, captureInstalledRuntimeConfigurationRecord } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
 
 export async function prepareWorkerState(stateDirectory) {
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);

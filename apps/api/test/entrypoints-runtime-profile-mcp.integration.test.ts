@@ -3,9 +3,10 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { JobRuntimeFingerprintSchema, JobRuntimeProfileListSchema } from '@foreman-code/contracts/job-runtime'
 import { ApprovedSourceSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
-import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
+import type { JobRuntimeProfileRecord, JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobPolicySchema } from '@foreman-code/contracts/jobs'
-import { JobRuntimeProfileListRecordSchema, JobVerificationProfileSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { JobRuntimeProfileListRecordSchema, JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema,
+  JobVerificationRuntimeMeasurementSchema, JobRuntimeQualificationReadRecordSchema, QualifiedVerificationJobRuntimeSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
@@ -14,20 +15,21 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import type { JobSql } from '../src/modules/jobs/repository.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
 import { createProductionSources } from '../src/modules/sources/production.js'
 import { createSourceManifest, sourceSha256 } from '../src/modules/sources/manifest.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { DomainError } from '../src/modules/errors.js'
 import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { jobSpec } from './helpers/jobFixture.js'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
+import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
 
 const origin = 'http://127.0.0.1:5173', browserHeaders = { host: '127.0.0.1:3000', origin }
 const verificationSaveResult = z.object({ profile: JobVerificationProfileSchema }).strict()
 /** Real migrated PostgreSQL, domain writes, browser approval and authenticated MCP.
- * Installed candidate capture is a metadata fixture; no physical qualification is claimed. */
+ * Producer records are contract fixtures; physical ordinary qualification has separate acceptance coverage. */
 async function fixture() {
   const db = await currentDatabase(), access = new PostgresAccessService(db.pool), workspaceId = randomUUID()
   const owner = await access.issue({ name: 'Runtime fixture owner', audience: 'operator',
@@ -57,15 +59,49 @@ async function fixture() {
   await db.pool.query('insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision) values($1,$2,$3,1)', [rootId, workspaceId, digest])
   await db.pool.query('insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record) values($1,1,$2,$3,$4::jsonb)', [rootId, workspaceId, snapshotId, JSON.stringify(root)])
   const producer = { capture: vi.fn(async (profile: JobRuntimeProfileRecord) => {
-    if (profile.schemaVersion === 2) throw new DomainError('JOB_RUNTIME_UNAVAILABLE',
-      'The metadata fixture does not supply a physical verification installation.', 503)
+    if (profile.schemaVersion === 2) {
+      const metadata = verificationRuntimeFixture().measurement.fingerprint
+      return JobVerificationRuntimeFingerprintSchema.parse({ ...metadata, profileId: profile.id,
+        profileRevision: profile.revision, specDigest: profile.specDigest, root: profile.root,
+        hostRef: profile.root.selection.hostRef, registration: profile.root.registration, mainInstallationId: mainId,
+        resources: profile.spec.resources, limits: profile.spec.resources.limits, sourceCommit: profile.sourceCommit,
+        network: profile.spec.policy.network, approvalConfig: profile.approvalConfig,
+        imageDigest: profile.spec.policy.imageDigest, toolchainDigest: profile.spec.policy.toolchainDigest })
+    }
     return JobRuntimeFingerprintSchema.parse({ schemaVersion: 1,
     profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest, hostRef: root.selection.hostRef,
     registration: null, mainInstallationId: mainId, bootId: randomUUID(), root, runtimeExecutable: '/usr/bin/podman', runtimeBinarySha256: digest,
     ociExecutable: '/usr/bin/crun', ociBinarySha256: digest, configurationDigest: digest, imageDigest: profile.policy.imageDigest,
     toolchainDigest: profile.policy.toolchainDigest, limits: profile.limits }) }),
-    run: vi.fn(async () => { throw new Error('private producer failure /secret/path token=do-not-expose') }),
-    revalidate: vi.fn(async () => ({ ready: false, reasons: ['UNQUALIFIED'] })) }
+    run: vi.fn(async (approval: JobRuntimeApprovalRecord) => {
+      if (approval.schemaVersion === 1) throw new Error('private producer failure /secret/path token=do-not-expose')
+      const fixture = verificationRuntimeFixture()
+      const profile = JobVerificationProfileSchema.parse((await db.pool.query(
+        'select record from job_runtime_profile_versions where profile_id=$1 and revision=$2',
+        [approval.profileId, approval.profileRevision])).rows[0].record)
+      const fingerprint = approval.fingerprint
+      const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...fixture.measurement, fingerprint,
+        approvedAt: approval.approvedAt, checkedAt: new Date().toISOString(), expiresAt: approval.expiresAt,
+        identity: { ...fixture.measurement.identity, profileId: profile.id, profileRevision: profile.revision,
+          rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+          qualificationId: approval.qualificationId, fingerprintDigest: approval.fingerprintDigest,
+          imageDigest: fingerprint.imageDigest, toolchainDigest: fingerprint.toolchainDigest, network: fingerprint.network,
+          approvalId: approval.id, approvalExpiresAt: approval.expiresAt, qualificationExpiresAt: approval.expiresAt },
+        suites: profile.spec.suites.map(suite => ({ ...fixture.measurement.suites[0], suite,
+          resources: profile.spec.resources })),
+      })
+      const runtime = QualifiedVerificationJobRuntimeSchema.parse({ ...fixture.runtime, ...fingerprint.limits,
+        policyId: profile.id, policyRevision: profile.revision, qualificationId: approval.qualificationId,
+        imageDigest: fingerprint.imageDigest, toolchainDigest: fingerprint.toolchainDigest, network: fingerprint.network,
+        quota: fingerprint.quota, deviceLimits: fingerprint.deviceLimits, provisioningSuite: fingerprint.provisioningSuite,
+        aggregateCgroupIdentityDigest: fingerprint.aggregateCgroupIdentityDigest, imageManifestDigest: fingerprint.imageManifestDigest,
+        imageConfigDigest: fingerprint.imageConfigDigest, resourcePolicyRevision: fingerprint.resourcePolicyRevision,
+        resourcePolicyDigest: fingerprint.resourcePolicyDigest, runtimeApprovalId: fingerprint.runtimeApprovalId,
+        runtimeApprovalRevision: fingerprint.runtimeApprovalRevision })
+      return { outcome: 'qualified' as const, measurement, runtime }
+    }),
+    revalidate: vi.fn(async (_sql: JobSql, profile: JobRuntimeProfileRecord) => profile.schemaVersion === 2
+      ? { ready: true, reasons: [] } : { ready: false, reasons: ['UNQUALIFIED'] }) }
   const commands = new PostgresCommandCoordinator(db.pool)
   const noCarrier = (): never => { throw new Error('Source snapshot readback cannot contact a worker') }
   const sourceRuntime = await createProductionSources({ pool: db.pool, commands,
@@ -151,12 +187,34 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       f.producer.capture.mockClear()
       const pending = await client.callTool({ name: 'job_runtime_qualification_request', arguments: {
         workspaceId: f.workspaceId, profileId: saved.id, commandId: randomUUID(), expectedRevision: saved.revision } })
-      expect(pending.isError).toBe(true)
-      const error = pending.content.find(item => item.type === 'text')
-      if (!error || error.type !== 'text') throw new Error('Expected a public qualification error.')
-      expect(JSON.parse(error.text)).toMatchObject({ error: { code: 'JOB_RUNTIME_UNAVAILABLE' } })
+      expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
+      const approval = (pending.structuredContent as { approval: { id: string } }).approval
       expect(f.producer.capture).toHaveBeenCalledWith(saved)
+      const browser = await f.browser()
+      expect((await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
+        workspaceId: f.workspaceId, approvalId: approval.id, commandId: randomUUID() } })).isError).toBe(true)
       expect(f.producer.run).not.toHaveBeenCalled()
+      const approved = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${approval.id}/approve`,
+        headers: browser, payload: { commandId: randomUUID() } })
+      expect(approved.statusCode, approved.body).toBe(200)
+      const runCommandId = randomUUID()
+      const run = await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
+        workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } })
+      expect(run.isError, JSON.stringify(run.content)).not.toBe(true)
+      const qualified = JobVerificationProfileSchema.parse((run.structuredContent as { profile: unknown }).profile)
+      expect(qualified.status).toBe('qualified')
+      expect(qualified.measurement?.suites.map(item => item.suite)).toEqual(saved.spec.suites)
+      const qualification = await client.callTool({ name: 'job_runtime_qualification_get', arguments: {
+        workspaceId: f.workspaceId, approvalId: approval.id } })
+      const completed = JobRuntimeQualificationReadRecordSchema.parse(qualification.structuredContent)
+      expect(completed).toMatchObject({ profile: qualified, approval: { status: 'complete' },
+        readiness: { ready: true, reasons: [], sideEffects: false } })
+      expect((await f.db.pool.query('select record from job_runtime_profiles where id=$1', [saved.id])).rows[0].record)
+        .toEqual(qualified)
+      expect((await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
+        workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } })).structuredContent)
+        .toEqual(run.structuredContent)
+      expect(f.producer.run).toHaveBeenCalledOnce()
 
       const reader = await f.access.issue({ name: 'Verification reader', audience: 'operator',
         grants: [{ actions: ['job_definitions:read'], scope: { workspaceIds: [f.workspaceId] } }],
@@ -165,7 +223,13 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect((await readonly.callTool({ name: 'job_runtime_profile_save',
         arguments: { workspaceId: f.workspaceId, ...input, commandId: randomUUID() } })).isError).toBe(true)
       const readback = await readonly.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: f.workspaceId } })
-      expect(JobRuntimeProfileListRecordSchema.parse(readback.structuredContent)).toEqual(result)
+      expect(JobRuntimeProfileListRecordSchema.parse(readback.structuredContent).profiles.find(item => item.profile.id === saved.id))
+        .toEqual({ profile: qualified, ready: true, reasons: [], sideEffects: false })
+      for (const name of ['job_runtime_qualification_request', 'job_runtime_qualification_run']) {
+        const args = name.endsWith('request') ? { profileId: saved.id, expectedRevision: 1 } : { approvalId: approval.id }
+        expect((await readonly.callTool({ name, arguments: { workspaceId: f.workspaceId,
+          commandId: randomUUID(), ...args } })).isError).toBe(true)
+      }
       expect((await f.db.pool.query("select outcome from management_audit where principal_id=$1 and action='job_runtime_profile_save'",
         [reader.principal.id])).rows).toEqual([{ outcome: 'denied' }])
       expect((await f.db.pool.query('select count(*)::int as count from job_runtime_profile_versions where profile_id=$1',

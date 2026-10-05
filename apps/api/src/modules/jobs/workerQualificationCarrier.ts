@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
-import { JOB_RUNTIME_QUALIFICATION_EXTENSION, JobRuntimeQualificationRpcRequestSchema, JobRuntimeQualificationRpcResponseSchema,
-  type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
+import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeQualificationRpcRequestRecordSchema, JobRuntimeQualificationRpcResponseRecordSchema,
+  type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
@@ -32,21 +34,21 @@ export function createWorkerQualificationExtension(input: {
       mainInstallationId: connection.mainId, bootId: connection.bootId, connection }
   }
   return { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(raw, context) {
-    const request = JobRuntimeQualificationRpcRequestSchema.parse(raw), host = observed()
+    const request = JobRuntimeQualificationRpcRequestRecordSchema.parse(raw), host = observed()
     if (context.bytes !== undefined || !isDeepStrictEqual(host.connection, context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The diagnostic request is not on the original actual Main channel.', 403)
     const signal = AbortSignal.any([input.signal, context.signal])
     if (request.operation === 'inspect') {
       const inspected = await inspectInstalledJobRuntime({ configuration: input.configuration, profile: request.profile, host })
       if (!isDeepStrictEqual(observed(), host)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The installed diagnostic host changed during capture.', 409)
-      return { payload: JobRuntimeQualificationRpcResponseSchema.parse({ version: 1, operation: 'inspect', ...inspected }) }
+      return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: request.version, operation: 'inspect', ...inspected }) }
     }
     if (request.operation !== 'run' || !isDeepStrictEqual(request.admission.connection, host.connection)) throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The genuine persisted diagnostic admission is required.', 403)
-    const assertAdmission = async (admission: JobRuntimeNativeAdmission, candidate: JobQualificationCandidate = request.candidate) => {
+    const assertAdmission = async (admission: JobRuntimeNativeAdmissionRecord, candidate: JobQualificationCandidateRecord = request.candidate) => {
       signal.throwIfAborted()
       if (!isDeepStrictEqual(observed(), host) || !isDeepStrictEqual(admission, request.admission) || !isDeepStrictEqual(candidate, request.candidate))
         throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original diagnostic admission changed.', 403)
-      const reply = await input.request(JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace, { version: 1, operation: 'authorize', admission, candidate }, { signal })
-      const approved = JobRuntimeQualificationRpcResponseSchema.parse(reply.payload)
+      const reply = await input.request(JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace, { version: request.version, operation: 'authorize', admission, candidate }, { signal })
+      const approved = JobRuntimeQualificationRpcResponseRecordSchema.parse(reply.payload)
       if (reply.bytes !== undefined || approved.operation !== 'authorize' || !isDeepStrictEqual(approved.admission, admission)
         || !isDeepStrictEqual(approved.candidate, candidate) || approved.approval.fingerprint !== admission.fingerprintDigest
         || approved.approval.expiresAt !== admission.expiresAt || !isDeepStrictEqual(observed(), host))
@@ -64,6 +66,6 @@ export function createWorkerQualificationExtension(input: {
       },
     })
     if (!isDeepStrictEqual(observed(), host)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original measured diagnostic host changed.', 409)
-    return { payload: JobRuntimeQualificationRpcResponseSchema.parse({ version: 1, operation: 'run', admission: request.admission, candidate: request.candidate, result }) }
+    return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: request.version, operation: 'run', admission: request.admission, candidate: request.candidate, result }) }
   } }
 }

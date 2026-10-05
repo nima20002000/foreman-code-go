@@ -9,12 +9,17 @@ import {
   JobRuntimeFingerprintSchema,
   InstalledJobRuntimeDescriptorSchema,
   type CurrentJobRuntimeFingerprint,
-  type JobRuntimeFingerprint,
-  type JobRuntimeNativeAdmission,
   type JobRuntimeProfile,
 } from '@foreman-code/contracts/job-runtime'
-import type { JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
-import { inspectInstalledVerificationCandidate } from './installedVerificationRuntime.js'
+import { JobRuntimeFingerprintRecordSchema, InstalledJobRuntimeDescriptorRecordSchema,
+  jobRuntimeProfilePolicy, jobRuntimeProfileLimits, type JobQualificationCandidateRecord,
+  type JobRuntimeProfileRecord, type JobRuntimeFingerprintRecord, type JobRuntimeNativeAdmissionRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { inspectInstalledVerificationCandidate, inspectInstalledVerificationRuntime,
+  InstalledVerificationRuntimeConfigurationSchema, InstalledVerificationRuntimeCaptureInputSchema,
+  captureInstalledVerificationRuntimeConfiguration, type InstalledVerificationRuntimeConfiguration }
+  from './installedVerificationRuntime.js'
+import { qualifyVerificationRuntime } from './verificationQualification.js'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -44,6 +49,18 @@ export const InstalledJobRuntimeCaptureInputSchema = InstalledJobRuntimeConfigur
   imageDigest: target.imageDigest, toolchainDigest: digest, diskBytes: z.number().int().positive(),
 }).strict()
 export type InstalledJobRuntimeCaptureInput = z.infer<typeof InstalledJobRuntimeCaptureInputSchema>
+export const InstalledJobRuntimeCaptureInputRecordSchema = z.union([
+  InstalledJobRuntimeCaptureInputSchema, InstalledVerificationRuntimeCaptureInputSchema,
+])
+export const InstalledJobRuntimeConfigurationRecordSchema = z.union([
+  InstalledJobRuntimeConfigurationSchema, InstalledVerificationRuntimeConfigurationSchema,
+])
+export async function captureInstalledRuntimeConfigurationRecord(
+  input: z.infer<typeof InstalledJobRuntimeCaptureInputRecordSchema>,
+) {
+  if (input.schemaVersion === 2) return captureInstalledVerificationRuntimeConfiguration(input)
+  return captureInstalledRuntimeConfiguration(input)
+}
 export interface InstalledRuntimeConfigurationLocation { path: string; ownerUid: number }
 export interface InstalledRuntimeHostDependencies {
   /** Existing application-installation/device authority, no provider inventory. */
@@ -53,7 +70,8 @@ export interface InstalledRuntimeHostDependencies {
   currentConnection?(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<DeviceSessionBinding | null>
   /** Existing admitted original operation supplies process/OCI ownership, not config principal IDs. */
   reserve(input: Parameters<InstalledJobRuntimeHost['reserveQualification']>[0]): Promise<{
-    native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'>
+    native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
+      | 'completedResult' | 'recordResult'>
     ownership: OCIContainerOwnership
     authority: JobQualificationAuthority
   }>
@@ -97,7 +115,7 @@ export async function readProtectedRuntimeConfiguration<T>(
   catch (error) { if (error instanceof DomainError) throw error; return unavailable('configuration_unavailable') }
 }
 export async function readProtectedRuntimeFile(
-  location: InstalledRuntimeConfigurationLocation | null, maximumBytes = 65536,
+  location: InstalledRuntimeConfigurationLocation | null, maximumBytes = 2 * 1024 * 1024 + 65536,
 ): Promise<Buffer> {
   if (!location) unavailable('missing_configuration')
   if (!Number.isSafeInteger(location.ownerUid) || location.ownerUid < 0 || !location.path.startsWith('/')) unavailable('invalid_configuration_location')
@@ -123,7 +141,7 @@ export async function readProtectedRuntimeFile(
   } finally { await file?.close() }
 }
 
-async function installedIdentity(sql: JobSql, configuration: InstalledJobRuntimeConfiguration) {
+async function installedIdentity(sql: JobSql, configuration: { target: InstalledJobRuntimeConfiguration['target'] }) {
   const selected = configuration.target
   const main = (await sql.query<{ id: string }>('select id from application_installation where singleton=true for share')).rows[0]
   if (!main || main.id !== selected.mainInstallationId || selected.hostRef.mainId !== main.id) unavailable('installation_changed')
@@ -175,7 +193,7 @@ async function inspectConfiguration(configuration: InstalledJobRuntimeConfigurat
 
 /** Worker-local protected capture. Pairing and current authenticated connection
  * are supplied by the existing installed worker authority; no SQL facade. */
-export type InstalledRuntimeObservedHost = Pick<JobRuntimeNativeAdmission, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId' | 'connection'>
+export type InstalledRuntimeObservedHost = Pick<JobRuntimeNativeAdmissionRecord, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId' | 'connection'>
 function assertInstalledHost(configuration: InstalledJobRuntimeConfiguration, host: InstalledRuntimeObservedHost) {
   const target = configuration.target
   if (hash(target.hostRef) !== hash(host.hostRef) || hash(target.registration) !== hash(host.registration) ||
@@ -189,9 +207,13 @@ function assertInstalledHost(configuration: InstalledJobRuntimeConfiguration, ho
 }
 export async function inspectInstalledJobRuntime(input: {
   configuration: InstalledRuntimeConfigurationLocation | null
-  profile: JobRuntimeProfile
+  profile: JobRuntimeProfileRecord
   host: InstalledRuntimeObservedHost
-}): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }> {
+}): Promise<{ descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }> {
+  if (input.profile.schemaVersion === 2) {
+    const { descriptor, fingerprint } = await inspectInstalledVerificationRuntime({ ...input, profile: input.profile })
+    return { descriptor, fingerprint }
+  }
   const configuration = await readInstalledRuntimeConfiguration(input.configuration)
   assertInstalledHost(configuration, input.host)
   const { descriptor, fingerprint } = await inspectConfiguration(configuration, input.profile)
@@ -217,14 +239,27 @@ export async function inspectInstalledJobRuntimeCandidate(input: {
 }
 
 export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHostDependencies): InstalledJobRuntimeHost & {
-  inspect(profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>
+  inspect(profile: JobRuntimeProfileRecord): Promise<{
+    descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>
 } {
-  const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration; descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>()
-  const key = (profile: InstalledRuntimeProfileContext) => `${profile.id}:${profile.revision}`
+  const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration | InstalledVerificationRuntimeConfiguration;
+    descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>()
+  const key = (profile: Pick<JobRuntimeProfileRecord, 'id' | 'revision'>) => `${profile.id}:${profile.revision}`
   async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
-    const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
-    await installedIdentity(sql, configuration)
-    const snapshot = await inspectConfiguration(configuration, profile)
+    let snapshot
+    if (profile.schemaVersion === 2) {
+      const configuration = await readProtectedRuntimeConfiguration(dependencies.configuration,
+        InstalledVerificationRuntimeConfigurationSchema)
+      await installedIdentity(sql, { target: configuration.descriptor.target })
+      const connection = profile.root.selection.hostRef.kind === 'main' ? null
+        : await dependencies.currentConnection?.(sql, profile) ?? null
+      snapshot = await inspectInstalledVerificationRuntime({ configuration: dependencies.configuration, profile,
+        host: { ...configuration.descriptor.target, bootId: configuration.machine.bootId, connection } })
+    } else {
+      const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
+      await installedIdentity(sql, configuration)
+      snapshot = await inspectConfiguration(configuration, profile)
+    }
     snapshots.set(key(profile), snapshot)
     return snapshot
   }
@@ -236,21 +271,58 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
       const snapshot = snapshots.get(key(profile))
       if (!snapshot || !dependencies.currentConnection) unavailable('current_connection_unavailable')
       const binding = DeviceSessionBindingSchema.parse(await dependencies.currentConnection(sql, profile))
-      const selected = snapshot.configuration.target
+      const selected = snapshot.descriptor.target
       if (selected.hostRef.kind !== 'device' || binding.mainId !== selected.mainInstallationId || binding.deviceId !== selected.hostRef.deviceId ||
         binding.workerInstallationId !== selected.registration?.workerInstallationId || binding.keyRevision !== selected.registration?.keyRevision ||
         binding.authorizationRevision !== selected.registration?.authorizationRevision || binding.bootId !== snapshot.fingerprint.bootId) unavailable('current_connection_changed')
       return binding
     },
-    async currentMetadata(sql, profile): Promise<JobRuntimeFingerprint | null> {
+    async currentMetadata(sql, profile): Promise<JobRuntimeFingerprintRecord | null> {
       // G1/GET readback consumes captured installed metadata only. Native entry
       // captures pins again; an uncaptured/restarted host never invents readiness.
       const snapshot = snapshots.get(key(profile))
       if (!snapshot || snapshot.fingerprint.profileRevision !== profile.revision || snapshot.fingerprint.specDigest !== profile.specDigest ||
-        hash(snapshot.configuration.root) !== hash(profile.root) || snapshot.fingerprint.imageDigest !== profile.policy.imageDigest ||
-        snapshot.fingerprint.toolchainDigest !== profile.policy.toolchainDigest || hash(snapshot.fingerprint.limits) !== hash(profile.limits)) return null
-      try { await installedIdentity(sql, snapshot.configuration); return CurrentJobRuntimeFingerprintSchema.parse(snapshot.fingerprint) }
+        hash(snapshot.configuration.root) !== hash(profile.root) || snapshot.fingerprint.imageDigest !== jobRuntimeProfilePolicy(profile).imageDigest ||
+        snapshot.fingerprint.toolchainDigest !== jobRuntimeProfilePolicy(profile).toolchainDigest
+        || hash(snapshot.fingerprint.limits) !== hash(jobRuntimeProfileLimits(profile))
+        || profile.schemaVersion === 2 && (snapshot.fingerprint.schemaVersion !== 3
+          || snapshot.fingerprint.sourceCommit !== profile.sourceCommit
+          || hash(snapshot.fingerprint.resources) !== hash(profile.spec.resources)
+          || hash(snapshot.fingerprint.network) !== hash(profile.spec.policy.network)
+          || hash(snapshot.fingerprint.approvalConfig) !== hash(profile.approvalConfig))) return null
+      try {
+        await installedIdentity(sql, { target: snapshot.descriptor.target })
+        return JobRuntimeFingerprintRecordSchema.parse(snapshot.fingerprint)
+      }
       catch (error) { if (error instanceof DomainError && error.status < 500) return null; throw error }
+    },
+    async capture(profile) { return (await current(dependencies.identity, profile)).fingerprint },
+    async runAdmitted(input) {
+      if (input.candidate.fingerprint.schemaVersion !== 3) throw new Error('Verification candidate required.')
+      await input.assertAdmission()
+      await current(dependencies.identity, input.profile)
+      return qualifyVerificationRuntime({ candidate: (await import('@foreman-code/contracts/job-verification-runtime'))
+        .JobVerificationQualificationCandidateSchema.parse(input.candidate), admission: input.nativeAdmission,
+        configuration: dependencies.configuration, signal: input.signal,
+        authority: {
+          readApproval: async id => {
+            if (id !== input.approval.id) return null
+            await input.assertAdmission()
+            return { status: 'approved', fingerprint: input.approval.fingerprintDigest, expiresAt: input.approval.expiresAt }
+          },
+          assertCurrent: async candidate => {
+            if (hash(candidate) !== hash(input.candidate)) unavailable('original_approval_context_changed')
+            await input.assertAdmission()
+            await inspectInstalledJobRuntimeCandidate({ configuration: dependencies.configuration, candidate,
+              host: input.nativeAdmission })
+          },
+          reserve: async (candidate, signal) => {
+            const reserved = await dependencies.reserve({ ...input, candidate, signal,
+              operationId: input.approval.qualificationId })
+            return createQualificationNativeOwner(candidate, reserved.native, reserved.ownership, reserved.authority)
+          },
+        },
+      })
     },
     async reserveQualification(input) {
       input.signal.throwIfAborted()
