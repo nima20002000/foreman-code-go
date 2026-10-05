@@ -42,7 +42,7 @@ export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResourc
   return JOB_TOOLS.filter(name => jobToolAvailable(context, name, resource)).map(name => ({
     name, actions: [actions[name]],
     detail: name.startsWith('job_cancellation_recovery')
-      ? 'Cleanup requires jobs:cancel and separate browser-owner approval. MCP cannot approve itself or authorize execution.'
+      ? 'Cleanup requires jobs:cancel and separate local-human approval. MCP cannot approve itself or authorize execution.'
       : JOB_QUEUE_CAPABILITY_DETAIL + ' Accepted specifications and file revisions are immutable. '
         + 'No Agent, provider login or Operator credential enters the build.',
   }))

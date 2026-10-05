@@ -643,6 +643,14 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       headers: { authorization: `Bearer ${reader.token}` } })
     expect(httpList.statusCode).toBe(200)
     expect(httpList.json()).toEqual(listed.structuredContent)
+    const localRead = await app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${f.workspaceId}/jobs/queue/${persisted.id}` })
+    expect(localRead.statusCode, localRead.body).toBe(200)
+    expect(localRead.json()).toEqual(read.structuredContent)
+    const localList = await app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${f.workspaceId}/jobs/queue` })
+    expect(localList.statusCode, localList.body).toBe(200)
+    expect(localList.json()).toEqual(listed.structuredContent)
     const { workspaceId, ...body } = input
     const crossTransport = await app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/jobs/executions`,
