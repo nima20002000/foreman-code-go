@@ -78,10 +78,23 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
     setPolicy('')
     if (value === 'custom') {
       setVerification('')
+      if (verification) {
+        const build = definition?.schemaVersion === 1 ? definition.spec : undefined
+        setArgv(JSON.stringify(build?.argv ?? ['corepack', 'pnpm', 'build']))
+        setOutputs(JSON.stringify(build?.outputs ?? [], null, 2))
+        setCwd(build?.relativeCwd ?? '')
+        setLimitsPin(undefined)
+      }
       if (policyPin && 'schemaVersion' in policyPin) setPolicyPin(undefined)
     } else if (value === 'saved' && savedVerification) {
       setVerification(JSON.stringify(savedVerification, null, 2))
       setPolicyPin(definition?.spec.policy)
+      setLimitsPin(savedVerification.resources.limits)
+      setArgv(JSON.stringify(definition?.spec.argv))
+      setOutputs(JSON.stringify(definition?.spec.outputs, null, 2))
+      setCwd(definition?.spec.relativeCwd ?? '')
+      setTarget(definition && isAutoJobSpecRecord(definition.spec) ? 'auto' : '')
+      setTargetPin(definition?.spec.target)
     } else {
       const selected = templates[Number(value)]
       if (!selected) return
@@ -90,7 +103,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
       setPolicyPin(selected.policy)
       setLimitsPin(selected.resources.limits)
       setArgv(JSON.stringify(selected.argv))
-      setOutputs(JSON.stringify(selected.outputs, null, 2))
+      setOutputs(JSON.stringify(selected.outputs ?? [], null, 2))
       setCwd('')
       setVerification(JSON.stringify({ suite: selected.suite, parameters: selected.parameters,
         resources: selected.resources, credentialRefs: [] }, null, 2))
@@ -111,6 +124,10 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
           label: `Repository ${item.suite} · ${item.profileId} revision ${item.profileRevision}${item.ready ? '' : ' · runtime setup required'}` }))]}
       onChange={event => selectTemplate(event.target.value)}
       hint="Verification templates run the complete repository suite and publish its summary, JUnit, JSON results and logs." />
+    {selectedTemplate?.setupIssue === 'report_budget_insufficient' && <Alert title="Report budget too small" tone="warning">
+      Four required reports cannot fit the saved {selectedTemplate.policy.maxOutputBytes}-byte output allowance.
+      Increase the runtime profile's output allowance and report reservation, then qualify the updated profile.
+    </Alert>}
     <Select label="Computer and validated root" value={target} disabled={locked || choices.isError}
       options={[{ value: 'auto', label: 'Auto · highest-priority ready build computer' },
         { value: 'fixed', label: 'Fixed computer (advanced)' },

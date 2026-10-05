@@ -68,17 +68,32 @@ export const JobVerificationTemplateSchema = z.object({
   maxUnitWorkers: DeviceSafeIntegerSchema.min(1).max(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
   argv: z.tuple([z.literal('node'), z.literal('scripts/verify-repository.mjs'),
     z.literal('--context'), z.literal('.graphql-job-inputs/verification.json')]),
-  outputs: JobVerificationOutputsSchema,
-}).strict()
+  outputs: JobVerificationOutputsSchema.nullable(),
+  setupIssue: z.literal('report_budget_insufficient').optional(),
+}).strict().superRefine((value, context) => {
+  const insufficient = value.policy.maxOutputBytes < 4
+  if (insufficient !== (value.setupIssue === 'report_budget_insufficient')
+    || insufficient !== (value.outputs === null) || (insufficient && value.ready)) {
+    context.addIssue({ code: 'custom', message: 'An insufficient report budget retains its setup issue and no report configuration.' })
+  }
+  if (value.outputs && value.outputs.reduce((bytes, output) => bytes + output.maxBytes, 0) > value.policy.maxOutputBytes) {
+    context.addIssue({ code: 'custom', message: 'Template reports must fit the saved output budget.' })
+  }
+  if (value.parameters.unitWorkers > value.maxUnitWorkers) {
+    context.addIssue({ code: 'custom', message: 'Template parameters must fit the qualified worker allowance.' })
+  }
+})
 export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSchema>
 
-export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters'>) {
+export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
   const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
+  const parameters = { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
+    integrationShards: JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }
+  const argv = ['node', 'scripts/verify-repository.mjs', '--context', '.graphql-job-inputs/verification.json']
+  if (!reportBytes) return JobVerificationTemplateSchema.parse({ ...input, ready: false,
+    setupIssue: 'report_budget_insufficient', parameters, argv, outputs: null })
   return JobVerificationTemplateSchema.parse({
-    ...input,
-    parameters: { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
-      integrationShards: JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards },
-    argv: ['node', 'scripts/verify-repository.mjs', '--context', '.graphql-job-inputs/verification.json'],
+    ...input, parameters, argv,
     outputs: [
       { path: '.logs/verification/summary.json', kind: 'suite-summary', mediaType: 'application/json' },
       { path: '.logs/verification/junit.xml', kind: 'junit', mediaType: 'application/xml' },

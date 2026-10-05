@@ -71,6 +71,24 @@ it('does not display a pass while a required companion report is missing', async
   expect(screen.queryByText('Verification: passed')).toBeNull()
 })
 
+it('uses the required summary when an optional summary is declared first', async () => {
+  const optional = { path: '.logs/verification/optional.json', kind: 'suite-summary' as const,
+    required: false, mediaType: 'application/json', maxBytes: 4096 }
+  const outputs = [optional, ...verificationExecution.acceptedSpec.outputs.map(output => ({
+    ...output, maxBytes: output.maxBytes - 1024,
+  }))]
+  await responses(verificationReport, { ...verificationExecution,
+    acceptedSpec: { ...verificationExecution.acceptedSpec, outputs } })
+  const optionalRead = vi.fn()
+  server.use(http.get(`${root}/artifacts/report-0/revisions/revision-0/content`, () => {
+    optionalRead()
+    return HttpResponse.error()
+  }))
+  mount()
+  expect(await screen.findByText('Verification: passed')).toBeInTheDocument()
+  expect(optionalRead).not.toHaveBeenCalled()
+})
+
 it('presents a retained partial timeout report with first-pass failures', async () => {
   await responses({ ...verificationReport, outcome: 'timed_out', completeness: 'partial', completedPortions: 1,
     totals: { total: 8, passed: 6, failed: 1, skipped: 1 }, firstPassFailed: 1, disallowedSkipped: 1 },
