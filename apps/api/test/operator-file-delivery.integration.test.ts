@@ -17,8 +17,8 @@ import { codexChatHostDirectory } from '../src/modules/harnesses/codexFiles/loca
 import type { ApiConfig } from '../src/config.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
-import type { ChildProcessEnvironment } from '../src/modules/harnesses/port.js'
-import { ManagedOpenCodeServer, type ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
+import type { ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
+import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
 import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
 import { deferred } from './helpers/agentChatF5.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
@@ -29,21 +29,6 @@ vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>('../src/modules/harnesses/codexProtocol.js')
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
 })
-class RecordedOpenCodeServer extends ManagedOpenCodeServer {
-  readonly calls: Array<{ path: string; body?: Record<string, unknown> }> = []
-  readonly restartEnvironments: ChildProcessEnvironment[] = []
-
-  override async request(path: string, init: RequestInit = {}, signal?: AbortSignal, generation?: number) {
-    const body = typeof init.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
-    this.calls.push({ path, ...(body ? { body } : {}) })
-    return super.request(path, init, signal, generation)
-  }
-
-  override async restart(environment: ChildProcessEnvironment, signal?: AbortSignal) {
-    this.restartEnvironments.push(structuredClone(environment))
-    await super.restart(environment, signal)
-  }
-}
 const servers: RecordedOpenCodeServer[] = []
 const serverOptions: ManagedOpenCodeServerOptions[] = []
 const { applyApplicationMigrations } = await import('../src/infrastructure/migrations.js')
