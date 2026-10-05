@@ -82,8 +82,8 @@ export function assertNativeOutputRootExcluded(root: string, writableRoots: read
  * The returned shape is the W09 storage port, independently of producer imports. */
 export async function createInstalledNativeOutputStorage(input: InstalledNativeOutputStorageInput) {
   const owner = BudgetOwner.parse(input.owner), limits = Limits.parse(input.limits)
-  const minimumGeneration = 'kind' in owner ? 0 : 1
-  if (!owner.nativeTurnId || !Number.isSafeInteger(owner.runtimeGeneration) || owner.runtimeGeneration < minimumGeneration
+  // The qualified Codex transport numbers its original generation from zero.
+  if (!owner.nativeTurnId || !Number.isSafeInteger(owner.runtimeGeneration) || owner.runtimeGeneration < 0
     || owner.session.harness !== 'codex'
     || 'intent' in owner && owner.intent.mainId !== owner.binding.mainId) throw unavailable()
   await input.assertCurrent(); await input.protection.assertProtected(owner)
@@ -145,7 +145,7 @@ export async function createInstalledNativeOutputStorage(input: InstalledNativeO
 }
 
 const RemoteBudgetOwner = z.object({ intent: DispatchIntentSchema, binding: DeviceSessionBindingSchema,
-  session: NativeSessionReferenceSchema, nativeTurnId: z.string().min(1).max(500), runtimeGeneration: z.number().int().positive() }).strict()
+  session: NativeSessionReferenceSchema, nativeTurnId: z.string().min(1).max(500), runtimeGeneration: z.number().int().nonnegative() }).strict()
 const LocalBudgetOwner = z.object({ kind: z.literal('local'), mainId: z.uuid(),
   executionId: z.string().min(1), attemptId: z.string().min(1), placementHash: z.string().regex(/^[a-f0-9]{64}$/),
   session: NativeSessionReferenceSchema, nativeTurnId: z.string().min(1).max(500),

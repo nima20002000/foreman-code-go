@@ -298,9 +298,27 @@ describe('durable native output installation budget, no qualification grants', (
     await expect(recovered.reserve({ ...allocation, owner: f.input.owner })).rejects.toThrow()
     await expect(createInstalledNativeOutputStorage({ ...f.input, owner: { ...owner, runtimeGeneration: -1 },
       limits: input.limits, budget: recovered })).rejects.toThrow()
-    await expect(createInstalledNativeOutputStorage({ ...f.input,
-      owner: { ...f.input.owner, runtimeGeneration: 0 } })).rejects.toThrow()
     await expect(createNativeOutputBudgetLedger(f.budgetInput)).rejects.toThrow()
+    await original.release()
+    await expect(original.assertCurrent()).rejects.toThrow()
+  })
+
+  it('recovers the original installed transport generation zero after reservation acceptance', async () => {
+    const f = await budgetFixture()
+    const owner = { ...f.input.owner, runtimeGeneration: 0 }
+    const allocation = { ...f.reservation, owner, artifactId: randomUUID() }
+    const ledger = await createNativeOutputBudgetLedger(f.budgetInput)
+    const storage = await createInstalledNativeOutputStorage({ ...f.input, owner,
+      limits: f.budgetInput.limits, budget: ledger })
+    const original = await storage.reserve({ artifactId: allocation.artifactId, ...allocation.requested })
+    const recovered = await createNativeOutputBudgetLedger(f.budgetInput)
+    const restored = await createInstalledNativeOutputStorage({ ...f.input, owner,
+      limits: f.budgetInput.limits, budget: recovered })
+    await (await restored.reserve({ artifactId: allocation.artifactId, ...allocation.requested })).assertCurrent()
+    await expect(recovered.reserve({ ...allocation, owner: { ...owner, runtimeGeneration: 1 } })).rejects.toThrow()
+    await expect(recovered.reserve({ ...allocation, owner: { ...owner, nativeTurnId: 'another-turn' } })).rejects.toThrow()
+    await expect(createInstalledNativeOutputStorage({ ...f.input, owner: { ...owner, runtimeGeneration: -1 } }))
+      .rejects.toThrow()
     await original.release()
     await expect(original.assertCurrent()).rejects.toThrow()
   })
