@@ -1,9 +1,9 @@
 import { inflateSync } from 'node:zlib'
-import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
+import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
@@ -76,7 +76,8 @@ function verificationRuntimeFixture() {
   })
   const target = { ...f.spec.target, hostRef: baseline.hostRef, mainId: baseline.mainInstallationId,
     mainInstallationId: baseline.mainInstallationId, destination: { ...f.spec.target.destination,
-      canonicalProjectRoot: `/approved/source/${id}/tree`, canonicalCwd: `/approved/source/${id}/tree` } }
+      canonicalProjectRoot: `/approved/source/${f.acceptedBuild.source.materializationId}/tree`,
+      canonicalCwd: `/approved/source/${f.acceptedBuild.source.materializationId}/tree` } }
   const spec = AcceptedVerificationJobSpecSchema.parse({ ...f.acceptedBuild, ...f.spec, target, schemaVersion: 2,
     source: { ...f.acceptedBuild.source }, profile, reservationId: id,
     resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1 })
@@ -100,17 +101,33 @@ describe('offline verification launch validation with structured physical observ
         path: `.logs/verification/${name}`, mediaType, required: true, maxBytes: 1024 })) } })
     const preseedFacts = { lockfileSha256: digest, pnpmVersion: '11.27.0', platform: 'linux', architecture: 'x64',
       provenanceDigest: digest, minimumReleaseAgeMinutes: 2880, releaseAgeVerified: true }
-    const context = verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts })
+    const spec = execution.acceptedSpec
+    const parent = dirname(spec.target.destination.canonicalProjectRoot)
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    const gitMounts: VerifiedJobGitMounts = {
+      version: 1, layout: JOB_PRIVATE_GIT_LAYOUT, workspaceId: execution.workspaceId,
+      executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId,
+      owner: execution.owner, specDigest: spec.specDigest, bindingHash: spec.bindingHash,
+      materializationId: spec.source.materializationId, materializationDigest: spec.source.materializationDigest,
+      git: { directory: join(parent, 'repository'), filesystem, generatedCommit: '4'.repeat(40),
+        sourceCommit: spec.source.commit, repositoryReceiptDigest: digest, configDigest: digest,
+        indexDigest: digest, mountpoint: filesystem },
+      scheduler: { directory: join(parent, 'job-heavy-jobs'), filesystem }, receiptDigest: digest,
+    }
+    const context = verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts, gitMounts })
     expect(context.identity).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId,
       commit: f.spec.source.commit, profile: f.spec.profile, resources: f.spec.verification.resources })
     expect(context.qualifiedUnitWorkers).toBe(1)
     expect(context.storeDirectory).toBe('/job-scratch/pnpm-store')
+    expect(context.privateGit).toMatchObject({ generatedCommit: '4'.repeat(40), sourceCommit: spec.source.commit })
     expect(context.limits).toEqual({ summaryBytes: 1024, junitBytes: 1024, vitestBytes: 1024,
       logsArchiveBytes: 1024, logBytes: 1024 })
-    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts: null })).toThrow()
+    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts: null, gitMounts })).toThrow()
+    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts,
+      gitMounts: { ...gitMounts, git: { ...gitMounts.git, sourceCommit: '0'.repeat(40) } } })).toThrow('Git/scheduler')
     expect(() => verificationRepositoryContext({ execution: { ...execution,
       acceptedSpec: { ...execution.acceptedSpec, outputs: execution.acceptedSpec.outputs.slice(0, 1) } },
-      measurement: f.measurement, preseedFacts })).toThrow('every fixed')
+      measurement: f.measurement, preseedFacts, gitMounts })).toThrow('every fixed')
   })
   it('denies host namespace, executable control temp, shared memory overflow and owner-home visibility', () => {
     const { resources } = verificationFixture()

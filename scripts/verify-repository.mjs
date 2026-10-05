@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, statfsSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, statfsSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { groupUsed, stopGroup } from './integration-process.mjs'
@@ -22,6 +22,12 @@ export function validateVerificationContext(context) {
   }
   if (!identity.target || !identity.profile || !identity.resources || !identity.parameters) {
     throw new Error('Accepted target, profile, resources and parameters are required')
+  }
+  const git = context.privateGit
+  if (!git || git.sourceCommit !== identity.commit
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(git.generatedCommit)
+    || ['repositoryReceiptDigest', 'configDigest', 'indexDigest'].some(field => !/^[a-f0-9]{64}$/.test(git[field]))) {
+    throw new Error('Authenticated private Git receipt must retain the accepted source commit')
   }
   positiveInteger(identity.resources.reportBytes, 'Accepted report reservation')
   positiveInteger(context.executionTimeoutMs, 'Execution deadline')
@@ -79,6 +85,25 @@ export function verifyEffectivePackagePolicy(root, environment) {
   }
   const exclusions = run(['config', 'get', 'minimumReleaseAgeExclude'])
   if (!['undefined', 'null', '[]', ''].includes(exclusions)) throw new Error('Release-age exclusions are prohibited')
+}
+
+export function verifyPrivateGitHead(root, context) {
+  validateVerificationContext(context)
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+  if (head !== context.privateGit.generatedCommit) throw new Error('Private Git HEAD differs from its authenticated receipt')
+}
+
+export function prepareVerificationDirectory(root) {
+  const directory = resolve(root, dirname(reportPaths.summary))
+  privateDirectory(directory)
+  for (const entry of readdirSync(directory)) {
+    const stat = lstatSync(join(directory, entry))
+    if (entry !== 'summary.json' || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size !== 0) {
+      throw new Error('Verification output directory already contains attempt results; use a fresh attempt')
+    }
+  }
+  privateDirectory(join(directory, 'parts'))
+  return directory
 }
 
 export function expectedPortions(root, suite) {
@@ -252,9 +277,7 @@ export function finalizeVerification(context, { root, directory, state, terminal
 
 export async function verifyRepository(context, { root = repository, signal } = {}) {
   validateVerificationContext(context)
-  const directory = resolve(root, dirname(reportPaths.summary))
-  if (existsSync(directory)) throw new Error('Verification output directory already exists; use a fresh attempt')
-  privateDirectory(join(directory, 'parts'))
+  const directory = prepareVerificationDirectory(root)
   const state = { identity: context.identity, startedAt: new Date().toISOString(),
     expected: expectedPortions(root, context.identity.suite) }
   writeReport(join(directory, 'parts', 'state.json'), state, context.limits.vitestBytes)
@@ -265,8 +288,7 @@ export async function verifyRepository(context, { root = repository, signal } = 
   let result = { terminalOutcome: 'incomplete', processStopped: true }
   let measurementTimer
   try {
-    const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-    if (commit !== context.identity.commit) throw new Error('Source commit differs from the accepted execution')
+    verifyPrivateGitHead(root, context)
     verifyEffectivePackagePolicy(root, environment)
     verifyOfflinePreseed(root, context.preseedReceipt)
     writeReport(join(directory, 'parts', 'preseed-receipt.json'), context.preseedReceipt, context.limits.logBytes)

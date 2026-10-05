@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { groupUsed } from './integration-process.mjs'
-import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess, sampleVerificationResources,
-  validateVerificationContext, verificationCommand, verifyOfflinePreseed } from './verify-repository.mjs'
+import { collectPortions, expectedPortions, finalizeVerification, prepareVerificationDirectory, runSuiteProcess,
+  sampleVerificationResources, validateVerificationContext, verificationCommand, verifyOfflinePreseed,
+  verifyPrivateGitHead } from './verify-repository.mjs'
 import { portionPath, readNodeReport, runVerificationCommand, suiteSummary, writeReport } from './verification-reports.mjs'
 
 function context(suite = 'unit') {
@@ -29,7 +31,9 @@ function context(suite = 'unit') {
       fingerprintDigest: digest, imageDigest: `sha256:${digest}`, toolchainDigest: digest,
       network: { schemaVersion: 2, mode: 'none' }, approvalId: id,
       approvalExpiresAt: '2026-10-05T13:00:00.000Z', qualificationExpiresAt: '2026-10-05T13:00:00.000Z' },
-  }, mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
+  }, privateGit: { sourceCommit: 'b'.repeat(40), generatedCommit: 'c'.repeat(40),
+    repositoryReceiptDigest: digest, configDigest: digest, indexDigest: digest },
+  mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
   limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
     logsArchiveBytes: 65536, logBytes: 8192 } }
 }
@@ -45,6 +49,40 @@ function receipt(directory, key, code = 0) {
   writeReport(portionPath(directory, key, 'command.json'), { key, code,
     startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:00:01.000Z' }, 8192)
 }
+
+test('private HEAD is checked against its generated receipt while reports retain the approved source commit', () => {
+  const f = fixture()
+  try {
+    const git = (...args) => execFileSync('git', args, { cwd: f.root,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8' }).trim()
+    git('init', '--quiet')
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+      '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--allow-empty', '-m', 'private snapshot')
+    const configuration = context()
+    configuration.privateGit.generatedCommit = git('rev-parse', 'HEAD')
+    assert.notEqual(configuration.privateGit.generatedCommit, configuration.identity.commit)
+    assert.doesNotThrow(() => verifyPrivateGitHead(f.root, configuration))
+    configuration.privateGit.generatedCommit = '0'.repeat(40)
+    assert.throws(() => verifyPrivateGitHead(f.root, configuration), /authenticated receipt/)
+    configuration.privateGit.sourceCommit = '0'.repeat(40)
+    assert.throws(() => validateVerificationContext(configuration), /accepted source commit/)
+  } finally { f.close() }
+})
+
+test('a reserved empty summary permits launch but prior attempt results and symlinks do not', () => {
+  const f = fixture()
+  try {
+    const directory = join(f.root, '.logs', 'verification')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'summary.json'), '')
+    assert.equal(prepareVerificationDirectory(f.root), directory)
+    assert.throws(() => prepareVerificationDirectory(f.root), /attempt results/)
+    rmSync(directory, { recursive: true })
+    mkdirSync(directory)
+    symlinkSync(join(f.root, 'reports'), join(directory, 'summary.json'))
+    assert.throws(() => prepareVerificationDirectory(f.root), /attempt results/)
+  } finally { f.close() }
+})
 
 test('ordinary suites run their full root commands', () => {
   for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build']]) {
