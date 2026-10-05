@@ -99,3 +99,20 @@ it('forwards the native applied-settings acknowledgement only for the admitted t
   f.bridge.close()
   await expect(f.lease.request()).rejects.toMatchObject({ status: 403 })
 })
+
+it('keeps native profile reads on a live Main-issued request and rechecks the caller', async () => {
+  const f = setup()
+  const profile = vi.fn(async () => { throw new Error('Profile unavailable') })
+  const reader = f.bridge.capture({ request: { method: 'conversation.capabilities', binding: f.binding,
+    configuration: f.configuration }, current: f.current, channel: { binding: f.connection, request: f.send },
+    callbacks: { profile } })
+  const callback = { method: 'conversation.profile', binding: f.binding, admissionId: reader.admissionId }
+  await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toThrow('Profile unavailable')
+  expect(profile).toHaveBeenCalledOnce()
+  f.current.mockRejectedValueOnce(new Error('Read grant revoked'))
+  await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toThrow('Read grant revoked')
+  expect(profile).toHaveBeenCalledOnce()
+  reader.close()
+  await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
+  f.lease.close()
+})

@@ -13,6 +13,7 @@ import {
 import {
   WorkerConversationHistorySchema, WorkerConversationReceiptSchema, WorkerMcpInspectionSchema, WorkerResponseAvailabilitySchema,
   type WorkerConversationBinding, type WorkerConversationConfiguration, type WorkerConversationRpcRequest,
+  type WorkerConversationProfileFacts,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput,
   NativeInitialTurnInput, NativeCompactInput, NativeSteerInput, NativeResponseIdentity } from '../harnesses/port.js'
@@ -29,6 +30,7 @@ interface ManagerOptions {
   bridge: MainWorkerConversationBridge
   current(request: WorkerConversationRpcRequest): Promise<void>
   observeSession?(session: NativeSessionReference): Promise<void>
+  profile?(): Promise<WorkerConversationProfileFacts>
 }
 
 /** Main's existing native port targets one conversation on its selected paired worker. */
@@ -48,7 +50,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     return { ...input, binding: this.options.binding } as WorkerConversationRpcRequest
   }
   private capture(frame: WorkerConversationRpcRequest, callbacks: WorkerConversationCallbacks = {}) {
-    const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel, callbacks,
+    const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
+      callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}), ...callbacks },
       current: () => { this.lifetime.signal.throwIfAborted(); return this.options.current(frame) } })
     this.leases.add(lease)
     return lease

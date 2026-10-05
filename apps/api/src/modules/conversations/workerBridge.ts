@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import {
   WorkerConversationCallbackSchema, WorkerConversationRpcRequestSchema,
   type WorkerConversationRpcRequest, type WorkerConversationBinding,
+  type WorkerConversationProfileFacts,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
@@ -11,6 +12,7 @@ import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 
 export interface WorkerConversationCallbacks {
+  profile?(): Promise<WorkerConversationProfileFacts>
   sessionObserved?(session: NativeSessionReference): Promise<void>
   submitted?(correlationId: string, identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>): Promise<void>
   settingsApplied?(): Promise<void>
@@ -83,6 +85,12 @@ export class MainWorkerConversationBridge {
     if (callback.method === 'conversation.authorize') {
       if (!isDeepStrictEqual(admission.request, callback.request)) denied()
       return { authorized: true }
+    }
+    if (callback.method === 'conversation.profile') {
+      if (!admission.callbacks.profile) denied()
+      const facts = await admission.callbacks.profile()
+      await this.current(admission, callback.binding, connection, signal)
+      return facts
     }
     const task = admission.tail.then(async () => {
       await this.current(admission, callback.binding, connection, signal)

@@ -1,15 +1,17 @@
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { NativeSessionReferenceSchema, withAdvancedDefaults } from '@foreman-code/contracts'
+import { NativeSessionReferenceSchema, withAdvancedDefaults, type HarnessQualification } from '@foreman-code/contracts'
 import { WorkerConversationBindingSchema, type WorkerConversationConfiguration,
-  type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+  WorkerConversationProfileFactsSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { createAdmittedNativeManager } from '../harnesses/admittedManager.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
+import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
+import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
 import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
@@ -19,6 +21,9 @@ import { agentChatCorrelation } from './agentChatRepository.js'
 import { WorkerConversationManager } from './workerManager.js'
 import { MainWorkerConversationBridge } from './workerBridge.js'
 import { DomainError } from '../errors.js'
+import { MainWorkerConversationMcp } from './mainWorkerMcp.js'
+import type { PostgresAccessService } from '../access/postgres.js'
+import type { SelectedMainMcpForward } from '../placement/workerMcpRelay.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -44,6 +49,11 @@ export function createProductionWorkerConversations(input: {
   claudeProfiles: AcceptedHarnessProfileAdmission<ClaudeProfileOwner>
   operators: PostgresOperatorConversationRepository
   agents: PostgresAgentChatRepository
+  registry: ProductionHarnessRegistry
+  qualifications: Pick<HarnessQualificationRepository, 'find'>
+  suiteRevisions: Partial<Record<'codex' | 'opencode', string>>
+  access: Pick<PostgresAccessService, 'authenticate'>
+  mcpForward(): SelectedMainMcpForward
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -154,6 +164,19 @@ export function createProductionWorkerConversations(input: {
         if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
       }
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
+        profile: async () => {
+          const installation = input.registry.pinOverride(accepted.override).installation
+          let qualification: HarnessQualification | null = null
+          const harness = configuration.harness.harness
+          const binary = installation.launcher.resolvedLauncher
+          const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === binary)?.fingerprint
+          const revision = harness === 'claude' ? undefined : input.suiteRevisions[harness]
+          if (harness !== 'claude' && sha256 && installation.observedVersion && revision) {
+            qualification = await input.qualifications.find(harness, installation.observedVersion, sha256, revision)
+          }
+          return WorkerConversationProfileFactsSchema.parse({ installation, override: accepted.override,
+            profile: accepted.persistedProof, qualification })
+        },
         observeSession: async session => {
           const saved = await input.pool.query(`update operator_conversations set worker_conversation_binding=$2::jsonb
             where id=$1 and deleted_at is null
@@ -177,6 +200,9 @@ export function createProductionWorkerConversations(input: {
     inspectors.set(admitted.manager, admitted.inspector)
     return admitted.manager
   }
-  return { create, bridge, inspector: (manager: NativeHarnessSessionManager) => inspectors.get(manager),
+  const mcp = new MainWorkerConversationMcp({ pool: input.pool, access: input.access, operators: input.operators,
+    profiles: input.profiles, claudeProfiles: input.claudeProfiles, bridge,
+    current: deviceId => input.endpoint().captureRequest(deviceId, 'execution-v1')?.binding, forward: input.mcpForward })
+  return { create, bridge, mcp, inspector: (manager: NativeHarnessSessionManager) => inspectors.get(manager),
     close: () => bridge.close() }
 }

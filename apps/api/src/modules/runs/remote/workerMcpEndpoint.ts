@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { registerAppRoute } from '../../harnesses/appMcpLauncher.js'
-import type { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
+import type { ChildProcessEnvironment } from '../../harnesses/port.js'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
@@ -32,14 +33,15 @@ export function observedWorkflowArtifactPublication(body: unknown, response: z.i
 /** The admitted worker owns this private route until its original native owner closes.
  * Main reauthorizes every relayed request; neither this endpoint nor its route file grants access. */
 export async function createWorkerMcpEndpoint(input: {
-  relay: Awaited<ReturnType<typeof prepareWorkerApplicationAccess>>
+  relay: { environment: ChildProcessEnvironment; expiresAt: string;
+    request(body: unknown, protocolVersion?: string, signal?: AbortSignal): Promise<z.infer<typeof WorkerMcpRelayResponseSchema>> }
   launcher: string
   signal: AbortSignal
   onArtifactPublication?(input: { transferId: string; publication: AgentFilePublishInput }, result: AgentFilePublishResult): void
 }) {
   input.signal.throwIfAborted()
   const expiresAt = input.relay.expiresAt
-  const token = input.relay.environment.variables.GRAPHQL_MCP_TOKEN
+  const token = readProductEnvironment(input.relay.environment.variables, 'MCP_TOKEN')
   if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
   const digest = createHash('sha256').update(`Bearer ${token}`).digest()
   const active = new Set<Promise<void>>()

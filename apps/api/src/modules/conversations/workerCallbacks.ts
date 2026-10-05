@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { WorkerConversationProfileFactsSchema,
+  type WorkerConversationRpcRequest, type WorkerConversationProfileFacts } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationHostPorts } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
@@ -9,7 +10,9 @@ import { DomainError } from '../errors.js'
 export function workerConversationCallbacks(input: {
   currentBinding(): Readonly<DeviceSessionBinding>
   capture(): WorkerConversationChannel | undefined
-}): Pick<WorkerConversationHostPorts, 'authorize' | 'observeSession' | 'observeSubmission' | 'observeSettings'> {
+}): Pick<WorkerConversationHostPorts, 'authorize' | 'observeSession' | 'observeSubmission' | 'observeSettings'> & {
+  profile(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<WorkerConversationProfileFacts>
+} {
   const request = async (source: WorkerConversationRpcRequest, payload: Record<string, unknown>, signal: AbortSignal) => {
     if (!source.admissionId) throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED',
       'The native operation has no live Main-issued conversation admission.', 403)
@@ -26,6 +29,8 @@ export function workerConversationCallbacks(input: {
     return reply.payload
   }
   return {
+    profile: async (source, signal) => WorkerConversationProfileFactsSchema.parse(
+      await request(source, { method: 'conversation.profile' }, signal)),
     authorize: async (source, connection, signal) => {
       if (!isDeepStrictEqual(input.currentBinding(), connection)) throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE',
         'The native operation addresses a stale worker channel.', 409)

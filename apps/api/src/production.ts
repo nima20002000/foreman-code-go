@@ -320,6 +320,11 @@ export function buildProductionApp(
       } },
       { namespace: WORKER_MCP_EXTENSION.namespace, version: WORKER_MCP_EXTENSION.version, role: 'server',
         maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
+          if (payload && typeof payload === 'object' && 'operation' in payload
+            && typeof payload.operation === 'string' && payload.operation.startsWith('conversation-mcp.')) {
+            if (context.bytes !== undefined) throw new DomainError('WORKER_CONVERSATION_MCP_DENIED', 'Chat MCP cannot carry transfer bytes.', 403)
+            return { payload: await workerChats.mcp.handle(payload, context.binding, context.signal) }
+          }
           if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
           context.signal.throwIfAborted()
           const result = await mainWorkerMcp.handle(payload, context.binding)
@@ -834,7 +839,10 @@ export function buildProductionApp(
   const agentConversations = new PostgresAgentChatRepository(database.pool)
   const workerChats = createProductionWorkerConversations({ pool: database.pool,
     endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
-    operators: operatorConversations, agents: agentConversations })
+    operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
+    qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app), suiteRevisions: selectedSuites ? {
+      codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+    } : {} })
   const recoverChatCompaction = async (
       configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
       conversationId: string, session: import('@foreman-code/contracts').NativeSessionReference,

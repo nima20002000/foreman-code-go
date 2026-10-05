@@ -35,6 +35,8 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
+import { createInstalledWorkerConversations } from '../conversations/installedWorkerConversations.js'
+import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 
 /** Shipped worker domains consume actual protected installation selections and
  * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
@@ -196,6 +198,13 @@ export async function createInstalledWorkerDomains(input: {
     return host
   })()
   const execution = extensions.find(extension => extension.namespace === 'execution-v1')
+  const conversations = approved ? await createInstalledWorkerConversations({ stateDirectory: input.stateDirectory,
+    configuration: input.configuration, registry, journal, approvedRoots: roots, current,
+    capture: () => input.connection()?.captureRequest('execution-v1'), request,
+    codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal }) : null
+  if (conversations && !extensions.some(extension => extension.namespace === WORKER_MCP_EXTENSION.namespace)) {
+    extensions.push({ ...WORKER_MCP_EXTENSION, role: 'client' })
+  }
   if (input.jobConfiguration && approved) {
     const outputExtension = extensions.find(extension => extension.namespace === JOB_OUTPUT_NAMESPACE)
     if (outputExtension) {
@@ -204,15 +213,17 @@ export async function createInstalledWorkerDomains(input: {
       extensions.push({ namespace: JOB_OUTPUT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16384, maxBinaryBytes: 8192 })
     }
     extensions.push({namespace:JOB_INPUT_NAMESPACE,version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192})
+  }
+  if (input.jobConfiguration && approved || conversations) {
     const workflow = execution?.handle
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {
         if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'Execution requires its actual authenticated worker channel.', 409)
-        const job = RemoteJobExecutionRpcRequestSchema.safeParse(payload).success ? await openJobs() : jobs
+        const job = input.jobConfiguration && RemoteJobExecutionRpcRequestSchema.safeParse(payload).success ? await openJobs() : jobs
         return { payload: await createRemoteExecutionHandler({ handle: async raw => {
           if (!workflow) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The installed Workflow runtime is unavailable.', 409)
           return (await workflow(raw, context)).payload
-        } }, job)(payload) }
+        } }, job, conversations ? { handle: raw => conversations.handle(raw, context.binding, context.signal) } : undefined)(payload) }
       },
     }
     if (execution) extensions.splice(extensions.indexOf(execution), 1, handler)
@@ -236,6 +247,7 @@ export async function createInstalledWorkerDomains(input: {
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
+      try { await conversations?.close() } catch (error) { failures.push(error) }
       await Promise.allSettled([...active])
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
       if (!failures.length) {

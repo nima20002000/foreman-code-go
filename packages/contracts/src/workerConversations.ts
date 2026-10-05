@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js'
+import { HostHarnessInstallationSchema, HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from './harnessRegistry.js'
+import { HarnessQualificationSchema } from './harnessQualification.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
 import {
@@ -144,9 +146,18 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
 })
 export type WorkerConversationRpcRequest = z.infer<typeof WorkerConversationRpcRequestSchema>
 
+export const WorkerConversationProfileFactsSchema = z.object({
+  installation: z.lazy(() => HostHarnessInstallationSchema),
+  override: z.lazy(() => HostHarnessOverrideSchema),
+  profile: z.lazy(() => HostHarnessProfileEvidenceSchema),
+  qualification: HarnessQualificationSchema.nullable(),
+}).strict()
+export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
+
 const callback = { admissionId: z.uuid(), binding: WorkerConversationBindingSchema }
 export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('conversation.authorize'), ...callback, request: WorkerConversationRpcRequestSchema }).strict(),
+  z.object({ method: z.literal('conversation.profile'), ...callback }).strict(),
   z.object({ method: z.literal('conversation.session-observed'), ...callback,
     session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
   z.object({ method: z.literal('conversation.submitted'), ...callback, correlationId: id,
