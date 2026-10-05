@@ -480,8 +480,10 @@ export class NativeHarnessFactories {
         if (qualified.binary !== pin.binary) throw new DomainError('CODEX_DIAGNOSTIC_PIN_MISMATCH', 'The diagnostic binary differs from its native session pin.', 409)
         return (native?.assertUnchanged ?? assertCodexUnchanged)(qualified)
       }),
-      qualifyModel: (configuration, _binary, _cwd, _environment, request) => track(() =>
-        (native?.qualifyModel ?? qualifyNativeCodexModel)(configuration, pin.binary, pin.cwd, { ...environment }, combined(request), recovery)),
+      qualifyModel: (configuration, _binary, _cwd, _environment, request, _recovery, inspection) => track(() =>
+        (native?.qualifyModel ?? qualifyNativeCodexModel)(configuration, pin.binary, pin.cwd,
+          { ...environment }, combined(request), recovery,
+          inspection ? { ...inspection, assertUnchanged: io.assertUnchanged } : undefined)),
       runCommand: (_binary, args, _cwd, request, _environment, options) => track(() => {
         const readonlyCommand = (args.length === 4 && args[0] === 'mcp' && args[1] === 'get' && args[3] === '--json')
           || (args.length === 3 && args[0] === 'mcp' && args[1] === 'list' && args[2] === '--json')

@@ -13,6 +13,26 @@ export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
 export const NATIVE_COMMAND_TIMEOUT_MS = 30_000
 const ownedProcesses = new WeakMap<ChildProcess, () => Promise<void>>()
 
+function readableDrained(stream: Readable): Promise<void> {
+  if (stream.readableEnded) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      stream.removeListener('end', ended)
+      stream.removeListener('close', closed)
+      stream.removeListener('error', failed)
+      if (error) reject(error)
+      else resolve()
+    }
+    const ended = () => finish()
+    const closed = () => finish(stream.readableEnded ? undefined : new Error('Native diagnostics closed before readable drainage.'))
+    const failed = (error: Error) => finish(error)
+    stream.once('end', ended)
+    stream.once('close', closed)
+    stream.once('error', failed)
+    if (stream.destroyed) closed()
+  })
+}
+
 export interface JsonlProcessOptions {
   binary: string
   args: string[]
@@ -312,6 +332,8 @@ export function spawnOwnedStdioProcess(options: {
   environment: NodeJS.ProcessEnv
   recovery?: NativeProcessRecovery
   onError(error: Error): void
+  /** Metadata inspectors need actual readable EOF, not pipe destruction, to classify late diagnostics. */
+  preserveReadableDrain?: boolean
 }): {
   child: ChildProcessWithoutNullStreams
   closed: Promise<ProcessExit>
@@ -350,10 +372,19 @@ export function spawnOwnedStdioProcess(options: {
         } catch (error) { failure ??= error }
       }
       let confirmed = false
+      const drain = async () => {
+        if (options.preserveReadableDrain && !await within(Promise.all([
+          readableDrained(child.stdout), readableDrained(child.stderr),
+        ]), PROCESS_SHUTDOWN_GRACE_MS)) throw new Error('Native diagnostics did not drain before cleanup.')
+      }
       try {
         // Registry shutdown includes its own grace period and verifies the launch boundary.
         // Do not wrap it in the shorter per-signal timeout used for legacy children.
-        if (await stopRecoveredChild(child)) { confirmed = true; return }
+        if (await stopRecoveredChild(child)) {
+          await drain()
+          confirmed = true
+          return
+        }
         // Signal the group even after its leader exited: descendants may own pipes.
         await send('SIGTERM')
         if (!didClose) await within(closed, PROCESS_SHUTDOWN_GRACE_MS)
@@ -362,6 +393,7 @@ export function spawnOwnedStdioProcess(options: {
           failure ??= new Error('Provider process did not close after forced tree shutdown.')
         }
         if (failure) throw failure
+        await drain()
         confirmed = true
       } finally {
         child.stdin.destroy()

@@ -3,6 +3,7 @@ import { describe, it } from 'vitest'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 
@@ -74,6 +75,53 @@ describe('Codex production/replay dependency boundary', () => {
     await assert.rejects(manager.shutdown(), /cleanup failed/)
     await manager.shutdown()
     assert(fixture.calls.filter((value) => value === 'close').length >= 2)
+  })
+})
+
+describe('Codex native model discovery', () => {
+  it('does not publish fallback options after native diagnostics report a failed remote refresh', async () => {
+    const f = replay()
+    f.dependencies.transport = (...args) => ({
+      start: async () => { args[10]?.() }, close: async () => undefined,
+      respond: async () => undefined, reject: async () => undefined,
+      request: async method => {
+        assert.equal(method, 'model/list')
+        return { data: [], nextCursor: null }
+      },
+    })
+    const manager = new CodexAppServerSessionManager('/recorded-codex',
+      undefined, undefined, undefined, undefined, undefined, f.dependencies)
+    try {
+      await assert.rejects(manager.discoverModels('/recorded-workspace'), (error: unknown) => {
+        assert(error instanceof HarnessExecutionError)
+        assert.equal(error.result.error?.code, 'CODEX_MODEL_CATALOG_UNAVAILABLE')
+        assert.equal(error.result.error?.retryable, true)
+        return true
+      })
+      assert(!f.calls.includes('thread/start'))
+    } finally { await manager.shutdown() }
+  })
+
+  it('publishes native model and effort capabilities from a metadata-only inspection', async () => {
+    const f = replay()
+    f.dependencies.transport = () => ({
+      start: async () => undefined, close: async () => undefined,
+      respond: async () => undefined, reject: async () => undefined,
+      request: async method => {
+        assert.equal(method, 'model/list')
+        return { data: [{ model: 'recorded-model', displayName: 'Recorded model', hidden: false,
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }], additionalSpeedTiers: ['fast'] }], nextCursor: null }
+      },
+    })
+    const manager = new CodexAppServerSessionManager('/recorded-codex',
+      undefined, undefined, undefined, undefined, undefined, f.dependencies)
+    try {
+      assert.deepEqual((await manager.discoverModels('/recorded-workspace')).models, [{
+        id: 'recorded-model', name: 'Recorded model', defaultPriority: 0,
+        reasoningEfforts: ['medium'], variants: [], serviceTiers: ['standard', 'priority'],
+      }])
+      assert(!f.calls.includes('thread/start'))
+    } finally { await manager.shutdown() }
   })
 })
 

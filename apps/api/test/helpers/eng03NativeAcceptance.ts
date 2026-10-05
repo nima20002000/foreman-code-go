@@ -227,7 +227,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
       const fallback = harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
-          reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }
+          reasoningEffort: process.env.ENG03_CODEX_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
         : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
           variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
       const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined

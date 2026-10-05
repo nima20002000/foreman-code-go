@@ -54,6 +54,7 @@ interface Operation {
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 const MAX_OPERATIONS = 256
+const MODEL_REFRESH_FAILURE = 'failed to refresh available models:'
 
 /** All stream and dispatch failures end at this boundary, never at EventEmitter. */
 export class CodexStdioTransport {
@@ -65,6 +66,7 @@ export class CodexStdioTransport {
   private stopped = false
   private closePromise: Promise<void> | undefined
   private timing: Awaited<ReturnType<typeof openCodexRuntimeTiming>> | undefined
+  private diagnosticTail = ''
 
   constructor(
     private readonly binary: string,
@@ -78,6 +80,7 @@ export class CodexStdioTransport {
     private readonly processRecovery?: NativeProcessRecovery,
     /** Process-local only; never edits the native configuration file. */
     private readonly disabledMcpServerNames: readonly string[] = [],
+    private readonly onModelRefreshFailure?: () => void,
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -97,12 +100,18 @@ export class CodexStdioTransport {
           ...(this.timing?.arguments ?? []),
         ], cwd: this.cwd, environment: this.environment,
         onError: (error) => this.fail(error),
+        ...(this.onModelRefreshFailure ? { preserveReadableDrain: true } : {}),
         ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
       })
     } catch (error) { await this.closeTiming(); throw error }
     const { child, closed } = this.owned
     // Drain diagnostics without retaining or exposing provider stderr.
-    child.stderr.resume()
+    if (this.onModelRefreshFailure) child.stderr.on('data', (chunk: Buffer) => {
+      const text = this.diagnosticTail + chunk.toString('utf8')
+      if (text.includes(MODEL_REFRESH_FAILURE)) this.onModelRefreshFailure?.()
+      this.diagnosticTail = text.slice(-(MODEL_REFRESH_FAILURE.length - 1))
+    })
+    else child.stderr.resume()
     void this.readFrames().catch((error: unknown) => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
     try {
@@ -183,7 +192,8 @@ export class CodexStdioTransport {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
-    const physical = this.owned?.close() ?? Promise.resolve()
+    const physical = this.onModelRefreshFailure ? this.closeModelInspection()
+      : this.owned?.close() ?? Promise.resolve()
     const attempt = this.timing ? physical.then(() => this.closeTiming()) : physical
     this.closePromise = attempt
     // A failed cleanup stays fenced, but the next explicit close must retry it.
@@ -195,6 +205,30 @@ export class CodexStdioTransport {
     // Optional diagnostics cannot change native execution or physical-closure results.
     try { await this.timing?.close() }
     catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_close_failed' }) }
+  }
+
+  private async closeModelInspection(): Promise<void> {
+    if (!this.owned) return
+    let timer: NodeJS.Timeout | undefined
+    let failed = false
+    let failure: unknown
+    try {
+      // EOF and child close drain stderr before deciding whether discovery succeeded.
+      this.owned.child.stdin.end()
+      await Promise.race([this.owned.closed, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE',
+          'Native model diagnostics did not finish.', true)), this.timeoutMs)
+      })])
+    } catch (error) {
+      failed = true
+      failure = error
+    } finally { clearTimeout(timer) }
+    try { await this.owned.close() }
+    catch (cleanup) {
+      if (failed) throw new AggregateError([failure, cleanup], 'Native model diagnostics and cleanup failed.')
+      throw cleanup
+    }
+    if (failed) throw failure
   }
 
   /** Current writable callback channel only; this snapshot is not delivery evidence. */

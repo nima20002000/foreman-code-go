@@ -24,6 +24,7 @@ import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/decl
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATIVE_OUTPUT_TOOL_ALIASES,
   type CodexNativeOutputs, type CodexNativeOutputQualificationInput, type CodexNativeOutputSandbox } from './codexNativeOutput.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
+import { readNativeCodexModelCatalog } from './codexModelCatalog.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
@@ -425,8 +426,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       assertUnchanged: assertCodexUnchanged, environment: safeEnvironment,
       runCommand: (binary, args, cwd, signal, environment, options) => runCommand(binary, args, cwd, signal, environment,
         { ...options, ...(this.processRecovery ? { recovery: this.processRecovery } : {}) }),
-      qualifyModel: (configuration, binary, cwd, environment, signal) =>
-        qualifyNativeCodexModel(configuration, binary, cwd, environment, signal, this.processRecovery),
+      qualifyModel: (configuration, binary, cwd, environment, signal, _recovery, inspection) =>
+        qualifyNativeCodexModel(configuration, binary, cwd, environment, signal, this.processRecovery, inspection),
       id: randomUUID, now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,
       withDiagnostics: async (pin, run) => {
         if (this.processRecovery) throw new HarnessExecutionError('CODEX_DIAGNOSTIC_OWNER_REQUIRED',
@@ -470,7 +471,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const environment = this.dependencies.environment()
     const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
-    await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal)
+    await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal,
+      undefined, { qualified, assertUnchanged: this.dependencies.assertUnchanged,
+        transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     return nativeQualification(parsed.data, qualified.providerVersion)
   }
 
@@ -479,9 +482,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, this.dependencies.environment(), true, signal)
     await this.dependencies.assertUnchanged(qualified)
-    const result = await this.dependencies.runCommand(qualified.binary, ['debug', 'models'], workingDirectory, signal, this.dependencies.environment())
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Native model discovery failed.')
-    return { providerVersion: qualified.providerVersion, models: codexModelOptions(JSON.parse(result.stdout)) }
+    const catalog = await readNativeCodexModelCatalog({ qualified, assertUnchanged: this.dependencies.assertUnchanged,
+      transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) },
+      workingDirectory, this.dependencies.environment(), signal, this.processRecovery)
+    return { providerVersion: qualified.providerVersion, models: codexModelOptions(catalog) }
   }
 
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
@@ -1735,7 +1739,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
-      io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
+      io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
+      undefined, { qualified, assertUnchanged: io.assertUnchanged,
+        transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
       if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
         throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
@@ -1925,9 +1931,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       undefined, this.processRecovery, prepared.disabledAppMcpServerNames,
     )
     // Also own cold-attachment candidates before a Runtime has been published.
-    this.transports.add(transport)
-    const close = transport.close.bind(transport)
-    transport.close = async () => { await close(); this.transports.delete(transport) }
+    this.ownTransport(transport)
     try {
       await transport.start(signal)
       if (this.appMcpAccess === 'none') {
@@ -1963,6 +1967,16 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         } finally { activating = false; bufferedBytes = 0 }
       },
     }
+  }
+
+  private ownTransport(transport: CodexTransport): CodexTransport {
+    this.transports.add(transport)
+    const close = transport.close.bind(transport)
+    transport.close = async () => {
+      await close()
+      this.transports.delete(transport)
+    }
+    return transport
   }
 
   private async restart(runtime: Runtime, signal?: AbortSignal, supplied?: Prepared): Promise<void> {

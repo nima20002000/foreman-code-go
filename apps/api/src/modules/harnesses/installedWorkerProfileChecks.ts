@@ -52,8 +52,8 @@ export async function createInstalledWorkerProfileChecks(input: {
               assertUnchanged: qualified => guarded(() => assertCodexUnchanged(qualified)),
               runCommand: (binary, args, cwd, effectSignal, environment, options) => guarded(
                 () => runCommand(binary, args, cwd, effectSignal, environment, { ...options, recovery }), effectSignal),
-              qualifyModel: (settings, binary, cwd, environment, effectSignal) => guarded(
-                () => qualifyNativeCodexModel(settings, binary, cwd, environment, effectSignal, recovery), effectSignal),
+              qualifyModel: (settings, binary, cwd, environment, effectSignal, _recovery, inspection) => guarded(
+                () => qualifyNativeCodexModel(settings, binary, cwd, environment, effectSignal, recovery, inspection), effectSignal),
             })
           try {
             return await manager.qualifyConfiguration(profile.configuration, directory, signal)

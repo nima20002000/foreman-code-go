@@ -62,8 +62,8 @@ async function ownedFixture() {
           },
           runCommand: (binary, args, cwd, signal, environment, options) =>
             runCommand(binary, args, cwd, signal, environment, { ...options, recovery: diagnosticRecovery }),
-          qualifyModel: (value, binary, cwd, environment, signal) =>
-            qualifyNativeCodexModel(value, binary, cwd, environment, signal, diagnosticRecovery),
+          qualifyModel: (value, binary, cwd, environment, signal, _recovery, inspection) =>
+            qualifyNativeCodexModel(value, binary, cwd, environment, signal, diagnosticRecovery, inspection),
         })
       } finally {
         assert.equal(await registry.closeOwner(diagnosticOwner), true, 'Diagnostic closure must be confirmed.')

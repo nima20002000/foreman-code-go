@@ -68,6 +68,10 @@ if (args[1] === 'generate-json-schema') {
   process.exit(0)
 }
 const agent = process.env.TEST_AGENT_ID || 'agent-a'
+process.stdin.on('end', () => {
+  if (flag('models-refresh-failed-on-close')) fs.writeSync(2, 'failed to refresh available models: fixture refresh failure\n')
+  process.exit(0)
+})
 let created = 0
 const outstanding = new Map()
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
@@ -334,12 +338,20 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     result(message.id, { config: { approval_policy: 'on-request', mcp_servers: servers }, origins: {}, layers: [] })
   }
   else if (message.method === 'mcpServerStatus/list') result(message.id, { data: [], nextCursor: null })
-  else if (message.method === 'model/list') result(message.id, { data: [{
-    id: 'test-model', model: 'test-model', displayName: 'Test model', description: 'Deterministic protocol fixture',
-    hidden: false, isDefault: true, defaultReasoningEffort: 'medium',
-    supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
-      { reasoningEffort: 'medium', description: 'Medium' }],
-  }], nextCursor: null })
+  else if (message.method === 'model/list') {
+    if (flag('models-refresh-failed')) console.error('failed to refresh available models: fixture refresh failure')
+    const catalog = read('models.json', { models: [{ slug: 'test-model',
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] })
+    result(message.id, { data: catalog.models.map(model => ({
+      id: model.slug, model: model.slug, displayName: model.display_name || model.slug,
+      description: 'Deterministic protocol fixture', hidden: model.visibility === 'hide', isDefault: true,
+      defaultReasoningEffort: 'medium', upgrade: null, upgradeInfo: null, availabilityNux: null,
+      modelSpecialty: null, inputModalities: ['text'], supportsPersonality: false, multiAgentVersion: null,
+      supportedReasoningEfforts: model.supported_reasoning_levels.map(level => ({
+        reasoningEffort: level.effort, description: level.effort,
+      })), additionalSpeedTiers: model.additional_speed_tiers || [], serviceTiers: [], defaultServiceTier: null,
+    })), nextCursor: null })
+  }
   else if (message.method === 'config/mcpServer/reload') result(message.id, {})
   else if (message.method === 'account/login/start') result(message.id, { type: 'chatgptDeviceCode', loginId: 'login-1', verificationUrl: 'https://example.invalid/device', userCode: 'TEST-CODE' })
   else if (message.method === 'account/login/cancel') result(message.id, { status: 'canceled' })
