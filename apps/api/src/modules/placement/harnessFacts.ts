@@ -81,8 +81,8 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     // only when its full installation and live context still match.
     const measured = await readHostHarnessMeasurements(sql, harness, binarySha256, suites[harness])
     const matching = measured.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
-      .sort((left, right) => Date.parse(right.qualification.checkedAt ?? right.qualification.startedAt)
-        - Date.parse(left.qualification.checkedAt ?? left.qualification.startedAt))
+      .sort((left, right) => Date.parse(right.qualification.checkedAt ?? right.qualification.startedAt ?? '1970-01-01T00:00:00Z')
+        - Date.parse(left.qualification.checkedAt ?? left.qualification.startedAt ?? '1970-01-01T00:00:00Z'))
     const latest = matching[0]?.qualification
     if (!latest || latest.status !== 'qualified') return unavailable('main_qualification_identity_missing')
     installation.observedVersion = latest.version
