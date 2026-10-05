@@ -4,7 +4,7 @@ import { repeatId } from './repeatResolution.js'
 import { safeNodeName } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
-import { codexUnsupportedInteractionMessage } from '@graphql/contracts'
+import { codexUnsupportedInteractionMessage } from '@foreman-code/contracts'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;

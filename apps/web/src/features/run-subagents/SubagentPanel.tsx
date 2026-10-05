@@ -8,7 +8,7 @@ import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'
 import { formatBytes, formatClock, providerNames, subagentName, subagentStatus, subagentTiming, toolStatus } from './presentation'
 import { subagentsKey, useSubagentDetail, useSubagentMessages, useSubagentTools, type SubagentsScope } from './query'
-import type { InteractionResponseValue } from '@graphql/contracts'
+import type { InteractionResponseValue } from '@foreman-code/contracts'
 import { NativeInteractionResponse } from '../../shared/ui/NativeInteractionResponse'
 
 type CommandVariables = { operation: 'input' | 'interrupt' | 'respond'; commandId: string; expectedRevision: string;

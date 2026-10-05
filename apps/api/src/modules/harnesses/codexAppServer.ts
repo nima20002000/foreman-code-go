@@ -40,7 +40,7 @@ import { CodexChildControls } from './codexChildControls.js'
 import { codexInputDeliveryEvidence } from './codexResponseDelivery.js'
 import { responseValueDigest, type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
@@ -277,7 +277,7 @@ function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames:
   for (const key of scopedNames) delete environment[key]
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
-      // Operator and Worker credentials share GRAPHQL_MCP_TOKEN; the server resolves the role from the token.
+      // Operator and Worker credentials use the admitted App token; the server resolves its role.
       if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key) || isDatabaseCredentialVariable(key)) {
         throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
       }

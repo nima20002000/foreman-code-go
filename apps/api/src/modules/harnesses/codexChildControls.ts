@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { RunSubagent, RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { codexRequest, type QualifiedCodex } from './codexProtocol.js'

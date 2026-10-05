@@ -10,8 +10,8 @@ import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/wor
 import { createWorkflowRepositoryServices } from '../../src/modules/runs/workflowRepositoryServices.js'
 import { randomUUID } from 'node:crypto'
 import { vi } from 'vitest'
-import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpointSaver.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -40,8 +40,8 @@ export async function codexWorkflowRuntime(kind: 'questions' | 'form') {
   const provider = await deliveryFixture()
   const journal = new NativeResponseJournal(join(provider.directory, 'response-journal'))
   try {
-    await provider.json('mcp.json', { name: 'graphql', enabled: true, required: true,
-      transport: { type: 'streamable_http', url: providerAppEndpoint, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } })
+    await provider.json('mcp.json', { name: 'foreman-code', enabled: true, required: true,
+      transport: { type: 'streamable_http', url: providerAppEndpoint, bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } })
     await provider.json('workflow-input.json', kind === 'questions'
       ? { method: 'item/tool/requestUserInput', params: { itemId: 'question-tool', isBlocking: true,
         questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',

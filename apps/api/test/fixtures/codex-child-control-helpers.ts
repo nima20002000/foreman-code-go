@@ -1,9 +1,9 @@
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { NativeSessionReference } from '@graphql/contracts'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
 import { RunSubagentSchema, subagentCapabilities, type RunSubagent,
-  type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
+  type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { CodexChildControls, type CodexChildControlHost } from '../../src/modules/harnesses/codexChildControls.js'
 import { CodexRpcError, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import type { Thread, Turn } from '../../src/modules/harnesses/codexMethodTypes.js'

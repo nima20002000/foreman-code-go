@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { RespondToInteractionResponseSchema, type InteractionResponseValue } from '@graphql/contracts'
+import { RespondToInteractionResponseSchema, type InteractionResponseValue } from '@foreman-code/contracts'
 import { describe, expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'

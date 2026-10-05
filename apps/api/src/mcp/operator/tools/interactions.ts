@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server'
-import { RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@graphql/contracts'
+import { RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@foreman-code/contracts'
 import {
   InteractionGetInputSchema,
   InteractionSummaryInputSchema, InteractionSummaryResultSchema,

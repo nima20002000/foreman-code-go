@@ -22,7 +22,7 @@ export interface SubagentControlLease {
   assertCurrent(): void
   sendInput?(receipt: RunSubagentCommandReceipt, text: string): Promise<void>
   interrupt?(receipt: RunSubagentCommandReceipt): Promise<void>
-  pendingInteraction?(): import('@graphql/contracts').PendingNativeInteraction | undefined
+  pendingInteraction?(): import('@foreman-code/contracts').PendingNativeInteraction | undefined
   respond?(receipt: RunSubagentCommandReceipt): Promise<void>
   /** Read exact native correlation, never retry a prompt after uncertain delivery. */
   reconcile?(receipt: RunSubagentCommandReceipt): Promise<'acknowledged' | 'rejected' | 'uncertain'>

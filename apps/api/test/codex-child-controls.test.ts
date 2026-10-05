@@ -1,6 +1,6 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { withInteractionResponse } from '@graphql/contracts'
+import { withInteractionResponse } from '@foreman-code/contracts'
 import { describe, expect, it, onTestFailed, vi } from 'vitest'
 import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'

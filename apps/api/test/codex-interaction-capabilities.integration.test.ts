@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { CODEX_INTERACTION_SUPPORT } from '@graphql/contracts'
-import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema } from '@graphql/contracts/management'
+import { CODEX_INTERACTION_SUPPORT } from '@foreman-code/contracts'
+import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 

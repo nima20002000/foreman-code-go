@@ -2,7 +2,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ApprovalResponseOption } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ApprovalResponseOption } from '@foreman-code/contracts'
 import { NativeInteractionResponse } from './NativeInteractionResponse'
 
 const base = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!

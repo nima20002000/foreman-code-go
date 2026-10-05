@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { RespondToInteractionResponseSchema } from '@graphql/contracts'
+import { RespondToInteractionResponseSchema } from '@foreman-code/contracts'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { buildApp } from '../src/app.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'

@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { withInteractionResponse } from '@graphql/contracts'
+import { withInteractionResponse } from '@foreman-code/contracts'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
 import { collect, emit, input, until } from './fixtures/codex-test-helpers.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'

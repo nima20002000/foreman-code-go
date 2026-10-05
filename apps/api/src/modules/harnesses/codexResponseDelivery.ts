@@ -1,5 +1,5 @@
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import type { ApprovalResponseOption, PendingNativeInteraction } from '@graphql/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import type { ApprovalResponseOption, PendingNativeInteraction } from '@foreman-code/contracts'
 import { responseValueDigest, type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeHistory } from './port.js'
 import { isObject, type JsonObject } from './codexStdioTransport.js'

@@ -1,4 +1,4 @@
-import { ConversationSchema } from '@graphql/contracts'
+import { ConversationSchema } from '@foreman-code/contracts'
 import { NativeNonSubmissionSchema } from './nativeNonSubmission.js'
 
 export const OperatorConversationRecordSchema = ConversationSchema.safeExtend({

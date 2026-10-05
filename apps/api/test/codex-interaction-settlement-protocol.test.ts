@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
 import { protocolFromBundle, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
 import { translateCodexInteraction, resolveCodexInteractionResponse } from '../src/modules/harnesses/codexInteractions.js'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 
 it('validates user answers and form content against the pinned native Codex protocol', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-interaction-schema-'))

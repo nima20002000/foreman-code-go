@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { validateInteractionResponse, type ApprovalResponseOption, type InteractionResponseValue,
-  type NativeInteractionInput } from '@graphql/contracts'
+  type NativeInteractionInput } from '@foreman-code/contracts'
 import { Button } from './nocturne'
 import { approvalOptionScope } from './approvalOptionScope'
 import './nativeInteractionResponse.css'

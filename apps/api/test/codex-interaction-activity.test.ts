@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CODEX_UNSUPPORTED_INTERACTION_ERRORS } from '@graphql/contracts'
+import { CODEX_UNSUPPORTED_INTERACTION_ERRORS } from '@foreman-code/contracts'
 import { publicRunActivity, type ActivityReadRow } from '../src/modules/runs/activityProjection.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 

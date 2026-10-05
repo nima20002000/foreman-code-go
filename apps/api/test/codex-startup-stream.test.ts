@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { NativeHarnessEvent } from '@graphql/contracts'
-import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
+import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
 import { createNativeTextStream } from '../src/modules/conversations/nativeTextStream.js'

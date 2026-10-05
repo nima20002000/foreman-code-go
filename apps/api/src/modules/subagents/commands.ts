@@ -9,7 +9,7 @@ import { reconcileRunSubagents } from './projection.js'
 import { reconcileSubagentCommand } from './recovery.js'
 import { SubagentDispatchRejectedError } from './controlErrors.js'
 import type { RunSubagentService, SubagentReadScope } from './service.js'
-import { withInteractionResponse } from '@graphql/contracts'
+import { withInteractionResponse } from '@foreman-code/contracts'
 import type { z } from 'zod'
 
 type SubagentCommandInput = z.infer<typeof RunSubagentInputSchema> | z.infer<typeof RunSubagentInterruptSchema>

@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { z } from 'zod'
-import { ExecutionResultSchema, type ExecutionResult } from '@graphql/contracts'
+import { ExecutionResultSchema, type ExecutionResult } from '@foreman-code/contracts'
 
 export const NativeNonSubmissionSchema = z.object({
   requestId: z.string(),
