@@ -4,7 +4,7 @@ import {
   RESOURCE_TELEMETRY_CAPABILITY, TELEMETRY_LIMITS, TelemetryCollectedBatchSchema, TelemetryHostSchema,
   TelemetrySelectorSchema, TelemetrySelectorTargetSchema, telemetryCanonical, telemetrySelectorKey,
   type CollectionChallenge, type TelemetryCollectedBatch, type TelemetryCollectedRow, type TelemetryCpu,
-  type TelemetryIdentity, type TelemetryOwner, type TelemetryReason, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector,
+  type TelemetryHost, type TelemetryIdentity, type TelemetryOwner, type TelemetryReason, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector,
   type TelemetrySelectorResult, type TelemetrySelectorTarget,
   type TrustedTelemetryContext, type TelemetryReadService,
 } from '@foreman-code/contracts/resource-telemetry'
@@ -393,6 +393,34 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     }
     return { kind: 'sample', sample: current, lastKnown: lastKnownAllowed
       && this.ports.clock.monotonicMs() - cached.lastKnownMonoMs < TELEMETRY_LIMITS.lastKnownMs ? structuredClone(cached.lastKnown) : null }
+  }
+  /** Internal Job admission consumes only fresh computer data on its authorized host and installation. */
+  async availableComputerMemory(expected: Pick<TelemetryHost,
+    'hostRef' | 'applicationInstallationId' | 'bootId' | 'keyRevision' | 'authorizationRevision'>,
+  signal: AbortSignal): Promise<number | null> {
+    signal.throwIfAborted()
+    this.#trim()
+    const states = [...this.#devices.values()].filter(state => !state.retired
+      && Object.entries(expected).every(([key, value]) =>
+        telemetryCanonical(Reflect.get(state.identity.host, key)) === telemetryCanonical(value)))
+    if (this.#closed || states.length !== 1) return null
+    const state = states[0]!
+    if (!await this.ports.sessions.active(state.context, signal)) { this.revoke(state.context); return null }
+    const presence = await this.ports.sessions.presence(state.context, signal)
+    signal.throwIfAborted()
+    if (presence !== 'online' || state.retired || this.#closed
+      || !await this.ports.sessions.active(state.context, signal)) return null
+    signal.throwIfAborted()
+    if (state.retired || this.#closed || this.#devices.get(state.key) !== state) return null
+    const selector: TelemetrySelector = { schemaVersion: 1, scope: 'computer',
+      mainId: state.identity.mainId, host: state.identity.host }
+    const cached = state.rows.get(telemetrySelectorKey(selector))
+    if (!cached || !('latest' in cached)) return null
+    const age = this.ports.clock.monotonicMs() - cached.issuedMonoMs
+    const metric = cached.latest.memory
+    if (age < 0 || age >= TELEMETRY_LIMITS.freshMs || metric.state !== 'ok'
+      || metric.value?.kind !== 'host-used-estimate') return null
+    return metric.value.availableBytes
   }
   async *changes(principal: ManagementPrincipal, selector: TelemetrySelector, signal: AbortSignal): AsyncIterable<TelemetryReadResult> {
     if (this.#listeners.size >= 256) throw new TelemetryRejected('reader-limit')

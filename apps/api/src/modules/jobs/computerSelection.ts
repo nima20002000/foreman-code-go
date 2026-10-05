@@ -1,5 +1,6 @@
 import { AutoVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
-import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { AutoJobDefinitionSpecSchema, JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
 import {
   isAutoJobSpecRecord,
@@ -89,8 +90,13 @@ export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntim
   return { cpuLimit: allowance.cpuLimit - reserve.cpuLimit,
     memoryBytes: allowance.memoryBytes - reserve.memoryBytes,
     pidsLimit: allowance.pidsLimit - reserve.pidsLimit,
-    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, runtime.quota.workloadHardLimitBytes) }
+    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, profile.schemaVersion === 2
+      ? runtime.quota.volumeCapacityBytes - runtime.quota.controlHardLimitBytes : runtime.quota.workloadHardLimitBytes) }
 }
+
+export type VerificationMemoryReader = (profile: JobVerificationProfile) => Promise<number | null>
+export type JobComputerCapacityDecision = { fits: true } | { fits: false;
+  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' }
 
 const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
       and e.record #> '{process,processStopped}'='true'::jsonb
@@ -132,7 +138,7 @@ export async function readJobComputerSelection(sql: JobSql, definition: JobDefin
 
 export class JobComputerSelection {
   constructor(private readonly settings: BuildComputerSettings, private readonly inventory: JobComputerInventory,
-    private readonly workerExecution: WorkerExecutionPolicy) {}
+    private readonly workerExecution: WorkerExecutionPolicy, private readonly availableMemory?: VerificationMemoryReader) {}
 
   async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
     identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
@@ -201,8 +207,9 @@ export class JobComputerSelection {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`job-capacity:${hostKey}`])
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${candidate.sourceReservation.scopeId}`])
       await releaseClosedJobComputers(sql)
-      if (!await this.fits(sql, candidate)) {
-        reasons.push('busy')
+      const capacity = await this.fits(sql, candidate)
+      if (!capacity.fits) {
+        reasons.push(capacity.reason)
         continue
       }
       let mode: 'auto' | 'fixed' = isAutoJobSpecRecord(request) ? 'auto' : 'fixed'
@@ -233,7 +240,7 @@ export class JobComputerSelection {
     return (Object.keys(capacity) as (keyof typeof capacity)[])
       .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
-  private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<boolean> {
+  private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<JobComputerCapacityDecision> {
     const storage = (await sql.query<{ bytes: string; materializations: string }>(`select coalesce(sum(bytes),0)::text as bytes,
       coalesce(sum(materializations),0)::text as materializations from (
         select reserved_bytes as bytes, case when owner_kind='materialization' and state in ('preparing','owned','uncertain')
@@ -242,8 +249,8 @@ export class JobComputerSelection {
           and not exists(select 1 from source_storage_reservations r where r.owner_kind='materialization' and r.owner_id=s.operation_id)
       ) usage`, [candidate.sourceReservation.scopeId])).rows[0]!
     if (Number(storage.bytes) + candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes
-      || Number(storage.materializations) >= SOURCE_AGGREGATE_LIMITS.materializations) return false
-    return jobComputerHasCapacity(sql, candidate.spec.target, candidate.profile)
+      || Number(storage.materializations) >= SOURCE_AGGREGATE_LIMITS.materializations) return { fits: false, reason: 'busy' }
+    return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory)
   }
 
   async prepare(sql: JobSql, definition: JobDefinitionRecord, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
@@ -275,11 +282,23 @@ export class JobComputerSelection {
 }
 
 export async function jobComputerHasCapacity(sql: JobSql,
-  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord): Promise<boolean> {
+  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
+  availableMemory?: VerificationMemoryReader): Promise<boolean> {
+  return (await jobComputerCapacityDecision(sql, target, profile, availableMemory)).fits
+}
+
+export async function jobComputerCapacityDecision(sql: JobSql,
+  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
+  availableMemory?: VerificationMemoryReader): Promise<JobComputerCapacityDecision> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
-  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits'] }>(`select limits from job_computer_selections s
+  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits']; compute_closed: boolean }>(`select s.limits,
+    exists(select 1 from job_executions e where e.id=s.execution_id
+      and e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
+    from job_computer_selections s
     where host_key=$1 and released_at is null and not ${closedJobComputerSql}
-    union all select coalesce(p.record->'limits',p.record #> '{spec,resources,limits}') as limits from job_executions e
+    union all select coalesce(p.record->'limits',p.record #> '{spec,resources,limits}') as limits,
+      (e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
+    from job_executions e
     join job_runtime_profile_versions p on p.profile_id=e.accepted_spec #>> '{policy,isolationPolicyId}'
       and p.revision=(e.accepted_spec #>> '{policy,isolationPolicyRevision}')::bigint
     where not exists(select 1 from job_computer_selections s where s.execution_id=e.id)
@@ -289,10 +308,26 @@ export async function jobComputerHasCapacity(sql: JobSql,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile)
-  // Build qualification starts with one heavy slot; storage stays charged through publication and cleanup.
-  if (rows.length >= 1) return false
-  return (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
-    rows.reduce((total, row) => total + row.limits[field], jobRuntimeProfileLimits(profile)[field]) <= capacity[field])
+  const computing = rows.filter(row => !row.compute_closed)
+  let slots = 1
+  if (profile.schemaVersion === 2) {
+    const approved = target.hostRef.kind === 'main' ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs
+      : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
+    const measured = profile.measurement?.suites.map(suite => suite.maxConcurrentHeavyJobs) ?? []
+    slots = measured.length ? Math.min(approved, ...measured) : 0
+    if (target.hostRef.kind === 'device') {
+      const bytes = await availableMemory?.(profile)
+      if (bytes === null || bytes === undefined) return { fits: false, reason: 'memory_unavailable' }
+      const minimum = JOB_VERIFICATION_OWNER_CONFIGURATION.laptopMinimumAvailableBytes
+        + JOB_VERIFICATION_OWNER_CONFIGURATION.laptopPerRunningJobBytes * (computing.length + 1)
+      if (bytes < minimum) return { fits: false, reason: 'memory_headroom_required' }
+    }
+  }
+  if (computing.length >= slots) return { fits: false, reason: 'busy' }
+  const fits = (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
+    (field === 'diskBytes' ? rows : computing).reduce((total, row) => total + row.limits[field],
+      jobRuntimeProfileLimits(profile)[field]) <= capacity[field])
+  return fits ? { fits: true } : { fits: false, reason: 'busy' }
 }
 
 export async function releaseUnstartedJobComputer(sql: JobSql, identity: JobPreparationIdentity): Promise<void> {
