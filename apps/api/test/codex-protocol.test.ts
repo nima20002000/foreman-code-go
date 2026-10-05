@@ -77,7 +77,7 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
     const owner = 'codex-qualification-owner'
     const scope = registry.scope(owner)
     assert.equal(await registry.closeOwner(owner), false)
-    await qualifyCodex(f.binary, undefined, f.directory, { ...process.env }, true, undefined, scope)
+    await qualifyCodex(f.binary, f.directory, { ...process.env }, true, undefined, scope)
     assert.equal(await registry.closeOwner(owner), true)
   })
 })

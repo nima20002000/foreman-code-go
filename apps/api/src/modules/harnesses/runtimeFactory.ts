@@ -205,13 +205,13 @@ export class NativeHarnessFactories {
     if (input.harness === 'codex') {
       let dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
         ? { ...this.infrastructure.codex, mode: 'native',
-          qualify: async (binary, version, cwd, environment, authenticated, signal) => {
+          qualify: async (binary, cwd, environment, authenticated, signal) => {
             await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             const qualified = await (this.infrastructure.codex?.qualify
-              ?? ((selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
-                qualifyCodex(selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
-              binary, version, cwd, environment, authenticated, signal)
+              ?? ((selectedBinary, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
+                qualifyCodex(selectedBinary, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
+              binary, cwd, environment, authenticated, signal)
             await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             return qualified
@@ -232,11 +232,11 @@ export class NativeHarnessFactories {
         const replay = this.infrastructure.codex
         dependencies = { ...replay,
           qualify: async (...args) => {
-            await input.revalidateSelection?.(args[5])
-            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            await input.revalidateSelection?.(args[4])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[4])
             const result = await replay.qualify(...args)
-            await input.revalidateSelection?.(args[5])
-            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            await input.revalidateSelection?.(args[4])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[4])
             return result
           },
           assertUnchanged: async qualified => {
@@ -485,8 +485,8 @@ export class NativeHarnessFactories {
     }
     const io: CodexDiagnosticOperations = {
       environment: (_input, excluded = []) => { guard(); return Object.fromEntries(Object.entries(environment).filter(([name]) => !excluded.includes(name))) },
-      qualify: (_binary, _version, _cwd, _environment, authentication, request) => track(() =>
-        (native?.qualify ?? qualifyCodex)(pin.binary, pin.expectedVersion, pin.cwd, { ...environment }, authentication, combined(request), recovery)),
+      qualify: (_binary, _cwd, _environment, authentication, request) => track(() =>
+        (native?.qualify ?? qualifyCodex)(pin.binary, pin.cwd, { ...environment }, authentication, combined(request), recovery)),
       assertUnchanged: (qualified) => track(() => {
         if (qualified.binary !== pin.binary) throw new DomainError('CODEX_DIAGNOSTIC_PIN_MISMATCH', 'The diagnostic binary differs from its native session pin.', 409)
         return (native?.assertUnchanged ?? assertCodexUnchanged)(qualified)

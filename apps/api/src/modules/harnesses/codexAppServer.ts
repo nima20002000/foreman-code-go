@@ -425,8 +425,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   ) {
     const defaults: CodexSessionOperations = {
       transport: (...args) => new CodexStdioTransport(...args),
-      qualify: (binary, version, cwd, environment, authentication, signal) =>
-        qualifyCodex(binary, version, cwd, environment, authentication, signal, this.processRecovery),
+      qualify: (binary, cwd, environment, authentication, signal) =>
+        qualifyCodex(binary, cwd, environment, authentication, signal, this.processRecovery),
       assertUnchanged: assertCodexUnchanged, environment: safeEnvironment,
       runCommand: (binary, args, cwd, signal, environment, options) => runCommand(binary, args, cwd, signal, environment,
         { ...options, ...(this.processRecovery ? { recovery: this.processRecovery } : {}) }),
@@ -455,7 +455,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
+    const result = await this.dependencies.qualify(this.binary, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
     return NativeHarnessCapabilitiesSchema.parse({
       provider: 'codex', providerVersion: result.providerVersion, persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
@@ -473,7 +473,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const parsed = CodexHarnessConfigurationSchema.safeParse(value)
     if (!parsed.success) throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'The accepted Codex configuration is invalid.')
     const environment = this.dependencies.environment()
-    const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
+    const qualified = await this.dependencies.qualify(this.binary, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
     await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal,
       undefined, { qualified, assertUnchanged: this.dependencies.assertUnchanged,
@@ -484,7 +484,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async discoverModels(workingDirectory: string, signal?: AbortSignal) {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, this.dependencies.environment(), true, signal)
+    const qualified = await this.dependencies.qualify(this.binary, workingDirectory, this.dependencies.environment(), true, signal)
     await this.dependencies.assertUnchanged(qualified)
     const catalog = await readNativeCodexModelCatalog({ qualified, assertUnchanged: this.dependencies.assertUnchanged,
       transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) },
@@ -495,7 +495,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
+    const result = await this.dependencies.qualify(this.binary, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
     return {
       providerVersion: result.providerVersion, schemaManifestSha256: result.schemaManifestSha256,
       referenceSchemaManifestSha256: result.referenceSchemaManifestSha256, stableSchemaGitBlob: result.stableSchemaGitBlob,
@@ -1485,7 +1485,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const environment = this.dependencies.environment()
     return timeRuntimeOperation('harness', 'native.inspect_mcp', async () => {
-      const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, cwd, environment, true, signal)
+      const qualified = await this.dependencies.qualify(this.binary, cwd, environment, true, signal)
       return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
     })
   }
@@ -1557,7 +1557,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.loginStarting = true
     try {
       const environment = this.dependencies.environment()
-      const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, process.cwd(), environment, false, signal)
+      const qualified = await this.dependencies.qualify(this.binary, process.cwd(), environment, false, signal)
       await this.dependencies.assertUnchanged(qualified)
       const transport = this.dependencies.transport(
         qualified.binary, process.cwd(), environment, qualified.protocol,
@@ -1717,7 +1717,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const harnessConfiguration = configuration(input)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const environment = io.environment(input.environment)
-    const qualified = await io.qualify(binary, this.expectedVersion, workingDirectory, environment, true, signal)
+    const qualified = await io.qualify(binary, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)
     let scopedCredentialVariable: string | undefined
     let excludedCredentialVariable: string | undefined

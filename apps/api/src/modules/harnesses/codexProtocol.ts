@@ -235,7 +235,7 @@ const verifiedProtocols = new Map<string, QualifiedCodex>()
 
 /** Authentication and installation identity are checked even when the protocol is cached. */
 export async function qualifyCodex(
-  binary: string, _expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
   const resolved = await executable(binary, cwd, environment)

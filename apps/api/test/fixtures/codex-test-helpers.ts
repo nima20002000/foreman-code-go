@@ -103,7 +103,7 @@ export function agentMessage(
   return { type: 'agentMessage', id, text, phase, memoryCitation: null, delivery: null, questions: null }
 }
 export async function fixtureQualification(
-  binary: string, _expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal,
 ): Promise<QualifiedCodex> {
   const version = await runCommand(binary, ['--version'], cwd, signal, environment)
