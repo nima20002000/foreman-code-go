@@ -66,7 +66,8 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     if (this.binding.kind === 'workflow') { await this.callbackAdmission(); return }
     const row = (await this.database.query<ChatRow>(
       'select * from operator_conversations where id=$1', [this.binding.conversationId])).rows[0]
-    if (!row || row.kind !== this.binding.kind || row.deleted_at || row.cancel_requested || row.record.status === 'archived'
+    if (!row || row.kind !== this.binding.kind || row.deleted_at
+      || row.cancel_requested && !this.binding.observationPrincipalId || row.record.status === 'archived'
       || this.binding.kind === 'agent' && row.workspace_id !== this.binding.workspaceId) denied()
     if (this.binding.observationPrincipalId) {
       const caller = this.binding.observationPrincipalId

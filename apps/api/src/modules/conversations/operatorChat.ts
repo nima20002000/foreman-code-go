@@ -1048,6 +1048,7 @@ export class OperatorChatService {
       }
       try {
         const runtime = this.runtimes.get(id)
+        runtime?.manager.setSessionControlPrincipal?.(principal.id)
         if (runtime && await this.interrupt(id, row, runtime, markDispatchAttempt)) {
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
@@ -1112,6 +1113,7 @@ export class OperatorChatService {
       this.responding.add(id)
       try {
         markDispatchAttempt()
+        runtime.manager.setSessionControlPrincipal?.(principal.id)
         await runtime.manager.respond(runtime.session, input.nativeRequestId, option, this.lifetime.signal)
         delivered = true
         if (runtime.manager.reconcileResponse && pending) {

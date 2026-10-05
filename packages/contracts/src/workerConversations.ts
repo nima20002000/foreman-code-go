@@ -72,25 +72,32 @@ export const WorkerConversationHistorySchema = z.object({
   terminalTurn: z.object({ correlationId: id, providerId: id, result: z.lazy(() => ExecutionResultSchema) }).optional(),
 }).passthrough()
 
-const binding = { binding: WorkerConversationBindingSchema }
+const binding = { binding: WorkerConversationBindingSchema, admissionId: z.uuid().optional() }
 const native = { ...binding, session: z.lazy(() => NativeSessionReferenceSchema) }
 const prompt = {
   prompt: z.string().min(1).max(1_000_000), correlationId: id,
   sessionMode: SessionModeSchema.optional(), preferences: SessionPreferencesSchema.optional(),
 }
+const applicationAccess = z.object({ kind: z.literal('operator-chat-mcp'), token: z.string().min(1).max(16384) }).strict()
 export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('conversation.status'), ...binding }).strict(),
   z.object({ method: z.literal('conversation.open'), ...binding, operationId: id,
     configuration: WorkerConversationConfigurationSchema, mode: z.enum(['create', 'attach', 'fork']),
     source: z.lazy(() => NativeSessionReferenceSchema).optional(), preferences: SessionPreferencesSchema.optional(),
+    applicationAccess: applicationAccess.optional(),
   }).strict(),
   z.object({ method: z.literal('conversation.initial-turn'), ...binding, ...prompt, operationId: id,
-    configuration: WorkerConversationConfigurationSchema }).strict(),
+    configuration: WorkerConversationConfigurationSchema, applicationAccess: applicationAccess.optional() }).strict(),
   z.object({ method: z.literal('conversation.start-turn'), ...native, ...prompt }).strict(),
   z.object({ method: z.enum(['conversation.history', 'conversation.reconcile']), ...native,
     correlationId: id.optional(), before: id.optional() }).strict(),
   z.object({ method: z.enum(['conversation.capabilities', 'conversation.inspect-mcp']), ...binding,
     configuration: WorkerConversationConfigurationSchema }).strict(),
+  z.object({ method: z.literal('conversation.inspect-entry'), ...binding,
+    configuration: WorkerConversationConfigurationSchema, inspection: z.object({
+      harness: z.lazy(() => AgentHarnessSchema), runnerId: id, workingDirectory: directory, serverName: id,
+      phase: z.enum(['configuration', 'health']).optional(),
+    }).strict() }).strict(),
   z.object({ method: z.enum(['conversation.pending', 'conversation.controls-read', 'conversation.close']),
     ...native }).strict(),
   z.object({ method: z.literal('conversation.cancel'), ...native, nativeTurnId: id.optional() }).strict(),
@@ -103,5 +110,41 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
     correlationId: id, expectedTurnId: id }).strict(),
   z.object({ method: z.literal('conversation.reconcile-steers'), ...native,
     inputs: z.array(z.object({ clientCorrelationId: id, expectedTurnId: id }).strict()).max(1000) }).strict(),
-])
+]).superRefine((request, context) => {
+  if ('applicationAccess' in request && request.applicationAccess
+    && (request.binding.owner.kind !== 'operator' || request.binding.appMcpAccess !== 'scoped')) {
+    context.addIssue({ code: 'custom', message: 'Management MCP credentials require a scoped Operator conversation.' })
+  }
+})
 export type WorkerConversationRpcRequest = z.infer<typeof WorkerConversationRpcRequestSchema>
+
+const callback = { admissionId: z.uuid(), binding: WorkerConversationBindingSchema }
+export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('conversation.authorize'), ...callback, request: WorkerConversationRpcRequestSchema }).strict(),
+  z.object({ method: z.literal('conversation.session-observed'), ...callback,
+    session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
+  z.object({ method: z.literal('conversation.submitted'), ...callback, correlationId: id,
+    identity: z.object({ nativeTurnId: id.optional(), nativeSubmission: NativeMessageSubmissionSchema.optional() }).strict()
+      .refine(value => Boolean(value.nativeTurnId || value.nativeSubmission), 'A provider submission identity is required') }).strict(),
+  z.object({ method: z.literal('conversation.settings-applied'), ...callback, correlationId: id }).strict(),
+])
+export type WorkerConversationCallback = z.infer<typeof WorkerConversationCallbackSchema>
+
+export const WorkerMcpInspectionSchema = z.object({
+  harness: z.lazy(() => AgentHarnessSchema), providerVersion: id, runnerId: id,
+  workingDirectory: directory, inspectedAt: z.iso.datetime(), generation: id.optional(), authorizationScope: id.optional(),
+  entry: z.object({ name: id, transport: z.enum(['streamable-http', 'sse', 'stdio', 'unknown']),
+    automaticEndpoint: z.boolean().optional(), endpoint: z.string().optional(), enabled: z.boolean().optional(),
+    credentialEnvironmentVariable: id.optional(),
+    credentialArrangement: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('environment_variable'), environmentVariable: id }).strict(),
+      z.object({ kind: z.literal('unknown') }).strict(),
+      z.object({ kind: z.literal('scoped_http_header'), acknowledgement: z.object({
+        source: z.literal('sdk_set_mcp_servers'), serverName: id, endpoint: z.string(), generation: id, authorizationScope: id,
+      }).strict() }).strict(),
+    ]).optional(),
+    status: z.enum(['connected', 'disabled', 'authentication_required', 'broken', 'status_unavailable']).optional(),
+    detail: z.string().optional(), enabledTools: z.array(id).optional(), disabledTools: z.array(id).optional(),
+    nativeFilterDiagnostics: z.array(z.string()).optional(),
+  }).strict().optional(),
+}).strict()

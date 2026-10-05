@@ -11,10 +11,13 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../../infrastructure/logger.js'
+import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 
 export interface WorkerConversationAllocation {
   manager: NativeHarnessSessionManager
-  start(input: { correlationId: string; instructionsDelivered: boolean }): Promise<NativeSessionStart>
+  inspector?: NativeMcpInspector
+  start(input: { correlationId: string; instructionsDelivered: boolean;
+    applicationAccess?: { kind: 'operator-chat-mcp'; token: string } }): Promise<NativeSessionStart>
   nativeOwner(session: NativeSessionReference): Promise<RemoteNativeIdentity>
   close(): Promise<void>
 }
@@ -28,9 +31,12 @@ export interface WorkerConversationHostPorts {
   recover?(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<WorkerConversationAllocation>
   /** Native callbacks stay behind Main's persisted identity acknowledgement. */
-  observeSession(binding: WorkerConversationBinding, session: NativeSessionReference, signal: AbortSignal): Promise<void>
+  observeSession(binding: WorkerConversationBinding, session: NativeSessionReference,
+    request: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
   observeSubmission(binding: WorkerConversationBinding, correlationId: string,
-    identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>, signal: AbortSignal): Promise<void>
+    identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>,
+    request: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
+  observeSettings?(request: WorkerConversationRpcRequest, correlationId: string, signal: AbortSignal): Promise<void>
 }
 interface Resident {
   binding: WorkerConversationBinding
@@ -62,6 +68,7 @@ export class WorkerConversationHost {
   private readonly residents = new Map<string, Resident>()
   private readonly allocating = new Map<string, Promise<Resident>>()
   private readonly tasks = new Set<Promise<void>>()
+  private readonly running = new Map<string, Promise<void>>()
   private readonly lifetime = new AbortController()
   private readonly log = componentLogger('harness')
   private closing = false
@@ -141,10 +148,11 @@ export class WorkerConversationHost {
     return task
   }
 
-  private async bind(resident: Resident, session: NativeSessionReference, signal: AbortSignal) {
+  private async bind(resident: Resident, session: NativeSessionReference,
+    request: WorkerConversationRpcRequest, signal: AbortSignal) {
     await this.ports.journal.bindSession(resident.binding, session,
       sessionOwner(await resident.allocation.nativeOwner(session)))
-    await this.ports.observeSession(resident.binding, session, signal)
+    await this.ports.observeSession(resident.binding, session, request, signal)
   }
 
   private async open(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
@@ -170,7 +178,8 @@ export class WorkerConversationHost {
     }
     await this.authorize(request, connection, signal)
     const start = await resident.allocation.start({ correlationId: request.operationId,
-      instructionsDelivered: request.mode === 'fork' })
+      instructionsDelivered: request.mode === 'fork',
+      ...(request.applicationAccess ? { applicationAccess: request.applicationAccess } : {}) })
     const manager = resident.allocation.manager
     let session: NativeSessionReference
     if (request.mode === 'fork') {
@@ -178,25 +187,26 @@ export class WorkerConversationHost {
       session = await manager.forkSession(request.source!, start, signal)
       if (session.nativeSessionId === request.source!.nativeSessionId) unavailable('The native fork returned its source session.')
     } else session = await manager.createSession(start, signal)
-    await this.bind(resident, session, signal)
+    await this.bind(resident, session, request, signal)
     return { receipt: await this.ports.journal.read(request.binding) }
   }
 
-  private callbacks(resident: Resident, request: { correlationId: string; prompt: string;
-    sessionMode?: NativeTurnInput['sessionMode']; preferences?: NativeTurnInput['sessionPreferences'] }, signal: AbortSignal): NativeTurnInput {
+  private callbacks(resident: Resident, request: Extract<WorkerConversationRpcRequest,
+    { method: 'conversation.initial-turn' | 'conversation.start-turn' }>, signal: AbortSignal): NativeTurnInput {
     return {
       prompt: request.prompt, clientCorrelationId: request.correlationId,
       ...(request.sessionMode ? { sessionMode: request.sessionMode } : {}),
       ...(request.preferences ? { sessionPreferences: request.preferences } : {}),
       onSubmitted: async nativeTurnId => {
         await this.ports.journal.submitted(resident.binding, request.correlationId, { nativeTurnId })
-        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeTurnId }, signal)
+        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeTurnId }, request, signal)
       },
       onMessageSubmitted: async nativeSubmission => {
         await this.ports.journal.submitted(resident.binding, request.correlationId, { nativeSubmission })
-        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeSubmission }, signal)
+        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeSubmission }, request, signal)
       },
       onSettingsApplied: async () => {
+        await this.ports.observeSettings?.(request, request.correlationId, signal)
         const record = await this.ports.journal.read(resident.binding)
         if (!record?.session || !record.desiredPreferences) return
         await this.ports.journal.preferences(resident.binding, record.desiredPreferences,
@@ -220,6 +230,9 @@ export class WorkerConversationHost {
         this.log.error({ err: error, conversationId: resident.binding.owner.conversationId }, 'Worker chat needs native recovery')
       }
     })()
+    const key = `${resident.binding.owner.conversationId}:${request.correlationId}`
+    this.running.set(key, task)
+    void task.then(() => this.running.delete(key), () => this.running.delete(key))
     this.track(task)
   }
 
@@ -268,6 +281,14 @@ export class WorkerConversationHost {
     const request = WorkerConversationRpcRequestSchema.parse(raw)
     await this.authorize(request, connection, signal)
     if (request.method === 'conversation.status') return { receipt: await this.ports.journal.read(request.binding) }
+    if (request.method === 'conversation.inspect-entry') {
+      const resident = await this.allocate(request, connection, signal)
+      if (request.inspection.harness !== request.binding.harness
+        || request.inspection.workingDirectory !== request.binding.workingDirectory || !resident.allocation.inspector) {
+        unavailable('The native MCP inspector does not address this selected worker profile.')
+      }
+      return resident.allocation.inspector.inspect({ ...request.inspection, signal })
+    }
     if (request.method === 'conversation.open') return this.open(request, connection, signal)
     if (request.method === 'conversation.capabilities' || request.method === 'conversation.inspect-mcp') {
       const resident = await this.allocate(request, connection, signal)
@@ -288,10 +309,11 @@ export class WorkerConversationHost {
           await manager.configureSessionPreferences?.(request.preferences)
           await this.ports.journal.preferences(request.binding, request.preferences, null)
         }
-        const start = await resident.allocation.start({ correlationId: request.correlationId, instructionsDelivered: false })
+        const start = await resident.allocation.start({ correlationId: request.correlationId, instructionsDelivered: false,
+          ...(request.applicationAccess ? { applicationAccess: request.applicationAccess } : {}) })
         this.pump(resident, request, connection, () => manager.startInitialTurn!(start, {
           ...this.callbacks(resident, request, this.lifetime.signal),
-          onSessionObserved: session => this.bind(resident, session, this.lifetime.signal),
+          onSessionObserved: session => this.bind(resident, session, request, this.lifetime.signal),
         }, this.lifetime.signal))
       }
       return { receipt: await this.ports.journal.read(request.binding) }
@@ -314,10 +336,12 @@ export class WorkerConversationHost {
       case 'conversation.history':
       case 'conversation.reconcile': {
         let history: NativeHistory
-        if (request.correlationId) history = await manager.reconcile(request.session, request.correlationId, signal)
+        const running = request.correlationId !== undefined
+          && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
+        if (request.correlationId && !running) history = await manager.reconcile(request.session, request.correlationId, signal)
         else if (request.before && manager.historyPage) history = await manager.historyPage(request.session, request.before, signal)
         else history = await manager.history(request.session, signal)
-        if (request.correlationId && record.turns.some(turn => turn.correlationId === request.correlationId)) {
+        if (request.correlationId && !running && record.turns.some(turn => turn.correlationId === request.correlationId)) {
           await this.finish(request.binding, request.correlationId, history)
         }
         return { history, context: manager.contextSnapshot?.(request.session) ?? null,

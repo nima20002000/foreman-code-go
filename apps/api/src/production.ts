@@ -69,6 +69,8 @@ import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harn
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
+import { createProductionWorkerConversations } from './modules/conversations/workerProduction.js'
+import { WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
 import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
@@ -217,6 +219,7 @@ export function buildProductionApp(
   qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
   infrastructure?: ProductionHarnessInfrastructure,
 ) {
+  let workerChats: ReturnType<typeof createProductionWorkerConversations> | undefined
   const workerExecution = new WorkerExecutionPolicy(config.workerExecution)
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
@@ -334,6 +337,11 @@ export function buildProductionApp(
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
+          if (WorkerConversationCallbackSchema.safeParse(payload).success) {
+            if (!workerChats || context.bytes !== undefined) throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE',
+              'The Main conversation callback authority is unavailable.', 503)
+            return { payload: await workerChats.bridge.handle(payload, context.binding, context.signal) }
+          }
           if (RemoteJobMainRpcRequestSchema.safeParse(payload).success) {
             if (!jobRuntime) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual main Job application bridge is unavailable.', 503)
             return { payload: await jobRuntime.application.handle(payload, context.binding) }
@@ -823,6 +831,10 @@ export function buildProductionApp(
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
+  const agentConversations = new PostgresAgentChatRepository(database.pool)
+  workerChats = createProductionWorkerConversations({ pool: database.pool,
+    endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
+    operators: operatorConversations, agents: agentConversations })
   const recoverChatCompaction = async (
       configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
       conversationId: string, session: import('@foreman-code/contracts').NativeSessionReference,
@@ -855,6 +867,8 @@ export function buildProductionApp(
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    createDevice: (configuration, conversationId, fileInputs) => workerChats!.create({
+      configuration, conversationId, workingDirectory: operatorWorkingDirectory, appMcpAccess: fileInputs ? 'none' : 'scoped' }),
     createSelected: (configuration, conversationId, fileInputs, recovery) => {
       if (!configuration.harnessProfileSelection || configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected Operator driver profile is unavailable.', 409)
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
@@ -899,7 +913,7 @@ export function buildProductionApp(
   })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
-    (manager) => nativeFactories.inspector(manager),
+    (manager) => workerChats!.inspector(manager) ?? nativeFactories.inspector(manager),
     async (manager, configuration, environment, signal) => {
       const claude = claudeLaunches.get(manager)
       const servers: ClaudeHarnessConfiguration['mcpServers'] = configuration.harness.harness === 'claude'
@@ -942,11 +956,15 @@ export function buildProductionApp(
     operatorConversations, operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
-  const agentConversations = new PostgresAgentChatRepository(database.pool)
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
     const existing = agentChatManagers.get(conversationId)
     if (existing) return existing
+    if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+      const manager = workerChats!.create({ configuration, conversationId, workingDirectory, appMcpAccess: 'none' })
+      agentChatManagers.set(conversationId, manager)
+      return manager
+    }
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
@@ -1179,6 +1197,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'worker conversation callback admissions', run: async () => { workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },

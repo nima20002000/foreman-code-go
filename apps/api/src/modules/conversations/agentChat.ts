@@ -783,6 +783,7 @@ export class AgentChatService {
       return this.commands.execute(principal, source, id, input.requestId, { kind: 'interrupt', workspaceId, ...input }, async (markDispatchAttempt) => {
         await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
         const target = await this.repository.interrupt(id, input.expectedNativeTurnId)
+        this.runtimes.get(id)?.manager.setSessionControlPrincipal?.(principal.id)
         if (target) markDispatchAttempt()
         await this.interruptActive(id, true, target)
         return this.readConversation(principal, workspaceId, id)
@@ -835,6 +836,7 @@ export class AgentChatService {
           const option = withInteractionResponse(offered, input.response)
           const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
           markDispatchAttempt()
+          runtime.manager.setSessionControlPrincipal?.(principal.id)
           await runtime.manager.respond(runtime.session, input.nativeRequestId, option, signal)
           if (runtime.manager.reconcileResponse) {
             const history = await runtime.manager.reconcileResponse(runtime.session, { nativeRequestId: input.nativeRequestId,
