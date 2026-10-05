@@ -11,7 +11,7 @@ import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.j
 
 afterEach(() => vi.restoreAllMocks())
 
-const failures = ['receipt', 'audit', 'commit', 'commit division by zero'] as const
+const failures = ['receipt', 'audit', 'commit', 'commit division by zero', 'commit localized rejection'] as const
 
 describe('workspace project folder compensation through authenticated MCP', () => {
   for (const explicitName of [true, false]) {
@@ -28,7 +28,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
              for each row execute function reject_creation()`
         const condition = failure === 'receipt'
           ? "new.operation = 'workspace.create'" : "new.action = 'workspace.create' and new.outcome = 'succeeded'"
-        const rejection = failure === 'commit division by zero'
+        const rejection = failure === 'commit division by zero' || failure === 'commit localized rejection'
           ? "raise exception 'Injected division by zero' using errcode = '22012'"
           : "raise exception 'Injected creation failure'"
         await f.pool.query(`create function reject_creation() returns trigger language plpgsql as $$
@@ -36,10 +36,24 @@ describe('workspace project folder compensation through authenticated MCP', () =
             if ${condition} then ${rejection}; end if;
             return new;
           end $$; ${trigger}`)
+        if (failure === 'commit localized rejection') {
+          const query = pg.Client.prototype.query as unknown as
+            (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
+          // Keep the real deferred COMMIT rejection; represent its localized protocol severity.
+          vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+            return query.apply(this, args).catch((error: unknown) => {
+              if (args[0] === 'commit' && error instanceof pg.DatabaseError && error.code === '22012') {
+                error.severity = 'FEHLER'
+              }
+              throw error
+            })
+          } as never)
+        }
         const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicitName ? { name } : {}) }
         const failed = await f.owner.client.callTool({ name: 'workspace_create', arguments: input })
         expect(failed.isError).toBe(true)
         expect(await readdir(f.parentPath)).toEqual([])
+        expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
         expect((await f.pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(0)
         expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
           [input.commandId])).rows[0].count).toBe(0)

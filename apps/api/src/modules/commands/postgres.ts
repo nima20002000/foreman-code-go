@@ -9,9 +9,9 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 
 function commitWasRejected(error: unknown): boolean {
   if (!(error instanceof pg.DatabaseError) || !error.code) return false
-  // A server ERROR rejects the statement. Connection and unknown-completion
-  // errors cannot establish whether COMMIT reached durable storage.
-  return error.severity === 'ERROR' && !error.code.startsWith('08') && error.code !== '40003'
+  // SQLSTATE is not localized. This is used only after a successful rollback;
+  // connection failures and unknown completion still leave COMMIT ambiguous.
+  return !error.code.startsWith('08') && error.code !== '40003'
 }
 
 export class PostgresCommandCoordinator {

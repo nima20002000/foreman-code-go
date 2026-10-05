@@ -63,10 +63,34 @@ describe('command rollback compensation', () => {
   it('compensates a server-rejected commit', async () => {
     const error = new pg.DatabaseError('Deferred constraint rejected commit', 0, 'error')
     error.code = '23514'
+    error.severity = 'ERROR'
     const f = fixture({ commitError: error })
     const afterRollback = vi.fn(async () => { expect(f.rolledBack()).toBe(true) })
     await expect(f.coordinator.execute({ ...f.command, afterRollback, perform: async () => 'project' })).rejects.toBe(error)
     expect(afterRollback).toHaveBeenCalledOnce()
+  })
+
+  it('compensates a localized server rejection using its SQLSTATE', async () => {
+    const error = new pg.DatabaseError('Division durch Null', 0, 'error')
+    error.code = '22012'
+    error.severity = 'FEHLER'
+    const f = fixture({ commitError: error })
+    const afterRollback = vi.fn(async () => { expect(f.rolledBack()).toBe(true) })
+    await expect(f.coordinator.execute({ ...f.command, afterRollback, perform: async () => 'project' }))
+      .rejects.toBe(error)
+    expect(afterRollback).toHaveBeenCalledOnce()
+  })
+
+  it.each(['08006', '40003'])('preserves external effects for ambiguous SQLSTATE %s', async code => {
+    const error = new pg.DatabaseError('Uncertain transaction completion', 0, 'error')
+    error.code = code
+    error.severity = 'FEHLER'
+    const f = fixture({ commitError: error })
+    const afterRollback = vi.fn()
+    await expect(f.coordinator.execute({ ...f.command, afterRollback, perform: async () => 'project' }))
+      .rejects.toBe(error)
+    expect(f.rolledBack()).toBe(true)
+    expect(afterRollback).not.toHaveBeenCalled()
   })
 
   it('reports cleanup failure and restores its connection before failure auditing', async () => {
