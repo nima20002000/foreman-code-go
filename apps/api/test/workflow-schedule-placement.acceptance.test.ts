@@ -10,6 +10,8 @@ import { schedulePlacementFixture } from './helpers/schedulePlacementFixture.js'
 import { join } from 'node:path'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { spawnOwnedStdioProcess } from '../src/modules/harnesses/process.js'
+import { createRequire } from 'node:module'
+import { diagnosticEnvironment, parseInstalledVersion } from '../src/modules/harnesses/compatibility/probe.js'
 
 describe('native scheduled placement recovery', () => {
   let database: Sch11Database
@@ -18,13 +20,17 @@ describe('native scheduled placement recovery', () => {
   }, 60_000)
   afterAll(async () => { await database?.close() })
 
-  it('closes an owned diagnostic process after its direct child exits', async () => {
+  it.each(['node', 'codex'] as const)('closes an owned %s diagnostic after its direct child exits', async (harness) => {
     const registry = new NativeProcessRegistry(join(database.directory, 'diagnostic-processes'))
-    const recovery = registry.reserveLaunch('version-diagnostic')
+    const recovery = registry.reserveLaunch(`version-diagnostic:${harness}`)
     const errors: Error[] = []
+    const binary = harness === 'node' ? process.execPath
+      : createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js')
+    const args = harness === 'node' ? ['-e', 'process.stdout.write("diagnostic complete\\n")'] : ['--version']
     const diagnostic = spawnOwnedStdioProcess({
-      binary: process.execPath, args: ['-e', 'process.stdout.write("diagnostic complete\\n")'],
-      cwd: database.directory, environment: {}, recovery, onError: error => { errors.push(error) },
+      binary, args, cwd: database.directory,
+      environment: diagnosticEnvironment(database.directory, process.env), recovery,
+      onError: error => { errors.push(error) },
     })
     let output = ''
     diagnostic.child.stdout.on('data', chunk => { output += String(chunk) })
@@ -36,7 +42,8 @@ describe('native scheduled placement recovery', () => {
     })
     try {
       expect(await Promise.race([diagnostic.closed, deadline])).toEqual({ exitCode: 0, exitSignal: null })
-      expect(output).toBe('diagnostic complete\n')
+      if (harness === 'node') expect(output).toBe('diagnostic complete\n')
+      else expect(parseInstalledVersion('codex', output, '')).toBe('0.154.0')
       expect(errors).toEqual([])
     } finally {
       clearTimeout(timer)
