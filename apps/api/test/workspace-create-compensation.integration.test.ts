@@ -41,8 +41,10 @@ describe('workspace project folder compensation through authenticated MCP', () =
             (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
           // Keep the real deferred COMMIT rejection; represent its localized protocol severity.
           vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
-            return query.apply(this, args).catch((error: unknown) => {
-              if (args[0] === 'commit' && error instanceof pg.DatabaseError && error.code === '22012') {
+            const response = query.apply(this, args)
+            if (args[0] !== 'commit') return response
+            return response.catch((error: unknown) => {
+              if (error instanceof pg.DatabaseError && error.code === '22012') {
                 error.severity = 'FEHLER'
               }
               throw error
