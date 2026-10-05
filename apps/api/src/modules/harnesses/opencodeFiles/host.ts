@@ -295,7 +295,8 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
           }
           if (code(error) === 'EEXIST') {
             throw new OpenCodeFileError('FILE_ARTIFACT_CONFLICT',
-              'A concurrent native edit remains at the working-copy path; both other versions are retained.')
+              'A concurrent native edit remains at the working-copy path; both other versions are retained.',
+              { cause: error })
           }
           throw error
         }
