@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto'
 import { HarnessReleaseProvenanceSchema, type CompatibilityHarness, type HarnessReleaseProvenance } from '@foreman-code/contracts'
 
-/**
- * Existing qualification pins, NOT new qualifications performed by this checker.
- * Official release/tag records inspected 2026-09-19 and 2026-09-23. No startup network lookup.
- * Adding a release here must follow the native qualification/review process.
- */
+/** Historical release provenance for readback. Every installed release still undergoes contract verification. */
 export const COMPATIBILITY_CHECKER_REVISION = 'runtime-contracts-v2'
 export const QUALIFIED_RELEASES: Record<CompatibilityHarness, HarnessReleaseProvenance> = {
   codex: HarnessReleaseProvenanceSchema.parse({
