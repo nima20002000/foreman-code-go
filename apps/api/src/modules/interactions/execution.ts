@@ -1113,7 +1113,7 @@ export class ApprovalExecutionCoordinator {
       this.managerCredentials.delete(owned.manager)
       this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager, 'failed')
       if (this.ownedSessions.get(execution.id) === owned) this.ownedSessions.delete(execution.id)
-      componentLogger('native').warn({ err: safe.error(error), executionId: execution.id }, 'workflow approval restoration requires cleanup')
+      componentLogger('harness').warn({ err: safe.error(error), executionId: execution.id }, 'workflow approval restoration requires cleanup')
       return false
     }
   }

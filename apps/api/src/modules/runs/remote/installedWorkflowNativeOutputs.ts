@@ -68,10 +68,14 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     storage = undefined
     throw error
   })
+  const captureRequest = (namespace: string) => {
+    const capture = input.captureRequest(namespace)
+    if (!capture || !isDeepStrictEqual(capture.binding, context.binding)) throw unavailable()
+    return capture
+  }
   const request = async (payload: unknown, signal?: AbortSignal) => {
     await context.assertCurrent(undefined, signal)
-    const capture = input.captureRequest(WORKER_MCP_EXTENSION.namespace)
-    if (!capture || !isDeepStrictEqual(capture.binding, context.binding)) throw unavailable()
+    const capture = captureRequest(WORKER_MCP_EXTENSION.namespace)
     const result = await capture.request(payload, signal ? { signal } : undefined)
     if (result.bytes !== undefined) throw unavailable()
     await context.assertCurrent(undefined, signal)
@@ -85,7 +89,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     return mcpValue(await request(WorkerMcpRelayRequestSchema.parse({ ...envelope(), operation: 'worker-mcp.request',
       body: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: arguments_ } } }), signal), id, schema)
   }
-  const carrier = createChannelTransferClient({ captureRequest: input.captureRequest })
+  const carrier = createChannelTransferClient({ captureRequest })
   return {
     assertCurrent: (signal) => context.assertCurrent(undefined, signal),
     assertQualified: async (qualification, signal) => {

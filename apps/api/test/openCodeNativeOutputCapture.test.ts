@@ -239,7 +239,7 @@ it('does not bypass failed selected-profile recovery admission to use an existin
     throw new Error('Selected profile was revoked')
   })
   try {
-    await assert.rejects(admitted.manager.recoverEnvironment!(), /Selected profile was revoked/)
+    await assert.rejects(async () => admitted.manager.recoverEnvironment!(), /Selected profile was revoked/)
     await assert.rejects(admitted.manager.captureNativeOutputCall!(
       { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'unadmitted-session' }, toolName, {}),
     errorCode('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE'))

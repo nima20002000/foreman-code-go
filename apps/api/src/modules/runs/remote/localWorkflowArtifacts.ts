@@ -40,7 +40,8 @@ function mappings(version: WorkflowVersionV3, execution: HarnessExecution) {
   if (!node || node.kind === 'job' || !node.artifactOutputs || !execution.result) return conflict()
   try {
     if (version.definition.handoffs) return parseWorkHandoffArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
-    return parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice).artifactOutputs.outputs
+    if (node.choice) return parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice).artifactOutputs.outputs
+    return parseWorkflowArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
   } catch { return conflict() }
 }
 

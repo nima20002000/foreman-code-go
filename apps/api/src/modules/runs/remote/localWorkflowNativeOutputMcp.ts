@@ -135,7 +135,7 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
         outputSchema: WorkerNativeOutputReplySchema,
         description: `${operation} an original local workflow artifact using this authenticated native turn. No host path or caller scope. Requires the saved Agent tool enablement, native permissions and workflow owner write grant.`,
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      }, async raw => {
+      }, async (raw: unknown) => {
         try { return toolResult(await this.execute(principal,
           parseNativeOutputToolCommand(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation], raw), raw)) }
         catch (error) {

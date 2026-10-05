@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import type { StoredRepeatExecution } from './repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
@@ -17,6 +17,9 @@ function fixture() {
   // Original SQL source and receipt ports are unit doubles. They do not create
   // native qualification or physical closure; restart tests exercise the engine.
   const f = makeCurrentWorkflowFixture('terminal-receipt', 'single')
+  const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: 'unit-principal',
+    executionLocation: { runnerId: 'unit-runner', rootPath: '/workspace', locationRevision: 1,
+      identityHash: `sha256:${'0'.repeat(64)}` } })
   const node = f.version.definition.nodes[0]!
   const input = { executionSemanticsVersion: 3 as const, runInput: {}, occurrence: null, entry: null, predecessors: [] }
   const execution = HarnessExecutionSchema.parse({ id: 'execution', runId: f.run.id,
@@ -36,7 +39,7 @@ function fixture() {
   } as WorkflowNativeProofRecord
   const row = { record: proof, source_digest: repeatDigest(proof, 4 * 1024 * 1024) }
   const connection = new ExclusiveGraphConnection({ query: async () => ({ rows: [row], rowCount: 1 }) } as unknown as pg.ClientBase, () => {})
-  const snapshot = { run: f.run, version: f.version, configurations: f.configurations,
+  const snapshot = { run, version: f.version, configurations: f.configurations,
     stopRequested: false, cleanupPending: false } satisfies AcceptedRepeatRunSnapshot
   const stored = { execution, ref: proof.ref, slotId: 'slot', input, inputDigest: proof.inputDigest, accepted: false } satisfies StoredRepeatExecution
   const read = () => connection.transaction((sql) => readWorkflowTerminalReceiptLocked(sql, snapshot, stored))

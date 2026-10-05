@@ -20,6 +20,7 @@ import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
 import { createActivityReplayFileStorage, createActivityReplayWorkspace, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 
 const closes: Array<() => Promise<void>> = []
 async function eventStream(url: string, token: string) {
@@ -83,8 +84,8 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   await checkpoints.setup()
   closes.push(async () => { await checkpoints.close(); await db.pool.query(`drop schema "${cpSchema}" cascade`) })
   const seed = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'single')
-  if (options.handoffs) seed.version = WorkflowVersionV3Schema.parse({ ...seed.version,
-    definition: { ...seed.version.definition, handoffs: { contractVersion: 1 } } })
+  if (options.handoffs) seed.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...seed.version,
+    definition: { ...seed.version.definition, handoffs: { contractVersion: 1 } } }))
   seed.configurations = seed.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({ ...configuration,
     harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }))
   const saved = await seedAgent3(db.pool, workspace.workingDirectory, seed, { run: false })

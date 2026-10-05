@@ -9,7 +9,8 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
 import type { FileQuery } from '../src/modules/files/repository.js'
-import { LocalWorkflowNativeOutputRepository } from '../src/modules/runs/remote/localWorkflowNativeOutputRepository.js'
+import { LocalWorkflowNativeOutputRepository, type LocalOutputCaller } from '../src/modules/runs/remote/localWorkflowNativeOutputRepository.js'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type pg from 'pg'
 
@@ -43,9 +44,8 @@ async function fixture(pool: pg.Pool) {
     expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['agent_chat:read'],
       scope: { workspaceIds: [f.scope.workspaceId] } }] })
   const mainId = randomUUID()
-  const callers = []
-  for (const node of f.version.definition.nodes) {
-    if (node.kind === 'job') throw new Error('Agent fixture required')
+  const callers: LocalOutputCaller[] = []
+  for (const node of f.version.definition.nodes.map(agentWorkflowNode)) {
     const executionId = randomUUID()
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
       values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, f.run.id, node.id, node.agentId, JSON.stringify({

@@ -102,7 +102,6 @@ import { assertOpenCodeNativeOutputCall } from './modules/runs/remote/localWorkf
 import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
 import { WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
-import { runCommand } from './modules/harnesses/process.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
 import { fileURLToPath } from 'node:url'
