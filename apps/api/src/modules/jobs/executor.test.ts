@@ -20,7 +20,7 @@ import { podmanCreateArgv } from './executorPodman.js'
 import { readDeclaredJobOutputs, reserveVerificationReportSpace, writeVerificationInterruptionReport } from './executorOutputs.js'
 import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
 import type { RemoteJobTerminalEvidence } from '@graphql/contracts/remote-job-execution'
-import { verificationFixture } from '../../../../../packages/contracts/tests/helpers/jobVerification.js'
+import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 
 const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
