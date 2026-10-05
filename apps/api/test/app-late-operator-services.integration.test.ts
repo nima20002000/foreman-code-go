@@ -13,12 +13,14 @@ import { JobService } from '../src/modules/jobs/service.js'
 import { registerJobRoutes } from '../src/routes/jobs.js'
 import { jobSpec } from './helpers/jobFixture.js'
 
-// Explicit lane DB gate: only this test's random schema is migrated and removed.
+// The integration runner supplies a disposable test database; this test owns its schema.
 // Saved metadata is synthetic; no native execution or qualification is claimed.
-it.skipIf(!process.env.HRT_F03_DATABASE_URL)('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
-  const connectionString = process.env.HRT_F03_DATABASE_URL!
+it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
+  const connectionString = process.env.TEST_DATABASE_URL!
   const url = new URL(connectionString)
-  if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Use the authorized local PostgreSQL server.')
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
+    throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')
+  }
   const schema = `hrt_f03_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString, max: 1 })
   const pool = new pg.Pool({ connectionString, max: 4,

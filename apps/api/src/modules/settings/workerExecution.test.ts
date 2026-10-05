@@ -61,8 +61,9 @@ describe('Worker execution deployment setting', () => {
       mainId: spec.target.mainId,
       deviceId: '11111111-1111-4111-8111-111111111112',
     } } }
-    expect(() => jobs.prepareDefinition({} as never, reader,
-      { workspaceId: 'workspace', spec: remoteSpec } as never, identity)).toThrow()
+    await expect(jobs.prepareDefinition({} as never, reader,
+      { workspaceId: 'workspace', spec: remoteSpec } as never, identity))
+      .rejects.toMatchObject({ code: 'WORKER_EXECUTION_DISABLED', status: 409 })
     expect(accept).not.toHaveBeenCalled()
   })
 })

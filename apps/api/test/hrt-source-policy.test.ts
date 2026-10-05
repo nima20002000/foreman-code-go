@@ -63,6 +63,7 @@ async function fixture(device = false) {
     if (text.startsWith("select 'agent' kind")) rows = [{ kind: 'job' }]
     else if (text.startsWith('select operation_id,principal_id from job_preparations')) rows = [{ operation_id: operationId, principal_id: principal.id }]
     else if (text.startsWith('select principal_id,workspace_id,definition,created_at')) rows = values?.[0] === executionId && values?.[1] === attemptId ? [{ principal_id: principal.id, workspace_id: workspaceId, definition, created_at: new Date() }] : []
+    else if (text.startsWith('select record,owner_id,owner_fence from job_admission_queue')) rows = []
     else if (text.startsWith('select version_id from job_definitions')) rows = [{ version_id: definition.versionId }]
     else if (text.startsWith('select 1 from job_executions')) rows = [{ known: true }]
     else if (text === 'select 1 from source_preparation_reconciliations where operation_id=$1') rows = []
