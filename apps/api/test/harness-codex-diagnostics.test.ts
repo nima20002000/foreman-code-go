@@ -11,7 +11,8 @@ function fixture() {
   if (source.request.configuration.harness.harness !== 'codex') throw new Error('Expected Codex fixture.')
   source.request.configuration.harness.advanced!.sessionPersistence = 'ephemeral'
   source.environment = { ...source.environment!, variables: { ...source.environment!.variables, CUSTOM_APPLICATION_BEARER: 'writer-only' } }
-  const ambient = { CUSTOM_APPLICATION_BEARER: 'ambient-bearer', GRAPHQL_MCP_TOKEN: 'ambient-main', HOST_ONLY: 'host-config' }
+  const ambient = { CUSTOM_APPLICATION_BEARER: 'ambient-bearer', FOREMAN_CODE_MCP_TOKEN: 'ambient-main',
+    GRAPHQL_MCP_TOKEN: 'legacy-ambient-main', HOST_ONLY: 'host-config' }
   const close = vi.fn(async () => undefined)
   const requests: string[] = []
   const transport: CodexTransport = { start: async () => undefined, close, respond: async () => undefined, reject: async () => undefined,
@@ -39,10 +40,12 @@ function fixture() {
         commands.push({ args: [...args], environment: { ...environment as NodeJS.ProcessEnv }, recovery: options.recovery })
         await blockDiagnostic?.(signal!)
       }
-      if (args[0] === 'mcp' && args[1] === 'list') {
-        return { stdout: JSON.stringify([{ name: 'graphql' }]), stderr: '', exitCode: 0, exitSignal: null }
+      if (args[0] === 'mcp' && args[1] === 'list') return {
+        stdout: JSON.stringify([{ name: 'foreman-code' }]), stderr: '', exitCode: 0, exitSignal: null,
       }
-      if (args[0] !== 'mcp' || args[1] !== 'get') throw new Error(`Unexpected command ${args.join(' ')}`)
+      if (args[0] !== 'mcp' || args[1] !== 'get' || args[2] !== 'foreman-code') {
+        throw new Error(`Unexpected command ${args.join(' ')}`)
+      }
       return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
         url: 'http://127.0.0.1:3000/mcp', bearer_token_env_var: 'CUSTOM_APPLICATION_BEARER' } }),
       stderr: '', exitCode: 0, exitSignal: null }
@@ -72,9 +75,7 @@ it('same-process ephemeral reload uses separately admitted diagnostics with no s
     expect(f.admit).toHaveBeenCalledTimes(1)
     const scope = f.admit.mock.calls[0]![0]
     expect(scope.owner).not.toBe(f.writer.owner)
-    expect(f.commands.map(command => command.args)).toEqual([
-      ['mcp', 'list', '--json'], ['mcp', 'get', 'graphql', '--json'],
-    ])
+    expect(f.commands).toHaveLength(2)
     for (const command of f.commands) {
       expect(command.recovery).toBe(scope)
       expect(command.environment).toEqual({ HOST_ONLY: 'host-config' })

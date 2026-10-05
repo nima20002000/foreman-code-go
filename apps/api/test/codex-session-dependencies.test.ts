@@ -74,31 +74,48 @@ describe('Codex production/replay dependency boundary', () => {
   })
 })
 
-describe('Codex original placed inspection directory',()=>{
-  it.each([undefined,'/actual-admitted-source/src'])('qualifies and inspects MCP in the same actual directory with option %s',async workingDirectory=>{
-    const f=replay(),qualified:string[]=[],commands:string[]=[]
-    const qualify=f.dependencies.qualify
-    f.dependencies.qualify=async(...args)=>{qualified.push(args[2]);return qualify(...args)}
-    f.dependencies.runCommand=async(...args)=>{
-      commands.push(args[2])
-      if (args[1][1] === 'list') {
-        assert.deepEqual(args[1], ['mcp', 'list', '--json'])
-        return { stdout: JSON.stringify([{ name: 'graphql' }]), stderr: '', exitCode: 0 }
-      }
-      assert.deepEqual(args[1], ['mcp', 'get', 'graphql', '--json'])
-      return { stdout: JSON.stringify({ enabled: false, transport: { type: 'stdio' } }), stderr: '', exitCode: 0 }
-    }
-    const manager=new CodexAppServerSessionManager('/nonexistent-recorded-codex',undefined,undefined,undefined,undefined,undefined,f.dependencies,
-      workingDirectory?{workingDirectory}:{})
-    await manager.capabilities()
-    const inspected = await manager.inspectMcp()
-    assert.equal(inspected.serverName, 'graphql')
-    assert.equal(inspected.state, 'disabled')
-    await manager.qualificationEvidence()
-    assert.deepEqual(qualified,[workingDirectory??process.cwd(),workingDirectory??process.cwd(),workingDirectory??process.cwd()])
-    assert.deepEqual(commands,[workingDirectory??process.cwd(),workingDirectory??process.cwd()])
-    assert(!f.calls.includes('start'))
-    assert(!f.calls.includes('qualifyModel'))
-    await manager.shutdown()
-  })
+describe('Codex original placed inspection directory', () => {
+  for (const serverName of [undefined, 'foreman-code', 'graphql']) {
+    it.each([undefined, '/actual-admitted-source/src'])(
+      `qualifies and inspects ${serverName ?? 'absent'} MCP in the accepted directory with option %s`,
+      async (workingDirectory) => {
+        const f = replay()
+        const qualified: string[] = []
+        const commands: Array<{ args: string[]; cwd: string }> = []
+        const qualify = f.dependencies.qualify
+        f.dependencies.qualify = async (...args) => {
+          qualified.push(args[2])
+          return qualify(...args)
+        }
+        f.dependencies.runCommand = async (_binary, args, cwd) => {
+          commands.push({ args, cwd })
+          if (args[0] === 'mcp' && args[1] === 'list') return {
+            stdout: JSON.stringify(serverName ? [{ name: serverName }] : []),
+            stderr: '', exitCode: 0, exitSignal: null,
+          }
+          assert.deepEqual(args, ['mcp', 'get', serverName, '--json'])
+          return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
+            url: 'http://127.0.0.1:3000/mcp', bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } }),
+          stderr: '', exitCode: 0, exitSignal: null }
+        }
+        const manager = new CodexAppServerSessionManager('/nonexistent-recorded-codex', undefined, undefined,
+          undefined, undefined, undefined, f.dependencies, workingDirectory ? { workingDirectory } : {})
+        try {
+          await manager.capabilities()
+          const detected = await manager.inspectMcp()
+          await manager.qualificationEvidence()
+          const cwd = workingDirectory ?? process.cwd()
+          assert.deepEqual(qualified, [cwd, cwd, cwd])
+          const expected = [{ args: ['mcp', 'list', '--json'], cwd }]
+          if (serverName) expected.push({ args: ['mcp', 'get', serverName, '--json'], cwd })
+          assert.deepEqual(commands, expected)
+          assert.equal(detected.serverName, serverName ?? 'foreman-code')
+          assert.equal(detected.state, serverName ? 'status_unavailable' : 'not_detected')
+          assert.equal(detected.credentialEnvironmentVariable, serverName ? 'FOREMAN_CODE_MCP_TOKEN' : null)
+          assert(!f.calls.includes('start'))
+          assert(!f.calls.includes('qualifyModel'))
+        } finally { await manager.shutdown() }
+      },
+    )
+  }
 })
