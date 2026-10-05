@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
+  codexNativeOutputSandboxProbeProgram,
   matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from '../src/modules/harnesses/qualification/suites/codexNativeOutputSandbox.js'
 
 // Probe construction is exercised without a native sandbox or a protected-store qualification.
@@ -28,7 +29,9 @@ describe('Codex exact-binary native output protection check definitions', () => 
     const paths = { directPath: join(directory, "direct'file"), descendantPath: join(directory, 'child'),
       witnessPath: join(directory, 'witness'), marker: 'recorded-marker' }
     try {
-      const command = codexNativeOutputSandboxProbeCommand(paths)
+      const programPath = join(directory, "probe'program.py")
+      await writeFile(programPath, codexNativeOutputSandboxProbeProgram(paths), { mode: 0o400 })
+      const command = codexNativeOutputSandboxProbeCommand(programPath)
       const executed = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8',
         env: { ...process.env, TMPDIR: directory } })
       assert.equal(executed.status, 0, executed.stderr)
@@ -65,12 +68,13 @@ describe('Codex exact-binary native output protection check definitions', () => 
     assert.equal(matchesCodexNativeProbeCommand(null, command, '/bin/bash'), false)
   })
   it('preserves a quoted pathname in parseable Python', () => {
-    const command = codexNativeOutputSandboxProbeCommand({ directPath: "/protected/store/quoted'path", descendantPath: '/protected/store/child',
+    const program = codexNativeOutputSandboxProbeProgram({ directPath: "/protected/store/quoted'path", descendantPath: '/protected/store/child',
       witnessPath: '/owned/work/witness', marker: 'recorded-marker' })
+    const programPath = "/protected/store/probe'program.py"
+    const command = codexNativeOutputSandboxProbeCommand(programPath)
     const parsed = spawnSync('/usr/bin/python3', ['-c', `import ast,shlex,sys
-args=shlex.split(sys.argv[1])
-assert args[:2]==['/usr/bin/python3','-c'] and len(args)==3
-ast.parse(args[2])`, command], { encoding: 'utf8' })
+assert shlex.split(sys.argv[1]) == ['/usr/bin/python3',sys.argv[2]]
+ast.parse(sys.argv[3])`, command, programPath, program], { encoding: 'utf8' })
     assert.equal(parsed.status, 0, parsed.stderr)
   })
 })

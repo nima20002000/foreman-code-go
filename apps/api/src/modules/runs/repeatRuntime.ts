@@ -42,6 +42,7 @@ export function repeatExecutionDriver(input: {
    * Completed input is per-execution cleanup/reconciliation ONLY. It must never
    * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
+  reconcileArtifacts?(execution: HarnessExecution): Promise<void>
 }): RepeatExecutionDriver {
   const inFlight = new Map<string, Promise<void>>()
   return {
@@ -63,6 +64,14 @@ export function repeatExecutionDriver(input: {
       const previous = inFlight.get(execution.id)
       if (previous) return previous
       const task = (async () => {
+        const finalize = async (terminal: HarnessExecution) => {
+          await input.store.settleNativeExecution(terminal.id)
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+          await input.reconcileArtifacts?.(terminal)
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+        }
         const stored = await input.store.readExecution(execution.id)
         if (stored.execution.id !== execution.id || stored.execution.runId !== input.scope.runId) return repeatConflict('REPEAT_EXECUTION_INPUT_CONFLICT')
         input.owner.assertOwned()
@@ -71,9 +80,7 @@ export function repeatExecutionDriver(input: {
         // No native callback at all is needed for a close/COMMIT reply gap.
         if (stored.execution.state === 'completed') {
           try {
-            await input.store.settleNativeExecution(execution.id)
-            input.owner.assertOwned()
-            signal.throwIfAborted()
+            await finalize(stored.execution)
             return
           } catch (error) {
             if (!repeatSettlementPending(error)) throw error
@@ -93,18 +100,14 @@ export function repeatExecutionDriver(input: {
           if (terminal.execution.state !== 'completed') throw error
           // Native cleanup can throw after the terminal committed. Preserve it,
           // but never let that fact alone unblock a repeat or technical retry.
-          await input.store.settleNativeExecution(execution.id)
-          input.owner.assertOwned()
-          signal.throwIfAborted()
+          await finalize(terminal.execution)
           return
         }
         input.owner.assertOwned()
         signal.throwIfAborted()
         const terminal = await input.store.readExecution(execution.id)
         if (terminal.execution.state !== 'completed') return repeatConflict('REPEAT_BOUNDARY_PENDING')
-        await input.store.settleNativeExecution(execution.id)
-        input.owner.assertOwned()
-        signal.throwIfAborted()
+        await finalize(terminal.execution)
       })().catch((error: unknown) => {
         if (!repeatSettlementPending(error)) throw error
         input.owner.assertOwned()
@@ -134,7 +137,6 @@ export interface RepeatNativeObserverContext {
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
   preparePlacement?(execution: HarnessExecution): Promise<{ workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
-  reconcileArtifacts?(execution: HarnessExecution): Promise<void>
   directory(executionId: string): string
 }
 
@@ -167,7 +169,6 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
     // Do not even enter capacity or compute a directory for terminal replay.
     if (execution.state === 'completed') {
       await native.observeExact({ ...common, execution, store, signal })
-      await context.reconcileArtifacts?.(execution)
       return
     }
     // LangGraph restarts every unresolved wrapper, not just the notified
@@ -190,7 +191,6 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       execution = await reload() // Stop or another exact observation may win while queued.
       if (execution.state === 'completed') {
         await native.observeExact({ ...common, execution, store, signal })
-        await context.reconcileArtifacts?.(execution)
         return
       }
       const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
@@ -221,7 +221,6 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       assertSameRepeatExecution(admitted, execution)
       if (execution.state === 'completed') {
         await native.observeExact({ ...common, execution, store, signal })
-        await context.reconcileArtifacts?.(execution)
         return
       }
       if (execution.workingDirectory !== paths.workingDirectory || execution.runtimeDirectory !== paths.runtimeDirectory) {
@@ -281,7 +280,6 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution
         if (observation.state === 'completed') {
-          await context.reconcileArtifacts?.(execution)
           return
         }
         // Also gate a later request in this same native turn. Replaying older

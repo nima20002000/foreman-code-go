@@ -6,7 +6,7 @@ import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 import { collectChecks, requireCondition, type Check } from './checks.js'
 import { z } from 'zod'
 
-export const CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION = 'codex-native-output-protection-2'
+export const CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION = 'codex-native-output-protection-3'
 export interface CodexNativeSandboxProbeObservation {
   /** Actual qualified command item from the original diagnostic session/turn, not assistant text. */
   nativeSessionId: string; nativeTurnId: string; itemId: string
@@ -35,12 +35,14 @@ export function assertCodexProtectedOutputPlacement(root: string, sandbox: Codex
   requireCondition(writable.every(isAbsolute), 'Actual native writable roots and TMPDIR must be absolute.')
   requireCondition(writable.every(path => !contains(path, root) && !contains(root, path)), 'Protected output store overlaps actual native writable roots or TMPDIR.')
 }
-export function codexNativeOutputSandboxProbeCommand(input: {
+export function codexNativeOutputSandboxProbeProgram(input: {
   directPath: string; descendantPath: string; witnessPath: string; marker: string
 }): string {
   const script = `import errno,json,os,subprocess,sys\ndef attempt(p):\n try:\n  with open(p,'x') as f: f.write(${JSON.stringify(input.marker)})\n  return {'denied':False,'errno':None}\n except OSError as e: return {'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}\ndirect=attempt(${JSON.stringify(input.directPath)})\nchild="import errno,json,sys\\ntry:\\n with open(sys.argv[1],'x') as f: f.write(sys.argv[2])\\n print(json.dumps({'denied':False,'errno':None}))\\nexcept OSError as e: print(json.dumps({'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}))"\nresult=subprocess.run([sys.executable,'-c',child,${JSON.stringify(input.descendantPath)},${JSON.stringify(input.marker)}],capture_output=True,text=True)\nproof={'marker':${JSON.stringify(input.marker)},'uid':os.getuid(),'tmpdir':os.environ.get('TMPDIR'),'direct':direct,'descendant':json.loads(result.stdout),'descendantExitCode':result.returncode}\nwith open(${JSON.stringify(input.witnessPath)},'x') as f: json.dump(proof,f)\nprint(json.dumps(proof))`
-  const encoded = Buffer.from(script, 'utf8').toString('base64')
-  return `/usr/bin/python3 -c 'import base64;exec(base64.b64decode("${encoded}").decode("utf-8"))'`
+  return script
+}
+export function codexNativeOutputSandboxProbeCommand(programPath: string): string {
+  return `/usr/bin/python3 '${programPath.replaceAll("'", "'\\''")}'`
 }
 
 /** Command items include the selected shell's argv display; the script payload stays exact. */
@@ -88,6 +90,7 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
   const descendantPath = join(input.protectedDirectory, `.native-descendant-${marker}`)
   const witnessPath = join(input.workDirectory, `.native-witness-${marker}.json`)
   const hostPath = join(input.protectedDirectory, `.host-witness-${marker}`)
+  const programPath = join(input.protectedDirectory, `.native-probe-${marker}.py`)
   const evidence: Record<string, unknown> = { revision: CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION,
     binarySha256: input.binarySha256, providerVersion: input.version, protectedDirectory: input.protectedDirectory }
   const assertCurrent = async () => {
@@ -124,8 +127,13 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
     ['native-and-descendant-protected-store-write-denied', async () => {
       requireCondition(policy, 'Actual native policy check did not complete.')
       await assertCurrent()
-      const command = codexNativeOutputSandboxProbeCommand({ directPath, descendantPath, witnessPath, marker })
-      const observed = await input.probe.executeExactCommand(command, signal); await assertCurrent()
+      const program = codexNativeOutputSandboxProbeProgram({ directPath, descendantPath, witnessPath, marker })
+      await writeFile(programPath, program, { flag: 'wx', mode: 0o400 })
+      requireCondition(await readFile(programPath, 'utf8') === program, 'The protected probe program changed.')
+      const command = codexNativeOutputSandboxProbeCommand(programPath)
+      const observed = await input.probe.executeExactCommand(command, signal)
+      await assertCurrent()
+      requireCondition(await readFile(programPath, 'utf8') === program, 'The protected probe program changed.')
       requireCondition(matchesCodexNativeProbeCommand(observed.command, command, policy.nativeShell)
         && observed.status === 'completed' && observed.exitCode === 0
         && observed.nativeSessionId === policy.nativeSessionId && observed.nativeTurnId === policy.nativeTurnId
@@ -153,6 +161,6 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
     // Root must quiesce the original diagnostic actor before retiring these own markers.
     // This module cannot assert a native process stopped, so no target cleanup or
     // protected-store capability/qualification is inferred from return alone.
-    evidence.cleanupPaths = [hostPath, directPath, descendantPath, witnessPath]
+    evidence.cleanupPaths = [hostPath, directPath, descendantPath, witnessPath, programPath]
   }
 }

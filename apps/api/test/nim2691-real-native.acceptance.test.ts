@@ -600,6 +600,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             record #>> '{result,error,code}' as code,record #>> '{result,error,message}' as message
             from harness_executions where run_id=$1 order by id`, [runId])).rows
           .map(({ message, ...execution }) => ({ ...execution,
+            message: message === null ? null : redact.text(message).slice(0, 2048),
             modelAtCapacity: message === 'Selected model is at capacity. Please try a different model.',
           }))
         const activityKinds = (await pool.query<{ kind: string }>(

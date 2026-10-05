@@ -10,6 +10,7 @@ import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLaun
 import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
+  codexNativeOutputSandboxProbeProgram,
   matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
@@ -40,6 +41,7 @@ export async function qualifyCodexOutputProtection(input: {
   const descendantPath = join(protectedDirectory, `.native-descendant-${marker}`)
   const witnessPath = join(selected.expectedSandbox.cwd, `.native-witness-${marker}.json`)
   const hostPath = join(protectedDirectory, `.host-witness-${marker}`)
+  const programPath = join(protectedDirectory, `.native-probe-${marker}.py`)
   let failure: { error: unknown } | undefined
   const cleanupProbe = async () => {
     const errors: unknown[] = []
@@ -50,7 +52,7 @@ export async function qualifyCodexOutputProtection(input: {
     } catch (error) { errors.push(error) }
     if (errors.length) throw new AggregateError(errors, 'Native output qualification closure was incomplete.')
     // Own probe markers only, after positive diagnostic closure.
-    for (const path of [hostPath, directPath, descendantPath, witnessPath]) {
+    for (const path of [hostPath, directPath, descendantPath, witnessPath, programPath]) {
       await unlink(path).catch((error: unknown) => {
         if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
       })
@@ -118,7 +120,10 @@ export async function qualifyCodexOutputProtection(input: {
     }
     await writeFile(hostPath, marker, { flag: 'wx', mode: 0o600 })
     await unlink(hostPath)
-    const command = codexNativeOutputSandboxProbeCommand({ directPath, descendantPath, witnessPath, marker })
+    const program = codexNativeOutputSandboxProbeProgram({ directPath, descendantPath, witnessPath, marker })
+    await writeFile(programPath, program, { flag: 'wx', mode: 0o400 })
+    if (await readFile(programPath, 'utf8') !== program) throw unavailable()
+    const command = codexNativeOutputSandboxProbeCommand(programPath)
     const turn = object(await transport.request('turn/start', { threadId, clientUserMessageId: randomUUID(),
       input: [{ type: 'text', text: `Run this exact command once with the native shell tool. Do not change it, request broader permissions, or use other tools. Then finish.\n${command}`, text_elements: [] }],
     }, signal))
@@ -135,6 +140,7 @@ export async function qualifyCodexOutputProtection(input: {
         })])
       } finally { signal.removeEventListener('abort', aborted) }
     }
+    if (await readFile(programPath, 'utf8') !== program) throw unavailable()
     const observed = commands.filter((entry) => entry.threadId === threadId && entry.turnId === turnId)
     if (terminals.get(turnId) !== 'completed' || observed.length !== 1
       || !matchesCodexNativeProbeCommand(observed[0]!.item.command, command, environment.SHELL ?? '/bin/bash')
@@ -147,6 +153,8 @@ export async function qualifyCodexOutputProtection(input: {
             commandType: typeof item.command,
             commandDigest: typeof item.command === 'string'
               ? createHash('sha256').update(item.command).digest('hex') : null,
+            output: matchesCodexNativeProbeCommand(item.command, command, environment.SHELL ?? '/bin/bash')
+              && typeof item.aggregatedOutput === 'string' ? redact.text(item.aggregatedOutput).slice(0, 2048) : null,
             command: typeof item.command === 'string' && item.command.includes(marker)
               ? redact.text(item.command).slice(0, 4096) : null })),
         })

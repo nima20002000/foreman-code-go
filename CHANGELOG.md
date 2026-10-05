@@ -20,6 +20,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Adopt local workflow outputs after native settlement and resume unfinished adoption from the saved terminal execution after restart.
 - Use the same pinned artifact declarations during preflight and execution, and lock Run parents before artifact execution rows to prevent publication deadlocks.
 - Preserve original OpenCode call and permission names under both supported MCP connection names.
 - Validate Codex sandbox probe command payloads within the selected shell wrapper while retaining original session, terminal and filesystem checks.
@@ -33,6 +34,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Security
 
+- Run sandbox qualification from an immutable program in protected storage, retaining the original actor and descendant write-denial checks and verified cleanup.
 - Keep native output storage outside agent write access, verify original native call ownership and sandbox policy, and enforce saved OpenCode permissions and original approvals for output operations.
 - Retain grants, scope checks, native closure records and credential revocation through output publication and approval recovery.
 
