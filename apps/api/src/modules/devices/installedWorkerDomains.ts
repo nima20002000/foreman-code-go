@@ -14,7 +14,7 @@ import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
 import { createInstalledJobInputRsync } from '../runs/remote/installedJobInputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
-import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
+import type { RemoteJobExecutionHost, RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { createWorkerQualificationExtension } from '../jobs/workerQualificationCarrier.js'
@@ -43,6 +43,7 @@ export async function createInstalledWorkerDomains(input: {
   configuration: InstalledWorkflowConfigurationLocation | null
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
+  jobReports?: Pick<RemoteJobExecutionHostPorts, 'prepareOutputs' | 'preparePublication'>
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
@@ -176,6 +177,7 @@ export async function createInstalledWorkerDomains(input: {
     jobInputs = jobInputRsync ?? createWorkerJobInputPort({ channel: { request, currentBinding: current },
       stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
     const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
+      ...input.jobReports,
       connection, incarnationId: randomUUID(), journal: retained, currentBinding: current,
       source: createInstalledJobSource({ journal: retained, application, currentBinding: current, approvedRoots: roots }), inputs: jobInputs,
       authorize: (intent, _execution, action) => application.authorize(intent, action),

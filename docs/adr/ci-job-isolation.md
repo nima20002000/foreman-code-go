@@ -62,3 +62,46 @@ Tests use supervisor/CLI doubles and temporary output files. They are focused
 contract tests, not live isolation, reboot/reconnect or laptop qualification.
 Only the orchestrator runs integration/laptop acceptance after explicit human
 installation, source/root, capacity, runtime/image and readiness gates.
+
+## Offline verification runtime
+
+Verification keeps the same rootless Podman controller, original OCI identity,
+command-release gate, journal ownership, watchdog and descendant closure. Its
+executor retains the full version 2 execution and accepted spec. Versioned
+digest validation and W09 physical Git/input validators are mandatory injected
+ports; no security fields are discarded to use build-only adapters. The same
+supervision function handles cancellation, timeout, logs and output collection
+for build and verification executions.
+
+The verification image has a reviewed, immutable dependency seed. Corepack
+checks committed dependency inputs and effective strict 48-hour policy before
+commands. Installs are offline/frozen and include dev dependencies, with a
+private writable store and registry cache. A missing entry fails preparation.
+There is no dependency acquisition in a Job or network-mode fallback.
+
+Small control `/tmp` stays private, nosuid/nodev/noexec and explicitly sized.
+Workload scratch, package extraction and fresh HOME/XDG state use a private
+`job-scratch` sibling in the accepted quota namespace. Its bind preserves
+nosuid/nodev, with execution allowed only by the reviewed resource request.
+Private IPC and explicit shm size charge shared memory to the Job cgroup.
+CPU/memory/pids/swap limits remain enforced; host homes, sockets, IPC and
+network namespaces are never added. The admitted observation tool checks actual
+mount flags, namespace separation, cgroup limits, scratch execution, effective
+package policy and controller sentinel absence. A declared flag is not evidence.
+
+Report capacity is physically allocated outside container mounts before entry.
+After persisted positive closure and publication authorization, an interruption
+writer emits an honest partial summary for timeout/cancel or missing failed
+reports. Existing valid first-pass failure counts are retained. It never creates
+a passing result. The original reserve inode and terminal timestamp are reused
+on publication retries, and bytes return through the existing Job output path.
+Collectors enforce both per-output and aggregate byte limits. Publication
+failure preserves the observed process result and retained storage ownership.
+
+Installed worker composition accepts report preparation/publication callbacks;
+the versioned source/carrier/journal integration must persist their reserve
+identity and original publication/cleanup deadlines. Transfer cancellation must
+use those deadlines, including reconnects. No UI/MCP capability is advertised
+by merely adding runtime ports. Real rootless ordinary suites, quota pressure,
+timeout/cancel with descendants, and failed-report publication remain required
+integration gates; unit observations do not satisfy them.

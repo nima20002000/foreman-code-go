@@ -25,6 +25,9 @@ export interface RemoteJobExecutionHostPorts {
   /** Actual main PostgresJobDispatch.observeReceipt ingress; closure acknowledged before bytes publish. */
   observeReceipt(receipt: RemoteJobOperationReceipt): Promise<void>
   collectOutputs: JobExecutorPorts['collectOutputs']
+  prepareOutputs?: JobExecutorPorts['prepareOutputs']
+  /** Runs after durable closure and live publication authorization; uses the original terminal receipt on retries. */
+  preparePublication?(execution: JobExecution, terminal: RemoteJobTerminalEvidence): Promise<void>
 }
 export class RemoteJobExecutionHost {
   private readonly tasks = new Map<string, { controller: AbortController; task: Promise<void> }>()
@@ -126,6 +129,7 @@ export class RemoteJobExecutionHost {
         },
       }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
       collectOutputs: async () => {},
+      ...(this.ports.prepareOutputs ? { prepareOutputs: this.ports.prepareOutputs } : {}),
     }, signal)
     if (result.recoveryRequired || !result.processStopped || !result.outcome) { await this.ports.journal.jobUncertain(intent.operationId, 'OCI entry or physical closure remains uncertain'); return }
     const logGapPossible = result.logError || (await this.ports.journal.jobPendingLogs(intent.operationId)).length > 0
@@ -162,7 +166,11 @@ export class RemoteJobExecutionHost {
       await this.ports.observeReceipt(receipt)
       // A collector may have published before losing its ACK. Keep collecting; W09's
       // retained command IDs reconcile publication instead of allocating another revision.
-      try { await this.ports.collectOutputs(receipt.execution) } catch (error) {
+      try {
+        if (!receipt.terminal?.processStopped) throw new JobOutputCollectionError('Confirmed Job closure required before reports.')
+        await this.ports.preparePublication?.(receipt.execution, receipt.terminal)
+        await this.ports.collectOutputs(receipt.execution)
+      } catch (error) {
         if (!(error instanceof JobOutputCollectionError)) throw error
         await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return
       }

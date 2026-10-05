@@ -95,6 +95,7 @@ test('offline seed rejects links, undeclared files, missing registry times and q
 
 test('verification context binds reviewed seed provenance to committed dependency inputs and rejects a changed lock', async t => {
   const f = await offlineSeedFixture(t);
+  t.mock.method(Date, 'now', () => f.options.now);
   const repository = join(f.directory, 'repository');
   await mkdir(repository);
   const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -137,6 +138,9 @@ test('verification context binds reviewed seed provenance to committed dependenc
 test('verification installer fixes offline frozen dev installs, isolates caches and denies policy relaxation', () => {
   assert.deepEqual(verificationInstallArguments(['install', '--frozen-lockfile']),
     ['install', '--frozen-lockfile', '--offline', '--prod=false']);
+  assert.deepEqual(verificationInstallArguments(['install', '--frozen-lockfile', '--offline', '--prod=false',
+    '--store-dir', '/job-scratch/pnpm-store']), ['install', '--frozen-lockfile', '--offline', '--prod=false']);
+  assert.throws(() => verificationInstallArguments(['install', '--store-dir', '/owner/store']));
   for (const argument of ['--no-frozen-lockfile', '--offline=false', '--prod', '--minimum-release-age=0']) {
     assert.throws(() => verificationInstallArguments(['install', argument]));
   }

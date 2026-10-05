@@ -1,4 +1,8 @@
 import type { ChildProcess } from 'node:child_process'
+import { constants } from 'node:fs'
+import { open, readdir, lstat, realpath, statfs } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { JobRuntimeNativeAdmissionSchema, type JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
@@ -6,10 +10,93 @@ import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
-import type { OCIContainerOwnership } from './executorContainerOwner.js'
+import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
+import type { z } from 'zod'
+import { VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
+import { jobSupervisorIdentity } from './executor.js'
 import { JobQualificationCandidateSchema, jobQualificationFingerprint, createQualificationNativeOwner,
   qualifyJobRuntime, jobRuntimeMeasurement, type JobQualificationCandidate, type JobQualificationAuthority } from './qualification.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
+
+/** Samples the original Job boundary; no host-wide memory/CPU estimate is substituted for its cgroup. */
+export async function measureVerificationResourceUsage(input: {
+  execution: z.infer<typeof VerificationJobExecutionSchema>
+  certificate: OCIHostCertificate
+}): Promise<{
+  sampledAt: string; allocatedBytes: number; mutableInodes: number; memoryPeakBytes: number;
+  pids: number; cpuUsageMicroseconds: number; pressure: boolean; evidenceDigest: string
+}> {
+  const execution = VerificationJobExecutionSchema.parse(input.execution)
+  const subject = input.certificate.scope.subject
+  if (subject.kind !== 'job' || subject.executionId !== execution.id || subject.attemptId !== execution.attemptId
+    || subject.operationId !== execution.operationId || subject.bindingHash !== execution.acceptedSpec.bindingHash
+    || input.certificate.lifecycle !== 'active' || !('owner' in input.certificate.scope)
+    || !same(input.certificate.scope.owner, execution.owner)
+    || input.certificate.scope.bootId !== bootIdentity()
+    || input.certificate.process.bootId !== input.certificate.scope.bootId) {
+    throw new Error('Original active Job boundary required for measurement.')
+  }
+  const boundary = input.certificate.boundary
+  const cgroup = await open(boundary.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  let memoryPeakBytes: number
+  let pids: number
+  let cpuUsageMicroseconds: number
+  try {
+    const info = await cgroup.stat()
+    if (await realpath(boundary.path) !== boundary.path || String(info.dev) !== boundary.device || String(info.ino) !== boundary.inode
+      || (await statfs(`/proc/self/fd/${cgroup.fd}`)).type !== 0x63677270) throw new Error('Original cgroup identity changed.')
+    const read = async (name: string) => {
+      const file = await open(`/proc/self/fd/${cgroup.fd}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const bytes = await file.readFile()
+        if (bytes.length > 65536) throw new Error('Cgroup measurement exceeds its reply bound.')
+        return bytes.toString('utf8')
+      } finally { await file.close() }
+    }
+    memoryPeakBytes = Number((await read('memory.peak')).trim())
+    pids = Number((await read('pids.current')).trim())
+    cpuUsageMicroseconds = Number(/^usage_usec (\d+)$/m.exec(await read('cpu.stat'))?.[1])
+    if (![memoryPeakBytes, pids, cpuUsageMicroseconds].every(value => Number.isSafeInteger(value) && value >= 0)) {
+      throw new Error('Finite measured cgroup counters required.')
+    }
+  } finally { await cgroup.close() }
+  const namespace = dirname(execution.acceptedSpec.target.destination.canonicalProjectRoot)
+  const roots = [namespace, join(execution.acceptedSpec.target.destination.managedRuntimeRoot,
+    `${jobSupervisorIdentity(execution)}.oci.log`)]
+  const seen = new Set<string>()
+  let allocatedBytes = 0
+  let mutableInodes = 0
+  let device: number | undefined
+  const resources = execution.acceptedSpec.verification.resources
+  const walk = async (path: string): Promise<void> => {
+    const info = await lstat(path)
+    device ??= info.dev
+    if (info.dev !== device) throw new Error('Job accounting escaped its original workload filesystem.')
+    const identity = `${info.dev}:${info.ino}`
+    if (seen.has(identity)) return
+    seen.add(identity)
+    mutableInodes++
+    allocatedBytes += info.blocks * 512
+    if (mutableInodes > resources.mutableInodes || allocatedBytes > resources.limits.diskBytes) return
+    if (info.isDirectory()) {
+      const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      try {
+        const pinned = await directory.stat()
+        if (pinned.dev !== info.dev || pinned.ino !== info.ino) throw new Error('Job accounting directory changed.')
+        for (const entry of await readdir(`/proc/self/fd/${directory.fd}`)) {
+          await walk(`/proc/self/fd/${directory.fd}/${entry}`)
+          if (mutableInodes > resources.mutableInodes || allocatedBytes > resources.limits.diskBytes) break
+        }
+      } finally { await directory.close() }
+    }
+  }
+  for (const path of roots) await walk(path)
+  const sample = { sampledAt: new Date().toISOString(), allocatedBytes, mutableInodes,
+    memoryPeakBytes, pids, cpuUsageMicroseconds,
+    pressure: allocatedBytes >= resources.limits.diskBytes || mutableInodes >= resources.mutableInodes
+      || pids >= resources.limits.pidsLimit || memoryPeakBytes >= resources.limits.memoryBytes }
+  return { ...sample, evidenceDigest: createHash('sha256').update(JSON.stringify(sample)).digest('hex') }
+}
 
 export interface InstalledJobQualificationReservation {
   admission: JobRuntimeNativeAdmission

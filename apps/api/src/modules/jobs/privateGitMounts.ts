@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join } from 'node:path'
 import { JOB_PRIVATE_GIT_LAYOUT, verifyPrivateJobRepositoryMounts, type PrivateJobRepositoryMounts } from '../sources/repository.js'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { AcceptedJobSpec, JobExecution } from '@foreman-code/contracts/jobs'
 export { JOB_PRIVATE_GIT_LAYOUT }
 export type VerifiedJobGitMounts = PrivateJobRepositoryMounts
 export const JOB_GIT_CONTAINER_DIRECTORY = '/graphql-job-git' as const
@@ -10,7 +10,10 @@ export const JOB_GIT_ENVIRONMENT = Object.freeze({
   GIT_DIR:JOB_GIT_CONTAINER_DIRECTORY,GIT_WORK_TREE:'/workspace',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',
   GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',
 })
-export function requireJobGitMounts(execution:JobExecution,source:{gitMounts?:VerifiedJobGitMounts}):VerifiedJobGitMounts {
+type JobGitSubject = Pick<JobExecution, 'workspaceId' | 'id' | 'attemptId' | 'operationId' | 'owner'> & {
+  acceptedSpec: Pick<AcceptedJobSpec, 'source' | 'target' | 'specDigest' | 'bindingHash'>
+}
+export function requireJobGitMounts(execution:JobGitSubject,source:{gitMounts?:VerifiedJobGitMounts}):VerifiedJobGitMounts {
   const mounts=source.gitMounts,spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot)
   if(!mounts||mounts.layout!==JOB_PRIVATE_GIT_LAYOUT||mounts.version!==1||mounts.workspaceId!==execution.workspaceId
     ||mounts.executionId!==execution.id||mounts.attemptId!==execution.attemptId||mounts.operationId!==execution.operationId

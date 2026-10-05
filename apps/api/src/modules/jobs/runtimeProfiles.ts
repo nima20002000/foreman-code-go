@@ -18,6 +18,9 @@ import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { JobRuntimeInventory } from './sourcePreparation.js'
 import { PostgresJobRuntimeHumanAuthority } from './runtimeHumanAuthority.js'
 import type { JobRuntimeHumanAuthority, JobRuntimeQualificationProducer, JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
+import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema }
+  from '@graphql/contracts/job-verification-runtime'
+import type { z } from 'zod'
 
 /** Main CI policy metadata; machine/root identity continues to come from W07/W09/W12. */
 export class JobRuntimeProfiles implements JobRuntimeInventory {
@@ -225,4 +228,31 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     const current=await this.producer.revalidate(sql,profile)
     if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The qualified runtime context changed.',409,{reasons:current.reasons})
   }
+}
+/** Passive readiness only. Current fingerprint is installed-host metadata, never supplied by an Operator caller. */
+export function verificationProfileReadiness(input: {
+  profile: z.infer<typeof JobVerificationProfileSchema>
+  currentFingerprint: z.infer<typeof JobVerificationRuntimeFingerprintSchema> | null
+  now?: number
+}): { ready: boolean; reasons: string[]; sideEffects: false } {
+  const profile = JobVerificationProfileSchema.parse(input.profile)
+  const measurement = profile.measurement
+  const now = input.now ?? Date.now()
+  const denied = (reason: string) => ({ ready: false, reasons: [reason], sideEffects: false as const })
+  if (profile.status !== 'qualified' || !measurement) return denied('runtime_setup_required')
+  if (!profile.approvalConfig.review) return denied('approval_review_required')
+  if (Date.parse(measurement.expiresAt) <= now || Date.parse(measurement.identity.approvalExpiresAt) <= now) {
+    return denied('qualification_expired')
+  }
+  if (profile.spec.policy.network.mode !== 'none') return denied('network_enforcement_unavailable')
+  if (!input.currentFingerprint) return denied('runtime_context_unavailable')
+  const current = JobVerificationRuntimeFingerprintSchema.parse(input.currentFingerprint)
+  if (canonical(current) !== canonical(measurement.fingerprint)
+    || jobDigest(current) !== measurement.identity.fingerprintDigest) return denied('runtime_context_changed')
+  if (current.quota.workloadHardLimitBytes > current.resources.limits.diskBytes
+    || current.quota.workloadHardInodes > current.resources.mutableInodes
+    || current.resources.controlTempBytes + current.resources.shmBytes > current.resources.limits.memoryBytes) {
+    return denied('verification_quota_unenforced')
+  }
+  return { ready: true, reasons: [], sideEffects: false }
 }

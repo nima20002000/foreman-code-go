@@ -85,3 +85,37 @@ existing approval's `/api/management/workspaces/:workspaceId/jobs/runtime-qualif
 and verifies the same qualification/fingerprint through authenticated GET.
 Root alone runs this diagnostic and integration/laptop acceptance. Unit tests,
 CLI help, package builds and typechecks are not physical qualification evidence.
+
+## Verification storage and measurement
+
+Verification retains approved ext4 storage and rootless Podman. Its version 3
+fingerprint additionally requires effective workload byte/inode quotas and the
+canonical device/ancestor enforcement facts. The finite device volume used by
+the original build profile alone does not prove a per-Job quota. A larger
+workload hard limit than the accepted reservation, insufficient inode
+enforcement, an unmeasured suite or absent owner review denies verification
+entry. This source change does not format, resize, mount or configure a volume.
+
+Source, private store/node_modules, Git/scheduler metadata, workload scratch,
+report reserve and retained logs are charged through their accepted namespace
+and storage lifecycle. Control temp and private shm must fit the Job memory
+limit; storage sub-budgets are not additional device capacity. Device control
+headroom is already accounted for by the shared provisioning contract and is
+not subtracted again at launch.
+
+`measureVerificationResourceUsage` reads the original active OCI certificate,
+boot/owner/cgroup identity, cgroup counters and private namespace allocation.
+Hard-linked store content is counted once and symlinks are not followed. Samples
+include the private report reserve and retained OCI log; they report byte/inode
+pressure rather than substituting host free-space estimates. The orchestrator
+must retain repeated cold-cache samples through install, suite execution and
+cleanup and publish measured requirements, not universal proposed minima.
+
+The authenticated qualification CLI has separate verification readback mode.
+It requires the original version 2 measurement and saved profile agreement and
+retains per-suite cold-cache peaks and measured concurrency. It does not invent
+an approval, run a replacement operation or turn a build result into
+verification evidence. Initial qualification remains one heavy Job, one unit
+worker and one integration shard. Actual resource envelopes, safe higher
+concurrency and bounded approval validity require owner review and measurements
+on the approved device.

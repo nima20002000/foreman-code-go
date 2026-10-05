@@ -10,9 +10,11 @@ COPY seed-receipt.json /opt/graphql-ci/seed-receipt.json
 COPY seed-policy.mjs verification-policy.mjs verification-observation.mjs /opt/graphql-ci/
 RUN --network=none node /opt/graphql-ci/seed-policy.mjs /opt/graphql-ci/seed /opt/graphql-ci/seed-receipt.json \
  && chmod -R a+rX /opt/graphql-ci \
- && rm /usr/local/bin/corepack
+ && rm /usr/local/bin/corepack \
+ && rm -f /usr/local/bin/pnpm /usr/local/bin/pnpx
 COPY corepack /usr/local/bin/corepack
 RUN --network=none chmod 0755 /usr/local/bin/corepack \
+ && ln -s corepack /usr/local/bin/pnpm \
  && test "$(corepack pnpm --version)" = 11.27.0
 WORKDIR /workspace
 ENTRYPOINT []
