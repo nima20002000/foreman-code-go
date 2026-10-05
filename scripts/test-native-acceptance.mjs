@@ -34,6 +34,12 @@ export function nativeAcceptanceFiles(args) {
   return [...new Set(files)]
 }
 
+export function nativeAcceptanceVitestArguments(files, environment) {
+  const pattern = environment.ENG03_A_TEST_NAME_PATTERN
+  return ['run', ...files, '--no-file-parallelism',
+    ...(pattern ? ['--testNamePattern', pattern] : [])]
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
   if (configured) requireLoopbackTestDatabase(configured)
   const server = adminDatabaseUrl(configured)
@@ -84,7 +90,7 @@ async function main() {
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
           'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-          'vitest', 'run', ...files, '--no-file-parallelism',
+          'vitest', ...nativeAcceptanceVitestArguments(files, environment),
         ], { cwd: root, env: environment, stdio: 'inherit' })
         child.once('error', reject)
         child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))

@@ -389,7 +389,18 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         try { return await observeExact(input) }
         catch (error) {
           const errors = (evidence.nativeObservationErrors ??= []) as unknown[]
+          const failures = error instanceof AggregateError ? error.errors.slice(0, 8).map((failure: unknown) => {
+            if (!(failure instanceof Error)) return { name: typeof failure }
+            return {
+              name: failure.name,
+              message: nativePersistenceRedactor([]).text(failure.message).slice(0, 512),
+              cause: failure.cause instanceof Error
+                ? nativePersistenceRedactor([]).text(failure.cause.message).slice(0, 512) : undefined,
+            }
+          }) : []
           if (errors.length < 16) errors.push({ executionId: input.execution.id,
+            occurredAt: new Date().toISOString(),
+            failures,
             ...(error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
               message: nativePersistenceRedactor([]).text(error.message) } : { name: typeof error }) })
           throw error
@@ -549,9 +560,21 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     return { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
     evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
+    evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState
     if (runId && pool) {
       evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
+      try {
+        const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
+        evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
+          checkpointId: checkpoint?.checkpoint.id,
+          pendingWrites: checkpoint?.pendingWrites?.filter(([, channel]) =>
+            channel === '__interrupt__' || channel === '__error__'),
+        })
+      } catch (checkpointError) {
+        evidence.failureCheckpoint = { readError: checkpointError instanceof Error
+          ? nativePersistenceRedactor([]).text(checkpointError.message) : typeof checkpointError }
+      }
       if (activeRuntime) {
         const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
           session?: NativeSessionReference; manager: NativeHarnessSessionManager
