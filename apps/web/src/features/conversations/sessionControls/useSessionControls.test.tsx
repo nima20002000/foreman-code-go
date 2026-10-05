@@ -1,3 +1,4 @@
+import type { AgentChatContext } from '@graphql/contracts/agent-chat'
 import { createElement, type PropsWithChildren } from 'react'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -12,10 +13,10 @@ const initial = SessionControlStateSchema.parse({ conversationId: 'chat', revisi
   desiredMode: 'regular', appliedMode: 'regular', defaults: {}, desired: {}, applied: {}, applicability: 'applied',
   context: null, nativeSessionId: 'native', nativeProviderVersion: 'test', compaction: null, compactions: [],
   busyReason: null, capabilities: unavailableSessionControls('profile') })
-function mount() {
+function mount(context?: AgentChatContext) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = ({ children }: PropsWithChildren) => createElement(QueryClientProvider, { client }, children)
-  return renderHook(() => useSessionControls('chat'), { wrapper })
+  return renderHook(() => useSessionControls(context ? undefined : 'chat', context?.workspaceId, context), { wrapper })
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); useConversationDraftStore.getState().clearAllDrafts() })
 
@@ -76,4 +77,22 @@ it('reports storage failure and sends no native control without a durable identi
   })
   expect(mounted.result.current.mutation.isError).toBe(true)
   expect(change).not.toHaveBeenCalled()
+})
+
+it('keeps node control identity across reloads that reconstruct context fields in another order', async () => {
+  const context = { workspaceId: 'workspace', workflowId: 'workflow', workflowNodeId: 'node', agentId: 'agent' }
+  vi.spyOn(sessionControlsApi, 'readContext').mockResolvedValue(initial)
+  const change = vi.spyOn(sessionControlsApi, 'changeContext').mockRejectedValueOnce(new Error('Response lost'))
+  const first = mount(context)
+  await waitFor(() => expect(first.result.current.state).toBeDefined())
+  await act(async () => { await expect(first.result.current.change({ kind: 'compact' })).rejects.toThrow('Response lost') })
+  const original = change.mock.calls[0]![1]
+  first.unmount()
+  const second = mount({ agentId: 'agent', workflowNodeId: 'node', workflowId: 'workflow', workspaceId: 'workspace' })
+  await waitFor(() => expect(second.result.current.state).toBeDefined())
+  change.mockResolvedValueOnce({ ...initial, compaction: { requestId: original.requestId,
+    nativeSessionId: 'native', nativeOperationId: 'compact-turn', status: 'completed', beforeTokens: 100,
+    message: 'Context compacted.', observedAt: new Date().toISOString() } })
+  await act(async () => { await second.result.current.change({ kind: 'compact' }) })
+  expect(change.mock.calls[1]![1]).toEqual(original)
 })

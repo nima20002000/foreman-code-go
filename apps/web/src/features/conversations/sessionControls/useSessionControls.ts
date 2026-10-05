@@ -14,7 +14,9 @@ type Change = SessionControlRequest extends infer Request ? Request extends Sess
 export function useSessionControls(conversationId: string | undefined, workspaceId?: string, context?: AgentChatContext, executionId?: string) {
   const client = useQueryClient()
   const generation = sessionGeneration()
-  const scope = JSON.stringify([workspaceId ?? 'operator', context ?? conversationId, executionId ?? null])
+  const target = context ? [context.workspaceId, context.workflowId, context.workflowNodeId,
+    context.agentId, context.runId ?? null] : conversationId
+  const scope = JSON.stringify([workspaceId ?? 'operator', target, executionId ?? null])
   const key = ['session-controls', generation, workspaceId ?? 'operator', conversationId, context, executionId]
   const query = useQuery({ queryKey: key, enabled: !!conversationId || !!context,
     queryFn: ({ signal }) => conversationId ? sessionControlsApi.read(conversationId, workspaceId, { signal })
