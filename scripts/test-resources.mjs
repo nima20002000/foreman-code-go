@@ -34,8 +34,27 @@ export function createTestRoot(parent, prefix = 'graphql-test-') {
   }
   const directory = mkdtempSync(join(parent, prefix))
   const token = randomUUID()
-  writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token }), { mode: 0o600, flag: 'wx' })
+  const owner = findParentTestRoot(directory)
+  const parentCleanup = owner && { ...owner, id: registerTestResourceCleanup(owner,
+    { kind: 'child-invocation', directory, childOwner: token }) }
+  writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token, parentCleanup }),
+    { mode: 0o600, flag: 'wx' })
   return { directory, token }
+}
+
+function findParentTestRoot(directory) {
+  let ancestor = dirname(directory)
+  for (;;) {
+    const markerPath = join(ancestor, rootMarker)
+    if (existsSync(markerPath)) {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+      assertTestRoot(ancestor, marker.token)
+      return { directory: ancestor, token: marker.token }
+    }
+    const parent = dirname(ancestor)
+    if (parent === ancestor) return undefined
+    ancestor = parent
+  }
 }
 
 export function assertTestRoot(directory, token) {
@@ -56,7 +75,10 @@ export function assertTestRoot(directory, token) {
 export function removeTestRoot(resource) {
   assertTestRoot(resource.directory, resource.token)
   assertTestResourcesSettled(resource)
+  const { parentCleanup } = JSON.parse(readFileSync(join(resource.directory, rootMarker), 'utf8'))
+  if (parentCleanup) assertTestRoot(parentCleanup.directory, parentCleanup.token)
   rmSync(resource.directory, { recursive: true, force: true })
+  if (parentCleanup) completeTestResourceCleanup(parentCleanup, parentCleanup.id)
 }
 
 export function registerTestResourceCleanup(resource, details) {

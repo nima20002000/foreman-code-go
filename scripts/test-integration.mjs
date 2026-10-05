@@ -451,6 +451,7 @@ async function main() {
         if (interrupted) break
         try {
           await dropTestDatabase(admin, slot)
+          removeTestRoot(slot)
           const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
           Object.assign(slot, await createTestDatabase(admin, resource))
           retestSlots.push(slot)
@@ -491,7 +492,10 @@ async function main() {
     try {
       if (!cleanupError) {
         for (const slot of slots) if (slot.name) {
-          try { await dropTestDatabase(admin, slot) }
+          try {
+            await dropTestDatabase(admin, slot)
+            removeTestRoot(slot)
+          }
           catch (error) { cleanupError ??= error }
         }
       }

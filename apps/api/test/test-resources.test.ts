@@ -1,4 +1,4 @@
-import { readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { assertTestPath, assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
@@ -41,6 +41,27 @@ describe('disposable test resources', () => {
     expect(await readFile(file, 'utf8')).toBe('native recovery state')
     completeTestResourceCleanup(resource, second)
     removeTestRoot(resource)
+  })
+
+  it('retains ancestors until a nested invocation finishes cleanup and removes its root', async () => {
+    const parent = createTestRoot()
+    const home = join(parent.directory, 'home', '.cache')
+    await mkdir(home, { recursive: true, mode: 0o700 })
+    const child = createTestRoot(home)
+    const slot = createTestRoot(child.directory, 'slot-')
+    const cleanupId = registerTestResourceCleanup(slot, { kind: 'native-acceptance' })
+    const state = join(slot.directory, 'recovery.json')
+    await writeFile(state, 'retained native state')
+    expect(() => removeTestRoot(parent)).toThrow('cleanup remains unconfirmed')
+    expect(() => removeTestRoot(child)).toThrow('cleanup remains unconfirmed')
+    expect(() => removeTestRoot(slot)).toThrow('cleanup remains unconfirmed')
+    expect(await readFile(state, 'utf8')).toBe('retained native state')
+    completeTestResourceCleanup(slot, cleanupId)
+    expect(() => removeTestRoot(parent)).toThrow('cleanup remains unconfirmed')
+    expect(() => removeTestRoot(child)).toThrow('cleanup remains unconfirmed')
+    removeTestRoot(slot)
+    removeTestRoot(child)
+    removeTestRoot(parent)
   })
 
   it('rejects fixture cleanup outside the owned root and through escaping symlinks', async () => {

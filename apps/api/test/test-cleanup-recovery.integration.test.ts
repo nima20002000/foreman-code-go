@@ -31,22 +31,30 @@ async function waitForFile(file: string, child: ChildProcess): Promise<void> {
   }
 }
 
-it('retains the outer database and native registry after failed closure, then recovers them in a fresh process', async () => {
+it.each(['same invocation', 'nested invocation'])(
+  'retains databases and native state after failed closure in the %s, then recovers in a fresh process', async mode => {
   const environment = { ...process.env }
   delete environment.GRAPHQL_TEST_ROOT
   delete environment.GRAPHQL_TEST_OWNER
   const program = `
     import { join } from 'node:path';
     import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
-    import { registerTestResourceCleanup } from ${JSON.stringify(resourcesModule)};
-    const resource = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER,
+    import { createTestDatabase, createTestRoot, registerTestResourceCleanup, testAdminPool }
+      from ${JSON.stringify(resourcesModule)};
+    const parent = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER,
       databaseUrl: process.env.TEST_DATABASE_URL, name: new URL(process.env.TEST_DATABASE_URL).pathname.slice(1) };
+    let resource = parent;
+    if (${JSON.stringify(mode)} === 'nested invocation') {
+      const admin = await testAdminPool();
+      try { resource = await createTestDatabase(admin, createTestRoot()); }
+      finally { await admin.end(); }
+    }
     const registryDirectory = join(resource.directory, 'qualification-registry');
     const owner = 'unfinished-native-qualification';
     const registry = new NativeProcessRegistry(registryDirectory);
     const cleanupId = registerTestResourceCleanup(resource, { kind: 'native-qualification', registryDirectory, owner });
     registry.reserveLaunch(owner);
-    console.log('RECOVERY_RESOURCE ' + JSON.stringify({ resource, registryDirectory, owner, cleanupId }));
+    console.log('RECOVERY_RESOURCE ' + JSON.stringify({ parent, resource, registryDirectory, owner, cleanupId }));
     await registry.closeOwner(owner);
   `
   const child = spawn(process.execPath, [wrapper, '--', process.execPath, '--import', require.resolve('tsx'),
@@ -55,6 +63,7 @@ it('retains the outer database and native registry after failed closure, then re
   child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString() })
   child.stderr?.resume()
   let retained: { resource: { directory: string; token: string; databaseUrl: string; name: string };
+    parent: { directory: string; token: string; databaseUrl: string; name: string };
     registryDirectory: string; owner: string; cleanupId: string } | undefined
   try {
     expect(await exit(child)).not.toBe(0)
@@ -63,7 +72,10 @@ it('retains the outer database and native registry after failed closure, then re
     retained = JSON.parse(line.slice('RECOVERY_RESOURCE '.length)) as NonNullable<typeof retained>
     expect(existsSync(retained.registryDirectory)).toBe(true)
     const admin = await testAdminPool()
-    try { await assertTestDatabase(admin, retained.resource) }
+    try {
+      await assertTestDatabase(admin, retained.parent)
+      await assertTestDatabase(admin, retained.resource)
+    }
     finally { await admin.end() }
     const pool = new pg.Pool({ connectionString: retained.resource.databaseUrl, max: 1 })
     try { expect((await pool.query('select 1 as retained')).rows).toEqual([{ retained: 1 }]) }
@@ -77,15 +89,18 @@ it('retains the outer database and native registry after failed closure, then re
       }
       completeTestResourceCleanup(saved.resource, saved.cleanupId);
       await cleanupTestResources(saved.resource);
+      if (saved.parent.directory !== saved.resource.directory) await cleanupTestResources(saved.parent);
     `], { cwd: root, env: process.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     recovery.stdout?.resume()
     recovery.stderr?.resume()
     try { expect(await exit(recovery)).toBe(0) }
     finally { await stopGroup(recovery.pid) }
     expect(existsSync(retained.resource.directory)).toBe(false)
+    expect(existsSync(retained.parent.directory)).toBe(false)
     const check = await testAdminPool()
     try {
       expect((await check.query('select datname from pg_database where datname=$1', [retained.resource.name])).rows).toEqual([])
+      expect((await check.query('select datname from pg_database where datname=$1', [retained.parent.name])).rows).toEqual([])
     } finally { await check.end() }
   } finally {
     await stopGroup(child.pid)
