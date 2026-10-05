@@ -56,6 +56,22 @@ describe('bounded public Run Activities client', () => {
     expect(feed.nextCursor).toBe('cursor-4')
     expect(feed.unchangedReads).toBe(0)
   })
+  it('catches every byte-budgeted newer page through a frozen retained window', async () => {
+    let reads = 0
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, ({ request }) => {
+      const after = Number(new URL(request.url).searchParams.get('cursor')!.slice('cursor-'.length))
+      const sequence = after + 1
+      reads++
+      return HttpResponse.json({ scope, items: [item(String(sequence))], mode: 'newer',
+        highWater: '40', retainedFrom: '1', nextCursor: `cursor-${sequence}`,
+        olderCursor: null, hasMore: sequence < 40 })
+    }))
+    const feed = await readRunActivityFeed(scope, { items: [item('1')], olderCursor: null,
+      nextCursor: 'cursor-1', retainedFrom: '1', unchangedReads: 0 })
+    expect(reads).toBe(39)
+    expect(feed.items.map(event => event.sequence)).toEqual(Array.from({ length: 40 }, (_, index) => String(index + 1)))
+    expect(feed.nextCursor).toBe('cursor-40')
+  })
 
   it('retires the older cursor when a newer read advances retention, without losing retained rows', async () => {
     server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, () =>

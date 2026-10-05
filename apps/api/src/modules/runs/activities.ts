@@ -2,14 +2,15 @@ import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { GraphSequenceSchema, RunActivitiesInputSchema, RunActivitiesPageSchema,
-  canonicalGraphJson, type RunActivitiesPage } from '@graphql/contracts/wave25'
+  RUN_ACTIVITIES_RETAINED, RUN_ACTIVITIES_PAGE_BYTES,
+  canonicalGraphJson, graphJsonBytes, type RunActivitiesPage } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { withCurrentRunRead } from './currentRead.js'
 import { publicRunActivity, type ActivityReadRow } from './activityProjection.js'
 
 /** The original Run audit remains immutable. Activities expose its latest 1000
  * rows and make a cursor outside that bounded window explicitly expire. */
-export const RUN_ACTIVITIES_RETAINED = 1000
+export { RUN_ACTIVITIES_RETAINED } from '@graphql/contracts/wave25'
 export const RUN_ACTIVITIES_BOUNDS_SQL = `with recent as materialized (
   select sequence from run_activity where run_id=$1 order by sequence desc limit 1001
 ), retained as (select sequence from recent order by sequence desc limit 1000)
@@ -162,21 +163,38 @@ export class RunActivitiesService {
           mode === 'initial' ? '<=' : descending ? '<' : '>')
           .replace('__ORDER__', descending ? 'desc' : 'asc'),
         [run.id, position, through, bounds.retained_from, input.limit + 1])).rows
-        const hasMore = rows.length>input.limit
         const selected = rows.slice(0, input.limit)
         if (descending) selected.reverse()
         const items = selected.map((row) => publicRunActivity(row, version, run.id, run.outcome))
-        const first = items[0]?.sequence
-        const last = items.at(-1)?.sequence
-        const olderCursor = descending && hasMore && first ? encodeCursor({ version: 1,
-          runId: run.id, workflowVersionId: version.id, mode: 'older', position: first, through }) : null
-        const nextCursor = encodeCursor({ version: 1, runId: run.id,
-          workflowVersionId: version.id, mode: 'newer',
-          position: mode === 'newer' && hasMore && last ? last : through,
-          through: mode === 'newer' && hasMore ? through : '0' })
-        const page = RunActivitiesPageSchema.parse({ scope, items, mode,
-          highWater: through, retainedFrom: bounds.retained_from, nextCursor, olderCursor, hasMore })
-        canonicalGraphJson(page, 128 * 1024)
+        const pageFor = (count: number): RunActivitiesPage => {
+          const pageItems = descending ? items.slice(items.length - count) : items.slice(0, count)
+          const hasMore = rows.length > count
+          const first = pageItems[0]?.sequence
+          const last = pageItems.at(-1)?.sequence
+          const olderCursor = descending && hasMore && first ? encodeCursor({ version: 1,
+            runId: run.id, workflowVersionId: version.id, mode: 'older', position: first, through }) : null
+          const nextCursor = encodeCursor({ version: 1, runId: run.id,
+            workflowVersionId: version.id, mode: 'newer',
+            position: mode === 'newer' && hasMore && last ? last : through,
+            through: mode === 'newer' && hasMore ? through : '0' })
+          return RunActivitiesPageSchema.parse({ scope, items: pageItems, mode,
+            highWater: through, retainedFrom: bounds.retained_from, nextCursor, olderCursor, hasMore })
+        }
+        let page = pageFor(items.length)
+        if (graphJsonBytes(page) > RUN_ACTIVITIES_PAGE_BYTES) {
+          let minimum = 1
+          let maximum = items.length - 1
+          page = pageFor(1)
+          while (minimum <= maximum) {
+            const count = Math.floor((minimum + maximum) / 2)
+            const candidate = pageFor(count)
+            if (graphJsonBytes(candidate) <= RUN_ACTIVITIES_PAGE_BYTES) {
+              page = candidate
+              minimum = count + 1
+            } else maximum = count - 1
+          }
+        }
+        canonicalGraphJson(page, RUN_ACTIVITIES_PAGE_BYTES)
         return page
       })
     } catch (error) {

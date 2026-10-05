@@ -1,6 +1,7 @@
 import type { ActivitySnapshotV1 } from '@graphql/contracts/activity'
 import { reconcileActivitySnapshot } from '../conversations/agentChat/activityMerge'
-import { RepeatGraphScopeV3Schema, RunActivitiesPageSchema, type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
+import { RepeatGraphScopeV3Schema, RunActivitiesPageSchema, RUN_ACTIVITIES_RETAINED,
+  type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
@@ -98,7 +99,7 @@ export async function readRunActivityFeed(scope: RunActivityScope, previous?: Ru
   let cursor = previous.nextCursor
   let result = previous
   let changed = false
-  for (let count = 0; count < 20; count++) {
+  for (let count = 0; count < RUN_ACTIVITIES_RETAINED; count++) {
     const page = await readRunActivities(scope, cursor, options)
     changed ||= page.items.length > 0 || page.retainedFrom !== previous.retainedFrom
       || page.nextCursor !== previous.nextCursor

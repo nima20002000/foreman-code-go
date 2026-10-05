@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { GraphIdSchema, GraphSequenceSchema, RunGraphScopeSchema } from './graphPrimitives.js'
 import { TimestampSchema } from '../schemaPrimitives.js'
 
+export const RUN_ACTIVITIES_RETAINED = 1000
+export const RUN_ACTIVITIES_PAGE_BYTES = 128 * 1024
+
 /** One public, bounded Run history. The source activity payload is never part
  * of this wire contract; optional references are independently typed. */
 export const RunActivitiesInputSchema = z.object({

@@ -1,12 +1,17 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { AcceptedWorkflowRunV3Schema, RunActivitiesPageSchema } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, RunActivitiesPageSchema,
+  RUN_ACTIVITIES_PAGE_BYTES } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { buildApp } from '../src/app.js'
 import { RunActivitiesService } from '../src/modules/runs/activities.js'
 import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
 import { withCurrentRunRead } from '../src/modules/runs/currentRead.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
+import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -59,6 +64,106 @@ function measuredActivities(pool: pg.Pool) {
 }
 
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('public Activities response and query cost', () => {
+  it('pages large audit rows in both directions without omissions over HTTP and authenticated MCP', async () => {
+    await nim2691TaskDatabase(async (pool, directory) => {
+      await applyApplicationMigrations(pool)
+      const db = { pool, directory, schema: 'public', close: async () => {} } as Awaited<ReturnType<typeof currentDatabase>>
+      const fixture = await graphFixture(db, { form: 'sequential', insert: false, qualifiedReads: true })
+      const locations = new WorkspaceLocationService(pool, fixture.commands)
+      const runs = new RunManagementService(pool, fixture.commands, {} as never, {} as never, locations)
+      const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access: fixture.access, services: { commands: fixture.commands, workflows: fixture.workflows, runs } as never } })
+      try {
+        const location = await locations.set(fixture.writer.principal, 'http', { workspaceId: fixture.scope.workspaceId,
+          commandId: randomUUID(), expectedLocationRevision: 1, runnerId: 'runner-local', rootPath: directory })
+        const current = await fixture.workflows.get(fixture.writer.principal,
+          fixture.scope.workspaceId, fixture.scope.workflowId)
+        const nodeIds = current.workflow.nodes.map((_, index) => `node-${index}-${'n'.repeat(190)}`)
+        const edgeId = `edge-${'e'.repeat(190)}`
+        const graph = { ...current.workflow, entryNodeId: nodeIds[0],
+          nodes: current.workflow.nodes.map((node, index) => ({ ...node, id: nodeIds[index], name: '🟢'.repeat(32) })),
+          edges: current.workflow.edges.map(edge => ({ ...edge, id: edgeId, source: nodeIds[0], target: nodeIds[1] })) }
+        const savedResponse = await fixture.app.inject({ method: 'PUT',
+          url: `/api/management/workspaces/${fixture.scope.workspaceId}/workflows/${fixture.scope.workflowId}/definition`,
+          headers: graphHeaders(fixture.writer.token), payload: { workspaceId: fixture.scope.workspaceId,
+            workflowId: fixture.scope.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
+            expectedRevision: current.revision, expectedWorkflowVersionId: current.currentVersionId,
+            expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+            expectedLocationRevision: location.value.locationRevision, graph } })
+        expect(savedResponse.statusCode, savedResponse.body).toBe(200)
+        const saved = CurrentWorkflowSaveResultSchema.parse(savedResponse.json()).value
+        const started = await admitRepeatRun(pool, locations, fixture.writer.principal, 'http', {
+          workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+          workflowVersionId: saved.version.id, commandId: randomUUID(), executionSemanticsVersion: 3,
+          expectedWorkflowRevision: saved.revision, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
+          expectedLocationRevision: location.value.locationRevision, input: {},
+        }, repeatStartPublication)
+        const run = started.value
+        const node = agentWorkflowNode(saved.version.definition.nodes[0])
+        const executionId = `execution-${'x'.repeat(188)}`
+        await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+          values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, run.id, node.id, node.agentId, JSON.stringify({
+          id: executionId, runId: run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1,
+          agentConfigurationVersionId: saved.version.agentConfigurationVersionIds[node.agentId],
+          state: 'running', input: {}, createdAt: run.createdAt,
+        })])
+        const appendAudit = () => pool.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select $1,'backend','work_result_accepted',$2,$3::timestamptz,$4::jsonb from generate_series(1,200)`,
+        [run.id, executionId, run.createdAt, JSON.stringify({ relationshipId: edgeId, fromRelationshipId: edgeId,
+          requesterNodeId: nodeIds[0], destinationNodeId: nodeIds[1], privateOutput: 'private-audit-canary' })])
+        await appendAudit()
+        const args = { workspaceId: run.workspaceId, runId: run.id, limit: 100 }
+        const url = `/api/management/workspaces/${run.workspaceId}/runs/${run.id}/activities`
+        const reader = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: [run.id] } }])
+        const readPage = async (cursor?: string) => {
+          const query = new URLSearchParams({ limit: '100', ...(cursor ? { cursor } : {}) })
+          const http = await app.inject({ method: 'GET', url: `${url}?${query}`, headers: graphHeaders(reader.token) })
+          expect(http.statusCode, http.body).toBe(200)
+          const page = RunActivitiesPageSchema.parse(http.json())
+          expect(Buffer.byteLength(http.body)).toBeLessThanOrEqual(RUN_ACTIVITIES_PAGE_BYTES)
+          const mcp = await graphRpc(app, reader.token, 'tools/call', {
+            name: 'run_activities_get_v1', arguments: { ...args, ...(cursor ? { cursor } : {}) },
+          })
+          expect(mcp.result?.isError).not.toBe(true)
+          expect(RunActivitiesPageSchema.parse(graphRpcValue(mcp.result))).toEqual(page)
+          expect(JSON.stringify(page)).not.toContain('private-audit-canary')
+          return page
+        }
+        const retained = (await pool.query<{ sequence: string }>(
+          'select sequence::text from run_activity where run_id=$1 order by sequence', [run.id])).rows.map(row => row.sequence)
+        const initial = await readPage()
+        expect(initial.items.length).toBeGreaterThan(0)
+        expect(initial.items.length).toBeLessThan(args.limit)
+        const older = initial.items.map(item => item.sequence)
+        let cursor = initial.olderCursor
+        while (cursor) {
+          const page = await readPage(cursor)
+          older.unshift(...page.items.map(item => item.sequence))
+          cursor = page.olderCursor
+        }
+        expect(older).toEqual(retained)
+        expect(new Set(older).size).toBe(older.length)
+        await appendAudit()
+        const newer: string[] = []
+        cursor = initial.nextCursor
+        for (;;) {
+          const page = await readPage(cursor)
+          newer.push(...page.items.map(item => item.sequence))
+          if (!page.hasMore) break
+          cursor = page.nextCursor
+        }
+        expect(newer).toEqual((await pool.query<{ sequence: string }>(
+          'select sequence::text from run_activity where run_id=$1 and sequence>$2::bigint order by sequence',
+          [run.id, initial.highWater])).rows.map(row => row.sequence))
+        expect(newer).toHaveLength(200)
+        const denied = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
+        expect((await app.inject({ method: 'GET', url, headers: graphHeaders(denied.token) })).statusCode).toBe(403)
+        const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_activities_get_v1', arguments: args })
+        expect(blocked.error || blocked.result?.isError).toBeTruthy()
+      } finally { await app.close(); await fixture.app.close() }
+    })
+  }, 120000)
+
   it('keeps all retained public history pageable after the normalized snapshot exceeds the response budget', async () => {
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
