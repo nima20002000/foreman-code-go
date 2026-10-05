@@ -1,3 +1,4 @@
+import { componentLogger } from '../../infrastructure/logger.js'
 import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
@@ -50,7 +51,10 @@ export interface WorkflowNativeProofRecord {
   lane: WorkflowNativeCapture['lane']
 }
 function fail(code = 'NATIVE_SOURCE_IDENTITY_CONFLICT'): never {
-  throw new DomainError(code, 'The original native source does not match the owned execution and physical evidence.', 409)
+  const error = new DomainError(code, 'The original native source does not match the owned execution and physical evidence.', 409)
+  componentLogger('engine').warn({ code, errorLocation: error.stack?.split('\n')[2]?.trim() },
+    'Original native source validation failed.')
+  throw error
 }
 function immutableExecution(execution: HarnessExecution) {
   return { identity: repeatExecutionIdentity(execution), runId: execution.runId, input: execution.input,
