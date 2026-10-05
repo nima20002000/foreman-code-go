@@ -384,6 +384,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private readonly locks = new Set<string>()
   private readonly creations = new Map<string, Creation>()
   private readonly childControls = new CodexChildControls()
+  private readonly lifecycleTails = new Map<string, Promise<void>>()
   private loginControl: { transport: CodexTransport; loginId?: string; timer?: NodeJS.Timeout } | undefined
   private loginStarting = false
   private disposal: Promise<void> | undefined
@@ -1497,9 +1498,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
   private async exclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    if (this.locks.has(key)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'Another session lifecycle operation is in progress.')
+    const previous = this.lifecycleTails.get(key)
+    let release!: () => void
+    const tail = new Promise<void>((resolve) => { release = resolve })
+    this.lifecycleTails.set(key, tail)
     this.locks.add(key)
-    try { return await operation() } finally { this.locks.delete(key) }
+    try {
+      await previous
+      return await operation()
+    } finally {
+      if (this.lifecycleTails.get(key) === tail) {
+        this.lifecycleTails.delete(key)
+        this.locks.delete(key)
+      }
+      release()
+    }
   }
 
   private async prepareIdleInput(runtime: Runtime, source: NativeSessionStart, signal?: AbortSignal): Promise<Prepared> {

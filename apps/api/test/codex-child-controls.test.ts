@@ -8,7 +8,7 @@ import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 import { childControlRecord, childControlReceipt, codexChildControlFixture } from './fixtures/codex-child-control-helpers.js'
-import { calls, fixture, fixtureQualification, input, nativeThread, state } from './fixtures/codex-test-helpers.js'
+import { calls, fixture, fixtureQualification, input, nativeThread, state, until } from './fixtures/codex-test-helpers.js'
 
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>(
@@ -147,6 +147,36 @@ async function seedChild(directory: string, root: NativeSessionReference, source
 }
 
 describe('Codex session manager child control wiring over stdio', () => {
+  it('queues a child command behind the actual parent lifecycle lock without marking it uncertain', async () => {
+    const f = await fixture()
+    const manager = new CodexAppServerSessionManager(f.binary)
+    try {
+      const source = input(f.directory)
+      const root = await manager.createSession(source)
+      const child = await seedChild(f.directory, root, source)
+      await writeFile(join(f.directory, 'read-delay'), '')
+      const attaching = manager.attachSession(root, source)
+      await until(async () => (await calls(f.directory)).some(entry => {
+        const wire = entry.wire as { method?: string } | undefined
+        return wire?.method === 'thread/read'
+      }))
+      const lease = manager.subagentControl(child, () => {})!
+      const receipt = childControlReceipt(child, { nativeGeneration: lease.generation })
+      await lease.sendInput!(receipt, 'Follow up')
+      await attaching
+      expect(await lease.reconcile!(receipt)).toBe('acknowledged')
+      const commands = (await calls(f.directory)).filter(entry =>
+        (entry.wire as { method?: string } | undefined)?.method === 'turn/steer')
+      expect(commands).toHaveLength(1)
+      expect((await state(f.directory, 'native-child')).turns[0]!.items).toMatchObject([
+        { type: 'userMessage', clientId: receipt.nativeCorrelationId },
+      ])
+    } finally {
+      await manager.dispose()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
   it.each(['codex-collab', 'codex-multi-agent-v2'] as const)('controls and reconciles the admitted %s child without a parent command', async nativeMode => {
     const f = await fixture()
     const manager = new CodexAppServerSessionManager(f.binary)
