@@ -238,7 +238,8 @@ async function main() {
       await positivelyStarted(killed)
       const bindings = await nativeSessions(killed)
       const owners = new Set(bindings.map(binding => `execution:${binding.id}`))
-      const launches = registry.snapshot().launches.filter(launch => owners.has(launch.owner))
+      const launches = registry.snapshot().launches
+        .filter(launch => owners.has(launch.owner) && launch.lifecycle === 'active')
       assert.ok(launches.length > 0, 'Native work must have registered launch boundaries')
       for (const launch of launches) assert.ok(launch.boundary, 'Native work must be contained before the crash')
       const beforeKill = await systemctl('show', '--property=MainPID', '--value', unit)
