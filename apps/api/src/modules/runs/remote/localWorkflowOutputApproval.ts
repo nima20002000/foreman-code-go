@@ -1,12 +1,12 @@
 import { isDeepStrictEqual as same } from 'node:util'
-import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, nativeOutputToolArguments,
-  type WorkerNativeOutputCommand } from '@graphql/contracts/worker-native-output'
-import { RemoteNativeHistorySchema } from '@graphql/contracts/remote-workflow-physical'
+  type WorkerNativeOutputCommand } from '@foreman-code/contracts/worker-native-output'
+import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
 import type { FileQuery } from '../../files/repository.js'
 import { DomainError } from '../../errors.js'
 import type { NativeOutputCallCapture } from '../../harnesses/port.js'
-import { nativeOpenCodeMcpToolName } from '../../harnesses/openCodePermissionPolicy.js'
+import { nativeOpenCodeMcpToolNames } from '../../harnesses/openCodePermissionPolicy.js'
 import { usesOpenCodeNativeAuto } from '../../harnesses/opencodeNativeAuto.js'
 import { matchingDeliveryEvidence } from '../../interactions/delivery.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
@@ -36,14 +36,15 @@ export async function assertOpenCodeNativeOutputCall(sql: FileQuery, capture: Na
     || configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId
     || configuration.workspaceId !== row.workspace_id
     || original.nativeSessionId !== execution.nativeSessionId || original.toolName !== toolName
+    || !nativeOpenCodeMcpToolNames(toolName).includes(original.nativeToolName)
     || original.inputDigest !== repeatDigest(nativeOutputToolArguments(input.command), 4 * 1024 * 1024)) return denied()
-  const savedPolicy = openCodeWorkflowOutputPolicy(configuration.harness, input.command.operation)
+  const savedPolicy = openCodeWorkflowOutputPolicy(configuration.harness, input.command.operation, original.nativeToolName)
   if (savedPolicy === 'deny' || capture.effectivePolicy === 'deny') return denied()
   if (savedPolicy === 'allow' && capture.effectivePolicy === 'allow') {
     capture.assertCurrent()
     return
   }
-  const nativeTool = nativeOpenCodeMcpToolName(toolName)
+  const nativeTool = original.nativeToolName
   const automatic = capture.nativeAutoApproval
   if (usesOpenCodeNativeAuto(configuration.harness) && automatic?.reply === 'once'
     && automatic.nativeSessionId === original.nativeSessionId && automatic.permission === nativeTool

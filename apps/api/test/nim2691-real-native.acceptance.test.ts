@@ -20,7 +20,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName,
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName,
   installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
@@ -38,8 +38,7 @@ import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
-import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
-import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@graphql/contracts/worker-native-output'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -205,21 +204,24 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         const redact = nativePersistenceRedactor(Object.values(process.env)
           .filter((value): value is string => typeof value === 'string' && value.length >= 8))
         const startupErrors: Array<{ code: string; message: string; cause: string | null }> = []
-        const start = production.engine.start.bind(production.engine)
-        production.engine.start = async (runId) => {
-          try { return await start(runId) }
-          catch (error) {
-            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'start_run',
-              error: describeNativeFailure(error, [...secrets]) })
-            const code = error && typeof error === 'object' && 'code' in error
+        const recordFailure = (error: unknown) => {
+          if (nativeFailures.length < 16) nativeFailures.push({ stage: 'engine',
+            error: describeNativeFailure(error, [...secrets]) })
+          const code = error && typeof error === 'object' && 'code' in error
               ? String(error.code) : error instanceof Error ? error.name : 'unknown'
-            startupErrors.push({ code: redact.text(code),
-              message: redact.text(error instanceof Error ? error.message : 'Unknown engine failure').slice(0, 2048),
-              cause: error instanceof Error && error.cause instanceof Error
-                ? redact.text(error.cause.message).slice(0, 2048) : null })
-            throw error
+          startupErrors.push({ code: redact.text(code),
+            message: redact.text(error instanceof Error ? error.message : 'Unknown engine failure').slice(0, 2048),
+            cause: error instanceof Error && error.cause instanceof Error
+              ? redact.text(error.cause.message).slice(0, 2048) : null })
+        }
+        const observeEngine = (runtime: typeof production) => {
+          const start = runtime.engine.start.bind(runtime.engine)
+          runtime.engine.start = async (runId) => {
+            try { return await start(runId) }
+            catch (error) { recordFailure(error); throw error }
           }
         }
+        observeEngine(production)
         app = production.app
         if (artifacts) production.registerFileStorage()
         await production.initialize()
@@ -257,10 +259,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             const effect = artifactPolicy === 'deny_publish' ? 'allow' : artifactPolicy
             if (effect) permissionRules = [{ permission: '*', pattern: '*', effect: 'deny' },
               ...Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).map(toolName => ({
-                permission: nativeOpenCodeMcpToolName(toolName), pattern: '*', effect,
+                permission: nativeOpenCodeMcpToolName(toolName, APP_MCP_SERVER_NAME), pattern: '*', effect,
               }))]
             if (artifactPolicy === 'deny_publish') permissionRules.push({
-              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish), pattern: '*', effect: 'deny',
+              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, APP_MCP_SERVER_NAME),
+              pattern: '*', effect: 'deny',
             })
             harness = { ...harness, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules } }
             if (nativeAuto) harness = { ...harness, autoApprove: true,
@@ -268,7 +271,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           }
           configurations[0] = AgentConfigurationVersionSchema.parse({ ...original,
             harness,
-            prompt: { system: 'Produce the requested report using only the four declared tools whose names end in files_native_output_create, files_native_output_append, files_native_output_seal, and files_native_output_publish. Do not write files with shell tools. Follow the GraphQL artifact and work-handoff result contracts.' },
+            prompt: { system: 'Produce the requested report using only the four declared tools whose names end in files_native_output_create, files_native_output_append, files_native_output_seal, and files_native_output_publish. Do not write files with shell tools. Follow the Foreman Code artifact and work-handoff result contracts.' },
           })
         }
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
@@ -323,7 +326,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           })).structuredContent)
           const update = { commandId: randomUUID(), expectedRevision: original.revision,
             value: { approvalHandler: 'native' } }
-          expect((await readonly.callTool({ name: 'workflow_defaults_update', arguments: update })).isError).toBe(true)
+          expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain('workflow_defaults_update')
+          await expect(readonly.callTool({ name: 'workflow_defaults_update', arguments: update }))
+            .rejects.toMatchObject({ code: -32602 })
           expect(ManagedWorkflowDefaultsSchema.parse((await readonly.callTool({
             name: 'workflow_defaults_get', arguments: {},
           })).structuredContent)).toEqual(original)
@@ -413,7 +418,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{ actions: ['workflows:read', 'graph:read'],
               scope: { workspaceIds: [workspace.id] } }] })
           const readonly = await connect(reader.token)
-          expect((await readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })).isError).toBe(true)
+          expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
+          await expect(readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput }))
+            .rejects.toMatchObject({ code: -32602 })
           expect((await pool.query('select 1 from workflow_versions where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
           const owner = await connect(writer.token)
           const capabilities = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.capabilities, arguments: {} })
@@ -446,10 +453,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               actions: ['runs:read', 'workflows:read'], scope: { workspaceIds: [workspace.id] },
             }] })
           const denied = await connect(reader.token)
-          expect((await denied.callTool({ name: 'run_start', arguments: startInput })).isError).toBe(true)
-          const refusedOutput = await denied.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
-            arguments: { commandId: randomUUID(), filename: 'forbidden.md', mediaType: 'text/markdown' } })
-          expect(refusedOutput.isError).toBe(true)
+          expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('run_start')
+          await expect(denied.callTool({ name: 'run_start', arguments: startInput }))
+            .rejects.toMatchObject({ code: -32602 })
+          await expect(denied.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+            arguments: { commandId: randomUUID(), filename: 'forbidden.md', mediaType: 'text/markdown' } }))
+            .rejects.toMatchObject({ code: -32602 })
           expect((await pool.query('select 1 from local_workflow_native_outputs')).rowCount).toBe(0)
           expect((await pool.query('select 1 from runs where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
           const client = await connect(writer.token)
@@ -492,6 +501,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               artifactBoundary!.release()
               artifactBoundary = undefined
               production = buildProductionApp(config, database, checkpoints, false)
+              observeEngine(production)
               production.registerFileStorage()
               app = production.app
               await production.initialize()
@@ -524,6 +534,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               expect(approvalNativeLaunch.provider).toBeDefined()
               await production.shutdown()
               production = buildProductionApp(config, database, checkpoints, false)
+              observeEngine(production)
               app = production.app
               await production.initialize()
               await app.listen({ host: config.host, port: config.port })
@@ -543,7 +554,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               let permitted = request.permission === 'bash'
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === 'pwd'
               if (artifacts) permitted = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
-                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName))
+                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, APP_MCP_SERVER_NAME))
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === '*'
               if (interaction.nativeRequestType !== 'permission.asked' || !permitted) {
                 throw new Error('The native provider asked for a permission other than the exact read-only pwd command.')
@@ -561,6 +572,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               approved.add(interaction.id)
             }
           }
+          // server.ts runs this recovery every five seconds alongside native observation.
+          if (attempt % 5 === 0) await production.reconcile(recordFailure)
           const row = (await pool.query<{ execution_state: string; record: { outcome?: string } }>(
             'select execution_state,record from runs where id=$1', [runId])).rows[0]
           state = row?.execution_state; outcome = row?.record.outcome
@@ -597,7 +610,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             where e.run_id=$1 and c.closed_at is not null`, [runId])).rowCount).toBe(1)
           return
         }
-        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
+        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted'),
+          JSON.stringify({ state, outcome, runError, executions, startupErrors })).toBe(true)
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)

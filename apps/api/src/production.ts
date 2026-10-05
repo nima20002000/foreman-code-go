@@ -34,7 +34,7 @@ import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
 import { MainWorkerMcpRelay, selectedMainMcpForward, createWorkerNativeOutputAuthorizationPort } from './modules/placement/workerMcpRelay.js'
-import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { recoverWorkflowArtifactOutputs } from './modules/runs/remote/workflowArtifactRecovery.js'
 import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
@@ -100,7 +100,7 @@ import { createLocalWorkflowNativeOutputs } from './modules/runs/remote/localWor
 import { LocalWorkflowNativeOutputMcp } from './modules/runs/remote/localWorkflowNativeOutputMcp.js'
 import { assertOpenCodeNativeOutputCall } from './modules/runs/remote/localWorkflowOutputApproval.js'
 import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
-import { WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
@@ -182,7 +182,8 @@ import { ApprovalExecutionCoordinator } from './modules/interactions/execution.j
 import { PostgresWorkflowClosureStore } from './modules/interactions/workflowClosure.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
-import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver,
+  type NativeManagerResolutionContext } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
 import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
 import { PostgresOperatorRepository } from './modules/operators/postgres.js'
@@ -764,6 +765,18 @@ export function buildProductionApp(
     },
   })
   const credentials = new WorkerCredentialService(database.pool, access)
+  const prepareWorkflowManagerContext = async (context: NativeManagerResolutionContext) => {
+    const prepared = await remoteWorkflow!.prepareContext(context)
+    if (!context.runId || context.purpose) return prepared
+    const row = (await database.pool.query<{ version: unknown; node_id: string }>(
+      `select v.record as version,e.workflow_node_id as node_id from harness_executions e
+       join runs r on r.id=e.run_id join workflow_versions v on v.id=r.workflow_version_id
+       where e.id=$1 and r.id=$2`, [context.executionId, context.runId])).rows[0]
+    if (!row) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The saved native execution is unavailable.', 409)
+    const node = WorkflowVersionV3Schema.parse(row.version).definition.nodes.find(item => item.id === row.node_id)
+    return node && node.kind !== 'job' && node.artifactOutputs
+      ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
+  }
   const launchCredentials: ExecutionCredentialProvider = {
     async restore(executionId, environment) {
       await validateContinuation(executionId)
@@ -787,8 +800,9 @@ export function buildProductionApp(
       const context = {
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
         workingDirectory: input.workingDirectory, configuration, runId: execution.runId, attempt: execution.attempt,
+        ...(input.purpose ? { purpose: input.purpose } : {}),
       }
-      const preparedContext = await remoteWorkflow.prepareContext(context)
+      const preparedContext = await prepareWorkflowManagerContext(context)
       const { manager } = managers.resolve(preparedContext)
       const detection = remoteWorkflow.isRemote(input.executionId)
         ? remoteMcpPreflight(manager, preparedContext)
@@ -863,18 +877,7 @@ export function buildProductionApp(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
-    async context => {
-      const prepared = await remoteWorkflow!.prepareContext(context)
-      if (!context.runId || context.purpose) return prepared
-      const row = (await database.pool.query<{ version: unknown; node_id: string }>(
-        `select v.record as version,e.workflow_node_id as node_id from harness_executions e
-         join runs r on r.id=e.run_id join workflow_versions v on v.id=r.workflow_version_id
-         where e.id=$1 and r.id=$2`, [context.executionId, context.runId])).rows[0]
-      if (!row) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The saved native execution is unavailable.', 409)
-      const node = WorkflowVersionV3Schema.parse(row.version).definition.nodes.find(item => item.id === row.node_id)
-      return node && node.kind !== 'job' && node.artifactOutputs
-        ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
-    },
+    prepareWorkflowManagerContext,
   )
   const captureLocalNativeOutputCall = async (executionId: string, toolName: string,
     args: unknown, signal: AbortSignal): Promise<NativeOutputCallCapture> => {

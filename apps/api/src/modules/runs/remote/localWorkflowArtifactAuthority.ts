@@ -1,8 +1,8 @@
 import { isDeepStrictEqual as same } from 'node:util'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { ArtifactAttemptSchema, type ArtifactAttempt } from '@graphql/contracts/artifact-edges'
-import { SavedRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { ArtifactAttemptSchema, type ArtifactAttempt } from '@foreman-code/contracts/artifact-edges'
+import { SavedRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { DomainError } from '../../errors.js'
@@ -17,7 +17,7 @@ import { readReconciledDispatchIntent } from './persistence.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { openCodeWorkflowOutputAllowed } from './localWorkflowOutputPolicy.js'
-import type { WorkerNativeOutputOperation } from '@graphql/contracts/worker-native-output'
+import type { WorkerNativeOutputOperation } from '@foreman-code/contracts/worker-native-output'
 
 const denied = (): never => {
   throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original local artifact execution is unavailable.', 403)
@@ -35,11 +35,15 @@ export class LocalWorkflowArtifactAuthority {
 
   async execution(sql: FileQuery, executionId: string) {
     const row = (await sql.query<{ run: unknown; version: unknown; execution: unknown; configuration: unknown }>(
-      `select r.record as run,v.record as version,e.record as execution,c.record as configuration
-       from harness_executions e join runs r on r.id=e.run_id
+      `with parent as materialized (
+         select id,record,workflow_version_id from runs
+         where id=(select run_id from harness_executions where id=$1) for share
+       )
+       select r.record as run,v.record as version,e.record as execution,c.record as configuration
+       from parent r join harness_executions e on e.run_id=r.id
        join workflow_versions v on v.id=r.workflow_version_id
        join agent_configuration_versions c on c.id=e.record->>'agentConfigurationVersionId' and c.agent_id=e.agent_id
-       where e.id=$1 for share of e,r,v,c`, [executionId])).rows[0]
+       where e.id=$1 for share of e,v,c`, [executionId])).rows[0]
     if (!row) return denied()
     const snapshot = SavedRunVersionSnapshotSchema.parse({ run: row.run, version: row.version })
     const run = AcceptedWorkflowRunV3Schema.parse(snapshot.run)

@@ -28,7 +28,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
     const saved = node.artifactOutputs ? WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs) : undefined
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
     const contract = [
-      'GraphQL work-handoff result contract (version 1)',
+      'Foreman Code work-handoff result contract (version 1)',
       `On successful completion, return exactly one complete JSON object with exactly ${saved ? 'routing, data, and artifactOutputs' : 'routing and data'}.`,
       'routing.kind is request, return, or finish.',
       `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
@@ -50,7 +50,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
       'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
       'Return and handoff-limit notice metadata must also fit that limit. The backend checks delivery size before accepting success; keep deliverables concise or use artifact references.',
-      'End GraphQL work-handoff result contract.',
+      'End Foreman Code work-handoff result contract.',
     ].join('\n')
     return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
   }

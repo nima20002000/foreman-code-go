@@ -50,8 +50,8 @@ import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgemen
 import type { NativeOutputAutoApprovalRecord, NativeResponseJournal } from './recovery/responseJournal.js'
 import { bootIdentity, processIdentity } from './recovery/linuxIdentity.js'
 import { captureOpenCodeNativeOutput } from './openCodeNativeOutputCapture.js'
-import { nativeOpenCodeMcpToolName } from './openCodePermissionPolicy.js'
-import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@graphql/contracts/worker-native-output'
+import { nativeOpenCodeMcpToolNames } from './openCodePermissionPolicy.js'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
@@ -261,7 +261,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     request: NativePermissionRequest, generation: number, rootTurnId: string | undefined): void {
     if (!rootTurnId || request.sessionID !== session.nativeSessionId || !request.tool
       || !isDeepStrictEqual(request.patterns, ['*'])
-      || !Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).some(name => nativeOpenCodeMcpToolName(name) === request.permission)) return
+      || !Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).some(name => nativeOpenCodeMcpToolNames(name)
+        .includes(request.permission))) return
     if (typeof request.tool.messageID !== 'string' || !request.tool.messageID
       || typeof request.tool.callID !== 'string' || !request.tool.callID) throw new HarnessExecutionError(
       'OPENCODE_NATIVE_AUTO_REPLY_UNCONFIRMED', 'The automatic native request has no matching tool identity.')
@@ -1577,7 +1578,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
     await this.assertChatMcpDisabled(directory, signal)
     const boundNames = (configuration.advanced?.permissionRules ?? []).flatMap((rule) => {
-      if (/^graphql[-_]files(?:[-_]|$)/.test(rule.permission)) return []
+      if (/^graphql[-_]files(?:[-_]|$)/.test(rule.permission)
+        && !/^graphql_files_native_output(?:_|$)/.test(rule.permission)) return []
       const name = APP_MCP_SERVER_NAMES.find((candidate) => rule.permission === candidate
         || rule.permission.startsWith(`${candidate}_`) || rule.permission.startsWith(`${candidate}*`))
       return name ? [name] : []

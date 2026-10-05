@@ -1,15 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import type { WorkerNativeOutputCommand } from '@graphql/contracts/worker-native-output'
-import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
-import type { TemporaryFileScope } from '@graphql/contracts/files'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import type { WorkerNativeOutputCommand } from '@foreman-code/contracts/worker-native-output'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
+import type { TemporaryFileScope } from '@foreman-code/contracts/files'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
 import type { FileQuery } from '../src/modules/files/repository.js'
 import { LocalWorkflowNativeOutputRepository, type LocalOutputCaller } from '../src/modules/runs/remote/localWorkflowNativeOutputRepository.js'
+import { LocalWorkflowArtifactAuthority } from '../src/modules/runs/remote/localWorkflowArtifactAuthority.js'
+import { runWorkHandoffWithRestart, workHandoffRuntimeFixture } from './helpers/workHandoffRuntimeFixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type pg from 'pg'
@@ -71,6 +73,50 @@ async function fixture(pool: pg.Pool) {
 }
 
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL original native output byte journal', () => {
+  it('keeps artifact reads from locking executions ahead of their Run after acceptance and restart', async () => {
+    const definition = makeCurrentWorkflowFixture(randomUUID(), 'single')
+    definition.version.definition.handoffs = { contractVersion: 1 }
+    const f = await workHandoffRuntimeFixture(definition, () => ({ routing: { kind: 'finish' },
+      data: { latestDeliverable: 'accepted work', remainingFindings: ['owner direction'] } }))
+    let writer: pg.PoolClient | undefined
+    let reader: pg.PoolClient | undefined
+    let read: Promise<unknown> | undefined
+    try {
+      await runWorkHandoffWithRestart(f, true, () => true)
+      const accepted = (await f.db.pool.query<{ id: string }>(
+        'select id from harness_executions where run_id=$1 and accepted', [f.f.run.id])).rows
+      expect(accepted).toHaveLength(1)
+      const authority = new LocalWorkflowArtifactAuthority(randomUUID(), f.db.pool, f.locations,
+        { assertPinsCurrent: async () => { throw new Error('A node without outputs cannot read artifact placement') } })
+      writer = await f.db.pool.connect()
+      reader = await f.db.pool.connect()
+      const pid = (await reader.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      await writer.query('begin')
+      await writer.query('select id from runs where id=$1 for update', [f.f.run.id])
+      await reader.query('begin')
+      read = authority.execution(reader, accepted[0]!.id)
+      const result = Promise.allSettled([read])
+      let waiting = false
+      for (let attempt = 0; attempt < 100; attempt++) {
+        waiting = (await f.db.pool.query<{ waiting: boolean }>(
+          "select wait_event_type='Lock' as waiting from pg_stat_activity where pid=$1", [pid])).rows[0]?.waiting === true
+        if (waiting) break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      expect(waiting).toBe(true)
+      expect((await writer.query('select id from harness_executions where id=$1 for update',
+        [accepted[0]!.id])).rowCount).toBe(1)
+      await writer.query('rollback')
+      const [denied] = await result
+      expect(denied).toMatchObject({ status: 'rejected', reason: { code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' } })
+    } finally {
+      if (writer) { await writer.query('rollback'); writer.release() }
+      if (read) await Promise.allSettled([read])
+      if (reader) { await reader.query('rollback'); reader.release() }
+      await f.close()
+    }
+  }, 120000)
+
   it('preserves create, append and seal replies across reconstruction while rejecting changed and denied calls', async () => {
     await nim2691TaskDatabase(async pool => {
       const f = await fixture(pool)

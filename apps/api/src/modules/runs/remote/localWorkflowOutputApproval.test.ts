@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  DurableInteractionSchema, HarnessExecutionSchema, OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@graphql/contracts'
-import { nativeOutputToolArguments, WorkerNativeOutputCommandSchema } from '@graphql/contracts/worker-native-output'
+  DurableInteractionSchema, HarnessExecutionSchema, OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
+import { nativeOutputToolArguments, WorkerNativeOutputCommandSchema } from '@foreman-code/contracts/worker-native-output'
 import type { FileQuery } from '../../files/repository.js'
 import type { NativeOutputCallCapture } from '../../harnesses/port.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
@@ -23,6 +23,7 @@ function fixture() {
     filename: 'report.md', mediaType: 'text/markdown' })
   const capture: NativeOutputCallCapture = { descriptor: { nativeSessionId: 'native-session', rootTurnId: 'root-turn',
     assistantMessageId: 'assistant', callId: 'native-call', toolName: 'files.native_output_create',
+    nativeToolName: 'graphql_files_native_output_create',
     inputDigest: repeatDigest(nativeOutputToolArguments(command), 4 * 1024 * 1024) }, effectivePolicy: 'ask',
     assertCurrent: vi.fn() }
   const request = { id: 'native-request', sessionID: 'native-session', permission: 'graphql_files_native_output_create',

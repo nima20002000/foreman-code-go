@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
-import type { HarnessExecution, HarnessExecutionRequest } from '@graphql/contracts'
-import { WorkActivationInputSchema, makeCurrentWorkflowFixture, type WorkHandoffResult } from '@graphql/contracts/wave25'
+import type { HarnessExecution, HarnessExecutionRequest } from '@foreman-code/contracts'
+import { WorkActivationInputSchema, makeCurrentWorkflowFixture, type WorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { RepeatRunRepository } from '../../src/modules/runs/repeatPostgres.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 import { deferred } from './wave25Agent3.js'

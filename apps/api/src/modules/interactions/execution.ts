@@ -562,6 +562,7 @@ export class ApprovalExecutionCoordinator {
   private async managerContext(
     execution: HarnessExecution,
     configuration: AgentConfigurationVersion,
+    purpose?: NativeManagerResolutionContext['purpose'],
   ): Promise<NativeManagerResolutionContext> {
     if (!execution.workingDirectory) throw new Error('The durable execution has no accepted working directory.')
     if (configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId) {
@@ -571,6 +572,7 @@ export class ApprovalExecutionCoordinator {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
       runId: execution.runId, attempt: execution.attempt,
       workingDirectory: execution.workingDirectory, configuration,
+      ...(purpose ? { purpose } : {}),
     }
     return this.prepareManagerContext ? this.prepareManagerContext(context) : context
   }
@@ -733,7 +735,7 @@ export class ApprovalExecutionCoordinator {
     signal.throwIfAborted()
     const owned = this.ownedSessions.get(executionId)
     if (owned?.session) this.assertSessionIdentity(owned.session, session)
-    const context = { ...await this.managerContext(execution, configuration), purpose: 'reviewer' as const }
+    const context = await this.managerContext(execution, configuration, 'reviewer')
     const resolved = owned ? undefined : this.resolveManager(context)
     const manager = owned?.manager ?? resolved!.manager
     // Resolving a writer is not starting/attaching it. In particular there is no
@@ -1020,9 +1022,7 @@ export class ApprovalExecutionCoordinator {
       throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A completed workflow execution cannot resume native work.', 409)
     }
     await this.validateContinuation?.(execution.id, signal)
-    const resolutionContext = { ...await this.managerContext(execution, configuration),
-      ...(context.purpose ? { purpose: context.purpose } : {}),
-    }
+    const resolutionContext = await this.managerContext(execution, configuration, context.purpose)
     const request = HarnessExecutionRequestSchema.parse({
       executionId: execution.id, runId: execution.runId, workspaceId: run.workspaceId,
       workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,

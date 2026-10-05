@@ -3,8 +3,8 @@ import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
-import { DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@graphql/contracts'
-import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@graphql/contracts/worker-native-output'
+import { DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
 
 const scope = { workspaceIds: ['workspace'], workflowIds: ['workflow'], runIds: ['run'] }
 const worker: ManagementPrincipal = { id: 'worker-1', name: 'Worker', audience: 'worker', agentId: 'agent-1',

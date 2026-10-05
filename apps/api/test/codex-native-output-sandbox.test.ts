@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
-  matchesCodexNativeProbeCommand } from '../src/modules/harnesses/qualification/suites/codexNativeOutputSandbox.js'
+  matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from '../src/modules/harnesses/qualification/suites/codexNativeOutputSandbox.js'
 
 // Probe construction is exercised without a native sandbox or a protected-store qualification.
 const sandbox = { cwd: '/owned/work', writableRoots: ['/owned/extra'], networkAccess: false,
@@ -40,6 +40,11 @@ describe('Codex exact-binary native output protection check definitions', () => 
       assert.deepEqual(result.direct, { denied: false, errno: null })
       assert.deepEqual(result.descendant, { denied: false, errno: null })
       assert.equal(result.descendantExitCode, 0)
+      assert.deepEqual(parseCodexNativeProbeOutput(`Failed to load an unrelated shell profile\n${executed.stdout}`,
+        paths.marker), result)
+      assert.equal(parseCodexNativeProbeOutput(executed.stdout, 'another-marker'), undefined)
+      assert.equal(parseCodexNativeProbeOutput(executed.stdout + executed.stdout, paths.marker), undefined)
+      assert.equal(parseCodexNativeProbeOutput('Failed to execute the command', paths.marker), undefined)
       assert.equal(await readFile(paths.directPath, 'utf8'), paths.marker)
       assert.equal(await readFile(paths.descendantPath, 'utf8'), paths.marker)
     } finally { await rm(directory, { recursive: true, force: true }) }

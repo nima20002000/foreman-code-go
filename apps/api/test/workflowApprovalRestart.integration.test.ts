@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WorkActivationInputSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { WorkActivationInputSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { approvalFaultFixture, approvalResponse } from './helpers/eng06ApprovalFaults.js'

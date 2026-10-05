@@ -2,7 +2,7 @@ import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
-import { GRAPHQL_AGENT_TOOLS } from '@graphql/contracts'
+import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
 import { DomainError } from '../../modules/errors.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RepeatGraphStateV3Schema } from '@graphql/contracts/wave25'
+import { RepeatGraphStateV3Schema } from '@foreman-code/contracts/wave25'
 import { repeatEffectFactsFromState } from '../src/modules/run-graph/repeatProjectionProof.js'
 import { ProjectionDatabase, projectionScope, projectionDigest } from './eng04-projection-fixture.js'
 

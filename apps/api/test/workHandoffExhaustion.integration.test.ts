@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture, WorkActivationInputSchema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, WorkActivationInputSchema } from '@foreman-code/contracts/wave25'
 import { runWorkHandoffWithRestart, workHandoffRuntimeFixture } from './helpers/workHandoffRuntimeFixture.js'
 import { trustedWorkNoticePrompt } from '../src/modules/runs/workHandoffNotice.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'

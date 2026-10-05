@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CodexNativeOutputSandbox } from '../../codexNativeOutput.js'
 import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 import { collectChecks, requireCondition, type Check } from './checks.js'
+import { z } from 'zod'
 
 export const CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION = 'codex-native-output-protection-2'
 export interface CodexNativeSandboxProbeObservation {
@@ -50,6 +51,24 @@ export function matchesCodexNativeProbeCommand(observed: unknown, expected: stri
   const doubleQuoted = `"${expected.replace(/[\\"$`]/gu, '\\$&')}"`
   return [singleQuoted, doubleQuoted].some(argument =>
     observed === `${shell} -lc ${argument}` || observed === `${shell} -c ${argument}`)
+}
+const writeAttemptSchema = z.object({ denied: z.boolean(), errno: z.number().int().nullable() }).strict()
+const probeResultSchema = z.object({ marker: z.string(), uid: z.number().int().nonnegative(),
+  tmpdir: z.string().nullable(), direct: writeAttemptSchema, descendant: writeAttemptSchema,
+  descendantExitCode: z.number().int() }).strict()
+
+/** Native command output combines stdout and stderr; only one nonce-bound probe record is evidence. */
+export function parseCodexNativeProbeOutput(output: unknown, marker: string) {
+  if (typeof output !== 'string') return undefined
+  const records: Array<z.infer<typeof probeResultSchema>> = []
+  for (const line of output.split('\n')) {
+    let value: unknown
+    try { value = JSON.parse(line) }
+    catch (error) { if (error instanceof SyntaxError) continue; throw error }
+    const parsed = probeResultSchema.safeParse(value)
+    if (parsed.success && parsed.data.marker === marker) records.push(parsed.data)
+  }
+  return records.length === 1 ? records[0] : undefined
 }
 const missing = async (path: string) => {
   try { await access(path); return false } catch (error) {
@@ -111,7 +130,8 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
         && observed.status === 'completed' && observed.exitCode === 0
         && observed.nativeSessionId === policy.nativeSessionId && observed.nativeTurnId === policy.nativeTurnId
         && observed.itemId, 'No exact original completed native command item was observed.')
-      const result = JSON.parse(observed.aggregatedOutput.trim()) as Record<string, unknown>
+      const result = parseCodexNativeProbeOutput(observed.aggregatedOutput, marker)
+      requireCondition(result, 'No unique original native probe result was observed.')
       const witness = JSON.parse(await readFile(witnessPath, 'utf8')) as Record<string, unknown>
       requireCondition(JSON.stringify(result) === JSON.stringify(witness) && result.marker === marker
         && result.uid === process.getuid?.() && (result.tmpdir === null
@@ -119,7 +139,7 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
       // Measure the command actor's environment instead of inferring it from the app-server.
       assertCodexProtectedOutputPlacement(input.protectedDirectory, { ...policy.effectiveSandbox,
         tmpdir: typeof result.tmpdir === 'string' ? result.tmpdir : undefined })
-      const direct = result.direct as Record<string, unknown>, descendant = result.descendant as Record<string, unknown>
+      const direct = result.direct, descendant = result.descendant
       requireCondition(direct?.denied === true && descendant?.denied === true && result.descendantExitCode === 0
         && await missing(directPath) && await missing(descendantPath), 'Native/descendant wrote the protected store or denial was not evidenced.')
       await assertCurrent()

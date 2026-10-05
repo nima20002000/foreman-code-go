@@ -1,4 +1,4 @@
-import { parseWorkHandoffArtifactResult } from '@graphql/contracts/wave25'
+import { parseWorkHandoffArtifactResult } from '@foreman-code/contracts/wave25'
 import { isDeepStrictEqual as same } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'

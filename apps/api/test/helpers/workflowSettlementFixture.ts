@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { HarnessExecutionSchema, type ExecutionResult } from '@graphql/contracts'
+import { HarnessExecutionSchema, type ExecutionResult } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, type CurrentFixtureForm,
-  type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+  type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
 import { openRepeatCanonicalPublicationLocked } from '../../src/modules/run-graph/repeatPublication.js'

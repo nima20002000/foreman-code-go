@@ -10,7 +10,7 @@ import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLaun
 import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
-  matchesCodexNativeProbeCommand } from './qualification/suites/codexNativeOutputSandbox.js'
+  matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 
@@ -151,9 +151,15 @@ export async function qualifyCodexOutputProtection(input: {
               ? redact.text(item.command).slice(0, 4096) : null })),
         })
     }
-    const result = JSON.parse(String(observed[0]!.item.aggregatedOutput)) as {
-      marker: string; uid: number; tmpdir: string | null; direct: { denied: boolean }; descendant: { denied: boolean }
-      descendantExitCode: number
+    const result = parseCodexNativeProbeOutput(observed[0]!.item.aggregatedOutput, marker)
+    if (!result) {
+      throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
+        'The original native sandbox command emitted no unique probe result.', 409, {
+          firstOutputWord: typeof observed[0]!.item.aggregatedOutput === 'string'
+            ? /^[A-Za-z]{1,12}/u.exec(observed[0]!.item.aggregatedOutput)?.[0] ?? null : null,
+          hasMatchingMarker: typeof observed[0]!.item.aggregatedOutput === 'string'
+            && observed[0]!.item.aggregatedOutput.includes(marker),
+        })
     }
     const witness: unknown = JSON.parse(await readFile(witnessPath, 'utf8'))
     if (!isDeepStrictEqual(result, witness) || result.marker !== marker || result.uid !== process.getuid?.()

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import { WorkActivationInputSchema, WorkflowVersionV3Schema, workLimitNoticeText, type WorkActivationInput,
-  type WorkRequest } from '@graphql/contracts/wave25'
+  type WorkRequest } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { PostgresRepeatReviewerBindings } from '../src/modules/interactions/repeatReviewer.js'
 import { repeatDigest, repeatExecutionIdentity, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'

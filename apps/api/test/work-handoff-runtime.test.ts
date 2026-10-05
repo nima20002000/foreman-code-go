@@ -1,7 +1,7 @@
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { executeRepeatRuntime, type RepeatRuntimeLifecycle } from '../src/modules/runs/repeatRuntime.js'
 

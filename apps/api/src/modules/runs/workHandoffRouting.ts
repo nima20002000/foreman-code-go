@@ -1,4 +1,4 @@
-import type { WorkHandoffResult, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { WorkHandoffResult, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { repeatConflict } from './repeatResolution.js'
 
 export function selectedWorkHandoffRoutes(definition: WorkflowDefinitionV3, nodeId: string,

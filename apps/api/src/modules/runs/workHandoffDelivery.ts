@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@foreman-code/contracts'
 import {
   WorkRequestSchema, WorkReturnSchema, WorkNoticeSchema,
   canonicalGraphJson, type WorkHandoffResult, type WorkflowVersionV3,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 import {

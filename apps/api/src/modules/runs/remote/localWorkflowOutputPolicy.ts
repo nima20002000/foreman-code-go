@@ -1,5 +1,6 @@
-import type { OpenCodeHarnessConfiguration } from '@graphql/contracts'
-import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, type WorkerNativeOutputOperation } from '@graphql/contracts/worker-native-output'
+import type { OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, type WorkerNativeOutputOperation } from '@foreman-code/contracts/worker-native-output'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { evaluateOpenCodePermission, nativeOpenCodeMcpToolName,
   type OpenCodePermissionEffect } from '../../harnesses/openCodePermissionPolicy.js'
 
@@ -7,12 +8,16 @@ import { evaluateOpenCodePermission, nativeOpenCodeMcpToolName,
  * to the tool's wildcard request, with the saved ordered policy unchanged. */
 export function openCodeWorkflowOutputAllowed(configuration: OpenCodeHarnessConfiguration,
   operation: WorkerNativeOutputOperation): boolean {
-  return openCodeWorkflowOutputPolicy(configuration, operation) !== 'deny'
+  return APP_MCP_SERVER_NAMES.some(serverName => openCodeWorkflowOutputPolicy(configuration, operation,
+    nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation], serverName)) !== 'deny')
 }
 
 export function openCodeWorkflowOutputPolicy(configuration: OpenCodeHarnessConfiguration,
-  operation: WorkerNativeOutputOperation): OpenCodePermissionEffect {
-  if (configuration.nativeAgent !== 'build' || configuration.advanced?.mcp.serverEnabled.graphql === false) return 'deny'
-  const nativeTool = nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation])
+  operation: WorkerNativeOutputOperation,
+  nativeTool = nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation])): OpenCodePermissionEffect {
+  const serverName = APP_MCP_SERVER_NAMES.find(name =>
+    nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation], name) === nativeTool)
+  if (!serverName || configuration.nativeAgent !== 'build'
+    || configuration.advanced?.mcp.serverEnabled[serverName] === false) return 'deny'
   return evaluateOpenCodePermission(nativeTool, '*', configuration.advanced?.permissionRules ?? [], 'allow')
 }

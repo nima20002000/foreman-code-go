@@ -18,7 +18,7 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readAcceptedPlacement } from './persistence.js'
 import { DomainError } from '../errors.js'
-import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
 export interface SelectedMainMcpForward {
   /** Existing selected main's MCP transports, with this exact worker bearer;

@@ -138,6 +138,7 @@ export interface NativeOutputCallCapture {
     assistantMessageId: string
     callId: string
     toolName: string
+    nativeToolName: string
     inputDigest: string
   }
   effectivePolicy: 'allow' | 'ask' | 'deny'

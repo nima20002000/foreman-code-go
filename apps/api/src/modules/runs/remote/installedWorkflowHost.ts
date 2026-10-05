@@ -52,8 +52,8 @@ import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
-  type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
-import { workflowArtifactDigestsByOutputKey, type WorkflowArtifactOutputsV1 } from '@graphql/contracts/workflow-artifact-result'
+  type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
+import { workflowArtifactDigestsByOutputKey, type WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)

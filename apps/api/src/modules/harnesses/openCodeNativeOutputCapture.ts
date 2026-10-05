@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { ZodError } from 'zod'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, nativeOutputToolArguments,
-  parseNativeOutputToolCommand } from '@graphql/contracts/worker-native-output'
-import type { NativeSessionReference } from '@graphql/contracts'
+  parseNativeOutputToolCommand } from '@foreman-code/contracts/worker-native-output'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { HarnessExecutionError } from './errors.js'
 import { configurationPermissionRules, object, OPENCODE_HISTORY_PAGE_SIZE,
   type JsonObject } from './opencodeProtocol.js'
-import { evaluateOpenCodePermission, nativeOpenCodeMcpToolName,
+import { evaluateOpenCodePermission, nativeOpenCodeMcpToolNames,
   type OpenCodePermissionRule } from './openCodePermissionPolicy.js'
 import type { NativeOutputCallCapture } from './port.js'
 
@@ -46,10 +46,10 @@ function matchingParts(message: JsonObject, input: CaptureInput, expected: unkno
   if (info.sessionID !== input.session.nativeSessionId || info.role !== 'assistant'
     || info.parentID !== input.rootTurnId || info.agent !== input.agentName || info.mode !== input.agentName
     || typeof info.id !== 'string' || !Array.isArray(message.parts)) return []
-  const nativeTool = nativeOpenCodeMcpToolName(input.toolName)
+  const nativeTools = nativeOpenCodeMcpToolNames(input.toolName)
   return message.parts.map(object).filter(part => {
     const state = object(part.state)
-    if (part.type !== 'tool' || part.tool !== nativeTool || state.status !== 'running'
+    if (part.type !== 'tool' || !nativeTools.includes(String(part.tool)) || state.status !== 'running'
       || part.sessionID !== input.session.nativeSessionId || part.messageID !== info.id
       || typeof part.callID !== 'string' || !part.callID) return false
     try {
@@ -62,7 +62,7 @@ function matchingParts(message: JsonObject, input: CaptureInput, expected: unkno
 }
 
 async function runningCall(input: CaptureInput, expected: unknown) {
-  const calls: Array<{ assistantMessageId: string; callId: string }> = []
+  const calls: Array<{ assistantMessageId: string; callId: string; nativeToolName: string }> = []
   const seen = new Set<string>()
   let cursor: string | undefined
   let foundRoot = false
@@ -81,7 +81,7 @@ async function runningCall(input: CaptureInput, expected: unknown) {
         break
       }
       for (const part of matchingParts(message, input, expected)) {
-        calls.push({ assistantMessageId: info.id, callId: String(part.callID) })
+        calls.push({ assistantMessageId: info.id, callId: String(part.callID), nativeToolName: String(part.tool) })
       }
     }
     if (foundRoot) break
@@ -94,18 +94,20 @@ async function runningCall(input: CaptureInput, expected: unknown) {
   const latest = object((await input.read(`/session/${encodeURIComponent(input.session.nativeSessionId)}/message/`
     + encodeURIComponent(call.assistantMessageId))).value)
   if (object(latest.info).id !== call.assistantMessageId
-    || !matchingParts(latest, input, expected).some(part => part.callID === call.callId)) return conflict()
+    || !matchingParts(latest, input, expected).some(part => part.callID === call.callId
+      && part.tool === call.nativeToolName)) return conflict()
   return call
 }
 
-async function effectivePolicy(input: CaptureInput, call: { assistantMessageId: string; callId: string }) {
+async function effectivePolicy(input: CaptureInput,
+  call: { assistantMessageId: string; callId: string; nativeToolName: string }) {
   const session = object((await input.read(`/session/${encodeURIComponent(input.session.nativeSessionId)}`)).value)
   input.verifySession(session)
   const agents = (await input.read('/agent')).value
   if (!Array.isArray(agents)) return conflict()
   const matches = agents.filter(agent => object(agent).name === input.agentName)
   if (matches.length !== 1 || object(matches[0]).permission === undefined) return conflict()
-  const nativeTool = nativeOpenCodeMcpToolName(input.toolName)
+  const nativeTool = call.nativeToolName
   const policy = evaluateOpenCodePermission(nativeTool, '*', [
     ...rules(object(matches[0]).permission), ...rules(session.permission),
   ])
@@ -135,6 +137,7 @@ export async function captureOpenCodeNativeOutput(input: CaptureInput): Promise<
   const inputDigest = `sha256:${createHash('sha256').update(canonicalGraphJson(expected, 4 * 1024 * 1024)).digest('hex')}`
   input.assertCurrent()
   return { descriptor: { nativeSessionId: input.session.nativeSessionId, rootTurnId: input.rootTurnId,
-    assistantMessageId: call.assistantMessageId, callId: call.callId, toolName: input.toolName, inputDigest },
+    assistantMessageId: call.assistantMessageId, callId: call.callId, toolName: input.toolName,
+    nativeToolName: call.nativeToolName, inputDigest },
     effectivePolicy: policy, ...(automatic ? { nativeAutoApproval: automatic } : {}), assertCurrent: input.assertCurrent }
 }

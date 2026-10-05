@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { workHandoffNodeAction } from '../../src/modules/runs/workHandoffNode.js'
 import { ExecutionLimiter } from '../../src/modules/runs/limiter.js'
 import { WorkActivationInputSchema, type WorkHandoffResult, type WorkflowVersionV3,
-  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
 import { repeatId } from '../../src/modules/runs/repeatResolution.js'

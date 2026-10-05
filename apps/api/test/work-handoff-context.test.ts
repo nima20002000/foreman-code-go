@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { HarnessExecutionContextSchema, HarnessExecutionSchema, type HarnessExecutionRequest } from '@graphql/contracts'
+import { HarnessExecutionContextSchema, HarnessExecutionSchema, type HarnessExecutionRequest } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, WorkActivationInputSchema,
-  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
 import { repeatNativeObserver } from '../src/modules/runs/repeatRuntime.js'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'

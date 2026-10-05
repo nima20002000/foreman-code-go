@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { it } from 'vitest'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, nativeOutputToolArguments,
-  parseNativeOutputToolCommand } from '@graphql/contracts/worker-native-output'
+  parseNativeOutputToolCommand } from '@foreman-code/contracts/worker-native-output'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
@@ -50,12 +50,13 @@ class ResidentServer extends FixtureServer {
 }
 
 async function setup(options: { sessionPolicy?: 'allow' | 'ask' | 'deny'; automatic?: boolean;
-  journal?: NativeResponseJournal } = {}) {
+  journal?: NativeResponseJournal; serverName?: string } = {}) {
   const server = new ResidentServer()
+  const selectedTool = nativeOpenCodeMcpToolName(toolName, options.serverName ?? 'graphql')
   server.agents = [{ name: 'build', permission: [{ permission: '*', pattern: '*', action: 'allow' }] }]
   const harness = { ...configuration(), autoApprove: options.automatic ?? false,
     advanced: { ...advanced(), permissionHandling: options.automatic ? 'native_auto' as const : 'graphql_routed' as const,
-      permissionRules: options.sessionPolicy ? [{ permission: nativeTool, pattern: '*', effect: options.sessionPolicy }] : [] },
+      permissionRules: options.sessionPolicy ? [{ permission: selectedTool, pattern: '*', effect: options.sessionPolicy }] : [] },
   }
   const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1',
     ...(options.journal ? { responseJournal: options.journal } : {}) })
@@ -65,15 +66,15 @@ async function setup(options: { sessionPolicy?: 'allow' | 'ask' | 'deny'; automa
   const args = { commandId: randomUUID(), filename: 'output.md', mediaType: 'text/markdown' }
   const assistant = server.assistant(nativeMessageId(correlationId), '', undefined, false, session.nativeSessionId)
   assistant.parts = [{ id: 'original-part', sessionID: session.nativeSessionId, messageID: assistant.info.id,
-    type: 'tool', tool: nativeTool, callID: 'original-call', state: { status: 'running', input: structuredClone(args) } }]
-  const permission = { id: 'original-ask', sessionID: session.nativeSessionId, permission: nativeTool,
+    type: 'tool', tool: selectedTool, callID: 'original-call', state: { status: 'running', input: structuredClone(args) } }]
+  const permission = { id: 'original-ask', sessionID: session.nativeSessionId, permission: selectedTool,
     patterns: ['*'], always: ['*'], metadata: {}, tool: { messageID: String(assistant.info.id), callID: 'original-call' } }
   return { server, native, session, harness, turn, args, assistant, permission,
     async close() { await turn.return?.(); await native.dispose() } }
 }
 
-it('captures the running root tool call and normalized complete input without starting or recovering its server', async () => {
-  const f = await setup()
+it.each(['graphql', 'foreman-code'])('captures the running %s root tool call without starting or recovering its server', async (serverName) => {
+  const f = await setup({ serverName })
   try {
     object(f.assistant.parts[0]!.state).input = { ...f.args, filename: ' output.md ' }
     const ensure = f.server.ensureCalls
@@ -81,7 +82,7 @@ it('captures the running root tool call and normalized complete input without st
     const captured = await f.native.captureNativeOutputCall(f.session, toolName, f.args)
     assert.deepEqual(captured.descriptor, { nativeSessionId: f.session.nativeSessionId,
       rootTurnId: nativeMessageId(correlationId), assistantMessageId: f.assistant.info.id,
-      callId: 'original-call', toolName,
+      callId: 'original-call', toolName, nativeToolName: nativeOpenCodeMcpToolName(toolName, serverName),
       inputDigest: repeatDigest(nativeOutputToolArguments(parseNativeOutputToolCommand(toolName, f.args)), 4 * 1024 * 1024) })
     assert.equal(captured.effectivePolicy, 'allow')
     assert.equal(captured.nativeAutoApproval, undefined)

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoffResult } from '@graphql/contracts/wave25'
+import { WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'

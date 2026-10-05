@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, it, vi } from 'vitest'
-import type { ExecutionResult, HarnessExecution } from '@graphql/contracts'
+import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { CANONICAL_RUN_GRAPH_MCP_TOOLS, CanonicalRunGraphCurrentSchema,
-  type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+  type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { executeRepeatRuntime } from '../src/modules/runs/repeatRuntime.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'

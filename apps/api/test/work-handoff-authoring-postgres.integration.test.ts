@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema,
   CurrentWorkflowSaveResultSchema, CurrentWorkflowReadResultSchema,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphHeaders, graphRpcValue } from './eng04-graph-composition-fixture.js'

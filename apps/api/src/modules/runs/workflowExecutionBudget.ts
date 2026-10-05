@@ -1,4 +1,4 @@
-import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatConflict } from './repeatResolution.js'
 

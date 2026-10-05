@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { ExecutionResultSchema, HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@graphql/contracts'
+import { ExecutionResultSchema, HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@foreman-code/contracts'
 import {
   WorkReturnSchema, WorkNoticeSchema, WorkHandoffResultSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
   canonicalGraphJson, type WorkHandoffResult,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'

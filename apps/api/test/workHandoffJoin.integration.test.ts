@@ -3,7 +3,7 @@ import { Command, MemorySaver, interrupt } from '@langchain/langgraph'
 import { buildWorkHandoffGraph } from '../src/modules/runs/workHandoffGraph.js'
 import { randomUUID } from 'node:crypto'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveInputSchema,
-  CurrentWorkflowSaveResultSchema, WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoffResult } from '@graphql/contracts/wave25'
+  CurrentWorkflowSaveResultSchema, WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { describe, expect, it } from 'vitest'

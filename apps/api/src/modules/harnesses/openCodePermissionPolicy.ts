@@ -1,3 +1,5 @@
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
+
 export type OpenCodePermissionEffect = 'allow' | 'ask' | 'deny'
 
 export interface OpenCodePermissionRule {
@@ -27,6 +29,10 @@ export function evaluateOpenCodePermission(permission: string, pattern: string,
   return effect
 }
 
-export function nativeOpenCodeMcpToolName(toolName: string): string {
-  return `graphql_${toolName.replaceAll('.', '_')}`
+export function nativeOpenCodeMcpToolName(toolName: string, serverName = 'graphql'): string {
+  return `${serverName}_${toolName.replaceAll('.', '_')}`
+}
+
+export function nativeOpenCodeMcpToolNames(toolName: string): string[] {
+  return APP_MCP_SERVER_NAMES.map(serverName => nativeOpenCodeMcpToolName(toolName, serverName))
 }
