@@ -4,7 +4,7 @@ import { responseValueDigest, type NativeResponseDeliveryEvidence } from '../int
 import type { NativeHistory } from './port.js'
 import { isObject, type JsonObject } from './codexStdioTransport.js'
 
-/** Resolution can also mean cancellation. Require the native tool's subsequent result. */
+/** Resolution can also mean cancellation. Verify consumption through a result or an unchanged native turn read. */
 export function codexInputDeliveryEvidence(pending: PendingNativeInteraction, option: ApprovalResponseOption,
   nativeResponse: JsonObject, history: NativeHistory): NativeResponseDeliveryEvidence | undefined {
   const request = pending.request
@@ -56,6 +56,15 @@ export function codexInputDeliveryEvidence(pending: PendingNativeInteraction, op
       return isObject(item) && isObject(original) && item.id === original.id && item.type === 'mcpToolCall'
         && item.server === request.serverName && item.status === 'completed' && item.result != null && !item.error
     })
+    const offered = events.find(event => event.connectionId === submitted.connectionId
+      && event.type === 'interaction.pending' && event.payload.nativeRequestId === requestId
+      && event.sequence < reserved.sequence)
+    consumed ||= Boolean(offered && events.some(event => event.connectionId === submitted.connectionId
+      && event.type === 'interaction.readback' && event.payload.nativeRequestId === requestId
+      && event.sequence > resolved.sequence && event.payload.threadId === pending.session.nativeSessionId
+      && Object.hasOwn(offered.payload, 'observedTurnId') && Object.hasOwn(offered.payload, 'observedTurnStatus')
+      && event.payload.observedTurnId === offered.payload.observedTurnId
+      && event.payload.observedTurnStatus === offered.payload.observedTurnStatus))
   }
   if (!consumed) return undefined
   return { source: 'provider_history', ...pending.session, nativeRequestId: requestId!,

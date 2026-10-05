@@ -1342,6 +1342,24 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const history = await this.history(session)
     if (durable) return { ...history, responseDeliveries: [...(history.responseDeliveries ?? []), durable] }
     if (history.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return history
+    const runtime = this.requireRuntime(session)
+    const decision = runtime.responseDecisions.get(response.nativeRequestId)
+    if (decision?.pending.nativeRequestType === 'mcpServer/elicitation/request' && !runtime.closed) {
+      const transport = runtime.transport
+      const generation = runtime.generation
+      const { thread } = await codexRequest(transport, 'thread/read', {
+        threadId: session.nativeSessionId, includeTurns: true,
+      }, signal)
+      if (this.requireRuntime(session) !== runtime || runtime.transport !== transport || runtime.generation !== generation
+        || runtime.closed || thread.id !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The response readback owner changed.')
+      }
+      const latest = thread.turns.at(-1)
+      this.record(runtime, 'interaction.readback', { nativeRequestId: response.nativeRequestId,
+        threadId: thread.id, observedTurnId: latest?.id ?? null, observedTurnStatus: latest?.status ?? null })
+      const observed = await this.history(session)
+      if (observed.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return observed
+    }
     // The pinned Codex protocol's serverRequest/resolved also covers cleared
     // requests. It is NOT an acknowledgement of an exact permission choice.
     // Keep that uncertainty visible; do not synthesize a receipt or replay.
@@ -2321,9 +2339,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return
     }
     runtime.interactions.set(key, translated)
+    let observedTurnStatus: string | null = runtime.activeTurnId ? 'inProgress' : null
+    if (runtime.terminalResult?.outcome === 'succeeded') observedTurnStatus = 'completed'
+    else if (runtime.terminalResult?.outcome === 'canceled') observedTurnStatus = 'interrupted'
+    else if (runtime.terminalResult?.outcome === 'failed') observedTurnStatus = 'failed'
     this.record(runtime, 'interaction.pending', {
       nativeRequestId: translated.pending.turn.nativeRequestId, nativeRequestType: request.method,
       turnId: translated.pending.turn.nativeTurnId,
+      observedTurnId: runtime.activeTurnId ?? null,
+      observedTurnStatus,
     })
   }
 

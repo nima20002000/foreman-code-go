@@ -724,14 +724,19 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         where operation='agent_chat_control' and command_id=$1`, [input.requestId])).rows[0]!
       assert.deepEqual(receipt.result.acceptedControl.choice.response, response)
       assert.equal(receipt.result.status, 'completed')
-      assert.equal(receipt.result.providerAcknowledgment, undefined)
+      if (kind === 'questions') assert.equal(receipt.result.providerAcknowledgment, undefined)
+      else {
+        assert.equal(receipt.result.providerAcknowledgment.nativeRequestId, input.nativeRequestId)
+        assert.equal(receipt.result.providerAcknowledgment.optionId, input.optionId)
+        assert.match(receipt.result.providerAcknowledgment.responseDigest, /^[a-f0-9]{64}$/)
+      }
       const state = (valid.structuredContent as { state: AgentChatState }).state
       const activity = state.activitySnapshot
       const decisions = [...(activity?.pendingInteractions ?? []),
         ...(activity?.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : []) ?? [])]
         .filter((item) => item.native?.requestId === input.nativeRequestId && item.answerRecorded)
       assert(decisions.length > 0)
-      assert(decisions.every((item) => !item.providerAcknowledged))
+      assert(decisions.every((item) => item.providerAcknowledged === (kind !== 'questions')))
       const replay = await writer.callTool({ name: 'agent_chat_respond', arguments: {
         workspaceId, conversationId: id, ...input,
       } })
@@ -794,13 +799,18 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         where operation='operator_chat_control' and command_id=$1`, [input.commandId])).rows[0]!
       assert.deepEqual(receipt.result.acceptedControl.choice.response, response)
       assert.equal(receipt.result.status, 'completed')
-      assert.equal(receipt.result.providerAcknowledgment, undefined)
+      if (kind === 'questions') assert.equal(receipt.result.providerAcknowledgment, undefined)
+      else {
+        assert.equal(receipt.result.providerAcknowledgment.nativeRequestId, input.nativeRequestId)
+        assert.equal(receipt.result.providerAcknowledgment.optionId, input.optionId)
+        assert.match(receipt.result.providerAcknowledgment.responseDigest, /^[a-f0-9]{64}$/)
+      }
       const activity = (accepted.json().state as OperatorConversationState).activitySnapshot
       const decisions = [...(activity?.pendingInteractions ?? []),
         ...(activity?.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : []) ?? [])]
         .filter((item) => item.native?.requestId === input.nativeRequestId && item.answerRecorded)
       assert(decisions.length > 0)
-      assert(decisions.every((item) => !item.providerAcknowledged))
+      assert(decisions.every((item) => item.providerAcknowledged === (kind !== 'questions')))
       await operatorChat.shutdown()
       operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
         resolver, native.directory, authority)

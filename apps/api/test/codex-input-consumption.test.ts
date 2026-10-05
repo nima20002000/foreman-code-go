@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { withInteractionResponse } from '@graphql/contracts'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
-import { collect, input, until } from './fixtures/codex-test-helpers.js'
+import { collect, emit, input, until } from './fixtures/codex-test-helpers.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
 
 let f: Awaited<ReturnType<typeof deliveryFixture>>
@@ -59,4 +59,26 @@ it('does not treat request resolution or a canceled turn as consumed user input'
   await expect(response).rejects.toThrow('cleared')
   expect((await manager.history(session)).responseDeliveries).toEqual([])
   await stream.return?.()
+})
+
+it('confirms a standalone form with session/request identity and an unchanged native readback', async () => {
+  const journalPath = join(f.directory, 'response-journal')
+  const manager = f.makeManager(undefined, {}, { responseJournal: new NativeResponseJournal(journalPath) })
+  const source = input(f.directory)
+  delete source.environment
+  const session = await manager.createSession(source)
+  await emit(f.directory, { id: 6200, method: 'mcpServer/elicitation/request', params: {
+    threadId: session.nativeSessionId, turnId: null, mode: 'form', serverName: 'app', message: 'Enter details',
+    requestedSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] },
+  } })
+  const pending = await until(async () => manager.pending(session))
+  expect(pending.turn.nativeTurnId).toBeUndefined()
+  const option = withInteractionResponse(pending.responseOptions[0]!, { count: 2 })
+  await manager.respond(session, pending.turn.nativeRequestId!, option)
+  const identity = { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType, option }
+  const evidence = (await manager.reconcileResponse(session, identity)).responseDeliveries![0]!
+  expect(evidence).toMatchObject({ source: 'provider_history', nativeSessionId: session.nativeSessionId,
+    nativeRequestId: identity.nativeRequestId, optionId: option.optionId })
+  expect(new NativeResponseJournal(journalPath).read(session, identity)).toEqual(evidence)
+  expect(await f.wire('turn/start')).toHaveLength(0)
 })
