@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ test('packaged worker help identifies Foreman Code without starting runtime serv
 test('packaged schema checker accepts the actual pinned Codex export', {
   skip: !artifact || !readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
 }, async (t) => {
-  const directory = await mkdtemp('/var/tmp/worker-schema-check-');
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-schema-check-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = { PATH: workerPath(directory, process.execPath), HOME: directory, CODEX_HOME: join(directory, 'codex') };
   const exported = spawnSync(readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),

@@ -1,3 +1,5 @@
+import { join } from 'node:path'
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
@@ -97,7 +99,7 @@ function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding =
 
 describe('actual Main and installed Codex qualification read capability', () => {
   it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
-    const stateDirectory = await mkdtemp('/var/tmp/graphql-codex-revision-')
+    const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'graphql-codex-revision-'))
     try {
       const diagnosticsPath = new URL('../../worker/src/diagnostics.mjs', import.meta.url).href
       const { hostFacts } = await import(diagnosticsPath)

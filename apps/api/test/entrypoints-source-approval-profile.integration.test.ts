@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -59,7 +60,7 @@ vi.mock('node:child_process', async importOriginal => {
 
 it.skipIf(!postgresEnabled)('profiles complete repository approval through real HTTP/MCP with constant SQL publication and persisted readback', async () => {
   const db = await currentDatabase(), clients: Client[] = []
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-profile-')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-profile-'))
   const storage = join(directory, 'state', 'runtime', 'main', 'canonical', 'source-snapshots')
   await mkdir(storage, { recursive: true, mode: 0o700 })
   const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))

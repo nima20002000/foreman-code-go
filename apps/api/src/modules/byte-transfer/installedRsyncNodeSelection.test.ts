@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
@@ -19,7 +20,7 @@ async function sparseFile(path: string, size: number) {
   await chmod(path, 0o500)
 }
 async function fixture(size = reviewedNodeBytes) {
-  const root = await mkdtemp('/var/tmp/rsync-node-pin-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'rsync-node-pin-')); roots.push(root)
   const binary = join(root, '.local/share/graphql-tools/rsync/3.5.1/bin/rsync')
   await mkdir(dirname(binary), { recursive: true, mode: 0o700 }); await writeFile(binary, 'rsync pin', { mode: 0o500 })
   const node = join(root, 'node'), entryPoint = join(root, 'rsync-writer.mjs'), path = join(root, 'rsync-selection.json')

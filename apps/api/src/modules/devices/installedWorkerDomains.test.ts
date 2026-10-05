@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -10,7 +11,7 @@ import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
   it('mounts the guarded native profile-check endpoint for an installed workflow configuration', async () => {
-    const stateDirectory = await mkdtemp('/var/tmp/worker-profile-check-')
+    const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-profile-check-'))
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(),
       workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://unconnected.example/device/connect',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60000).toISOString() })

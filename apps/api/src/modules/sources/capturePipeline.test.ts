@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { sourceSha256 } from './manifest.js'
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function repository(bytes: Buffer) {
-  const root = await mkdtemp('/var/tmp/source-pipeline-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'source-pipeline-')); roots.push(root)
   await qualifiedGit(root, ['init', '--template='])
   const paths = Array.from({ length: 8 }, (_, index) => `file-${index}.bin`)
   for (const path of paths) await writeFile(join(root, path), bytes)

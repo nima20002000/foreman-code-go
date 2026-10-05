@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../../test/helpers/fixtureStorage.js'
 import { constants } from 'node:fs'
 import { mkdir, mkdtemp, open, rm, chmod, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -30,7 +31,7 @@ async function directoryIdentity(path: string) {
   try { return await identity(handle) } finally { await handle.close() }
 }
 async function fixture() {
-  const root = await mkdtemp('/var/tmp/hrt-input-runtime-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'hrt-input-runtime-')); roots.push(root)
   const execution = jobExecution(); execution.id = randomUUID(); execution.attemptId = randomUUID(); execution.operationId = randomUUID()
   const parent = join(root, execution.acceptedSpec.source.materializationId), project = join(parent, 'tree')
   inputDirectories.push(join(project, '.graphql-job-inputs'))

@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { chmod, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -6,7 +7,7 @@ import { entryParent, identity, openChildDirectory, openPrivateRoot } from './pr
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture() {
-  const root = await mkdtemp('/var/tmp/source-identity-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'source-identity-')); roots.push(root)
   return root
 }
 

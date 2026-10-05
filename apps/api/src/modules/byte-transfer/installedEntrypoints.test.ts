@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
@@ -11,7 +12,7 @@ import { transferContextForBinding } from './carrier.js'
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture() {
-  const root = await mkdtemp('/var/tmp/rsync-entrypoint-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'rsync-entrypoint-')); roots.push(root)
   const mainId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID()
   const binding: DeviceSessionBinding = { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 1,
     bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }

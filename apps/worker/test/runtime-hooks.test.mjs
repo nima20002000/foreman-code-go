@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { startWorker, acquireWorkerLock } from '../src/runtime.mjs';
 
 const runtimeUrl = new URL('../src/runtime.mjs', import.meta.url).href;
 async function state(t) {
-  const directory = await mkdtemp(join('/var/tmp', 'worker-drain-'));
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-drain-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
