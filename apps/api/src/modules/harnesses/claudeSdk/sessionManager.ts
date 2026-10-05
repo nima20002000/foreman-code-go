@@ -382,8 +382,16 @@ export function createClaudeNativeSessionManager(options: {
       runtime.appliedPreferences = structuredClone(preferences)
       runtime.pumping = pump(runtime)
       await inspectSettings(runtime)
-      if (profile && runtime.modelCapacity !== profile.capacity) {
-        throw new HarnessExecutionError('CLAUDE_CONTEXT_PROFILE_NOT_APPLIED', 'Native context capacity differs from the selected profile.')
+      if (profile) {
+        const base = (model: string) => model.replace(/\[(?:1m|200k)\]$/, '')
+        const selected = runtime.models?.find(model => model.value === profile.id)
+        const actualModel = runtime.selectedModel ? base(runtime.selectedModel) : undefined
+        const matchesModel = actualModel === base(profile.id)
+          || selected?.resolvedModel !== undefined && actualModel === base(selected.resolvedModel)
+        if (runtime.modelCapacity !== profile.capacity || !matchesModel) {
+          throw new HarnessExecutionError('CLAUDE_CONTEXT_PROFILE_NOT_APPLIED',
+            'Native model or context capacity differs from the selected profile.')
+        }
       }
       if (runtime.credentialServers) {
         runtime.controlPending = false
@@ -1100,6 +1108,7 @@ export function createClaudeNativeSessionManager(options: {
         if (control) { control.state = recovered; control.finish() }
         runtime.compaction = undefined
         runtime.controlPending = false
+        if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
       }
       return recovered
     },
