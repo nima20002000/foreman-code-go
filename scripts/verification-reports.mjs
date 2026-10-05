@@ -300,7 +300,10 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
     const files = command.slice(command.indexOf('--test') + 1).filter((arg) => !arg.startsWith('-'))
       .map((file) => repositoryFile(root, resolve(cwd, file)))
     writeReport(portionPath(directory, key, 'inventory.json'), files, logBytes)
-    command = [command[0], '--test-reporter=spec', `--test-reporter=${import.meta.filename}`,
+    const workerLimit = env.GRAPHQL_VERIFICATION_UNIT_WORKERS
+    const concurrency = workerLimit === undefined ? []
+      : [`--test-concurrency=${positiveInteger(Number(workerLimit), 'Node test workers', 256)}`]
+    command = [command[0], ...concurrency, '--test-reporter=spec', `--test-reporter=${import.meta.filename}`,
       '--test-reporter-destination=stdout',
       `--test-reporter-destination=${portionPath(directory, key, 'node.ndjson')}`, ...command.slice(1)]
   }

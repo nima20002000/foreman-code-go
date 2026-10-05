@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { groupUsed } from './integration-process.mjs'
 import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess, sampleVerificationResources,
   validateVerificationContext, verificationCommand, verifyOfflinePreseed } from './verify-repository.mjs'
-import { portionPath, readNodeReport, runVerificationCommand, writeReport } from './verification-reports.mjs'
+import { portionPath, readNodeReport, runVerificationCommand, suiteSummary, writeReport } from './verification-reports.mjs'
 
 function context(suite = 'unit') {
   const id = '11111111-1111-4111-8111-111111111111'
@@ -93,7 +93,7 @@ test('a native Node test process records each file and case, including skips', a
     const code = await runVerificationCommand([process.execPath, '--test', file], {
       root: f.root, cwd: f.root, script: 'test', env: { ...process.env,
         GRAPHQL_VERIFICATION_REPORT_DIR: f.directory, GRAPHQL_VERIFICATION_LOG_BYTES: '8192',
-        GRAPHQL_VERIFICATION_REPORT_BYTES: '65536' },
+        GRAPHQL_VERIFICATION_REPORT_BYTES: '65536', GRAPHQL_VERIFICATION_UNIT_WORKERS: '1' },
     })
     assert.equal(code, 0)
     const report = readNodeReport(portionPath(f.directory, 'root:test', 'node.ndjson'),
@@ -249,5 +249,25 @@ test('measurement reads available cgroup metrics and denies missing or corrupt m
     assert.throws(() => sampleVerificationResources(input), /unavailable or invalid/)
     rmSync(join(cgroup, 'pids.peak'))
     assert.throws(() => sampleVerificationResources(input))
+  } finally { f.close() }
+})
+
+
+test('a failed bootstrap is required for completeness without inventing unit cases', () => {
+  const f = fixture()
+  try {
+    receipt(f.directory, 'root:install', 1)
+    const portions = collectPortions(f.directory, f.root, [
+      { key: 'root:install', kind: 'bootstrap' }, { key: 'apps/api:test', kind: 'vitest' },
+    ], context().limits)
+    assert.equal(portions[0].failed, true)
+    assert.equal(portions[0].totals.total, 0)
+    const summary = suiteSummary(context().identity, portions, { startedAt: new Date(0).toISOString(),
+      finishedAt: new Date().toISOString(), terminalOutcome: 'failed', processStopped: true })
+    assert.equal(summary.outcome, 'incomplete')
+    assert.equal(summary.firstPassFailed, 1)
+    assert.equal(summary.completedPortions, 1)
+    assert.equal(summary.expectedPortions, 2)
+    assert.equal(summary.totals.total, 0)
   } finally { f.close() }
 })
