@@ -1,7 +1,7 @@
 import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
-import type { JobDefinition } from '@foreman-code/contracts/jobs'
+import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
 import type { Agent, WorkflowApprovalConfiguration } from '@foreman-code/contracts'
 import type { ManagedAgentSchema } from '@foreman-code/contracts/management'
 import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
@@ -308,7 +308,7 @@ export function discardMeaningfulChanges(context: NextDraftContext, graph: Workf
   return preserveWorkflowGeometry((context.savedDraft ?? context.draft).graph, graph)
 }
 
-export function attachJob(graph:WorkflowDefinitionV3,definition:JobDefinition,nodeId:string):WorkflowDefinitionV3 {
+export function attachJob(graph:WorkflowDefinitionV3,definition:JobDefinitionRecord,nodeId:string):WorkflowDefinitionV3 {
   if(definition.workspaceId!==graph.workspaceId||graph.nodes.some(node=>node.id===nodeId))throw new Error('Choose a saved job in this workspace and a new node identity.')
   if(graph.handoffs)throw new Error('Job nodes require a DAG or finite repeat workflow.')
   const node:DraftNode={kind:'job',id:nodeId,jobDefinitionId:definition.id,jobDefinitionRevision:definition.revision,jobDefinitionVersionId:definition.versionId,name:definition.name,position:{x:80+(graph.nodes.length%4)*280,y:80+Math.floor(graph.nodes.length/4)*180}}

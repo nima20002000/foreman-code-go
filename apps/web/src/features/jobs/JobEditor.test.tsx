@@ -5,9 +5,55 @@ import { http, HttpResponse } from 'msw'
 import { it, expect, vi } from 'vitest'
 import { server } from '../../mocks/server'
 import { JobEditor } from './JobEditor'
-import { definition } from './fixtures'
+import { definition, verificationDefinition, verificationTemplate } from './fixtures'
 import { jobPolicyRequirements, type JobDefinition } from '@foreman-code/contracts/jobs'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
+
+it('authors an ordinary suite from its saved profile template with the real wrapper and all required reports', async () => {
+  const saved: unknown[] = []
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [definition.spec.source],
+      policies: [], autoPolicies: [{ policy: verificationTemplate.policy, limits: verificationTemplate.resources.limits }],
+      verificationTemplates: [verificationTemplate] })),
+    http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+    http.post(`${root}/definitions`, async ({ request }) => {
+      saved.push(await request.json())
+      return HttpResponse.json({ definition: verificationDefinition })
+    }),
+  )
+  render(<QueryClientProvider client={new QueryClient()}>
+    <JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} />
+  </QueryClientProvider>)
+  const user = userEvent.setup()
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Job template' }),
+    await screen.findByRole('option', { name: /Repository unit/ }))
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }),
+    `${definition.spec.source.snapshotId}:${definition.spec.source.manifestDigest}`)
+  expect(screen.getByRole('textbox', { name: 'Exact executable and arguments (JSON array)' }))
+    .toHaveValue(JSON.stringify(verificationTemplate.argv))
+  expect(screen.getByText(/Selected policy: network none/)).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save job definition' }))
+  expect(saved).toEqual([expect.objectContaining({ name: 'Repository unit', spec: verificationDefinition.spec })])
+})
+
+it('edits a saved verification definition while build and verification policies coexist', async () => {
+  const saved: unknown[] = []
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [], policies: [definition.spec.policy],
+      autoPolicies: [{ policy: verificationTemplate.policy, limits: verificationTemplate.resources.limits }] })),
+    http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+    http.post(`${root}/definitions`, async ({ request }) => {
+      saved.push(await request.json())
+      return HttpResponse.json({ definition: verificationDefinition })
+    }),
+  )
+  render(<QueryClientProvider client={new QueryClient()}>
+    <JobEditor workspaceId={definition.workspaceId} definition={verificationDefinition} onClose={vi.fn()} />
+  </QueryClientProvider>)
+  await screen.findByRole('option', { name: /Image/ })
+  await userEvent.click(screen.getByRole('button', { name: 'Save job definition' }))
+  expect(saved).toEqual([expect.objectContaining({ expectedRevision: 1, spec: verificationDefinition.spec })])
+})
 it('restores the saved Auto policy and limits when keeping runtime requirements', async () => {
   const limits = { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 }
   const policy = jobPolicyRequirements(definition.spec.policy)

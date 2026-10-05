@@ -3,6 +3,8 @@ import {
   AcceptedVerificationJobSpecSchema, AutoVerificationJobSpecSchema, JobAcceptedSpecRecordSchema,
   JobDefinitionRecordSchema, JobVerificationOutputsSchema, JobVerificationPassSchema, JobVerificationReportSchema,
   ResolvedVerificationJobSpecSchema,
+  JobVerificationReportReadSchema, JobAuthoringChoicesRecordSchema, jobPolicyRequirementsRecord,
+  jobVerificationTemplate,
 } from './jobVerification.js'
 import {
   JOB_VERIFICATION_APPROVAL_LIFETIME_MS, JobNetworkPolicySchema, JobResourceRequestSchema,
@@ -12,6 +14,29 @@ import { JobVerificationGateResultSchema } from './jobVerificationGate.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
 
 describe('verification placement and policy', () => {
+  it('authors every ordinary suite from the saved resource envelope with the actual wrapper and four bounded reports', () => {
+    const { spec, resources } = verificationFixture()
+    const policy = jobPolicyRequirementsRecord(spec.policy)
+    for (const suite of ['install', 'typecheck', 'lint', 'unit', 'build'] as const) {
+      const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
+        profileRevision: spec.policy.isolationPolicyRevision, suite, ready: false,
+        policy, resources, maxUnitWorkers: 12 })
+      expect(template.argv).toEqual(['node', 'scripts/verify-repository.mjs', '--context',
+        '.graphql-job-inputs/verification.json'])
+      expect(template.outputs.map(output => [output.path, output.required])).toEqual([
+        ['.logs/verification/summary.json', true], ['.logs/verification/junit.xml', true],
+        ['.logs/verification/vitest.json', true], ['.logs/verification/logs.tar.gz', true],
+      ])
+      expect(template.outputs.reduce((bytes, output) => bytes + output.maxBytes, 0)).toBeLessThanOrEqual(policy.maxOutputBytes)
+      const authored = { ...spec, target: { kind: 'auto' }, policy, limits: resources.limits,
+        argv: template.argv, outputs: template.outputs, verification: { suite,
+          parameters: template.parameters, resources: template.resources, credentialRefs: [] } }
+      expect(AutoVerificationJobSpecSchema.parse(authored).verification.resources).toEqual(resources)
+      expect(JobAuthoringChoicesRecordSchema.parse({ sources: [], policies: [spec.policy], targets: [],
+        autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }).verificationTemplates)
+        .toEqual([template])
+    }
+  })
   it('keeps Auto requests separate from concrete immutable acceptance and preserves build history unchanged', () => {
     const { spec, acceptedBuild, definition, profile, resources, lifecycle } = verificationFixture()
     const { isolationPolicyId, isolationPolicyRevision, ...policy } = spec.policy
@@ -111,10 +136,14 @@ describe('verification reports and commit gates', () => {
     } }).success).toBe(false)
   })
   it('keeps an honest partial failure report readable and never erases first-pass failures with a retest', () => {
-    const { report } = verificationFixture()
+    const { report, pass } = verificationFixture()
     expect(JobVerificationReportSchema.parse({ ...report, firstPassFailed: 1, outcome: 'failed',
       completeness: 'partial', completedPortions: 0 }).outcome).toBe('failed')
     expect(JobVerificationReportSchema.safeParse({ ...report, totals: { ...report.totals, total: 5 } }).success).toBe(false)
+    const failed = { ...report, firstPassFailed: 1, outcome: 'failed', completeness: 'partial', completedPortions: 0 }
+    expect(JobVerificationReportReadSchema.parse({ report: failed, expected: pass.expected }).report.outcome).toBe('failed')
+    expect(JobVerificationReportReadSchema.safeParse({ report: { ...failed, attemptId: 'other' },
+      expected: pass.expected }).success).toBe(false)
   })
   it('requires every pinned child including native acceptance and rejects cross-commit/attempt aggregation', () => {
     const { pass, build } = verificationFixture()

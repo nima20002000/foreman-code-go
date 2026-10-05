@@ -1,6 +1,9 @@
 import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, JobLogPage } from '@foreman-code/contracts/jobs'
 import { JobDefinitionSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
+import { VerificationJobDefinitionSchema, VerificationJobExecutionSchema,
+  jobPolicyRequirementsRecord, jobVerificationTemplate, type JobVerificationReport } from '@foreman-code/contracts/job-verification'
+import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 const digest = 'a'.repeat(64)
 const uuid = '11111111-1111-4111-8111-111111111111'
 export const definition: JobDefinition & { spec: ResolvedJobDefinitionSpec } = {
@@ -36,3 +39,43 @@ export const autoDefinition = JobDefinitionSchema.parse({ ...definition,
     policy: jobPolicyRequirements(definition.spec.policy) } })
 export const autoQueueTicket = JobQueueTicketSchema.parse({ ...queueTicket,
   definition: autoDefinition, placement: { kind: 'auto' } })
+
+export const verificationPolicy = { ...definition.spec.policy, schemaVersion: 2 as const,
+  network: { schemaVersion: 2 as const, mode: 'none' as const }, serviceStartupTimeoutMs: 10000,
+  publicationTimeoutMs: 10000, cleanupTimeoutMs: 10000 }
+export const verificationTemplate = jobVerificationTemplate({
+  profileId: verificationPolicy.isolationPolicyId, profileRevision: verificationPolicy.isolationPolicyRevision,
+  suite: 'unit', ready: true, policy: jobPolicyRequirementsRecord(verificationPolicy),
+  resources: queueTicket.resources, maxUnitWorkers: 12,
+})
+export const verificationDefinition = VerificationJobDefinitionSchema.parse({ ...definition, schemaVersion: 2,
+  name: 'Repository unit', spec: { ...definition.spec, target: { kind: 'auto' },
+    policy: verificationTemplate.policy, limits: verificationTemplate.resources.limits,
+    argv: verificationTemplate.argv, outputs: verificationTemplate.outputs,
+    verification: { suite: verificationTemplate.suite, parameters: verificationTemplate.parameters,
+      resources: verificationTemplate.resources, credentialRefs: [] } } })
+export const verificationExecution = VerificationJobExecutionSchema.parse({ ...execution, schemaVersion: 2,
+  process: { ...execution.process, outcome: 'succeeded', exitCode: 0 }, resultIssue: null,
+  acceptedSpec: { ...execution.acceptedSpec, argv: verificationTemplate.argv,
+    outputs: verificationTemplate.outputs, verification: verificationDefinition.spec.verification,
+    schemaVersion: 2, target: definition.spec.target, policy: verificationPolicy,
+    source: execution.acceptedSpec.source, reservationId: uuid,
+    profile: { profileId: verificationPolicy.isolationPolicyId,
+      profileRevision: verificationPolicy.isolationPolicyRevision, qualificationId: uuid,
+      rootId: uuid, bindingRevision: 1, fingerprintDigest: digest, imageDigest: verificationPolicy.imageDigest,
+      toolchainDigest: digest, network: verificationPolicy.network, approvalId: uuid,
+      approvalExpiresAt: '2026-10-02T00:00:00Z', qualificationExpiresAt: '2026-10-02T00:00:00Z' },
+    lifecycle: verificationJobLifecycle(execution.createdAt, verificationPolicy),
+    resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: uuid, runtimeApprovalRevision: 1,
+  } })
+export const verificationReport: JobVerificationReport = {
+  schemaVersion: 1, commit: verificationExecution.acceptedSpec.source.commit, manifestDigest: digest,
+  definitionVersionId: definition.versionId, suite: 'unit', executionId: execution.id, attemptId: execution.attemptId,
+  target: verificationExecution.acceptedSpec.target, profile: verificationExecution.acceptedSpec.profile,
+  resources: verificationTemplate.resources, parameters: verificationTemplate.parameters,
+  startedAt: execution.startedAt!, finishedAt: execution.finishedAt!,
+  totals: { total: 8, passed: 8, failed: 0, skipped: 0 }, firstPassFailed: 0,
+  expectedPortions: 2, completedPortions: 2, disallowedSkipped: 0, completeness: 'complete', outcome: 'passed',
+}
+export const verificationQueueTicket = JobQueueTicketSchema.parse({ ...autoQueueTicket,
+  definition: verificationDefinition, resources: verificationTemplate.resources })
