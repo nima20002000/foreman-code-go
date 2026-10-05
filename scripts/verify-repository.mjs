@@ -32,7 +32,7 @@ export function validateVerificationContext(context) {
   positiveInteger(identity.resources.reportBytes, 'Accepted report reservation')
   positiveInteger(context.executionTimeoutMs, 'Execution deadline')
   positiveInteger(context.cancellationTimeoutMs, 'Cancellation deadline')
-  positiveInteger(context.qualifiedUnitWorkers, 'Qualified unit workers', 256)
+  positiveInteger(context.qualifiedUnitWorkers, 'Qualified unit workers', 12)
   positiveInteger(identity.parameters.unitWorkers, 'Unit workers', context.qualifiedUnitWorkers)
   positiveInteger(identity.parameters.integrationShards, 'Integration shards', 12)
   for (const name of limitNames) positiveInteger(context.limits?.[name], name)
@@ -109,7 +109,7 @@ export function prepareVerificationDirectory(root) {
 export function expectedPortions(root, suite) {
   if (suite === 'install') return [{ key: 'root:install', kind: 'command' }]
   const bootstrap = { key: 'root:install', kind: 'bootstrap' }
-  if (suite === 'unit') return [bootstrap,
+  if (suite === 'unit') return [bootstrap, { key: 'root:worker-artifact', kind: 'bootstrap' },
     { key: portionKey('packages/contracts', 'test'), kind: 'vitest' },
     { key: portionKey('apps/api', 'test'), kind: 'vitest' },
     { key: portionKey('apps/web', 'test:unit'), kind: 'vitest' },
@@ -250,28 +250,42 @@ export function sampleVerificationResources({ mutableDirectory, cgroupDirectory 
   return { sampledAt: new Date().toISOString(), ...values }
 }
 
-export function finalizeVerification(context, { root, directory, state, terminalOutcome, processStopped }) {
-  const portions = collectPortions(directory, root, state.expected, context.limits)
+export function finalizeVerification(context, { root, directory, state, terminalOutcome, processStopped, finishedAt = new Date().toISOString(), reportRoot = root,
+  writeSummary = writeReport, checkpoint = () => {} }) {
+  checkpoint()
+  const portions = collectPortions(directory, reportRoot, state.expected, context.limits)
   const summary = suiteSummary(context.identity, portions, { startedAt: state.startedAt,
-    finishedAt: new Date().toISOString(), terminalOutcome, processStopped })
+    finishedAt, terminalOutcome, processStopped })
   const files = portions.flatMap((portion) => portion.files)
   const details = { portions: portions.map(({ key, complete, failed, totals, missing, error }) =>
     ({ key, complete, failed, totals, missing, error })), terminalOutcome, processStopped }
   try {
+    checkpoint()
     writeReport(join(directory, 'parts', 'portions.json'), details, context.limits.vitestBytes)
+    checkpoint()
     writeReport(join(directory, 'vitest.json'), { ...mergedVitestReport(files, state.startedAt, summary.outcome),
       verification: summary },
       context.limits.vitestBytes)
+    checkpoint()
     writeReport(join(directory, 'junit.xml'), junitReport(files, summary.outcome, context.identity), context.limits.junitBytes)
+    checkpoint()
     const archive = logArchive(join(directory, 'parts'), context.limits.logsArchiveBytes)
     // Binary output uses the same atomic writer and declaration limit.
+    checkpoint()
     writeReport(join(directory, 'logs.tar.gz'), archive, context.limits.logsArchiveBytes)
   } catch (error) {
     summary.completeness = 'partial'
     if (!['cancelled', 'timed_out'].includes(summary.outcome)) summary.outcome = 'incomplete'
-    writeReport(join(directory, 'parts', 'publication-error.json'), { message: error.message }, context.limits.logBytes)
+    try {
+      checkpoint()
+      writeReport(join(directory, 'parts', 'publication-error.json'), { message: error.message }, context.limits.logBytes)
+    } catch (publicationError) {
+      // The summary can still use its protected inode when no additional report inode is available.
+      if (!['EDQUOT', 'ENOSPC'].includes(publicationError.code)) throw publicationError
+    }
   }
-  writeReport(join(directory, 'summary.json'), summary, context.limits.summaryBytes)
+  checkpoint()
+  writeSummary(join(directory, 'summary.json'), summary, context.limits.summaryBytes)
   return summary
 }
 
@@ -320,7 +334,24 @@ export async function verifyRepository(context, { root = repository, signal } = 
     if (result.terminalOutcome === 'passed' && context.identity.suite !== 'install') {
       verifyOfflinePreseed(root, context.preseedReceipt)
       verifyEffectivePackagePolicy(root, environment)
-      result = await execute(verificationCommand(context), 'root')
+      if (context.identity.suite === 'unit') {
+        const tool = context.unitCodex
+        if (tool?.executable !== '/opt/graphql-ci/tools/codex'
+          || createHash('sha256').update(readFileSync(tool.executable)).digest('hex') !== tool.binarySha256) {
+          throw new Error('The qualified Codex schema binary is unavailable or changed')
+        }
+        const artifact = join(context.mutableDirectory, 'worker-artifact')
+        environment.FOREMAN_CODE_WORKER_BUILD_COMMIT = context.privateGit.generatedCommit
+        environment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = artifact
+        environment.FOREMAN_CODE_WORKER_CODEX_BINARY = tool.executable
+        const startedAt = new Date().toISOString()
+        result = await execute(['node', 'scripts/build-worker-artifact.mjs',
+          'apps/worker/artifacts/ubuntu-24.04-x64-target.json', artifact], 'worker-artifact')
+        writeReport(portionPath(directory, 'root:worker-artifact', 'command.json'), {
+          key: 'root:worker-artifact', startedAt, finishedAt: new Date().toISOString(), code: result.code ?? 1,
+        }, context.limits.logBytes)
+      }
+      if (result.terminalOutcome === 'passed') result = await execute(verificationCommand(context), 'root')
     }
     if (context.measurement) {
       sample()

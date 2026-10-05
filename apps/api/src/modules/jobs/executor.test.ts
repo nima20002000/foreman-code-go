@@ -79,6 +79,13 @@ describe('verification interruption reports with real private files, no containe
           mediaType: 'application/gzip', kind: 'logs-archive', maxBytes: 1024 }] })
       await expect(readDeclaredJobOutputs(source, incomplete)).rejects.toThrow()
       expect(await readAvailableVerificationOutputs(source, incomplete)).toEqual(outputs)
+      await writeFile(join(source, 'reports/logs.tar.gz'), Buffer.alloc(1025))
+      await expect(readDeclaredJobOutputs(source, incomplete)).rejects.toThrow('budget rejected')
+      expect(await readAvailableVerificationOutputs(source, incomplete)).toEqual(outputs)
+      await rm(join(source, 'reports/logs.tar.gz'))
+      await symlink('/etc/passwd', join(source, 'reports/logs.tar.gz'))
+      await expect(readDeclaredJobOutputs(source, incomplete)).rejects.toThrow()
+      expect(await readAvailableVerificationOutputs(source, incomplete)).toEqual(outputs)
       await expect(writeVerificationInterruptionReport({ execution: job, reserve,
         terminal: { ...terminal, processStopped: false } as unknown as RemoteJobTerminalEvidence })).rejects.toThrow('confirmed closed')
       await expect(writeVerificationInterruptionReport({ execution: job,

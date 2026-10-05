@@ -261,7 +261,7 @@ test('an already cancelled request never starts its command', async () => {
 
 test('unit inventory includes all package runners and both web/root smoke commands', () => {
   const portions = expectedPortions('/unused', 'unit')
-  assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'packages/contracts:test', 'apps/api:test',
+  assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'root:worker-artifact', 'packages/contracts:test', 'apps/api:test',
     'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
 })
 
@@ -305,5 +305,21 @@ test('a failed bootstrap is required for completeness without inventing unit cas
     assert.equal(summary.completedPortions, 1)
     assert.equal(summary.expectedPortions, 2)
     assert.equal(summary.totals.total, 0)
+  } finally { f.close() }
+})
+
+
+test('unit completeness includes exact-source worker packaging without counting it as test cases', () => {
+  const f = fixture()
+  try {
+    const expected = expectedPortions('/unused', 'unit')
+    const packaging = expected.find(portion => portion.key === 'root:worker-artifact')
+    assert.equal(packaging.kind, 'bootstrap')
+    const missing = collectPortions(f.directory, f.root, [packaging], context().limits)[0]
+    assert.equal(missing.complete, false)
+    receipt(f.directory, packaging.key)
+    const complete = collectPortions(f.directory, f.root, [packaging], context().limits)[0]
+    assert.equal(complete.complete, true)
+    assert.equal(complete.totals.total, 0)
   } finally { f.close() }
 })

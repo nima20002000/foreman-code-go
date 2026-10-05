@@ -6,6 +6,7 @@ RUN test "$(node --version)" = v22.23.3 \
 FROM toolchain AS verification
 COPY source-lock/ /opt/graphql-ci/source-lock/
 COPY seed/ /opt/graphql-ci/seed/
+COPY tools/ /opt/graphql-ci/tools/
 COPY seed-receipt.json /opt/graphql-ci/seed-receipt.json
 COPY seed-policy.mjs verification-policy.mjs verification-observation.mjs /opt/graphql-ci/
 RUN --network=none node /opt/graphql-ci/seed-policy.mjs /opt/graphql-ci/seed /opt/graphql-ci/seed-receipt.json \

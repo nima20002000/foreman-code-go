@@ -8,6 +8,7 @@ import { JobVerificationPassSchema, JobVerificationReportSchema, VerificationJob
   type AcceptedVerificationJobSpec, type JobVerificationReport }
   from '@foreman-code/contracts/job-verification'
 import { z } from 'zod'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { JobVerificationRuntimeMeasurementSchema, JobVerificationPrivateGitSchema,
   JobVerificationPreseedFactsSchema, type JobVerificationRuntimeMeasurement }
   from '@foreman-code/contracts/job-verification-runtime'
@@ -48,21 +49,24 @@ async function readJobOutputs(root: string, spec: AcceptedJobSpec | AcceptedVeri
         const stat = await file.stat()
         const limit = 'maxBytes' in output ? Math.min(output.maxBytes, spec.policy.maxOutputBytes - total)
           : spec.policy.maxOutputBytes - total
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new Error('Output type or byte budget rejected.')
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new JobOutputCollectionError('Output type or byte budget rejected.')
         const bytes = Buffer.alloc(stat.size)
         let offset = 0
         while (offset < bytes.length) {
           const read = await file.read(bytes, offset, bytes.length - offset, offset)
-          if (!read.bytesRead) throw new Error('Output changed during collection.')
+          if (!read.bytesRead) throw new JobOutputCollectionError('Output changed during collection.')
           offset += read.bytesRead
         }
         const after = await file.stat()
-        if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw new Error('Output changed during collection.')
+        if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw new JobOutputCollectionError('Output changed during collection.')
         total += bytes.length
         outputs.push({ path: output.path, bytes })
       } catch (error) {
-        if (output.required && missingReports === 'require-all'
-          || !(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error
+        const unavailable = error instanceof Error && 'code' in error
+          && ['ENOENT', 'ELOOP', 'ENOTDIR'].includes(String(error.code))
+        if (missingReports === 'retain-available' && (unavailable || error instanceof JobOutputCollectionError)) continue
+        const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT'
+        if (output.required || !missing) throw error
       } finally {
         await file?.close()
         await Promise.all(directories.map(directory => directory.close()))
@@ -92,7 +96,7 @@ export function verificationRepositoryContext(input: {
   const suite = measured.suites.find(value => value.suite === spec.verification.suite)
   if (!suite || !isDeepStrictEqual(spec.profile, measured.identity)
     || !['install', 'typecheck', 'lint', 'unit', 'build'].includes(spec.verification.suite)
-    || spec.verification.parameters.unitWorkers > suite.maxUnitWorkers) {
+    || spec.verification.parameters.unitWorkers > Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)) {
     throw new Error('Matching ordinary-suite qualification required for wrapper context.')
   }
   const output = (kind: string, path: string) => {
@@ -109,8 +113,14 @@ export function verificationRepositoryContext(input: {
     suite: spec.verification.suite, executionId: execution.id, attemptId: execution.attemptId,
     target: spec.target, profile: spec.profile, resources: spec.verification.resources,
     parameters: spec.verification.parameters })
-  return { identity, privateGit, executionTimeoutMs: spec.policy.executionTimeoutMs,
-    cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: suite.maxUnitWorkers,
+  const codex = measured.fingerprint.tools.find(tool => tool.kind === 'codex')
+  if (spec.verification.suite === 'unit' && (!codex || codex.executable !== '/opt/graphql-ci/tools/codex')) {
+    throw new Error('Unit verification requires its qualified image Codex schema binary.')
+  }
+  return { identity, privateGit,
+    ...(codex ? { unitCodex: { executable: codex.executable, version: codex.version,
+      binarySha256: codex.binarySha256 } } : {}), executionTimeoutMs: spec.policy.executionTimeoutMs,
+    cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
     limits: { summaryBytes, junitBytes, vitestBytes, logsArchiveBytes,
       logBytes: Math.min(spec.policy.maxLogBytes, logsArchiveBytes) },
     mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',

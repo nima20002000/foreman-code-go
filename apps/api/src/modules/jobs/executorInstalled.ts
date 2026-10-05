@@ -12,6 +12,7 @@ import type { JobQualificationCandidateRecord } from '@foreman-code/contracts/jo
 import { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
 import { acceptedJobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
+import { createVerificationPublication } from './verificationPublication.js'
 import { reserveVerificationReportSpace } from './executorOutputs.js'
 import { verificationContextPin } from '../files/jobInputs/manifest.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -55,7 +56,7 @@ export function createInstalledJobExecutionPorts(input: InstalledJobExecutionHos
   const systemInput = createVerificationSystemInput({ configuration: input.configuration,
     journal: async () => input.journal })
   const contexts = new Map<string, NonNullable<Awaited<ReturnType<typeof systemInput>>>>()
-  return { ...input, supervisor,
+  return { ...input, supervisor, preparePublication: createVerificationPublication(input.journal),
     async verification(execution) {
       const qualification = await input.journal.qualifiedJobRuntime(execution)
       const result = qualification.result

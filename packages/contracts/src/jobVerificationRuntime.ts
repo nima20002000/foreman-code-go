@@ -51,6 +51,8 @@ export const JobVerificationRepositoryContextSchema = z.object({
     logBytes: DeviceSafeIntegerSchema.positive() }).strict(),
   mutableDirectory: z.literal('/job-scratch'), storeDirectory: z.literal('/job-scratch/pnpm-store'),
   preseedReceipt: JobVerificationPreseedFactsSchema,
+  unitCodex: z.object({ executable: z.literal('/opt/graphql-ci/tools/codex'),
+    binarySha256: DeviceDigestSchema, version: IdSchema }).strict().optional(),
 }).strict()
 
 export const JobVerificationProfileInputSchema = z.object({
