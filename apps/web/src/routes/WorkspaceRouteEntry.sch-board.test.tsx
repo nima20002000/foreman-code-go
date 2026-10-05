@@ -56,7 +56,11 @@ async function choose(runId: string | null) {
   })
   await userEvent.click(item)
 }
-const savedY = () => screen.findByRole('img', { name: 'Y, saved agent, read only' })
+async function savedY() {
+  const board = await screen.findByRole('region', { name: 'Selected Run board' })
+  const graph = await within(board).findByLabelText('Saved Run graph')
+  return within(graph).findByRole('img', { name: 'Y, saved agent, read only' })
+}
 
 beforeEach(() => {
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
