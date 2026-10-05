@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { HarnessExecution } from '@graphql/contracts'
 import {
   WorkRequestSchema, WorkReturnSchema, WorkNoticeSchema,
-  type WorkHandoffResult, type WorkflowVersionV3,
+  canonicalGraphJson, type WorkHandoffResult, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
@@ -15,15 +15,23 @@ interface DeliveryContext {
   sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3; now: string
 }
 
+async function assertDatabaseEnvelopeFits(sql: GraphTransactionSql, envelope: unknown): Promise<void> {
+  // jsonb expands exponent numbers; measure with the same function as the persisted constraints.
+  const result = await sql.query<{ bytes: number }>('select work_json_bytes($1::jsonb) as bytes',
+    [canonicalGraphJson(envelope, 64 * 1024)])
+  if (result.rows[0]!.bytes > 64 * 1024) return repeatConflict('WORK_HANDOFF_DELIVERY_TOO_LARGE')
+}
+
 async function assertNoticeFits(context: DeliveryContext, input: WorkLimitNoticeInput): Promise<void> {
   const alternatives = await availableWorkAlternativesLocked(context, input.requesterNodeId, input.relationshipId)
   const notice = createWorkLimitNotice(context, input, alternatives)
   // After acceptance counters can grow and an acknowledgement adds metadata.
   // Routes can only become exhausted; none can be added to the pinned workflow.
-  WorkNoticeSchema.parse({ ...notice, delivery: 'delivered', acknowledgementId: 'a'.repeat(200),
+  const delivered = WorkNoticeSchema.parse({ ...notice, delivery: 'delivered', acknowledgementId: 'a'.repeat(200),
     alternatives: alternatives.map((item) => ({ ...item,
       used: item.maxWorkHandoffsPerRun === null ? 2147483647 : item.maxWorkHandoffsPerRun - 1,
     })) })
+  await assertDatabaseEnvelopeFits(context.sql, delivered)
 }
 
 async function assertReturnFits(context: DeliveryContext, execution: HarnessExecution,
@@ -40,13 +48,14 @@ async function assertReturnFits(context: DeliveryContext, execution: HarnessExec
     || !sameRepeatValue(request.scope, context.scope)) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
   const returnId = repeatId('work-return', execution.id)
   const continuationActivationId = routing.outcome === 'needs_changes' ? repeatId('work-activation', returnId) : undefined
-  WorkReturnSchema.parse({ scope: context.scope, returnId, requestId: request.requestId,
+  const returned = WorkReturnSchema.parse({ scope: context.scope, returnId, requestId: request.requestId,
     sourceActivationId: activationId, sourceExecutionId: execution.id,
     requesterActivationId: request.requesterActivationId,
     ...(continuationActivationId ? { continuationActivationId } : {}),
     acceptedResultDigest: repeatDigest(execution.result, 64 * 1024), outcome: routing.outcome,
     latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings,
     returnedAt: context.now })
+  await assertDatabaseEnvelopeFits(context.sql, returned)
   const edge = context.version.definition.edges.find((item) => item.id === request.relationshipId)
   if (continuationActivationId && edge?.maxWorkHandoffsPerRun !== undefined) {
     await assertNoticeFits(context, { cause: { kind: 'last_return', returnId },

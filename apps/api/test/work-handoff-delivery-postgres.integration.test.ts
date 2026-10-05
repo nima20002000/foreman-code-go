@@ -19,6 +19,22 @@ import { transaction } from './eng04-migration-fixtures.js'
 
 const text = (value: unknown) => canonicalGraphJson(value, 4 * 1024 * 1024)
 
+async function databaseJsonBytes(pool: pg.Pool, value: unknown): Promise<number> {
+  const result = await pool.query<{ bytes: number }>('select work_json_bytes($1::jsonb) as bytes', [text(value)])
+  return result.rows[0]!.bytes
+}
+
+async function boundaryNoticeDeliverable(pool: pg.Pool,
+  notice: ReturnType<typeof createWorkLimitNotice>, payload: 'text' | 'numeric') {
+  const prefix = 'deliverable with spaces, "quotes", \\slashes and a newline\n'
+  const numbers = Array<number>(600).fill(1e100)
+  const latestDeliverable = payload === 'numeric' ? { numbers, text: prefix } : prefix
+  const delivered = { ...notice, latestDeliverable, delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }
+  const used = await databaseJsonBytes(pool, delivered)
+  const padded = prefix + 'x'.repeat(65536 - used)
+  return payload === 'numeric' ? { numbers, text: padded } : padded
+}
+
 async function acquireOwner(pool: pg.Pool, runId: string): Promise<RunOwnership> {
   const owner = await RunOwnership.acquire(pool, runId, () => undefined)
   assert.ok(owner)
@@ -177,7 +193,11 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
       } finally { await owner.release() }
     })
   }, 120000)
-  it.each([false, true])('delivers a boundary-sized review return and last-handoff notice (restart=%s)', async (restart) => {
+  it.each([
+    { restart: false, payload: 'text' }, { restart: true, payload: 'text' },
+    { restart: false, payload: 'numeric' }, { restart: true, payload: 'numeric' },
+  ] as const)('delivers a boundary-sized $payload return and last-handoff notice (restart=$restart)',
+    async ({ restart, payload }) => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
       const output: WorkHandoffResult = { routing: { kind: 'return', requestId: 'review-request', outcome: 'needs_changes' },
@@ -191,11 +211,7 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
         destinationNodeId: t.request.destinationNodeId, used: 1, maximum: 1,
         latestDeliverable: '', remainingFindings: output.data.remainingFindings,
       }, [])
-      const metadataBytes = Buffer.byteLength(canonicalGraphJson({ ...preview,
-        delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8')
-      const prefix = 'deliverable with spaces, "quotes", \\slashes and a newline\n'
-      const prefixBytes = Buffer.byteLength(JSON.stringify(prefix), 'utf8') - 2
-      output.data.latestDeliverable = prefix + 'x'.repeat(65536 - metadataBytes - prefixBytes)
+      output.data.latestDeliverable = await boundaryNoticeDeliverable(pool, preview, payload)
       const candidate = HarnessExecutionSchema.parse({ ...t.executions[1], result: { outcome: 'succeeded', output } })
       WorkHandoffResultSchema.parse(output)
       let owner = await acquireOwner(pool, t.run.id)
@@ -215,6 +231,8 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
         expect(notice.latestDeliverable).toEqual(output.data.latestDeliverable)
         expect(notice.remainingFindings).toEqual(output.data.remainingFindings)
         expect(notice.cause).toEqual({ kind: 'last_return', returnId: delivered.value.returnId })
+        expect(await databaseJsonBytes(pool, { ...notice,
+          delivery: 'delivered', acknowledgementId: 'a'.repeat(200) })).toBe(65536)
         expect((await store.returnWork(candidate.id)).replayed).toBe(true)
         expect((await pool.query('select record from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(1)
         expect((await pool.query('select return_id from run_work_returns where run_id=$1', [t.run.id])).rowCount).toBe(1)
@@ -222,7 +240,11 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
     })
   }, 120000)
 
-  it.each([false, true])('delivers a boundary-sized exhausted-route denial notice (restart=%s)', async (restart) => {
+  it.each([
+    { restart: false, payload: 'text' }, { restart: true, payload: 'text' },
+    { restart: false, payload: 'numeric' }, { restart: true, payload: 'numeric' },
+  ] as const)('delivers a boundary-sized $payload exhausted-route denial notice (restart=$restart)',
+    async ({ restart, payload }) => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
       const t = await acceptedReview(pool, { routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
@@ -238,8 +260,7 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
         relationshipId: t.request.relationshipId, destinationNodeId: t.request.destinationNodeId,
         used: 1, maximum: 1, latestDeliverable: '', remainingFindings: [],
       }, [])
-      output.data.latestDeliverable = 'x'.repeat(65536 - Buffer.byteLength(canonicalGraphJson({ ...notice,
-        delivery: 'delivered', acknowledgementId: 'a'.repeat(200) }), 'utf8'))
+      output.data.latestDeliverable = await boundaryNoticeDeliverable(pool, notice, payload)
       const candidate = HarnessExecutionSchema.parse({ ...next.execution, result: { outcome: 'succeeded', output } })
       let owner = await acquireOwner(pool, t.run.id)
       try {
@@ -253,6 +274,8 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
         assert.equal(denied.kind, 'limit_reached')
         expect(denied.notice.latestDeliverable).toEqual(output.data.latestDeliverable)
         expect(denied.notice.cause).toEqual({ kind: 'limit_denial', denialId })
+        expect(await databaseJsonBytes(pool, { ...denied.notice,
+          delivery: 'delivered', acknowledgementId: 'a'.repeat(200) })).toBe(65536)
         expect((await store.admitWorkRequest(candidate.id)).replayed).toBe(true)
         expect((await pool.query('select 1 from run_work_denials where run_id=$1', [t.run.id])).rowCount).toBe(1)
         expect((await pool.query('select 1 from run_work_notices where run_id=$1', [t.run.id])).rowCount).toBe(1)
@@ -260,21 +283,28 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
     })
   }, 120000)
 
-  it('rejects an undeliverable denial notice before accepting the requester result', async () => {
+  it.each(['text', 'numeric'] as const)(
+    'rejects an oversized %s denial notice before acceptance and after recovery', async (payload) => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
       const t = await acceptedReview(pool, { routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
         data: { latestDeliverable: { revision: 1 }, remainingFindings: [] } })
+      const latestDeliverable = payload === 'numeric' ? Array<number>(1000).fill(1e100) : 'x'.repeat(65000)
       const output: WorkHandoffResult = { routing: { kind: 'request', outcome: 'review' },
-        data: { latestDeliverable: 'x'.repeat(65000), remainingFindings: [] } }
+        data: { latestDeliverable, remainingFindings: [] } }
       WorkHandoffResultSchema.parse(output)
       const next = await pendingRequester(pool, t, output)
-      const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-      assert.ok(owner)
+      let owner = await acquireOwner(pool, t.run.id)
       try {
-        await expect(owner.oneShotConnection().transaction((sql) =>
-          acceptPreparedResult(sql, t, next.activationId, next.execution, output)))
-          .rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+        for (const recover of [false, true]) {
+          if (recover) {
+            await owner.release()
+            owner = await acquireOwner(pool, t.run.id)
+          }
+          await expect(owner.oneShotConnection().transaction((sql) =>
+            acceptPreparedResult(sql, t, next.activationId, next.execution, output)))
+            .rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+        }
         expect((await pool.query('select accepted from harness_executions where id=$1', [next.execution.id])).rows[0]?.accepted)
           .toBe(false)
         expect((await pool.query('select 1 from run_work_results where execution_id=$1', [next.execution.id])).rowCount).toBe(0)
@@ -283,24 +313,48 @@ postgresDescribe('handoff delivery after terminal acceptance', () => {
     })
   }, 120000)
 
-  it.each(['accepted', 'needs_changes'] as const)(
-    'rejects a result whose derived %s envelope cannot be delivered before accepting it', async (outcome) => {
+  it.each([
+    { outcome: 'accepted', payload: 'text' }, { outcome: 'needs_changes', payload: 'text' },
+    { outcome: 'accepted', payload: 'numeric' }, { outcome: 'needs_changes', payload: 'numeric' },
+  ] as const)(
+    'rejects $payload $outcome delivery overflow before acceptance and after recovery',
+    async ({ outcome, payload }) => {
       await taskDatabase(async (pool) => {
         await applyApplicationMigrations(pool)
+        const latestDeliverable = payload === 'numeric' ? Array<number>(1000).fill(1e100) : 'x'.repeat(65000)
         const output: WorkHandoffResult = { routing: { kind: 'return', requestId: 'review-request', outcome },
-          data: { latestDeliverable: 'x'.repeat(65000), remainingFindings: [] } }
+          data: { latestDeliverable, remainingFindings: [] } }
         WorkHandoffResultSchema.parse(output)
         const t = await acceptedReview(pool, output, { reviewAccepted: false })
-        const execution = t.executions[1]!
+        if (payload === 'numeric' && outcome === 'needs_changes') {
+          const returned = returnPreview(t, output)
+          const notice = createWorkLimitNotice({ scope: t.fixture.scope, version: t.version, now: t.fixture.createdAt }, {
+            cause: { kind: 'last_return', returnId: returned.returnId },
+            requesterActivationId: t.request.requesterActivationId, requesterNodeId: t.request.requesterNodeId,
+            continuationActivationId: returned.continuationActivationId!, relationshipId: t.request.relationshipId,
+            destinationNodeId: t.request.destinationNodeId, used: 1, maximum: 1,
+            latestDeliverable: '', remainingFindings: [],
+          }, [])
+          const boundary = await boundaryNoticeDeliverable(pool, notice, payload)
+          assert.ok(typeof boundary === 'object')
+          output.data.latestDeliverable = { ...boundary, text: boundary.text + 'x' }
+          expect(await databaseJsonBytes(pool, returnPreview(t, output))).toBeLessThanOrEqual(65536)
+          expect(await databaseJsonBytes(pool, { ...notice, latestDeliverable: output.data.latestDeliverable,
+            delivery: 'delivered', acknowledgementId: 'a'.repeat(200) })).toBe(65537)
+        }
+        const execution = HarnessExecutionSchema.parse({ ...t.executions[1], result: { outcome: 'succeeded', output } })
         expect(Buffer.byteLength(text(execution.result), 'utf8')).toBeLessThanOrEqual(65536)
-        const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
-        assert.ok(owner)
+        let owner = await acquireOwner(pool, t.run.id)
         try {
-          await expect(owner.oneShotConnection().transaction(async (sql) => {
-            await assertWorkHandoffDeliveryLocked({ sql, scope: t.fixture.scope, version: t.version,
-              now: t.fixture.createdAt }, execution, t.request.destinationActivationId, output)
-            await sql.query('update harness_executions set accepted=true where id=$1', [execution.id])
-          })).rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+          for (const recover of [false, true]) {
+            if (recover) {
+              await owner.release()
+              owner = await acquireOwner(pool, t.run.id)
+            }
+            await expect(owner.oneShotConnection().transaction((sql) =>
+              acceptPreparedResult(sql, t, t.request.destinationActivationId, execution, output)))
+              .rejects.toMatchObject({ code: 'WORK_HANDOFF_DELIVERY_TOO_LARGE' })
+          }
           expect((await pool.query('select accepted from harness_executions where id=$1', [execution.id])).rows[0]?.accepted)
             .toBe(false)
           expect((await pool.query('select 1 from run_work_results where execution_id=$1', [execution.id])).rowCount).toBe(0)
