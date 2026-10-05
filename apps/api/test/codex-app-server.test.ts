@@ -6,7 +6,8 @@ import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { CODEX_INTERACTION_SUPPORT,
-  type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
+  type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction,
+  type InteractionResponseValue } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 
@@ -1072,29 +1073,47 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     phase = 'starting turn'
     const { result } = await start(session)
     phase = 'injecting form'
+    const requestedSchema = { type: 'object', properties: { email: { type: 'string', format: 'email' } },
+      required: ['email'], ...(mode === 'form' ? {} : { additionalProperties: false }) }
     await inject(session, 'mcpServer/elicitation/request', { mode, serverName: 'app', message: 'Enter email', _meta: null,
-      requestedSchema: { type: 'object', additionalProperties: false,
-        properties: { email: { type: 'string', format: 'email' } }, required: ['email'] } }, 4002)
+      requestedSchema }, 4002)
     phase = 'waiting for form'
     const value = await pending(session)
     const option = value.responseOptions[0]!
     assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
-    for (const response of [{}, { email: 'invalid' }, { email: 'user@example.com', extra: true }]) {
+    const invalidResponses: InteractionResponseValue[] = [{}, { email: 'invalid' }, { email: 42 },
+      ...(mode === 'form' ? [] : [{ email: 'user@example.com', extra: true }])]
+    for (const response of invalidResponses) {
       phase = `rejecting invalid form: ${JSON.stringify(response)}`
       await assert.rejects(manager.respond(session, value.turn.nativeRequestId!, { ...option, response }))
     }
     assert.equal((await manager.pending(session))?.turn.nativeRequestId, value.turn.nativeRequestId)
     assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
+    const response: InteractionResponseValue = { email: 'user@example.com', ...(mode === 'form' ? { extra: true } : {}) }
     phase = 'delivering valid form'
-    await manager.respond(session, value.turn.nativeRequestId!, { ...option, response: { email: 'user@example.com' } })
+    await manager.respond(session, value.turn.nativeRequestId!, { ...option, response })
     phase = 'reading delivered form'
     assert.deepEqual((await wire()).find((entry) => entry.id === 4002 && entry.result)!.result,
-      { action: 'accept', content: { email: 'user@example.com' }, _meta: null })
+      { action: 'accept', content: response, _meta: null })
     assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     assert.equal(await manager.pending(session), undefined)
     phase = 'finishing turn'
     await finish(f.directory, session.nativeSessionId)
     phase = 'draining terminal turn'
+    await result
+  })
+
+  it('rejects a malformed standard form envelope before offering input', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email',
+      requestedSchema: { type: 'object', additionalProperties: false,
+        properties: { email: { type: 'string', format: 'email' } }, required: ['email'] } }, 4003)
+    const rejected = await until(async () => (await wire()).find((entry) => entry.id === 4003 && entry.error))
+    assert(isObject(rejected.error))
+    assert.equal(rejected.error.code, -32602)
+    assert.equal(await manager.pending(session), undefined)
+    await finish(f.directory, session.nativeSessionId)
     await result
   })
 

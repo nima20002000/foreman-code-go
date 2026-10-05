@@ -137,8 +137,10 @@ describe('Codex session manager child control wiring over stdio', () => {
       const turnId = String((await state(f.directory, 'native-child')).turns.at(-1)!.id)
       const callbacks = {
         command: { method: 'item/commandExecution/requestApproval', params: {
-          itemId: 'command', command: 'printf harmless', cwd: f.directory, availableDecisions: ['accept', 'decline'] } },
-        file: { method: 'item/fileChange/requestApproval', params: { itemId: 'patch', reason: 'Edit the requested file' } },
+          itemId: 'command', startedAtMs: 1, command: 'printf harmless', cwd: f.directory,
+          availableDecisions: ['accept', 'decline'] } },
+        file: { method: 'item/fileChange/requestApproval', params: {
+          itemId: 'patch', startedAtMs: 1, reason: 'Edit the requested file' } },
         questions: { method: 'item/tool/requestUserInput', params: { itemId: 'question', isBlocking: true,
           questions: [{ id: 'answer', header: 'Answer', question: 'Enter details', isOther: true,
             isSecret: false, options: null }] } },
