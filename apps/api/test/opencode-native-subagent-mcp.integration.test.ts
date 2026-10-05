@@ -112,6 +112,7 @@ it('dispatches qualified native child input through authenticated MCP with scope
     })
     assert(detail)
     assert.equal(detail.subagent.status, 'completed')
+    assert.equal(Date.parse(detail.subagent.firstObservedAt), object(child.time).created)
     assert.equal(detail.availableActions.sendInput, true)
     assert.equal(detail.subagent.capabilities.sendInput.qualification, 'passed')
     const command = { ...input, subagentId: detail.subagent.id, commandId: randomUUID(),

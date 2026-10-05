@@ -15,7 +15,7 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
+import { AgentChatEvents, AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import { agentChatCorrelation, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
@@ -40,7 +40,10 @@ import { configuration, FixtureServer, json } from './opencode-fixtures.js'
 function waitForDelivery(chat: AgentChatService, repository: PostgresAgentChatRepository,
   id: string, requestId: string, delivery: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    let settled = false
     const finish = (error?: unknown) => {
+      if (settled) return
+      settled = true
       clearTimeout(timeout)
       unsubscribe()
       if (error) reject(error)
@@ -63,6 +66,18 @@ function waitForDelivery(chat: AgentChatService, repository: PostgresAgentChatRe
     void check().catch(finish)
   })
 }
+
+it('retains current delivery listeners when an older subscription is released twice', () => {
+  const events = new AgentChatEvents()
+  const observed: Record<string, unknown>[] = []
+  const releaseOld = events.subscribe('conversation', () => {})
+  releaseOld()
+  const releaseCurrent = events.subscribe('conversation', (event) => { observed.push(event.data) })
+  releaseOld()
+  events.publish('conversation', 'turn', { requestId: 'queued', delivery: 'accepted' })
+  assert.deepEqual(observed, [{ requestId: 'queued', delivery: 'accepted' }])
+  releaseCurrent()
+})
 
 // Native HTTP/SSE and its absent OS process are fixtures. Admission, credentials,
 // bytes, host cleanup, manager, chat queue, HTTP/MCP authorization and SQL are real.
@@ -126,6 +141,7 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
       const attachment = { fileId: uploaded.file.fileId, revisionId: uploaded.revision.revisionId }
 
       const server = new FixtureServer()
+      server.nextSessionIds.push(`ses_${randomUUID().replaceAll('-', '')}`)
       server.config = { mcp: { graphql: { enabled: false } } }
       server.mcp = { graphql: { status: 'disabled' } }
       server.beforeRequest = (path, init) => {

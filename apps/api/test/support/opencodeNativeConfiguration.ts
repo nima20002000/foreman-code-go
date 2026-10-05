@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
 import { vi } from 'vitest'
@@ -21,7 +21,7 @@ export async function nativeConfigurationFixture(options: {
   respond?: (call: NativeModelCall, index: number) => Promise<string>
   beforeFinish?: (call: NativeModelCall, index: number) => Promise<void>
 } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'opencode-native-configuration-'))
+  const directory = await mkdtemp(join(options.files ? homedir() : tmpdir(), '.opencode-native-configuration-'))
   const workspaceRoot = join(directory, 'workspace')
   const vault = join(directory, 'vault')
   if (options.files) await mkdir(workspaceRoot, { mode: 0o700 })

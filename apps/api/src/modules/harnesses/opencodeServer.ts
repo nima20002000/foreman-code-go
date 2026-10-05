@@ -33,7 +33,7 @@ import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import {
   boundedMapSet, boundedSetAdd, configurationPermissionRules, digest, eventSessionId, failure,
-  nativeMessageId, nativePolicy, normalizedHistory, object, OpenCodeTurnHistory,
+  nativeMessageId, nativePolicy, normalizedHistory, object, openCodeTimestamp, OpenCodeTurnHistory,
   OPENCODE_EVENT_BYTES, OPENCODE_EVENT_LIMIT, OPENCODE_HISTORY_PAGE_SIZE,
   parseOpenCodeSse, providerSupports, visibleNativeEvent,
   type JsonObject, type OpenCodeEvent, type OpenCodeMessage,
@@ -1068,7 +1068,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'Child roster does not prove exact ancestry and directory.')
         }
         children.set(child.id, child); queue.push(child.id)
-        events.push(childHistoryEvent('session.created', { info: child }))
+        events.push(childHistoryEvent('session.created', { info: child }, openCodeTimestamp(object(child.time).created)))
       }
     }
     const ids = [...children.keys()].sort()

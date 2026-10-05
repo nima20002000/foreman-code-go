@@ -166,12 +166,16 @@ export function visibleNativeEvent(event: OpenCodeEvent, thinking: boolean, part
   return true
 }
 
+export function openCodeTimestamp(value: unknown): string {
+  const timestamp = typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 8_640_000_000_000_000
+    ? value : 0
+  return new Date(timestamp).toISOString()
+}
+
 export function normalizedHistory(messages: OpenCodeMessage[], thinking: boolean): NativeHarnessEvent[] {
   const result: NativeHarnessEvent[] = []
   for (const message of messages) {
-    const created = object(message.info.time).created
-    const timestamp = typeof created === 'number' && Number.isFinite(created) && Math.abs(created) <= 8_640_000_000_000_000 ? created : 0
-    const occurredAt = new Date(timestamp).toISOString()
+    const occurredAt = openCodeTimestamp(object(message.info.time).created)
     const id = String(message.info.id)
     const messageEventId = `message:${id}:${digest(message.info)}`
     result.push({ connectionId: `history-${digest(messageEventId)}`, sequence: 0, type: 'message.updated', occurredAt,

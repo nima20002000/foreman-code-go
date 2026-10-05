@@ -75,7 +75,10 @@ export class AgentChatEvents {
   subscribe(id: string, listener: (event: AgentChatStreamEvent) => void) {
     const listeners = this.listeners.get(id) ?? new Set()
     listeners.add(listener); this.listeners.set(id, listeners)
-    return () => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(id) }
+    return () => {
+      listeners.delete(listener)
+      if (!listeners.size && this.listeners.get(id) === listeners) this.listeners.delete(id)
+    }
   }
 }
 
