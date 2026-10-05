@@ -49,6 +49,7 @@ export async function inspectInstalledVerificationRuntime(input: {
     || !isDeepStrictEqual(recorded.resources, profile.spec.resources)
     || !isDeepStrictEqual(recorded.approvalConfig, profile.approvalConfig)
     || !isDeepStrictEqual(recorded.network, profile.spec.policy.network)
+    || !profile.sourceCommit || recorded.sourceCommit !== profile.sourceCommit
     || recorded.seedReceiptSha256 !== configuration.seedReceiptSha256) {
     throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'Protected verification installation differs from this profile.', 409)
   }

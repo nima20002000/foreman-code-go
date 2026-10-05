@@ -24,7 +24,7 @@ import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema,
   jobRuntimeProfilePolicy, jobRuntimeProfileLimits, type JobRuntimeApprovalRecord,
   type JobRuntimeProfileRecord, type JobRuntimeProfileSaveRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { createVerificationProfile, requireVerificationOwnerReview } from './verificationProfiles.js'
+import { createVerificationProfile, requireReviewedVerificationConfiguration } from './verificationProfiles.js'
 import type { z } from 'zod'
 import { runtimeQualificationFacts, validateRuntimeQualification, qualificationTimeoutMs, qualificationDeadline }
   from './runtimeQualificationFacts.js'
@@ -60,8 +60,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       const profiles=await Promise.all(rows.rows.map(async row=>{
         const profile=JobRuntimeProfileRecordSchema.parse(row.record)
         let readiness: { ready: boolean; reasons: string[] }
-        if (profile.schemaVersion === 2 && !profile.approvalConfig.review) readiness = verificationProfileReadiness({ profile, currentFingerprint: null })
-        else if (profile.schemaVersion === 2) readiness = await this.producer.revalidate(sql,profile)
+        if (profile.schemaVersion === 2) readiness = await this.readiness(sql, profile)
         else readiness=profile.status==='qualified'&&profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
         return {profile,...readiness,sideEffects:false as const}
       }))
@@ -86,8 +85,12 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const now=new Date().toISOString()
         let profile: JobRuntimeProfileRecord
         if ('resources' in input.spec) {
+          const approvedSource = await this.sources.resolveApprovedSource(sql, principal, workspaceId, root.source)
+          const sourceCommit = approvedSource.manifest.git?.commit
+          if (!sourceCommit) throw new DomainError('JOB_SOURCE_COMMIT_REQUIRED',
+            'Verification profiles require an approved source snapshot with its Git commit.', 409)
           profile = createVerificationProfile({ id, workspaceId, revision, name: input.name,
-            root, spec: input.spec, previous: old, now })
+            root, sourceCommit, spec: input.spec, previous: old, now })
         } else {
           const specDigest=jobDigest({workspaceId,id,revision,root,policy,limits:input.spec.limits})
           profile=JobRuntimeProfileSchema.parse({schemaVersion:1,id,workspaceId,revision,name:input.name,root,policy,limits:input.spec.limits,specDigest,status:'unqualified',measurement:null,createdAt:old?.createdAt??now,updatedAt:now})
@@ -108,12 +111,17 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       prepare:async()=>{
         const saved=await this.transaction(async sql=>{await this.authorize(sql,principal,workspaceId,true);return this.record(sql,workspaceId,input.profileId)})
         if(saved.revision!==input.expectedRevision)throw new DomainError('REVISION_CONFLICT','The runtime profile changed.',409)
-        if (saved.schemaVersion === 2) requireVerificationOwnerReview(saved)
+        if (saved.schemaVersion === 2) requireReviewedVerificationConfiguration(saved)
         const profile = saved
         const {isolationPolicyId,isolationPolicyRevision,...policy}=jobRuntimeProfilePolicy(profile)
         if (profile.schemaVersion === 1) JobRuntimeProfileInputSchema.parse({rootId:profile.root.binding.rootId,bindingRevision:profile.root.binding.bindingRevision,limits:profile.limits,policy})
         if(isolationPolicyId!==profile.id||isolationPolicyRevision!==profile.revision)throw new DomainError('JOB_RUNTIME_PROFILE_SCOPE_CONFLICT','The policy differs from its exact profile revision.',409)
         const fingerprint=JobRuntimeFingerprintRecordSchema.parse(await this.producer.capture(profile))
+        if (profile.schemaVersion === 2 && (fingerprint.schemaVersion !== 3
+          || fingerprint.sourceCommit !== profile.sourceCommit)) {
+          throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
+            'Verification qualification must capture the approved commit and verification profile.', 409)
+        }
         if(fingerprint.profileId!==profile.id||fingerprint.profileRevision!==profile.revision||fingerprint.specDigest!==profile.specDigest||canonical(fingerprint.root)!==canonical(profile.root)||canonical(fingerprint.hostRef)!==canonical(profile.root.selection.hostRef)||canonical(fingerprint.registration)!==canonical(profile.root.registration)||canonical(fingerprint.limits)!==canonical(jobRuntimeProfileLimits(profile)))throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Installed metadata does not match this profile revision.',409)
         if (profile.schemaVersion === 2 && (fingerprint.schemaVersion !== 3
           || canonical(fingerprint.resources) !== canonical(profile.spec.resources)
@@ -250,8 +258,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     return policies
   }
   readiness(sql: JobSql, profile: JobRuntimeProfileRecord) {
-    if (profile.schemaVersion === 2 && !profile.approvalConfig.review) {
-      return Promise.resolve({ ready: false, reasons: ['approval_review_required'] })
+    if (profile.schemaVersion === 2 && (!profile.approvalConfig.review || !profile.sourceCommit)) {
+      return Promise.resolve({ ready: false, reasons: ['runtime_configuration_changed'] })
     }
     if (profile.status !== 'qualified' || !profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) {
       return Promise.resolve({ ready: false, reasons: ['runtime_setup_required'] })
@@ -267,7 +275,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonical(jobRuntimeProfilePolicy(profile))!==canonical(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
     if ('verification' in spec) {
       if (profile.schemaVersion !== 2 || !profile.measurement) throw new DomainError('JOB_RUNTIME_UNQUALIFIED','A verification Job requires its measured verification profile.',409)
-      requireVerificationOwnerReview(profile)
+      requireReviewedVerificationConfiguration(profile)
+      if (profile.sourceCommit !== spec.source.commit || profile.measurement.fingerprint.sourceCommit !== spec.source.commit) {
+        throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
+          'The approved verification profile belongs to another source commit.', 409)
+      }
       const measured = profile.measurement.suites.find(value => value.suite === spec.verification.suite)
       if (!measured || canonical(measured.resources) !== canonical(spec.verification.resources)
         || spec.verification.parameters.unitWorkers > measured.maxUnitWorkers
@@ -289,7 +301,7 @@ export function verificationProfileReadiness(input: {
   const measurement = profile.measurement
   const now = input.now ?? Date.now()
   const denied = (reason: string) => ({ ready: false, reasons: [reason], sideEffects: false as const })
-  if (!profile.approvalConfig.review) return denied('approval_review_required')
+  if (!profile.approvalConfig.review || !profile.sourceCommit) return denied('runtime_configuration_changed')
   if (profile.status !== 'qualified' || !measurement) return denied('runtime_setup_required')
   if (Date.parse(measurement.expiresAt) <= now || Date.parse(measurement.identity.approvalExpiresAt) <= now) {
     return denied('qualification_expired')

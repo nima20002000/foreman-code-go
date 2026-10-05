@@ -11,17 +11,17 @@ function wrapper(){const client=new QueryClient({defaultOptions:{queries:{retry:
 afterEach(()=>{cleanup();for(const client of clients.splice(0))client.clear()})
 const base=`/api/management/workspaces/${profile.workspaceId}/jobs`
 describe('runtime profile browser client',()=>{
-  it('reads persisted verification resources and pending owner review without starting qualification', async () => {
+  it('reads persisted verification resources and runtime setup status without starting qualification', async () => {
     let reads = 0
     server.use(http.get(`${base}/runtime-profiles`, () => {
       reads++
       return HttpResponse.json({ profiles: [{ profile: verificationProfile, ready: false,
-        reasons: ['approval_review_required'], sideEffects: false }], approvals: [] })
+        reasons: ['runtime_configuration_changed'], sideEffects: false }], approvals: [] })
     }))
     const read = renderHook(() => useJobRuntimeProfiles(profile.workspaceId), { wrapper: wrapper() })
     await waitFor(() => expect(read.result.current.isSuccess).toBe(true))
     expect(read.result.current.data?.profiles[0]).toEqual({ profile: verificationProfile, ready: false,
-      reasons: ['approval_review_required'], sideEffects: false })
+      reasons: ['runtime_configuration_changed'], sideEffects: false })
     expect(reads).toBe(1)
   })
   it('reads exact scoped pending fingerprints through HTTP',async()=>{

@@ -47,7 +47,7 @@ function WorkspaceApprovals({ workspaceId, name, registration }: { workspaceId: 
     const profile = item.profile
     const host = profile.root.selection.hostRef
     const binding = profile.root.registration
-    return profile.schemaVersion === 2 && !item.ready && item.reasons.includes('approval_review_required')
+    return profile.schemaVersion === 2 && !item.ready
       && host.kind === 'device' && host.mainId === registration.mainId && host.deviceId === registration.deviceId
       && binding?.workerInstallationId === registration.workerInstallationId
       && binding.keyRevision === registration.keyRevision && binding.authorizationRevision === registration.authorizationRevision
@@ -57,8 +57,9 @@ function WorkspaceApprovals({ workspaceId, name, registration }: { workspaceId: 
       if (profile.schemaVersion !== 2) return null
       return <article key={profile.id} aria-label={`Verification profile ${profile.name}`}>
         <h4>{profile.name}</h4>
-        <p role="status">Verification is waiting for the owner to review approval lifetime and resource limits.</p>
+        <p role="status">Verification needs runtime setup for this saved commit. The approved policy uses offline dependencies and a 24-hour approval.</p>
         <dl className="computer-facts">
+          <div><dt>Approved commit</dt><dd>{profile.sourceCommit ?? 'Save a profile revision to bind its commit'}</dd></div>
           <div><dt>Requested suites</dt><dd>{profile.spec.suites.join(', ')}</dd></div>
           <div><dt>Requested CPU / memory / processes</dt><dd>{profile.spec.resources.limits.cpuLimit} CPU / {profile.spec.resources.limits.memoryBytes} bytes / {profile.spec.resources.limits.pidsLimit} processes</dd></div>
         </dl>

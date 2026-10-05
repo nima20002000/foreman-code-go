@@ -66,6 +66,7 @@ function verificationRuntimeFixture() {
     network: f.profile.network, resources,
     approvalConfig: { schemaVersion: 1 as const, revision: 1, approvalLifetimeMs: 3_600_000,
       review: { reviewedByPrincipalId: 'owner', reviewedAt: now, decisionDigest: digest } }, tools: [], seedReceiptSha256: digest,
+    sourceCommit: f.build.source.commit,
   }
   const profile = { ...f.profile, rootId: baseline.root.binding.rootId, fingerprintDigest: hash(fingerprint),
     approvalExpiresAt: expiry, qualificationExpiresAt: expiry }
@@ -91,6 +92,12 @@ function verificationRuntimeFixture() {
 }
 
 describe('offline verification launch validation with structured physical observations', () => {
+  it('rejects another source commit before using the approved runtime', () => {
+    const f = verificationRuntimeFixture()
+    expect(() => requireVerificationRuntime({ ...f.spec,
+      source: { ...f.spec.source, commit: 'c'.repeat(40) } }, f.measurement, f.runtime))
+      .toThrow('no matching measured offline runtime')
+  })
   it('derives the trusted ordinary wrapper context from accepted identities, declared limits and qualified workers', () => {
     const f = verificationRuntimeFixture()
     const paths = [

@@ -31,14 +31,15 @@ function handlers(pending = deviceApproval) {
   http.get(`${base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{ profile: deviceProfile, ready: false, reasons: [], sideEffects: false }], approvals: [pending] })))
   return base
 }
-it('shows why verification is pending owner review without offering an approval or implying qualification', async () => {
+it('shows verification runtime setup without offering an approval or implying qualification', async () => {
   const base = handlers()
   const pending = JobVerificationProfileSchema.parse({ ...verificationProfile, root })
   server.use(http.get(`${base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{ profile: pending,
-    ready: false, reasons: ['approval_review_required'], sideEffects: false }], approvals: [] })))
+    ready: false, reasons: ['runtime_configuration_changed'], sideEffects: false }], approvals: [] })))
   renderPanel()
   expect(await screen.findByRole('heading', { name: pending.name })).toBeInTheDocument()
-  expect(screen.getByRole('status')).toHaveTextContent('waiting for the owner to review')
+  expect(screen.getByRole('status')).toHaveTextContent('runtime setup for this saved commit')
+  expect(screen.getByRole('status')).toHaveTextContent('offline dependencies and a 24-hour approval')
   expect(screen.getByText('install, unit')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
   expect(screen.queryByText('Approved for physical qualification')).not.toBeInTheDocument()
