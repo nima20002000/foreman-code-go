@@ -219,8 +219,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       { commandId: startCommand, definitionId, expectedRevision: 1 }))
       .rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503 })
     try {
-      await Promise.race([started, pending.then(response => {
-        throw new Error(`Start returned ${response.statusCode} before source preparation entered`)
+      await Promise.race([started, pending.then(() => {
+        throw new Error('Start settled before source preparation entered')
       })])
       const row=(await database.pool.query<{operation_id:string}>('select operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,startCommand])).rows[0]!
       const command={operationId:row.operation_id,commandId:randomUUID()}
