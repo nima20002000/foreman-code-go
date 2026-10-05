@@ -17,6 +17,7 @@ import { WorkspaceManagementService } from '../../src/modules/workspaces/managem
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 
 export async function workspaceMcpFixture(options: {
+  connectionString?: string
   port?: number
   configure?(fixture: {
     app: ReturnType<typeof buildApp>
@@ -27,8 +28,8 @@ export async function workspaceMcpFixture(options: {
     services: OperatorServices
   }): Promise<void>
 } = {}) {
-  const connectionString = process.env.TEST_DATABASE_URL
-  if (!connectionString) throw new Error('TEST_DATABASE_URL is required')
+  const connectionString = options.connectionString ?? process.env.TEST_DATABASE_URL
+  if (!connectionString) throw new Error('A disposable test database is required')
   const databaseUrl = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(databaseUrl.hostname)
     || !databaseUrl.pathname.includes('test')) {

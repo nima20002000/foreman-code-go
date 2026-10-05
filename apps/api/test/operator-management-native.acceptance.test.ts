@@ -25,7 +25,8 @@ import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
 
-const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1' && Boolean(process.env.TEST_DATABASE_URL)
+const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1'
+const connectionString = process.env.OPERATOR_NATIVE_TEST_DATABASE_URL
 const binaries = harnessBinaries(process.env)
 
 function nativeCallCompleted(event: NativeHarnessEvent, harness: 'codex' | 'opencode', name: string) {
@@ -59,6 +60,7 @@ async function availablePort() {
 describe.skipIf(!enabled)('installed native Operator management MCP', () => {
   for (const harness of ['codex', 'opencode'] as const) {
     it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
+      if (!connectionString) throw new Error('OPERATOR_NATIVE_TEST_DATABASE_URL must name a disposable test database.')
       const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
@@ -75,9 +77,9 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           type: 'remote', url: endpoint, enabled: true,
           headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
         } } }))
-        f = await workspaceMcpFixture({ port, async configure({ app, pool, access, commands, parentPath, services }) {
+        f = await workspaceMcpFixture({ connectionString, port, async configure({ app, pool, access, commands, parentPath, services }) {
           const config: ApiConfig = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
-            database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
+            database: { connectionString, maxConnections: 4,
               connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
             workspaceStorageRoot: parentPath, fileStorageRoot: join(home, 'vault'), harnesses: {
               ...binaries, workspaceRoot: join(home, 'runtime'), timeoutMs: 180000,
