@@ -4,9 +4,14 @@ import type { RunOwnership } from '../runs/ownership.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import {
+  RemoteJobDispatchIntentSchema,
+  RemoteJobOperationReceiptRecordSchema,
+  type RemoteJobDispatchRecordPort,
+  type RemoteJobOperationReceiptRecord,
+} from '@foreman-code/contracts/remote-job-execution'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
-import { JobExecutionSchema, type AcceptedJobSpec, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobAcceptedSpecRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -20,11 +25,11 @@ import type { JobWorkerFence } from './worker.js'
 
 export interface JobDispatchHost {
   /** Actual W07 registration/boot/current connection and W09 source/root qualification. */
-  revalidate(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal,
+  revalidate(sql:JobSql,execution:JobExecutionRecord,principal:ManagementPrincipal,
     options?: { requireQualification: boolean }):Promise<void>
-  authorizeControl(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
-  authorizeLaunch?(sql:JobSql,execution:JobExecution):Promise<void>
-  observe(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<void>
+  authorizeControl(sql:JobSql,execution:JobExecutionRecord,principal:ManagementPrincipal):Promise<void>
+  authorizeLaunch?(sql:JobSql,execution:JobExecutionRecord):Promise<void>
+  observe(sql:JobSql,execution:JobExecutionRecord,receipt:RemoteJobOperationReceiptRecord):Promise<void>
   settleSource?(executionId: string): Promise<void>
   capacityChanged?(): void
   prepareWaiting?(executionId: string): Promise<void>
@@ -34,28 +39,31 @@ export interface JobDispatchHost {
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
   private readonly repository=new JobRepository()
   private readonly owners=new Map<string,{owner:JobOwnership;abort:AbortController;pendingRequests:number;settlementRequested:boolean}>()
-  constructor(private readonly pool: pg.Pool, private readonly remote: RemoteJobDispatchPort,
+  constructor(private readonly pool: pg.Pool, private readonly remote: RemoteJobDispatchRecordPort,
     private readonly host: JobDispatchHost,
     private readonly workerExecution = new WorkerExecutionPolicy()) {}
-  async accept(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;spec:AcceptedJobSpec;workflow:JobExecution['workflow'];principal:ManagementPrincipal}) {
+  async accept(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;spec:JobAcceptedSpecRecord;workflow:JobExecutionRecord['workflow'];principal:ManagementPrincipal}) {
     this.workerExecution.requireEnabled(input.spec.target.hostRef)
     const intent=RemoteJobDispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:input.spec.target.mainId,
       subject:input.workflow?{kind:'workflow-node',workspaceId:input.workspaceId,...input.workflow}:{kind:'manual-job',workspaceId:input.workspaceId,jobExecutionId:input.executionId,definitionId:input.spec.definitionId},
-      executionId:input.executionId,attemptId:input.attemptId,operationId:input.operationId,bindingHash:input.spec.bindingHash,inputDigest:`sha256:${input.spec.specDigest}`,owner:{grantId:randomUUID(),epoch:'1'}})
+      executionId:input.executionId,attemptId:input.attemptId,operationId:input.operationId,bindingHash:input.spec.bindingHash,inputDigest:`sha256:${input.spec.specDigest}`,owner:{grantId:randomUUID(),epoch:'1'},
+      ...(input.spec.resourcePolicyRevision !== undefined ? { resourcePolicyRevision: input.spec.resourcePolicyRevision,
+        resourcePolicyDigest: input.spec.resourcePolicyDigest, runtimeApprovalId: input.spec.runtimeApprovalId,
+        runtimeApprovalRevision: input.spec.runtimeApprovalRevision } : {})})
     await sql.query('insert into job_dispatch_intents(execution_id,workspace_id,intent) values($1,$2,$3::jsonb)',[input.executionId,input.workspaceId,JSON.stringify(intent)])
     return {operationId:intent.operationId,attemptId:intent.attemptId,owner:intent.owner}
   }
-  async cancel(sql:JobSql,execution:JobExecution,commandId:string,principal:ManagementPrincipal,action:'jobs:cancel'|'runs:stop'='jobs:cancel'):Promise<void> {
+  async cancel(sql:JobSql,execution:JobExecutionRecord,commandId:string,principal:ManagementPrincipal,action:'jobs:cancel'|'runs:stop'='jobs:cancel'):Promise<void> {
     await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3),cancel_action=coalesce(cancel_action,$4) where execution_id=$1',[execution.id,commandId,principal.id,action])
   }
-  cancelForRunCleanup(sql:GraphTransactionSql,execution:JobExecution,owner:RunOwnership,reason:JobRunCleanup['reason']) {return requestRunJobCleanup(sql,execution,owner,reason)}
+  cancelForRunCleanup(sql:GraphTransactionSql,execution:JobExecutionRecord,owner:RunOwnership,reason:JobRunCleanup['reason']) {return requestRunJobCleanup(sql,execution,owner,reason)}
   /** The accepted Run association is immutable. Acquire Run before Job, as workflow polling does. */
-  private async readExecutionLocked(sql:JobSql,workspaceId:string,executionId:string):Promise<JobExecution> {
+  private async readExecutionLocked(sql:JobSql,workspaceId:string,executionId:string):Promise<JobExecutionRecord> {
     const accepted=await this.repository.execution(sql,workspaceId,executionId)
     if(accepted.workflow)await sql.query('select id from runs where id=$1 for share',[accepted.workflow.runId])
     return this.repository.execution(sql,workspaceId,executionId,true)
   }
-  private async requireOwner(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+  private async requireOwner(sql:JobSql,execution:JobExecutionRecord,fence:JobWorkerFence):Promise<void> {
     const row=(await sql.query<{intent:unknown;owner_id:string|null;owner_fence:string|null}>('select intent,owner_id,owner_fence from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
     if(!row)throw new DomainError('JOB_DISPATCH_MISSING','The accepted W08 job dispatch intent is missing.',409)
     const intent=RemoteJobDispatchIntentSchema.parse(row.intent)
@@ -64,7 +72,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(!live)throw new DomainError('JOB_OWNERSHIP_LOST','The original main job owner session is no longer live.',409)
   }
   /** Launch/publication never borrow committed cleanup stop authority. */
-  async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence,
+  async require(sql:JobSql,execution:JobExecutionRecord,fence:JobWorkerFence,
     options?: { requireQualification: boolean }):Promise<void> {
     await this.requireOwner(sql,execution,fence)
     if(await readRunJobCleanup(sql,execution))throw new DomainError('JOB_CLEANUP_ONLY','The original Run owner admitted stop/closure only, not launch or publication.',409)
@@ -74,17 +82,17 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(accepted.cancel_principal_id)await this.host.authorizeControl(sql,execution,principal)
     else await this.host.revalidate(sql,execution,principal,options)
   }
-  async requireControl(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+  async requireControl(sql:JobSql,execution:JobExecutionRecord,fence:JobWorkerFence):Promise<void> {
     await this.requireOwner(sql,execution,fence)
     if(await readRunJobCleanup(sql,execution))return
     await this.require(sql,execution,fence)
   }
-  async requireLaunch(sql: JobSql, execution: JobExecution, fence: JobWorkerFence): Promise<void> {
+  async requireLaunch(sql: JobSql, execution: JobExecutionRecord, fence: JobWorkerFence): Promise<void> {
     await this.require(sql, execution, fence, { requireQualification: true })
     await this.host.authorizeLaunch?.(sql, execution)
   }
   /** Only trusted carrier receipt ingress uses this. No file write/read capability. */
-  async requireEvidence(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {return this.requireControl(sql,execution,fence)}
+  async requireEvidence(sql:JobSql,execution:JobExecutionRecord,fence:JobWorkerFence):Promise<void> {return this.requireControl(sql,execution,fence)}
   async wake(executionId:string):Promise<void> {
     if (this.host.prepareWaiting) {
       const waiting = (await this.pool.query(`select 1 from job_admission_queue q where execution_id=$1
@@ -233,7 +241,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     })
   }
   /** W07/W08 validated receipt ingress. Retains the original main owner across asynchronous work. */
-  async observeReceipt(workspaceId:string,executionId:string,receipt:RemoteJobOperationReceipt):Promise<void> {
+  async observeReceipt(workspaceId:string,executionId:string,receipt:RemoteJobOperationReceiptRecord):Promise<void> {
     const active=this.owners.get(executionId)
     if(!active)throw new DomainError('JOB_RECONCILIATION_REQUIRED','Acquire the original job owner and reconcile its journal before accepting a receipt.',409)
     active.owner.assertOwned()
@@ -247,8 +255,8 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     })
     if(terminal)await this.settle(executionId)
   }
-  async importCancellationClosure(workspaceId: string, executionId: string, receipt: RemoteJobOperationReceipt,
-    authorizeAndRelease: (sql: GraphTransactionSql, execution: JobExecution) => Promise<void>): Promise<void> {
+  async importCancellationClosure(workspaceId: string, executionId: string, receipt: RemoteJobOperationReceiptRecord,
+    authorizeAndRelease: (sql: GraphTransactionSql, execution: JobExecutionRecord) => Promise<void>): Promise<void> {
     let active = this.owners.get(executionId)
     if (!active) {
       const abort = new AbortController()
@@ -276,12 +284,12 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       await this.release(executionId)
     }
   }
-  private async acceptReceipt(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<boolean> {
-    receipt=RemoteJobOperationReceiptSchema.parse(receipt)
+  private async acceptReceipt(sql:JobSql,execution:JobExecutionRecord,receipt:RemoteJobOperationReceiptRecord):Promise<boolean> {
+    receipt=RemoteJobOperationReceiptRecordSchema.parse(receipt)
     const row=(await sql.query<{intent:unknown;receipt_sequence:string;last_receipt:unknown}>('select intent,receipt_sequence::text,last_receipt from job_dispatch_intents where execution_id=$1 for update',[execution.id])).rows[0]!
     if(canonical(row.intent)!==canonical(receipt.intent))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Remote receipt does not match the accepted operation/attempt/subject.',409)
     if(row.last_receipt) {
-      const previous=RemoteJobOperationReceiptSchema.parse(row.last_receipt)
+      const previous=RemoteJobOperationReceiptRecordSchema.parse(row.last_receipt)
       if(canonical(previous.connection)!==canonical(receipt.connection)||previous.workerIncarnationId!==receipt.workerIncarnationId)throw new DomainError('JOB_RECEIPT_IDENTITY_CONFLICT','Original worker receipt identity cannot change during recovery.',409)
       if(previous.native && (!receipt.native||previous.native.containerId!==receipt.native.containerId||previous.native.supervisorIdentity!==receipt.native.supervisorIdentity||previous.native.processIdentityDigest!==receipt.native.processIdentityDigest||previous.native.startedAt!==receipt.native.startedAt))throw new DomainError('JOB_NATIVE_IDENTITY_CONFLICT','Original supervised container/process identity cannot change.',409)
       if(previous.terminal && (!receipt.terminal||previous.terminal.outcome!==receipt.terminal.outcome||previous.terminal.exitCode!==receipt.terminal.exitCode||previous.terminal.signal!==receipt.terminal.signal||previous.terminal.finishedAt!==receipt.terminal.finishedAt||previous.terminal.closureEvidenceDigest!==receipt.terminal.closureEvidenceDigest))throw new DomainError('JOB_TERMINAL_CONFLICT','Original observed process closure cannot change.',409)
@@ -296,7 +304,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
   /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
   async readAcceptedNonEntryClosure(sql: JobSql, input: {
     workspaceId: string; executionId: string; attemptId: string; operationId: string;
-    bindingHash: string; owner: JobExecution['owner']
+    bindingHash: string; owner: JobExecutionRecord['owner']
   }): Promise<boolean> {
     const row = (await sql.query<{
       record: unknown; accepted_spec: unknown; intent: unknown; delivery_attempted: boolean;
@@ -309,7 +317,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       for share of e,d`,
     [input.workspaceId, input.executionId, input.attemptId, input.operationId])).rows[0]
     if (!row || row.delivery_attempted || row.last_receipt) return false
-    const execution = JobExecutionSchema.parse(row.record)
+    const execution = JobExecutionRecordSchema.parse(row.record)
     const intent = RemoteJobDispatchIntentSchema.parse(row.intent)
     const subject = execution.workflow
       ? { kind: 'workflow-node', workspaceId: execution.workspaceId, ...execution.workflow }
@@ -334,14 +342,14 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
   }
 
   /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
-  async readAcceptedClosureReceipt(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;bindingHash:string;owner:JobExecution['owner']}):Promise<RemoteJobOperationReceipt|null> {
+  async readAcceptedClosureReceipt(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;bindingHash:string;owner:JobExecutionRecord['owner']}):Promise<RemoteJobOperationReceiptRecord|null> {
     const row=(await sql.query<{record:unknown;accepted_spec:unknown;intent:unknown;last_receipt:unknown;receipt_sequence:string}>(`select e.record,e.accepted_spec,d.intent,d.last_receipt,d.receipt_sequence::text
       from job_executions e join job_dispatch_intents d on d.execution_id=e.id and d.workspace_id=e.workspace_id
       where e.workspace_id=$1 and e.id=$2 and e.attempt_id=$3 and e.operation_id=$4
         and d.intent->>'bindingHash'=$5 and d.intent #>> '{owner,grantId}'=$6 and d.intent #>> '{owner,epoch}'=$7
       for share of e,d`,[input.workspaceId,input.executionId,input.attemptId,input.operationId,input.bindingHash,input.owner.grantId,input.owner.epoch])).rows[0]
     if(!row||!row.last_receipt)return null
-    const execution=JobExecutionSchema.parse(row.record),intent=RemoteJobDispatchIntentSchema.parse(row.intent),receipt=RemoteJobOperationReceiptSchema.parse(row.last_receipt)
+    const execution=JobExecutionRecordSchema.parse(row.record),intent=RemoteJobDispatchIntentSchema.parse(row.intent),receipt=RemoteJobOperationReceiptRecordSchema.parse(row.last_receipt)
     const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
       :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
     if(execution.workspaceId!==input.workspaceId||execution.id!==input.executionId||execution.attemptId!==input.attemptId||execution.operationId!==input.operationId

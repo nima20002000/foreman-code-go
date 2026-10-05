@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
 import type { Readable } from 'node:stream'
-import { JobArtifactSchema, type JobArtifact, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobArtifactSchema, type JobArtifact } from '@foreman-code/contracts/jobs'
+import { type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JobArtifactFileWithRevisionSchema, JobArtifactMediaTypeSchema, type JobExecutionFileScope } from '@foreman-code/contracts/job-artifacts'
 import { fileStateAt, type FileWithRevision } from '@foreman-code/contracts/files'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -22,11 +23,11 @@ export type { JobOutputPublicationInput } from '@foreman-code/contracts/job-outp
 export interface TrustedJobOutputReader {
   /** Main verifies receipt/exact ownership, or opens an immutable collected output after proven closure.
    * No caller path is opened by this adapter. The declared relative path is metadata, not a main disk path. */
-  open(input: JobOutputPublicationInput, execution: JobExecution): Promise<Readable>
+  open(input: JobOutputPublicationInput, execution: JobExecutionRecord): Promise<Readable>
 }
 interface JobPublicationLink {
   kind: 'job_execution'; ownerPrincipalId: string; requestId: string; binding: string
-  executionId: string; workspaceId: string; attemptId: string; owner: JobExecution['owner']
+  executionId: string; workspaceId: string; attemptId: string; owner: JobExecutionRecord['owner']
   outputSpecDigest: string; specDigest: string; path: string; inputHash: string
   ref: { fileId: string; revisionId: string }; createdAt: string
 }
@@ -64,7 +65,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     return live
   }
   /** Main-only Run result projection, after its caller proves actual Run ownership. No bearer enters a build. */
-  async listCanonicalOutputs(query: JobSql, execution: JobExecution): Promise<JobArtifact[]> {
+  async listCanonicalOutputs(query: JobSql, execution: JobExecutionRecord): Promise<JobArtifact[]> {
     const current=await new JobRepository().execution(query,execution.workspaceId,execution.id)
     if (!current.workflow || current.process.phase!=='terminal' || !current.process.processStopped
       || current.attemptId!==execution.attemptId || current.acceptedSpec.specDigest!==execution.acceptedSpec.specDigest
@@ -156,7 +157,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     return {artifact:this.artifact(record.link,finalized.value),replayed:allocated.replayed}
   }
   /** CI worker authority invokes this inside its complete-publication transaction. */
-  async verifyRequiredOutputs(query: JobSql, execution: JobExecution): Promise<void> {
+  async verifyRequiredOutputs(query: JobSql, execution: JobExecutionRecord): Promise<void> {
     if (execution.process.phase !== 'terminal' || !execution.process.processStopped) throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT','Publication requires proven closure.',409)
     const rows = await this.ledger.list(query,execution.workspaceId,execution.id)
     for (const output of execution.acceptedSpec.outputs.filter(value=>value.required)) {

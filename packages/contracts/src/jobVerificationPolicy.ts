@@ -65,6 +65,22 @@ export const JobVerificationPolicyRequirementsSchema = JobVerificationPolicySche
 })
 export type JobVerificationPolicy = z.infer<typeof JobVerificationPolicySchema>
 
+export const JobVerificationLifecycleSchema = z.object({
+  dispatchAt: TimestampSchema,
+  executionDeadlineAt: TimestampSchema,
+  publicationDeadlineAt: TimestampSchema,
+  cleanupDeadlineAt: TimestampSchema,
+}).strict()
+export function verificationJobLifecycle(dispatchAt: string, policy: JobVerificationPolicy) {
+  const execution = Date.parse(dispatchAt) + policy.preparationTimeoutMs
+    + policy.serviceStartupTimeoutMs + policy.executionTimeoutMs
+  const publication = execution + policy.cancellationGraceMs + policy.publicationTimeoutMs
+  return JobVerificationLifecycleSchema.parse({ dispatchAt,
+    executionDeadlineAt: new Date(execution).toISOString(),
+    publicationDeadlineAt: new Date(publication).toISOString(),
+    cleanupDeadlineAt: new Date(publication + policy.cleanupTimeoutMs).toISOString() })
+}
+
 /** Save input cannot declare review, approval or measured readiness. */
 export const JobVerificationApprovalConfigInputSchema = z.object({
   approvalLifetimeMs: PositiveInteger.default(JOB_VERIFICATION_APPROVAL_LIFETIME_MS),

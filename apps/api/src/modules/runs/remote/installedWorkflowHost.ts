@@ -6,11 +6,22 @@ import { ExecutionResultSchema, type HarnessExecutionRequest, type NativeSession
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
-import { DeviceConnectionIdentitySchema, WorkerPairingConfigurationSchema, type WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
+import {
+  DeviceConnectionIdentitySchema,
+  WorkerPairingConfigurationSchema,
+  type WorkerPairingConfiguration,
+} from '@foreman-code/contracts/device-identity'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
-import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
+import {
+  RemoteNativeIdentitySchema,
+  RemoteTerminalEvidenceSchema,
+  RemoteOperationReceiptSchema,
+  type RemoteNativeIdentity,
+  type RemoteTerminalEvidence,
+  type RemoteApplicationAccess,
+} from '@foreman-code/contracts/remote-execution'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -39,7 +50,7 @@ import type { SourceInstalledNativeOwner } from '../../sources/executionHosts.js
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteExecutionHost } from './executionHost.js'
 import { createRemoteExecutionHandler } from './executionRouter.js'
-import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
@@ -436,7 +447,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     async handle(payload,context) {
       if(context.bytes!==undefined)unavailable('workflow_binary_payload_refused')
       const task=(async()=>{
-        if(RemoteJobExecutionRpcRequestSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed Codex workflow host has no Job runtime.',409)
+        if(RemoteJobExecutionRpcRequestRecordSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed Codex workflow host has no Job runtime.',409)
         const frame=RemoteExecutionRpcRequestSchema.parse(payload)
         const host=await construct(context,frame.intent,frame.placement)
         context.signal.throwIfAborted()

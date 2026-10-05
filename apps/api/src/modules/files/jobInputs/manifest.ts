@@ -1,25 +1,36 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { JobInputRevisionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobInputRevisionSchema } from '@foreman-code/contracts/jobs'
+import { type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JobInputEntrySchema, JobInputManifestSchema, type JobInputEntry, type JobInputManifest } from '@foreman-code/contracts/job-inputs'
 import { jobInputSnapshotDigest, jobBuildInputManifestBytes } from '@foreman-code/contracts/job-inputs-node'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { DomainError } from '../../errors.js'
 export const inputHash=(value:unknown)=>commandInputHash(value).slice(7)
-export function recipient(execution:JobExecution) { return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,
+export function recipient(execution:JobExecutionRecord) { return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,
   owner:execution.owner,bindingHash:execution.acceptedSpec.bindingHash,specDigest:execution.acceptedSpec.specDigest,materializationId:execution.acceptedSpec.source.materializationId,materializationDigest:execution.acceptedSpec.source.materializationDigest} }
 export const snapshotDigest=jobInputSnapshotDigest
 export const manifestBytes=jobBuildInputManifestBytes
-export function makeManifest(execution:JobExecution,entries:JobInputEntry[]):JobInputManifest {
-  const totalBytes=entries.reduce((sum,entry)=>sum+entry.pin.byteSize,0)
+export function verificationContextBytes(manifest: Pick<JobInputManifest, 'verificationContext'>): Buffer | undefined {
+  return manifest.verificationContext ? Buffer.from(JSON.stringify(manifest.verificationContext)) : undefined
+}
+export function verificationContextPin(manifest: Pick<JobInputManifest, 'verificationContext'>) {
+  const bytes = verificationContextBytes(manifest)
+  return bytes ? { relativePath: 'verification.json' as const,
+    sha256: createHash('sha256').update(bytes).digest('hex'), byteSize: bytes.length } : undefined
+}
+export function makeManifest(execution:JobExecutionRecord,entries:JobInputEntry[],verificationContext?:JobInputManifest['verificationContext']):JobInputManifest {
+  const systemBytes = verificationContextBytes({ verificationContext })
+  const totalBytes=entries.reduce((sum,entry)=>sum+entry.pin.byteSize,systemBytes?.length??0)
   if(totalBytes>128*1024*1024)throw new DomainError('JOB_INPUT_TOO_LARGE','Immutable input bytes exceed the supported delivery budget.',413)
   const content={version:1 as const,bindingId:inputHash([recipient(execution),snapshotDigest(execution)]),recipient:recipient(execution),inputSnapshotDigest:snapshotDigest(execution),
-    workflowInput:execution.acceptedSpec.workflowInput,entries,totalBytes}
+    workflowInput:execution.acceptedSpec.workflowInput,entries,totalBytes,
+    ...(verificationContext ? { verificationContext } : {})}
   const bytes=manifestBytes({...content,manifestSha256:'0'.repeat(64),manifestByteSize:0})
   return JobInputManifestSchema.parse({...content,manifestSha256:createHash('sha256').update(bytes).digest('hex'),manifestByteSize:bytes.length})
 }
 /** Workflow vectors remain exact accepted JSON. File pins must use the supported vector; unknown shapes fail closed. */
-export function workflowPins(execution:JobExecution) {
+export function workflowPins(execution:JobExecutionRecord) {
   const raw=execution.acceptedSpec.workflowInput?.files
   if(raw===undefined)return []
   return z.array(JobInputRevisionSchema.omit({path:true})).max(128).parse(raw)

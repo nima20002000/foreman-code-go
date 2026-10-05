@@ -1,7 +1,12 @@
 import type pg from 'pg'
-import { JobInputAdmissionSchema, JobInputDeliveryReceiptSchema, type JobInputDeliveryReceipt, type JobInputAdmission } from '@foreman-code/contracts/job-inputs'
+import {
+  JobInputAdmissionSchema,
+  JobInputDeliveryReceiptSchema,
+  type JobInputDeliveryReceipt,
+  type JobInputAdmission,
+} from '@foreman-code/contracts/job-inputs'
 import { TransferIntentSchema, type TransferIntent, type TransferContext } from '@foreman-code/contracts/byte-transfer'
-import { type JobExecution } from '@foreman-code/contracts/jobs'
+import { type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { isDeepStrictEqual } from 'node:util'
@@ -13,7 +18,7 @@ import { byteRange } from '../tools/transfers.js'
 import { DeviceRegistrationSchema, authorizeDevice } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../../errors.js'
 import type { JobInputAuthority } from './authority.js'
-import { inputHash, makeManifest, manifestBytes, recipient, snapshotDigest } from './manifest.js'
+import { inputHash, makeManifest, manifestBytes, recipient, snapshotDigest, verificationContextBytes, verificationContextPin } from './manifest.js'
 import { outputTransferContext } from '../jobs/outputAdmission.js'
 import { JOB_INPUT_NAMESPACE } from './protocol.js'
 export { JOB_INPUT_NAMESPACE } from './protocol.js'
@@ -24,37 +29,56 @@ export class CanonicalJobInputs {
     private readonly connection:Pick<DeviceEndpoint,'currentBinding'>,
     private readonly clock:()=>Date=()=>new Date()){this.commands=new PostgresCommandCoordinator(pool)}
   private async transaction<T>(work:(sql:JobSql)=>Promise<T>):Promise<T>{const sql=await this.pool.connect();try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}catch(error){await sql.query('rollback').catch(()=>{});throw error}finally{sql.release()}}
-  private binding(execution:JobExecution) {
+  private binding(execution:JobExecutionRecord) {
     const target=execution.acceptedSpec.target
     if(target.hostRef.kind!=='device'||!target.registration)throw new DomainError('JOB_INPUT_REMOTE_DEVICE_REQUIRED','Remote delivery requires its actual accepted device.',403)
     const binding=this.connection.currentBinding(target.hostRef.deviceId,JOB_INPUT_NAMESPACE)
     if(!binding||binding.mainId!==target.mainId||binding.workerInstallationId!==target.registration.workerInstallationId||binding.keyRevision!==target.registration.keyRevision||binding.authorizationRevision!==target.registration.authorizationRevision)throw new DomainError('JOB_INPUT_DEVICE_CONFLICT','Current authenticated recipient differs from acceptance.',403)
     return binding
   }
-  assertChannel(execution:JobExecution,binding:Readonly<DeviceSessionBinding>):void {
+  assertChannel(execution:JobExecutionRecord,binding:Readonly<DeviceSessionBinding>):void {
     if(!isDeepStrictEqual(this.binding(execution),binding))throw new DomainError('JOB_INPUT_CONNECTION_STALE','The incoming opaque recipient channel is not current.',403)
   }
-  async bind(execution:JobExecution):Promise<JobInputAdmission> {
+  async bind(execution:JobExecutionRecord,verificationContext?:JobInputAdmission['manifest']['verificationContext']):Promise<JobInputAdmission> {
+    if (execution.schemaVersion === 2) {
+      const spec = execution.acceptedSpec
+      if (!verificationContext || verificationContext.identity.executionId !== execution.id
+        || verificationContext.identity.attemptId !== execution.attemptId
+        || verificationContext.identity.commit !== spec.source.commit
+        || verificationContext.identity.manifestDigest !== spec.source.manifestDigest
+        || verificationContext.identity.suite !== spec.verification.suite
+        || verificationContext.identity.definitionVersionId !== spec.definitionVersionId
+        || verificationContext.privateGit.sourceCommit !== spec.source.commit
+        || verificationContext.executionTimeoutMs !== spec.policy.executionTimeoutMs
+        || verificationContext.cancellationTimeoutMs !== spec.policy.cancellationGraceMs
+        || !isDeepStrictEqual(verificationContext.identity.target,spec.target)
+        || !isDeepStrictEqual(verificationContext.identity.profile,spec.profile)
+        || !isDeepStrictEqual(verificationContext.identity.resources,spec.verification.resources)
+        || !isDeepStrictEqual(verificationContext.identity.parameters,spec.verification.parameters)) {
+        throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Verification context differs from its accepted execution.',409)
+      }
+    } else if (verificationContext) throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Build inputs cannot accept verification context.',409)
     const initial=await this.transaction(sql=>this.authority.recipient(sql,execution))
     const commandId=`job-input:${inputHash(recipient(execution))}`
-    const prepared=await this.commands.execute({principal:initial.principal,source:'device',commandId,operation:'job.inputs.bind',targetKey:`job:${execution.id}:inputs`,payload:{recipient:recipient(execution),inputSnapshotDigest:snapshotDigest(execution)},
+    const prepared=await this.commands.execute({principal:initial.principal,source:'device',commandId,operation:'job.inputs.bind',targetKey:`job:${execution.id}:inputs`,payload:{recipient:recipient(execution),inputSnapshotDigest:snapshotDigest(execution),...(verificationContext?{verificationContext}:{})},
       authorize:async sql=>{const current=await this.authority.recipient(sql,execution);if(current.principal.id!==initial.principal.id)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original accepted input actor changed.',403)},
       replayResult:value=>JobInputAdmissionSchema.parse(value),perform:async sql=>{
-        const current=await this.authority.recipient(sql,execution),entries=await this.authority.entries(sql,execution,current.principal),manifest=makeManifest(execution,entries)
+        const current=await this.authority.recipient(sql,execution),entries=await this.authority.entries(sql,execution,current.principal),manifest=makeManifest(execution,entries,verificationContext)
         await this.device(sql,execution)
         const binding=execution.acceptedSpec.target.hostRef.kind==='device'?this.binding(execution):null
         const source=(await sql.query<{root_id:string;binding_revision:string}>('select root_id,binding_revision::text from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 for share',[execution.acceptedSpec.source.materializationId,execution.id,execution.attemptId])).rows[0]
         if(!source)throw new DomainError('JOB_INPUT_ROOT_MISSING','The actual accepted input destination is not materialized.',409)
         const descriptors=[{relativePath:'manifest.json',sha256:manifest.manifestSha256,byteSize:manifest.manifestByteSize},
           {relativePath:'workflow-input.json',sha256:createHash('sha256').update(JSON.stringify(manifest.workflowInput)).digest('hex'),byteSize:Buffer.byteLength(JSON.stringify(manifest.workflowInput))},
-          ...entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize}))]
+          ...entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize})),
+          ...(verificationContextPin(manifest) ? [verificationContextPin(manifest)!] : [])]
         return JobInputAdmissionSchema.parse({version:1,manifest,principalId:current.principal.id,principalGrantsDigest:inputHash(current.principal.grants),issuedAt:this.clock().toISOString(),
           transfers:binding?descriptors.map(value=>({relativePath:value.relativePath,intent:TransferIntentSchema.parse({version:1,...outputTransferContext(binding),transferId:randomUUID(),operationId:randomUUID(),executionId:execution.id,attemptId:execution.attemptId,placementHash:execution.acceptedSpec.bindingHash,rootId:source.root_id,rootBindingRevision:Number(source.binding_revision),direction:'to-worker',byteClass:'artifact',sha256:value.sha256,byteSize:value.byteSize,manifestDigest:manifest.manifestSha256,expiresAt:new Date(this.clock().getTime()+3600_000).toISOString(),chunkBytes:8192})})):[]})
       }})
     await this.recheck(execution,prepared.value)
     return prepared.value
   }
-  async recheck(execution:JobExecution,admission:JobInputAdmission) {
+  async recheck(execution:JobExecutionRecord,admission:JobInputAdmission) {
     return this.transaction(async sql=>{
       const current=await this.authority.recipient(sql,execution)
       if(current.principal.id!==admission.principalId||inputHash(current.principal.grants)!==admission.principalGrantsDigest||inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Accepted input snapshot or actor grant changed.',403)
@@ -62,7 +86,7 @@ export class CanonicalJobInputs {
       await this.device(sql,execution)
     })
   }
-  private async device(sql:JobSql,execution:JobExecution) {
+  private async device(sql:JobSql,execution:JobExecutionRecord) {
       if(execution.acceptedSpec.target.hostRef.kind==='device'){
         const installation=(await sql.query<{id:string}>('select id from application_installation where singleton=true for share')).rows[0]
         if(installation?.id!==execution.acceptedSpec.target.mainId)throw new DomainError('JOB_INPUT_WRONG_MAIN','Accepted input belongs to a different main installation.',403)
@@ -71,11 +95,12 @@ export class CanonicalJobInputs {
         this.binding(execution)
       }
   }
-  async read(execution:JobExecution,admission:JobInputAdmission,relativePath:string,offset:number,length:number):Promise<Buffer> {
+  async read(execution:JobExecutionRecord,admission:JobInputAdmission,relativePath:string,offset:number,length:number):Promise<Buffer> {
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<1||length>8192)throw new DomainError('JOB_INPUT_RANGE_INVALID','Input delivery ranges are bounded.',416)
     await this.recheck(execution,admission)
     let data:Buffer
     if(relativePath==='manifest.json')data=manifestBytes(admission.manifest).subarray(offset,offset+length)
+    else if(relativePath==='verification.json'&&admission.manifest.verificationContext)data=verificationContextBytes(admission.manifest)!.subarray(offset,offset+length)
     else if(relativePath==='workflow-input.json')data=Buffer.from(JSON.stringify(admission.manifest.workflowInput)).subarray(offset,offset+length)
     else {
       const entry=admission.manifest.entries.find(value=>value.relativePath===relativePath)
@@ -88,12 +113,12 @@ export class CanonicalJobInputs {
     await this.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details) values($1,'device','job.input.read',$2,'succeeded',$3::jsonb)`,[admission.principalId,`job:${execution.id}`,JSON.stringify({bindingId:admission.manifest.bindingId,relativePath,offset,length,executionId:execution.id,attemptId:execution.attemptId})])
     return data
   }
-  async execution(executionId:string):Promise<JobExecution>{
+  async execution(executionId:string):Promise<JobExecutionRecord>{
     const row=(await this.pool.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
     if(!row)throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Actual recipient is unavailable.',404)
     return new JobRepository().execution(this.pool,row.workspace_id,executionId)
   }
-  async accepted(executionId:string):Promise<{execution:JobExecution;admission:JobInputAdmission}> {
+  async accepted(executionId:string):Promise<{execution:JobExecutionRecord;admission:JobInputAdmission}> {
     return this.transaction(async sql=>{
       const row=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
       if(!row)throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Actual recipient is unavailable.',404)
@@ -117,14 +142,15 @@ export class CanonicalJobInputs {
     await this.recheck(accepted.execution,original)
     return {...accepted,transfer:matches[0]!}
   }
-  private deliveryReceipt(execution:JobExecution,admission:JobInputAdmission,raw:unknown):JobInputDeliveryReceipt {
+  private deliveryReceipt(execution:JobExecutionRecord,admission:JobInputAdmission,raw:unknown):JobInputDeliveryReceipt {
     const receipt=JobInputDeliveryReceiptSchema.parse(raw)
     const files=[{relativePath:'manifest.json',sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize},
       {relativePath:'workflow-input.json',sha256:createHash('sha256').update(JSON.stringify(admission.manifest.workflowInput)).digest('hex'),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))},
       ...admission.manifest.entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize}))]
     if(!isDeepStrictEqual(receipt.recipient,recipient(execution))||receipt.bindingId!==admission.manifest.bindingId
       ||receipt.inputSnapshotDigest!==admission.manifest.inputSnapshotDigest||receipt.manifestSha256!==admission.manifest.manifestSha256
-      ||receipt.manifestByteSize!==admission.manifest.manifestByteSize||!isDeepStrictEqual(receipt.files,files))
+      ||receipt.manifestByteSize!==admission.manifest.manifestByteSize||!isDeepStrictEqual(receipt.files,files)
+      ||!isDeepStrictEqual(receipt.verificationContext,verificationContextPin(admission.manifest)))
       throw new DomainError('JOB_INPUT_RECEIPT_CONFLICT','Detached delivery does not describe the complete original input binding.',409)
     return receipt
   }

@@ -1,19 +1,19 @@
 import { isDeepStrictEqual as same } from 'node:util'
 import { join } from 'node:path'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
-import type { RemoteJobAcceptedSourceReadout } from '@foreman-code/contracts/remote-job-execution'
+import type { RemoteJobAcceptedSourceReadoutRecord } from '@foreman-code/contracts/remote-job-execution'
 import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
 import type { JobSql } from '../../jobs/repository.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { sourceSha256, verifySourceManifest } from '../../sources/manifest.js'
 import { DomainError } from '../../errors.js'
 
-export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadout
+export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadoutRecord
 function conflict(): never { throw new DomainError('JOB_ACCEPTED_SOURCE_CONFLICT', 'The original accepted Job source/root/runtime binding is unavailable or changed.', 409) }
 /** Call after the exact current Job read fence, in the same transaction. This
  * returns immutable Main metadata, never a physical source/qualification claim. */
-export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution): Promise<AcceptedJobSourceReadout> {
+export async function readAcceptedJobSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
   const spec = execution.acceptedSpec, target = spec.target, destination = target.destination
   const row = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations
     where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share`,

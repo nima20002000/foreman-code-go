@@ -108,6 +108,13 @@ export function createReviewedBuildQueueConfiguration(
     review: configuration.review,
     limits: configuration.limits,
     async resources(sql, definition) {
+      if ('verification' in definition.spec) {
+        const resources = definition.spec.verification.resources
+        if (!configuration.envelopes.some(envelope => canonical(envelope) === canonical(resources))) {
+          throw new DomainError('JOB_QUEUE_ENVELOPE_REVIEW_REQUIRED', 'No reviewed resource envelope covers this verification.', 409)
+        }
+        return JobResourceRequestSchema.parse(resources)
+      }
       let limits: JobResourceRequest['limits']
       if (isAutoJobSpec(definition.spec)) limits = definition.spec.limits
       else {

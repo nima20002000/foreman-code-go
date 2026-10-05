@@ -2,39 +2,48 @@ import { constants } from 'node:fs'
 import { open, mkdir, readFile, type FileHandle } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { resolve, relative, isAbsolute } from 'node:path'
-import { JOB_INPUT_DIRECTORY, JobInputDeliveryReceiptSchema, JobInputAdmissionSchema, type JobInputAdmission, type JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import {
+  JOB_INPUT_DIRECTORY,
+  JobInputDeliveryReceiptSchema,
+  JobInputAdmissionSchema,
+  type JobInputAdmission,
+  type JobInputDeliveryReceipt,
+} from '@foreman-code/contracts/job-inputs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { DomainError } from '../../errors.js'
-import { inputHash, recipient, snapshotDigest } from './manifest.js'
+import { inputHash, recipient, snapshotDigest, verificationContextPin } from './manifest.js'
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex')
 async function identity(handle:FileHandle){const stat=await handle.stat(),info=await readFile(`/proc/self/fdinfo/${handle.fd}`,'utf8'),mountId=/^mnt_id:\s*(\d+)$/m.exec(info)?.[1];if(!mountId)throw new Error('Input destination mount identity is unavailable.');return {device:String(stat.dev),inode:String(stat.ino),mountId}}
 async function directory(path:string){const handle=await open(path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);const stat=await handle.stat();if(!stat.isDirectory()||(process.getuid&&stat.uid!==process.getuid())){await handle.close();throw new Error('Input destination must be an owned directory.')}return handle}
 export interface JobInputDeliverySource {
-  admit(execution:JobExecution,signal:AbortSignal):Promise<JobInputAdmission>
+  admit(execution:JobExecutionRecord,signal:AbortSignal,verificationContext?:JobInputAdmission['manifest']['verificationContext']):Promise<JobInputAdmission>
   /** Reads and reauthorizes the original admission without staging or starting transfers. */
-  accepted?(execution:JobExecution,signal:AbortSignal):Promise<JobInputAdmission>
-  recheck(execution:JobExecution,admission:JobInputAdmission,signal:AbortSignal):Promise<void>
-  read(execution:JobExecution,admission:JobInputAdmission,path:string,offset:number,length:number,signal:AbortSignal):Promise<Uint8Array>
+  accepted?(execution:JobExecutionRecord,signal:AbortSignal):Promise<JobInputAdmission>
+  recheck(execution:JobExecutionRecord,admission:JobInputAdmission,signal:AbortSignal):Promise<void>
+  read(execution:JobExecutionRecord,admission:JobInputAdmission,path:string,offset:number,length:number,signal:AbortSignal):Promise<Uint8Array>
 }
 export interface VerifiedJobInputDeliverySource {
   privateRepositoryRoot:string
   directoryIdentityHash:string
   privateGit:true
+  gitMounts?: import('../../jobs/privateGitMounts.js').VerifiedJobGitMounts
   diskQuotaBytes:number
 }
+export type JobSystemInput = (execution: JobExecutionRecord, source: VerifiedJobInputDeliverySource,
+  signal: AbortSignal) => Promise<JobInputAdmission['manifest']['verificationContext']>
 async function readReceipt(path:string):Promise<JobInputDeliveryReceipt>{
   const record=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW)
   try{const stat=await record.stat();if(!stat.isFile()||stat.size>1024*1024||(process.getuid&&stat.uid!==process.getuid())||(stat.mode&0o077)!==0)throw new Error('Invalid private input receipt.');return JobInputDeliveryReceiptSchema.parse(JSON.parse(await record.readFile('utf8')))}finally{await record.close()}
 }
-async function verifyRetained(root:FileHandle,execution:JobExecution,admission:JobInputAdmission,original:JobInputDeliveryReceipt,signal:AbortSignal){
+async function verifyRetained(root:FileHandle,execution:JobExecutionRecord,admission:JobInputAdmission,original:JobInputDeliveryReceipt,signal:AbortSignal){
   if(inputHash(original.recipient)!==inputHash(recipient(execution))||original.bindingId!==admission.manifest.bindingId||original.inputSnapshotDigest!==snapshotDigest(execution)||original.manifestSha256!==admission.manifest.manifestSha256||original.manifestByteSize!==admission.manifest.manifestByteSize)throw new DomainError('JOB_INPUT_RECEIPT_CONFLICT','Existing detached input receipt belongs to different accepted data.',409)
   const expectedFiles=[{relativePath:'manifest.json',sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize},{relativePath:'workflow-input.json',sha256:hash(Buffer.from(JSON.stringify(admission.manifest.workflowInput))),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))},...admission.manifest.entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize}))]
-  if(inputHash(original.files)!==inputHash(expectedFiles))throw new DomainError('JOB_INPUT_RECEIPT_CONFLICT','Receipt no longer describes the complete original manifest.',409)
+  if(inputHash(original.files)!==inputHash(expectedFiles)||inputHash(original.verificationContext??null)!==inputHash(verificationContextPin(admission.manifest)??null))throw new DomainError('JOB_INPUT_RECEIPT_CONFLICT','Receipt no longer describes the complete original manifest.',409)
   const retained=await directory(`/proc/self/fd/${root.fd}/${JOB_INPUT_DIRECTORY}`)
   try{
     const rootIdentity=await identity(root),retainedIdentity=await identity(retained)
     if(inputHash({...retainedIdentity,relativePath:JOB_INPUT_DIRECTORY})!==inputHash(original.directory)||retainedIdentity.device!==rootIdentity.device||retainedIdentity.mountId!==rootIdentity.mountId)throw new DomainError('JOB_INPUT_DIRECTORY_CONFLICT','Original input directory identity changed.',409)
-    for(const file of original.files){
+    for(const file of original.verificationContext?[...original.files,original.verificationContext]:original.files){
       signal.throwIfAborted();let parent=retained;const held:FileHandle[]=[]
       try{const parts=file.relativePath.split('/');for(const part of parts.slice(0,-1)){const next=await directory(`/proc/self/fd/${parent.fd}/${part}`);const current=await identity(next);if(current.device!==original.directory.device||current.mountId!==original.directory.mountId){await next.close();throw new Error('Retained inputs crossed the approved volume.')}held.push(next);parent=next}
         const handle=await open(`/proc/self/fd/${parent.fd}/${parts.at(-1)}`,constants.O_RDONLY|constants.O_NOFOLLOW)
@@ -45,9 +54,10 @@ async function verifyRetained(root:FileHandle,execution:JobExecution,admission:J
 }
 /** Detached copies on the already verified original private worktree. Read-only OCI bind is mandatory. */
 export class ReadonlyJobInputDelivery {
-  constructor(private readonly source:JobInputDeliverySource,private readonly receiptRoot:string){}
+  constructor(private readonly source:JobInputDeliverySource,private readonly receiptRoot:string,
+    private readonly systemInput?: JobSystemInput){}
   /** Verifies the original detached delivery without creating files or reading transfer bytes. */
-  async verifyPrepared(execution:JobExecution,verifiedOriginalSource:VerifiedJobInputDeliverySource,originalReceipt:JobInputDeliveryReceipt,signal:AbortSignal):Promise<JobInputDeliveryReceipt>{
+  async verifyPrepared(execution:JobExecutionRecord,verifiedOriginalSource:VerifiedJobInputDeliverySource,originalReceipt:JobInputDeliveryReceipt,signal:AbortSignal):Promise<JobInputDeliveryReceipt>{
     signal.throwIfAborted()
     if(resolve(verifiedOriginalSource.privateRepositoryRoot)!==execution.acceptedSpec.target.destination.canonicalProjectRoot||verifiedOriginalSource.directoryIdentityHash!==execution.acceptedSpec.target.destination.directoryIdentityHash||!verifiedOriginalSource.privateGit)throw new DomainError('JOB_INPUT_DESTINATION_CONFLICT','Input delivery requires the exact previously verified private source.',409)
     if(!this.source.accepted)throw new DomainError('JOB_INPUT_ADMISSION_UNAVAILABLE','Read-only original input admission is unavailable.',410)
@@ -70,9 +80,9 @@ export class ReadonlyJobInputDelivery {
       await this.source.recheck(execution,admission,signal);signal.throwIfAborted();return original
     }finally{await receipts?.close();await root.close()}
   }
-  async prepare(execution:JobExecution,verified:VerifiedJobInputDeliverySource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>{
+  async prepare(execution:JobExecutionRecord,verified:VerifiedJobInputDeliverySource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>{
     if(resolve(verified.privateRepositoryRoot)!==execution.acceptedSpec.target.destination.canonicalProjectRoot||verified.directoryIdentityHash!==execution.acceptedSpec.target.destination.directoryIdentityHash||!verified.privateGit)throw new DomainError('JOB_INPUT_DESTINATION_CONFLICT','Input delivery requires the exact previously verified private source.',409)
-    const admission=JobInputAdmissionSchema.parse(await this.source.admit(execution,signal))
+    const admission=JobInputAdmissionSchema.parse(await this.source.admit(execution,signal,await this.systemInput?.(execution,verified,signal)))
     if(inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_SNAPSHOT_CONFLICT','Delivery cannot replace accepted job input.',409)
     if(admission.manifest.totalBytes+admission.manifest.manifestByteSize+Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))>verified.diskQuotaBytes)throw new DomainError('JOB_INPUT_DISK_BUDGET','Input delivery exceeds the qualified private volume budget.',413)
     const root=await directory(verified.privateRepositoryRoot),rootIdentity=await identity(root)
@@ -97,7 +107,8 @@ export class ReadonlyJobInputDelivery {
       target=await directory(path);const destination=await identity(target),files:JobInputDeliveryReceipt['files']=[]
       const descriptors=[{relativePath:'manifest.json',sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize},
         {relativePath:'workflow-input.json',sha256:hash(Buffer.from(JSON.stringify(admission.manifest.workflowInput))),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))},
-        ...admission.manifest.entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize}))]
+        ...admission.manifest.entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize})),
+        ...(verificationContextPin(admission.manifest)?[verificationContextPin(admission.manifest)!]:[])]
       for(const descriptor of descriptors){
         signal.throwIfAborted();const parts=descriptor.relativePath.split('/')
         if(parts.some(part=>!part||part==='.'||part==='..'||part.includes('\\')))throw new DomainError('JOB_INPUT_PATH_CONFLICT','Input paths must be bounded relative paths.',409)
@@ -110,12 +121,13 @@ export class ReadonlyJobInputDelivery {
             if(checksum.digest('hex')!==descriptor.sha256)throw new DomainError('JOB_INPUT_HASH_CONFLICT','Delivered bytes differ from the immutable accepted pins.',410)
             await handle.sync()
           }finally{await handle.close()}
-          await parent.sync();files.push(descriptor)
+          await parent.sync();if(descriptor.relativePath!=='verification.json')files.push(descriptor)
         }finally{for(const handle of owned.reverse())await handle.close()}
       }
       await this.source.recheck(execution,admission,signal)
       if(inputHash(await identity(root))!==inputHash(rootIdentity))throw new DomainError('JOB_INPUT_DESTINATION_CONFLICT','Private source identity changed during delivery.',409)
-      const receipt=JobInputDeliveryReceiptSchema.parse({version:1,recipient:recipient(execution),bindingId:admission.manifest.bindingId,inputSnapshotDigest:admission.manifest.inputSnapshotDigest,manifestSha256:admission.manifest.manifestSha256,manifestByteSize:admission.manifest.manifestByteSize,directory:{relativePath:JOB_INPUT_DIRECTORY,...destination},files,readonlyMountRequired:true})
+      const receipt=JobInputDeliveryReceiptSchema.parse({version:1,recipient:recipient(execution),bindingId:admission.manifest.bindingId,inputSnapshotDigest:admission.manifest.inputSnapshotDigest,manifestSha256:admission.manifest.manifestSha256,manifestByteSize:admission.manifest.manifestByteSize,directory:{relativePath:JOB_INPUT_DIRECTORY,...destination},files,
+        ...(verificationContextPin(admission.manifest)?{verificationContext:verificationContextPin(admission.manifest)}:{}),readonlyMountRequired:true})
       const record=await open(receiptPath,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o400);try{await record.writeFile(JSON.stringify(receipt));await record.sync()}finally{await record.close()}
       await target.chmod(0o500);await target.sync();await root.sync();await receipts.sync();return receipt
     }finally{await receipts?.close();await target?.close();await root.close()}

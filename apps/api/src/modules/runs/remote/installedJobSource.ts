@@ -12,7 +12,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 
 /** Main metadata and physical verification remain distinct. No source is created. */
 export function createInstalledJobSource(input: { journal: RemoteOperationJournal; application: WorkerJobApplicationSink;
-  currentBinding(): Readonly<DeviceSessionBinding>; approvedRoots(): Promise<ApprovedRootAllowlist> }): JobSourcePort {
+  currentBinding(): Readonly<DeviceSessionBinding>; approvedRoots(): Promise<ApprovedRootAllowlist> }): JobSourcePort<import('@foreman-code/contracts/job-verification').JobAcceptedSpecRecord> {
   return { async verify(spec, signal) {
     signal.throwIfAborted()
     const matches = (await input.journal.jobOperations()).filter(receipt => same(receipt.execution.acceptedSpec, spec))

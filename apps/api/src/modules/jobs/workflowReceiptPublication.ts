@@ -1,5 +1,5 @@
-import { RemoteJobOperationReceiptSchema,type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import { RemoteJobOperationReceiptRecordSchema,type RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { graphSourceDigest } from '../run-graph/publication.js'
 import { assertRunGraphPublication,openRunGraphPublication,type RunGraphPublication } from '../run-graph/publication.js'
 import { readPublicNodeProjection,publicNodeProjectionFacts } from '../run-graph/publicProjection.js'
@@ -12,11 +12,11 @@ import { deriveJobReceiptLocked,type JobCanonicalOutputVerifier } from './receip
 
 /** Caller already holds the actual Job owner/receipt fence and opens the existing
  * Run publication on THAT transaction. No detached Run owner or late readback. */
-export async function publishWorkflowJobReceiptLocked(publication:RunGraphPublication,execution:JobExecution,raw:RemoteJobOperationReceipt,outputs:JobCanonicalOutputVerifier):Promise<void> {
+export async function publishWorkflowJobReceiptLocked(publication:RunGraphPublication,execution:JobExecutionRecord,raw:RemoteJobOperationReceiptRecord,outputs:JobCanonicalOutputVerifier):Promise<void> {
   const {sql,scope}=publication
   assertRunGraphPublication(sql,scope)
   if(!execution.workflow||execution.workflow.runId!==scope.runId||execution.workflow.workflowId!==scope.workflowId||execution.workspaceId!==scope.workspaceId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','Receipt publication belongs to another actual Run.',409)
-  const receipt=RemoteJobOperationReceiptSchema.parse(raw),next=await deriveJobReceiptLocked(sql,execution,receipt,outputs)
+  const receipt=RemoteJobOperationReceiptRecordSchema.parse(raw),next=await deriveJobReceiptLocked(sql,execution,receipt,outputs)
   const ids=[execution.workflow.nodeId]
   await readPublicNodeProjection(sql,scope,ids) // Existing canonical domain is still unchanged here.
   const after=await readPublicNodeProjection(sql,scope,ids,{jobs:[next]})
@@ -34,7 +34,7 @@ export async function publishWorkflowJobReceiptLocked(publication:RunGraphPublic
 
 /** Readback only. It cannot repair an earlier naked receipt mutation: opening
  * the existing publication enforces its initial canonical/domain consistency. */
-export async function publishWorkflowJobStateReadbackLocked(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecution):Promise<void> {
+export async function publishWorkflowJobStateReadbackLocked(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecutionRecord):Promise<void> {
   if(execution.workflow?.runId!==scope.runId||execution.workflow.workflowId!==scope.workflowId||execution.workspaceId!==scope.workspaceId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The actual Job observation belongs to another Run.',409)
   const publication=await openRunGraphPublication(sql,scope)
   const facts=publicNodeProjectionFacts(await readPublicNodeProjection(sql,scope,[execution.workflow.nodeId],{jobs:[execution]}))

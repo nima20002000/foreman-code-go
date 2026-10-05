@@ -10,7 +10,7 @@ import { JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema, J
   JOB_CANCELLATION_GRANT_TTL_MS, jobCancellationGrantMessage, jobCancellationClosureMessage,
   type SignedJobCancellationClosure } from '@foreman-code/contracts/job-cancellation-recovery'
 import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -164,7 +164,7 @@ export class PostgresJobCancellationRecovery {
           signature: sign(null, Buffer.from(jobCancellationGrantMessage(grant)), identity!.privateKey).toString('base64url') })
       } })).value
   }
-  private async requireClosure(sql: JobSql, principal: ManagementPrincipal, execution: JobExecution,
+  private async requireClosure(sql: JobSql, principal: ManagementPrincipal, execution: JobExecutionRecord,
     recoveryId: string, signed: SignedJobCancellationClosure) {
     await this.authorize(sql, principal, execution.workspaceId)
     const proposal = await this.proposal(sql, execution.workspaceId, execution.id, recoveryId)

@@ -1,38 +1,43 @@
 import { createHash } from 'node:crypto'
 import { componentLogger } from '../../../infrastructure/logger.js'
 import { isDeepStrictEqual } from 'node:util'
-import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { RemoteJobExecutionRpcRequestSchema, type RemoteJobDispatchIntent, type RemoteJobConnectionIdentity,
-  type RemoteJobOwnerControl, type RemoteJobOperationReceipt, type RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestRecordSchema, type RemoteJobDispatchIntent, type RemoteJobConnectionIdentity,
+  type RemoteJobOwnerControl, type RemoteJobOperationReceiptRecord, type RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
-import { executeJob, jobSupervisorIdentity, type JobExecutorPorts, type JobExecutorResult } from '../../jobs/executor.js'
+import { executeJob, executeVerificationJob, jobSupervisorIdentity, type JobExecutorPorts,
+  type JobExecutorResult, type JobSupervisor, type VerificationExecution, type VerificationJobExecutorPorts } from '../../jobs/executor.js'
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
+type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
+  & Pick<PodmanJobSupervisor<JobExecutionRecord>, 'reconcile' | 'stopExecution'>
 export interface RemoteJobExecutionHostPorts {
   journal: RemoteOperationJournal
   connection: RemoteJobConnectionIdentity
   incarnationId: string
-  supervisor: PodmanJobSupervisor | ((execution: JobExecution) => Promise<PodmanJobSupervisor>)
-  source: JobExecutorPorts['source']
+  supervisor: RuntimeSupervisor | ((execution: JobExecutionRecord) => Promise<RuntimeSupervisor>)
+  source: JobExecutorPorts<JobExecutionRecord>['source']
   /** Mandatory W09 canonical delivery; exact tuple is verified before claim/native entry. */
-  inputs: JobExecutorPorts['inputs']
+  inputs: JobExecutorPorts<JobExecutionRecord>['inputs']
   appendLog: JobExecutorPorts['appendLog']
   /** Uses main's live, exact job grant; never an SQL connection on the worker. */
-  authorize(intent: RemoteJobDispatchIntent, execution: JobExecution, action: 'start'|'read'|'control'|'publish'): Promise<void>
+  authorize(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord, action: 'start'|'read'|'control'|'publish'): Promise<void>
   /** Actual main PostgresJobDispatch.observeReceipt ingress; closure acknowledged before bytes publish. */
-  observeReceipt(receipt: RemoteJobOperationReceipt): Promise<void>
-  collectOutputs: JobExecutorPorts['collectOutputs']
-  prepareOutputs?: JobExecutorPorts['prepareOutputs']
+  observeReceipt(receipt: RemoteJobOperationReceiptRecord): Promise<void>
+  collectOutputs: JobExecutorPorts<JobExecutionRecord>['collectOutputs']
+  prepareOutputs?: JobExecutorPorts<JobExecutionRecord>['prepareOutputs']
+  verification?(execution: VerificationExecution): Promise<Pick<VerificationJobExecutorPorts,
+    'measurement' | 'dispatchAt' | 'verifyAcceptedSpec' | 'prepareOutputs' | 'inputs'>>
   /** Runs after durable closure and live publication authorization; uses the original terminal receipt on retries. */
-  preparePublication?(execution: JobExecution, terminal: RemoteJobTerminalEvidence): Promise<void>
+  preparePublication?(execution: JobExecutionRecord, terminal: RemoteJobTerminalEvidence): Promise<void>
 }
 export class RemoteJobExecutionHost {
   private readonly tasks = new Map<string, { controller: AbortController; task: Promise<void> }>()
   constructor(private readonly ports: RemoteJobExecutionHostPorts) {}
-  private validate(intent: RemoteJobDispatchIntent, execution: JobExecution) {
+  private validate(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord) {
     const target = execution.acceptedSpec.target, connection = this.ports.connection
     const subject = execution.workflow ? { kind: 'workflow-node', workspaceId: execution.workspaceId, ...execution.workflow }
       : { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id, definitionId: execution.acceptedSpec.definitionId }
@@ -78,7 +83,7 @@ export class RemoteJobExecutionHost {
     }
   }
   async handle(raw: unknown) {
-    const frame = RemoteJobExecutionRpcRequestSchema.parse(raw)
+    const frame = RemoteJobExecutionRpcRequestRecordSchema.parse(raw)
     if (frame.method === 'job-dispatch') return this.deliver(frame.intent, frame.execution)
     const status = await this.ports.journal.jobStatus(frame.intent.operationId)
     if (status.status !== 'known') return status
@@ -93,8 +98,8 @@ export class RemoteJobExecutionHost {
     }
     return this.reconcile(status.receipt)
   }
-  async deliver(intent: RemoteJobDispatchIntent, raw: JobExecution) {
-    const execution = JobExecutionSchema.parse(raw)
+  async deliver(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord) {
+    const execution = JobExecutionRecordSchema.parse(raw)
     this.validate(intent, execution)
     await this.ports.authorize(intent, execution, 'start')
     await this.ports.journal.jobAccept(intent, execution, this.ports.connection, this.ports.incarnationId)
@@ -111,9 +116,9 @@ export class RemoteJobExecutionHost {
     void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => {})
     return this.ports.journal.jobStatus(intent.operationId)
   }
-  private async execute(intent: RemoteJobDispatchIntent, execution: JobExecution, signal: AbortSignal) {
+  private async execute(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord, signal: AbortSignal) {
     const supervisor = await this.supervisor(execution)
-    const result = await executeJob(execution, {
+    const ports: JobExecutorPorts<JobExecutionRecord> = {
       authority: {
         recheck: async () => { await this.ports.authorize(intent, execution, 'start') },
         claim: async (_execution, name) => {
@@ -130,16 +135,22 @@ export class RemoteJobExecutionHost {
       }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
       collectOutputs: async () => {},
       ...(this.ports.prepareOutputs ? { prepareOutputs: this.ports.prepareOutputs } : {}),
-    }, signal)
+    }
+    let result: JobExecutorResult
+    if (execution.schemaVersion === 2) {
+      if (!this.ports.verification) throw new Error('Verification execution dependencies were not composed.')
+      const verification = await this.ports.verification(execution)
+      result = await executeVerificationJob(execution, { ...ports, ...verification }, signal)
+    } else result = await executeJob(execution, ports, signal)
     if (result.recoveryRequired || !result.processStopped || !result.outcome) { await this.ports.journal.jobUncertain(intent.operationId, 'OCI entry or physical closure remains uncertain'); return }
     const logGapPossible = result.logError || (await this.ports.journal.jobPendingLogs(intent.operationId)).length > 0
     const receipt = await this.ports.journal.jobTerminal(intent.operationId, this.terminalEvidence(result, logGapPossible))
     await this.publish(receipt)
   }
-  private supervisor(execution: JobExecution) {
+  private supervisor(execution: JobExecutionRecord) {
     return typeof this.ports.supervisor === 'function' ? this.ports.supervisor(execution) : Promise.resolve(this.ports.supervisor)
   }
-  private async reconcileSupervisor(receipt: RemoteJobOperationReceipt) {
+  private async reconcileSupervisor(receipt: RemoteJobOperationReceiptRecord) {
     const supervisor = await this.supervisor(receipt.execution)
     let observed = await supervisor.reconcile(receipt.execution)
     if (receipt.native && observed && receipt.native.containerId !== observed.containerId) throw new Error('Recovered OCI container identity changed')
@@ -151,7 +162,7 @@ export class RemoteJobExecutionHost {
     return observed
   }
   /** Each transition is fsynced before transport IO. Lost ACKs resume the same output commands. */
-  private async publish(original: RemoteJobOperationReceipt) {
+  private async publish(original: RemoteJobOperationReceiptRecord) {
     let receipt = original
     await this.ports.observeReceipt(receipt)
     if (receipt.publication === 'complete' || receipt.publication === 'failed') return
@@ -189,7 +200,7 @@ export class RemoteJobExecutionHost {
       processStopped: result.processStopped, exitCode: result.exitCode, signal: result.signal }), outcome: result.outcome, exitCode: result.exitCode, signal: result.signal,
       processStopped: true, resultDigest: digest(result), logGapPossible, logsTruncated: result.logsTruncated, outputCollectionError: result.outputCollectionError, artifactDigests: [] }
   }
-  private async reconcile(receipt: RemoteJobOperationReceipt) {
+  private async reconcile(receipt: RemoteJobOperationReceiptRecord) {
     try { await this.flushLogs(receipt.intent.operationId) } catch { /* Explicit durable pending log cursor remains. */ }
     if (this.tasks.has(receipt.intent.operationId)) return this.ports.journal.jobStatus(receipt.intent.operationId)
     if (receipt.terminal) { await this.publish(receipt); return this.ports.journal.jobStatus(receipt.intent.operationId) }

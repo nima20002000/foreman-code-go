@@ -5,21 +5,23 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
-import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
 
-import { RemoteJobOperationReceiptSchema, RemoteJobDispatchIntentSchema, RemoteJobOwnerControlSchema, RemoteJobNativeIdentitySchema, RemoteJobTerminalEvidenceSchema,
-  type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptRecordSchema, RemoteJobDispatchIntentSchema, RemoteJobOwnerControlSchema, RemoteJobNativeIdentitySchema, RemoteJobTerminalEvidenceSchema,
+  type RemoteJobConnectionIdentity, type RemoteJobOperationReceiptRecord, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatusRecord } from '@foreman-code/contracts/remote-job-execution'
 
-import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRuntimeQualificationResultSchema, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema,
+  type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
@@ -253,10 +255,10 @@ export class RemoteOperationJournal {
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.qualificationReceipts.find(value => value.admission.operationId === operationId) ?? null)
   }
-  qualificationAccept(raw: JobRuntimeNativeAdmission, rawCandidate: JobQualificationCandidate) {
+  qualificationAccept(raw: JobRuntimeNativeAdmissionRecord, rawCandidate: JobQualificationCandidateRecord) {
     return this.change(data => {
-      const admission = JobRuntimeNativeAdmissionSchema.parse(raw)
-      const candidate = JobQualificationCandidateSchema.parse(rawCandidate)
+      const admission = JobRuntimeNativeAdmissionRecordSchema.parse(raw)
+      const candidate = JobQualificationCandidateRecordSchema.parse(rawCandidate)
       if (candidate.operationId !== admission.operationId || candidate.approvalId !== admission.approvalId || candidate.qualificationId !== admission.qualificationId) throw new Error('Qualification candidate subject changed')
       const existing = data.qualificationReceipts.find(value => value.admission.operationId === admission.operationId)
       if (existing) { if (!same(existing.admission, admission) || !same(existing.candidate, candidate)) throw new Error('Qualification admission conflict'); return existing }
@@ -339,11 +341,18 @@ export class RemoteOperationJournal {
   }
   qualificationResult(operationId: string, raw: unknown) {
     return this.change(data => {
-      const receipt = this.qualificationReceipt(data, operationId), result = JobRuntimeQualificationResultSchema.parse(raw)
+      const receipt = this.qualificationReceipt(data, operationId), result = JobRuntimeQualificationResultRecordSchema.parse(raw)
       if (receipt.result) { if (!same(receipt.result, result)) throw new Error('Original qualification result changed'); return receipt }
-      if (result.outcome === 'qualified' && (receipt.phase !== 'closed' || receipt.container?.certificate?.lifecycle !== 'closed' ||
-        result.measurement.approvalId !== receipt.admission.approvalId || result.measurement.qualificationId !== receipt.admission.qualificationId ||
-        result.measurement.fingerprintDigest !== receipt.admission.fingerprintDigest || !same(result.measurement.fingerprint, receipt.candidate.fingerprint))) throw new Error('Original measured qualification closure/context missing')
+      if (result.outcome === 'qualified') {
+        const identity = result.measurement.schemaVersion === 2 ? result.measurement.identity : result.measurement
+        if (receipt.phase !== 'closed' || receipt.container?.certificate?.lifecycle !== 'closed'
+          || identity.approvalId !== receipt.admission.approvalId
+          || identity.qualificationId !== receipt.admission.qualificationId
+          || identity.fingerprintDigest !== receipt.admission.fingerprintDigest
+          || !same(result.measurement.fingerprint, receipt.candidate.fingerprint)) {
+          throw new Error('Original measured qualification closure/context missing')
+        }
+      }
       if (result.outcome === 'denied' && result.closure === 'confirmed' && receipt.phase !== 'closed') throw new Error('Original physical qualification closure unconfirmed')
       if (result.outcome === 'denied' && result.closure === 'unconfirmed') receipt.phase = 'uncertain'
       receipt.result = result; receipt.sequence++; return receipt
@@ -351,22 +360,22 @@ export class RemoteOperationJournal {
   }
 
   private jobReceipt(data: z.infer<typeof JournalSchema>, operationId: string) {
-    const receipt = data.receipts.find((value): value is RemoteJobOperationReceipt => 'kind' in value && value.intent.operationId === operationId)
+    const receipt = data.receipts.find((value): value is RemoteJobOperationReceiptRecord => 'kind' in value && value.intent.operationId === operationId)
     if (!receipt) throw new Error('Unknown job operation: recovery required')
     return receipt
   }
-  async jobStatus(operationId: string): Promise<RemoteJobOperationStatus> {
+  async jobStatus(operationId: string): Promise<RemoteJobOperationStatusRecord> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    const receipt = this.data.receipts.find((value): value is RemoteJobOperationReceipt => 'kind' in value && value.intent.operationId === operationId)
+    const receipt = this.data.receipts.find((value): value is RemoteJobOperationReceiptRecord => 'kind' in value && value.intent.operationId === operationId)
     return receipt ? { status: 'known', receipt: structuredClone(receipt) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
   }
-  async jobOperations(): Promise<RemoteJobOperationReceipt[]> {
+  async jobOperations(): Promise<RemoteJobOperationReceiptRecord[]> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    return structuredClone(this.data.receipts.filter((receipt): receipt is RemoteJobOperationReceipt => 'kind' in receipt))
+    return structuredClone(this.data.receipts.filter((receipt): receipt is RemoteJobOperationReceiptRecord => 'kind' in receipt))
   }
-  async jobCancellationConnection(execution: JobExecution): Promise<RemoteJobConnectionIdentity> {
+  async jobCancellationConnection(execution: JobExecutionRecord): Promise<RemoteJobConnectionIdentity> {
     await this.tail
     if (this.closed || this.faulted) throw new Error('Original journal unavailable for cancellation')
     const existing = this.data.receipts.find(value => value.intent.operationId === execution.operationId)
@@ -378,23 +387,27 @@ export class RemoteOperationJournal {
     const matches = this.data.qualificationReceipts.filter(receipt => {
       if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified' || !receipt.admission.connection) return false
       const measurement = receipt.result.measurement
-      return measurement.runtime.policyId === spec.policy.isolationPolicyId
-        && measurement.runtime.policyRevision === spec.policy.isolationPolicyRevision
-        && measurement.runtime.imageDigest === spec.policy.imageDigest
-        && measurement.runtime.toolchainDigest === spec.policy.toolchainDigest
-        && same(measurement.hostRef, spec.target.hostRef) && same(measurement.registration, spec.target.registration)
-        && measurement.fingerprint.mainInstallationId === spec.target.mainInstallationId
-        && measurement.root.binding.workspaceId === execution.workspaceId
-        && measurement.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
-        && measurement.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
+      const fingerprint = measurement.fingerprint
+      const matchingKind = execution.schemaVersion === 2
+        ? measurement.schemaVersion === 2 && same(measurement.identity, execution.acceptedSpec.profile)
+        : measurement.schemaVersion === 1
+      return matchingKind && fingerprint.profileId === spec.policy.isolationPolicyId
+        && fingerprint.profileRevision === spec.policy.isolationPolicyRevision
+        && fingerprint.imageDigest === spec.policy.imageDigest
+        && fingerprint.toolchainDigest === spec.policy.toolchainDigest
+        && same(fingerprint.hostRef, spec.target.hostRef) && same(fingerprint.registration, spec.target.registration)
+        && fingerprint.mainInstallationId === spec.target.mainInstallationId
+        && fingerprint.root.binding.workspaceId === execution.workspaceId
+        && fingerprint.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
+        && fingerprint.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
     })
     if (matches.length !== 1) throw new Error('Original Job connection missing or ambiguous')
     return structuredClone(matches[0]!.admission.connection!)
   }
-  jobCancelBeforeEntry(intent: RemoteJobDispatchIntent, raw: JobExecution, connection: RemoteJobConnectionIdentity,
+  jobCancelBeforeEntry(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord, connection: RemoteJobConnectionIdentity,
     workerIncarnationId: string, command: RemoteJobOwnerControl, rawTerminal: RemoteJobTerminalEvidence) {
     return this.change(data => {
-      const execution = JobExecutionSchema.parse(raw)
+      const execution = JobExecutionRecordSchema.parse(raw)
       const terminal = RemoteJobTerminalEvidenceSchema.parse(rawTerminal)
       if (terminal.outcome !== 'cancelled' || terminal.exitCode !== null || terminal.signal !== null
         || !terminal.processStopped) throw new Error('No-entry cancellation terminal required')
@@ -424,10 +437,10 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
-  jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecution, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
+  jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecutionRecord, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
     return this.change(data => this.acceptJob(data, raw, execution, connection, workerIncarnationId))
   }
-  private acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecution,
+  private acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecutionRecord,
     connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
       const intent = RemoteJobDispatchIntentSchema.parse(raw)
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
@@ -439,7 +452,7 @@ export class RemoteOperationJournal {
       if (data.qualificationReceipts.some(value => value.admission.operationId === intent.operationId)) throw new Error('Operation already bound to a qualification')
       if (data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
-      const receipt = RemoteJobOperationReceiptSchema.parse({ schemaVersion: 1, kind: 'job', intent, execution, connection, workerIncarnationId,
+      const receipt = RemoteJobOperationReceiptRecordSchema.parse({ schemaVersion: 1, kind: 'job', intent, execution, connection, workerIncarnationId,
         sequence: 1, observedAt: new Date().toISOString(), phase: 'received', entryAttempted: false, stopFence: false, controls: [], publication: 'pending' })
       data.receipts.push(receipt); return receipt
   }
@@ -482,7 +495,7 @@ export class RemoteOperationJournal {
       receipt.terminal = evidence; receipt.phase = 'confirmed_terminal'; receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
     })
   }
-  jobPublication(operationId: string, phase: RemoteJobOperationReceipt['publication']) {
+  jobPublication(operationId: string, phase: RemoteJobOperationReceiptRecord['publication']) {
     return this.change(data => {
       const receipt = this.jobReceipt(data, operationId)
       if (!receipt.terminal) throw new Error('Physical job closure required before publication')
@@ -501,7 +514,7 @@ export class RemoteOperationJournal {
   }
 
   /** Repeated diagnostics can renew one installed runtime; native owners keep their selected diagnostic. */
-  async qualifiedJobRuntime(execution: JobExecution): Promise<QualificationReceipt> {
+  async qualifiedJobRuntime(execution: JobExecutionRecord): Promise<QualificationReceipt> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const spec = execution.acceptedSpec
@@ -509,20 +522,25 @@ export class RemoteOperationJournal {
     const matches = this.data.qualificationReceipts.flatMap(receipt => {
       if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified') return []
       const measurement = receipt.result.measurement
-      const runtime = measurement.runtime
-      const matching = (!retained || receipt.admission.operationId === retained)
-        && runtime.policyId === spec.policy.isolationPolicyId
-        && runtime.policyRevision === spec.policy.isolationPolicyRevision
-        && runtime.imageDigest === spec.policy.imageDigest
-        && runtime.toolchainDigest === spec.policy.toolchainDigest
-        && same(measurement.hostRef, spec.target.hostRef)
-        && same(measurement.registration, spec.target.registration)
-        && measurement.fingerprint.mainInstallationId === spec.target.mainInstallationId
-        && measurement.root.binding.workspaceId === execution.workspaceId
-        && measurement.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
-        && measurement.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
-        && measurement.root.selection.locationRevision === spec.target.destination.locationRevision
+      const fingerprint = measurement.fingerprint
+      const root = fingerprint.root
+      let matching = (!retained || receipt.admission.operationId === retained)
+        && fingerprint.profileId === spec.policy.isolationPolicyId
+        && fingerprint.profileRevision === spec.policy.isolationPolicyRevision
+        && fingerprint.imageDigest === spec.policy.imageDigest
+        && fingerprint.toolchainDigest === spec.policy.toolchainDigest
+        && same(fingerprint.hostRef, spec.target.hostRef)
+        && same(fingerprint.registration, spec.target.registration)
+        && fingerprint.mainInstallationId === spec.target.mainInstallationId
+        && root.binding.workspaceId === execution.workspaceId
+        && root.selection.rootPolicyId === spec.target.destination.rootPolicyId
+        && root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
+        && root.selection.locationRevision === spec.target.destination.locationRevision
+        && same(fingerprint, receipt.candidate.fingerprint)
         && (Boolean(retained) || Date.parse(measurement.expiresAt) > Date.now())
+      if ('verification' in spec) {
+        matching = matching && measurement.schemaVersion === 2 && same(measurement.identity, spec.profile)
+      } else matching = matching && measurement.schemaVersion === 1
       return matching ? [{ receipt, checkedAt: Date.parse(measurement.checkedAt) }] : []
     })
     const first = matches[0]
@@ -551,6 +569,49 @@ export class RemoteOperationJournal {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.jobOwners.find(value => value.operationId === operationId) ?? null)
+  }
+  jobPrepareVerification(operationId: string, raw: NonNullable<JobNativeOwner['verification']>) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      if (receipt.execution.schemaVersion !== 2 || receipt.entryAttempted || receipt.stopFence || receipt.terminal) {
+        throw new Error('Verification preparation requires the original unentered operation.')
+      }
+      const preparation = JobNativeOwnerSchema.shape.verification.unwrap().parse(raw)
+      const spec = receipt.execution.acceptedSpec
+      if (preparation.context.identity.executionId !== receipt.execution.id
+        || preparation.context.identity.attemptId !== receipt.execution.attemptId
+        || preparation.context.identity.commit !== spec.source.commit
+        || preparation.context.identity.definitionVersionId !== spec.definitionVersionId
+        || !same(preparation.context.identity.profile, spec.profile)
+        || !same(preparation.context.identity.resources, spec.verification.resources)
+        || preparation.reserve.bytes !== spec.verification.resources.reportBytes) {
+        throw new Error('Verification preparation changed its original accepted facts.')
+      }
+      let owner = data.jobOwners.find(value => value.operationId === operationId)
+      if (!owner) {
+        owner = { operationId, qualificationOperationId: null, timedOut: false,
+          connection: receipt.connection, launches: [], container: null }
+        data.jobOwners.push(owner)
+      }
+      if (!same(owner.connection, receipt.connection) || owner.verification && !same(owner.verification, preparation)) {
+        throw new Error('Original verification preparation conflicts with retained state.')
+      }
+      owner.verification ??= preparation
+      return owner.verification
+    })
+  }
+  jobVerificationFinalized(operationId: string, finishedAt: string) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      const owner = this.jobOwner(data, operationId)
+      if (!receipt.terminal?.processStopped || receipt.terminal.finishedAt !== finishedAt || !owner.verification) {
+        throw new Error('Original closed verification and terminal time required for finalization.')
+      }
+      if (owner.verification.finalizedAt && owner.verification.finalizedAt !== finishedAt) {
+        throw new Error('Verification finalization time changed.')
+      }
+      owner.verification.finalizedAt ??= finishedAt
+    })
   }
   jobReserveProcess(operationId: string, input: { launchId: string; processOwner?: string; binary: string; argv: string[] }) {
     return this.change(data => {
@@ -597,7 +658,9 @@ export class RemoteOperationJournal {
       const container = this.jobOwner(data, operationId).container
       if (!container || container.identity !== identity || container.containerId && container.containerId !== containerId) throw new Error('Original Job container conflict')
       container.containerId = containerId
-      container.deadlineAt ??= new Date(Date.now() + this.jobReceipt(data, operationId).execution.acceptedSpec.policy.executionTimeoutMs).toISOString()
+      const spec = this.jobReceipt(data, operationId).execution.acceptedSpec
+      container.deadlineAt ??= 'verification' in spec ? spec.lifecycle.executionDeadlineAt
+        : new Date(Date.now() + spec.policy.executionTimeoutMs).toISOString()
     })
   }
   jobTimedOut(operationId: string) {

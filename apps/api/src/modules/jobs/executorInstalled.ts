@@ -1,12 +1,17 @@
+import { verifyJobInputDirectory } from './inputs.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { constants } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
 import { identity } from '../sources/privateFilesystem.js'
 import type { ChildProcess } from 'node:child_process'
-import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import type { JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
+import type { JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { acceptedJobSpecDigests } from '@foreman-code/contracts/jobs-node'
+import { createVerificationSystemInput } from './verificationSystemInput.js'
+import { reserveVerificationReportSpace } from './executorOutputs.js'
+import { verificationContextPin } from '../files/jobInputs/manifest.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
@@ -28,9 +33,9 @@ export type InstalledJobExecutionHostInput = Omit<RemoteJobExecutionHostPorts, '
  * The caller opens the ORIGINAL journal without initializeNewInstallation.
  */
 export function createInstalledJobExecutionHost(input: InstalledJobExecutionHostInput): RemoteJobExecutionHost {
-  const admissions = new Map<string, { execution: JobExecution; filesystem: { device: string; mountId: string } }>()
-  const supervisors = new Map<string, Promise<PodmanJobSupervisor>>()
-  const supervisor = (execution: JobExecution) => {
+  const admissions = new Map<string, { execution: JobExecutionRecord; filesystem: { device: string; mountId: string } }>()
+  const supervisors = new Map<string, Promise<PodmanJobSupervisor<JobExecutionRecord>>>()
+  const supervisor = (execution: JobExecutionRecord) => {
     let value = supervisors.get(execution.operationId)
     if (!value) {
       const original = structuredClone(execution)
@@ -41,7 +46,45 @@ export function createInstalledJobExecutionHost(input: InstalledJobExecutionHost
     }
     return value
   }
-  return new RemoteJobExecutionHost({ ...input, supervisor, source: { async verify(spec, signal) {
+  const systemInput = createVerificationSystemInput({ configuration: input.configuration,
+    journal: async () => input.journal })
+  const contexts = new Map<string, NonNullable<Awaited<ReturnType<typeof systemInput>>>>()
+  return new RemoteJobExecutionHost({ ...input, supervisor,
+    async verification(execution) {
+      const qualification = await input.journal.qualifiedJobRuntime(execution)
+      const result = qualification.result
+      if (result?.outcome !== 'qualified' || result.measurement.schemaVersion !== 2) {
+        throw new Error('Original verification measurement unavailable.')
+      }
+      return {
+        measurement: result.measurement, dispatchAt: execution.acceptedSpec.lifecycle.dispatchAt,
+        async verifyAcceptedSpec(spec) {
+          const expected = acceptedJobSpecDigests(spec)
+          if (Object.entries(expected).some(([key, value]) => spec[key as keyof typeof expected] !== value)) {
+            throw new Error('Accepted verification digests changed.')
+          }
+        },
+        inputs: {
+          prepare: input.inputs.prepare.bind(input.inputs),
+          async verify(job, source, receipt, signal) {
+            const context = await systemInput(job, source, signal)
+            if (!context || !same(receipt.verificationContext, verificationContextPin({ verificationContext: context }))) {
+              throw new Error('Delivered verification context differs from protected runtime facts.')
+            }
+            await verifyJobInputDirectory(job, source, receipt, signal)
+            contexts.set(job.operationId, context)
+          },
+        },
+        async prepareOutputs(job, signal) {
+          const context = contexts.get(job.operationId)
+          if (!context) throw new Error('Verified context required before report reservation.')
+          const reserve = await reserveVerificationReportSpace(job, signal)
+          await input.journal.jobPrepareVerification(job.operationId, { context,
+            contextPin: verificationContextPin({ verificationContext: context })!, reserve, finalizedAt: null })
+          await input.prepareOutputs?.(job, signal)
+        },
+      }
+    }, source: { async verify(spec, signal) {
     const matches = [...admissions.values()].filter(value => same(value.execution.acceptedSpec, spec))
     if (matches.length !== 1) throw new Error('Unique original installed Job admission missing')
     const { execution, filesystem } = matches[0]!
@@ -82,8 +125,8 @@ export function createInstalledJobExecutionHost(input: InstalledJobExecutionHost
   } } })
 }
 
-async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: JobExecution, admitted: (filesystem: { device: string; mountId: string }) => void): Promise<PodmanJobSupervisor> {
-  const execution = JobExecutionSchema.parse(raw), target = execution.acceptedSpec.target, connection = input.connection
+async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: JobExecutionRecord, admitted: (filesystem: { device: string; mountId: string }) => void): Promise<PodmanJobSupervisor<JobExecutionRecord>> {
+  const execution = JobExecutionRecordSchema.parse(raw), target = execution.acceptedSpec.target, connection = input.connection
   const unavailable: PodmanCommandRunner = { async run() { throw new Error('Original qualified OCI runtime unavailable') }, async attach() { throw new Error('Original qualified OCI runtime unavailable') } }
   const observedHost = () => {
     const binding = 'deviceId' in connection ? input.currentBinding?.() : null
@@ -92,19 +135,23 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       binding.authorizationRevision !== connection.authorizationRevision || binding.bootId !== connection.bootId)) throw new Error('Actual Job channel unavailable')
     return { hostRef: target.hostRef, registration: target.registration, mainInstallationId: target.mainInstallationId, bootId: connection.bootId, connection: binding ?? null }
   }
-  let candidate: JobQualificationCandidate, profile: QualifiedJobProfile, measurementExpiresAt: string
+  let candidate: JobQualificationCandidateRecord, profile: QualifiedJobProfile, measurementExpiresAt: string
   try {
     const original = await input.journal.qualifiedJobRuntime(execution)
     if (original.result?.outcome !== 'qualified') throw new Error('Original runtime measurement missing')
-    candidate = original.candidate; profile = original.result.measurement.runtime; measurementExpiresAt = original.result.measurement.expiresAt
+    candidate = original.candidate
+    const result = original.result
+    if ('runtime' in result) profile = result.runtime
+    else profile = result.measurement.runtime
+    measurementExpiresAt = result.measurement.expiresAt
     const root = candidate.sourceParent, repository = target.destination.canonicalProjectRoot
     if (bootIdentity() !== connection.bootId || candidate.fingerprint.bootId !== connection.bootId ||
       target.destination.managedRuntimeRoot !== candidate.runtimeRoot || !repository.startsWith(`${root}/`) ||
       repository.slice(root.length + 1).split('/').some(part => !part || part === '.' || part === '..') ||
       !same(original.result.measurement.fingerprint, candidate.fingerprint) ||
-      original.result.measurement.fingerprintDigest !== original.admission.fingerprintDigest ||
-      original.result.measurement.qualificationId !== candidate.qualificationId ||
-      original.result.measurement.approvalId !== candidate.approvalId) throw new Error('Original measured Job placement changed')
+      (original.result.measurement.schemaVersion === 1 ? original.result.measurement.fingerprintDigest : original.result.measurement.identity.fingerprintDigest) !== original.admission.fingerprintDigest ||
+      (original.result.measurement.schemaVersion === 1 ? original.result.measurement.qualificationId : original.result.measurement.identity.qualificationId) !== candidate.qualificationId ||
+      (original.result.measurement.schemaVersion === 1 ? original.result.measurement.approvalId : original.result.measurement.identity.approvalId) !== candidate.approvalId) throw new Error('Original measured Job placement changed')
     await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: {
       hostRef: target.hostRef, registration: target.registration, mainInstallationId: target.mainInstallationId, bootId: connection.bootId,
       // Retained diagnostic connection is physical provenance only. Every fresh
@@ -114,7 +161,7 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
   } catch (error) {
     componentLogger('jobs').error({ err: error, executionId: execution.id }, 'Installed Job qualification read failed')
     // executeJob records a positive pre-entry preparation failure; never downgrade isolation.
-    return new PodmanJobSupervisor(null, unavailable, async () => { throw new Error('Job isolation unavailable') })
+    return new PodmanJobSupervisor<JobExecutionRecord>(null, unavailable, async () => { throw new Error('Job isolation unavailable') })
   }
   admitted(candidate.fingerprint.root.binding.filesystem)
   const owner = `job:${execution.operationId}:${execution.owner.grantId}:${execution.owner.epoch}`
@@ -125,7 +172,9 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     : value
   const launches = new Map<string, { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean }>()
   const assertLocal = async () => {
-    await assertJobRuntimeEntryContext(candidate)
+    if (candidate.fingerprint.schemaVersion === 3) {
+      await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: observedHost() })
+    } else await assertJobRuntimeEntryContext(candidate)
     if (bootIdentity() !== connection.bootId) throw new Error('Original Job boot changed; no automatic reboot relaunch')
     const status = await input.journal.jobStatus(execution.operationId)
     if (status.status !== 'known' || !same(status.receipt.intent.owner, execution.owner) || !same(status.receipt.execution.acceptedSpec, execution.acceptedSpec) ||
@@ -270,12 +319,21 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     },
     publish: certificate => input.journal.jobCertificate(execution.operationId, certificate),
   }
-  return new PodmanJobSupervisor(profile, commands, async current => {
+  const qualification = await input.journal.qualifiedJobRuntime(execution)
+  const verification = execution.schemaVersion === 2 && qualification.result?.outcome === 'qualified'
+    && qualification.result.measurement.schemaVersion === 2 ? {
+      measurement: qualification.result.measurement, dispatchAt: execution.acceptedSpec.lifecycle.dispatchAt,
+      verifyGit: verifyJobGitMounts, verifyInputs: async (job: import('./executor.js').VerificationExecution,
+        source: import('./inputs.js').VerifiedJobSource, receipt: import('@foreman-code/contracts/job-inputs').JobInputDeliveryReceipt, signal: AbortSignal) => {
+        await verifyJobInputDirectory(job,source,receipt,signal)
+      },
+    } : undefined
+  return new PodmanJobSupervisor<JobExecutionRecord>(profile, commands, async current => {
     if (!same(current.acceptedSpec, execution.acceptedSpec) || current.id !== execution.id || current.attemptId !== execution.attemptId) throw new Error('Original Job supervisor subject changed')
     return ownership
   }, {
     async deadlineMs() { const owner = await input.journal.jobNativeOwner(execution.operationId); if (!owner?.container?.deadlineAt) throw new Error('Original Job deadline missing'); return Date.parse(owner.container.deadlineAt) },
     markTimeout: () => input.journal.jobTimedOut(execution.operationId),
     async isTimedOut() { return (await input.journal.jobNativeOwner(execution.operationId))?.timedOut ?? false },
-  })
+  }, verification)
 }

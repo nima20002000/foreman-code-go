@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { FileScopeSchema, fileStateAt, type FileWithRevision } from '@foreman-code/contracts/files'
 import { JobInputEntrySchema, type JobInputEntry } from '@foreman-code/contracts/job-inputs'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -18,7 +18,7 @@ export class JobInputAuthority {
   readonly files:PostgresFileRepository
   constructor(private readonly pool:pg.Pool,private readonly runtime:Pick<PostgresJobDispatch, 'require'>,
     private readonly clock:()=>Date=()=>new Date()){this.files=new PostgresFileRepository(pool)}
-  async recipient(sql: JobSql, expected: JobExecution) {
+  async recipient(sql: JobSql, expected: JobExecutionRecord) {
     const current = await this.jobs.execution(sql, expected.workspaceId, expected.id, true)
     const changed = current.attemptId !== expected.attemptId || !isDeepStrictEqual(current.owner, expected.owner)
       || !isDeepStrictEqual(current.acceptedSpec, expected.acceptedSpec)
@@ -35,9 +35,9 @@ export class JobInputAuthority {
       ...(current.workflow ? { workflowId: current.workflow.workflowId, runId: current.workflow.runId } : {}),
     })
     await this.runtime.require(sql, current, { attemptId: current.attemptId, owner: current.owner })
-    return { execution: JobExecutionSchema.parse(current), principal }
+    return { execution: JobExecutionRecordSchema.parse(current), principal }
   }
-  private async pin(sql:JobSql,execution:JobExecution|null,principal:ManagementPrincipal,pin:{fileId:string;revisionId:string;sha256:string;byteSize:number},relativePath:string,delegation:JobInputEntry['delegation']):Promise<JobInputEntry> {
+  private async pin(sql:JobSql,execution:JobExecutionRecord|null,principal:ManagementPrincipal,pin:{fileId:string;revisionId:string;sha256:string;byteSize:number},relativePath:string,delegation:JobInputEntry['delegation']):Promise<JobInputEntry> {
     const stored=await this.files.read(pin.fileId,pin.revisionId,sql)
     if(!stored||stored.value.revision.sha256!==pin.sha256||stored.value.revision.byteSize!==pin.byteSize)throw new DomainError('JOB_INPUT_PIN_CONFLICT','The exact accepted input revision is missing or differs.',409)
     const scope=FileScopeSchema.parse(stored.value.file.scope)
@@ -73,7 +73,7 @@ export class JobInputAuthority {
     return JobInputEntrySchema.parse({relativePath,pin,scope,senderPrincipalId:principal.id,senderGrantsDigest:inputHash(principal.grants),delegation})
   }
   /** Definition Save/validate/Start admission: SQL-only, no made-up execution or byte probe. */
-  async validateDeclaredJobInputs(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,inputs:JobExecution['acceptedSpec']['inputs']):Promise<void>{
+  async validateDeclaredJobInputs(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,inputs:JobExecutionRecord['acceptedSpec']['inputs']):Promise<void>{
     const live=await readLiveManagementPrincipal(sql,principal.id)
     for(const input of inputs){const stored=await this.files.read(input.fileId,input.revisionId,sql);if(!stored)throw new DomainError('JOB_INPUT_PIN_CONFLICT','Declared input revision is missing.',409)
       const scope=stored.value.file.scope
@@ -82,7 +82,7 @@ export class JobInputAuthority {
       const {path,...pin}=input;await this.pin(sql,null,live,pin,`files/${path}`,null)
     }
   }
-  async entries(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<JobInputEntry[]> {
+  async entries(sql:JobSql,execution:JobExecutionRecord,principal:ManagementPrincipal):Promise<JobInputEntry[]> {
     const entries:JobInputEntry[]=[]
     for(const input of execution.acceptedSpec.inputs){const {path,...pin}=input;entries.push(await this.pin(sql,execution,principal,pin,`files/${path}`,null))}
     const workflow=workflowPins(execution)
@@ -102,7 +102,7 @@ export class JobInputAuthority {
     }
     ensureDistinct(entries);return entries
   }
-  async recheck(sql:JobSql,execution:JobExecution,entry:JobInputEntry):Promise<FileWithRevision> {
+  async recheck(sql:JobSql,execution:JobExecutionRecord,entry:JobInputEntry):Promise<FileWithRevision> {
     const recipient=await this.recipient(sql,execution)
     const current=await this.pin(sql,execution,recipient.principal,entry.pin,entry.relativePath,entry.delegation)
     if(!isDeepStrictEqual(current,entry))throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input authority changed or was revoked.',403)

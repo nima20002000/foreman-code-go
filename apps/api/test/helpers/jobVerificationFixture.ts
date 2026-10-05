@@ -1,3 +1,4 @@
+import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { AcceptedJobSpecSchema, ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
 import { ResolvedVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
 import { JobVerificationProfileIdentitySchema } from '@foreman-code/contracts/job-verification-policy'
@@ -49,5 +50,5 @@ export function verificationFixture() {
     workflowInput: null, definitionId: 'definition', definitionRevision: 1, definitionVersionId: 'definition-version',
     scriptDigest: digest, outputSpecDigest: digest, specDigest: digest, bindingHash: digest,
   })
-  return { build, spec, profile, resources, acceptedBuild }
+  return { lifecycle: verificationJobLifecycle('2026-10-04T12:00:00.000Z', spec.policy), build, spec, profile, resources, acceptedBuild }
 }

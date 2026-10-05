@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import type { JobExecution, JobArtifact } from '@foreman-code/contracts/jobs'
+import type { JobArtifact } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { TransferIntent, ByteTransferPort } from '@foreman-code/contracts/byte-transfer'
 import type { JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
-import { JobOutputCollectionError, readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
+import { JobOutputCollectionError, readDeclaredJobOutputs, readAvailableVerificationOutputs } from '../../jobs/executorOutputs.js'
 import { TransferExpiredError } from '../../byte-transfer/service.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 import { WorkerJobOutputApplication, WorkerJobOutputReceiver, type WorkerJobOutputChannel } from '../../files/jobs/outputChannel.js'
@@ -12,7 +13,7 @@ import type { RemoteOperationJournal } from './operationJournal.js'
 /** Worker metadata and sealed bytes share its existing selected-main signed carrier. */
 export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, connection: TransferSenderConnection, journal: RemoteOperationJournal,rsync?:WorkerJobOutputRsyncPort) {
   const collect = createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal,rsync)
-  return async (execution: JobExecution) => {
+  return async (execution: JobExecutionRecord) => {
     try {
       await collect(execution)
     } catch (error) {
@@ -26,7 +27,7 @@ export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, 
 
 export interface WorkerJobOutputRsyncPort {
   published(intent:TransferIntent,signal:AbortSignal):Promise<JobArtifact|undefined>
-  register(execution:JobExecution,input:JobOutputPublicationInput,intent:TransferIntent,bytes:Uint8Array,signal:AbortSignal):Promise<void>
+  register(execution:JobExecutionRecord,input:JobOutputPublicationInput,intent:TransferIntent,bytes:Uint8Array,signal:AbortSignal):Promise<void>
   stage(intent:TransferIntent,signal:AbortSignal):Promise<void>
 }
 
@@ -39,9 +40,12 @@ export interface JobOutputApplicationPort {
 }
 /** Only called after main's physical closure acknowledgement. Reads real sealed declared bytes. */
 export function createRemoteJobOutputCollector(receiver: ByteTransferPort, connection: TransferSenderConnection, main: JobOutputApplicationPort, journal: RemoteOperationJournal,rsync?:WorkerJobOutputRsyncPort) {
-  return async (execution: JobExecution) => {
+  return async (execution: JobExecutionRecord) => {
     if (execution.acceptedSpec.target.hostRef.kind !== 'device') throw new Error('Remote job outputs require their actual registered device')
-    const outputs = await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
+    const spec = execution.acceptedSpec
+    const outputs = execution.schemaVersion === 2
+      ? await readAvailableVerificationOutputs(spec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
+      : await readDeclaredJobOutputs(spec.target.destination.canonicalProjectRoot, spec)
     for (const output of outputs) {
       const declared = execution.acceptedSpec.outputs.find(value => value.path === output.path)
       if (!declared) throw new Error('Undeclared job output')
@@ -69,6 +73,9 @@ export function createRemoteJobOutputCollector(receiver: ByteTransferPort, conne
       const artifact = await main.publish(input)
       if (artifact.executionId !== execution.id || artifact.sha256 !== sha256 || artifact.byteSize !== bytes.length || artifact.path !== output.path
         || artifact.state !== 'available') throw new Error('Canonical output publication readback conflict')
+    }
+    if (spec.outputs.some(declaration => declaration.required && !outputs.some(output => output.path === declaration.path))) {
+      throw new JobOutputCollectionError('Available failure artifacts were published; required outputs remain incomplete.')
     }
   }
 }

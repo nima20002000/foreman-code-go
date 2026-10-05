@@ -13,14 +13,14 @@ import { verificationFixture, verificationId, verificationTime, verificationDige
 
 describe('verification placement and policy', () => {
   it('keeps Auto requests separate from concrete immutable acceptance and preserves build history unchanged', () => {
-    const { spec, acceptedBuild, definition, profile, resources } = verificationFixture()
+    const { spec, acceptedBuild, definition, profile, resources, lifecycle } = verificationFixture()
     const { isolationPolicyId, isolationPolicyRevision, ...policy } = spec.policy
     expect(isolationPolicyId).toBe(profile.profileId)
     expect(isolationPolicyRevision).toBe(profile.profileRevision)
     const auto = { ...spec, target: { kind: 'auto' }, policy, limits: resources.limits }
     expect(AutoVerificationJobSpecSchema.parse(auto)).toEqual(auto)
     const accepted = { ...acceptedBuild, ...spec, source: acceptedBuild.source,
-      schemaVersion: 2, profile, reservationId: verificationId,
+      schemaVersion: 2, profile, reservationId: verificationId, lifecycle,
       resourcePolicyRevision: 1, resourcePolicyDigest: verificationDigest,
       runtimeApprovalId: verificationId, runtimeApprovalRevision: 1 }
     expect(AcceptedVerificationJobSpecSchema.parse(accepted)).toEqual(accepted)

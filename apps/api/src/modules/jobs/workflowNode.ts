@@ -1,4 +1,4 @@
-import type { JobExecution, PreparedJobSpec } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord, PreparedJobSpecRecord } from '@foreman-code/contracts/job-verification'
 import type { RepeatNodeRef, RepeatResolution } from '../runs/repeatResolution.js'
 import type { RepeatGraphState } from '../runs/repeatNode.js'
 import { repeatConflict } from '../runs/repeatResolution.js'
@@ -7,8 +7,8 @@ import type { WorkflowJobAdmission, WorkflowJobDriver } from './workflowRuntimeP
 import type { WorkflowJobPreparation } from './workflowPreparation.js'
 export interface WorkflowJobNodeStore {
   prepareJob(ref:RepeatNodeRef):Promise<WorkflowJobAdmission>
-  admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpec):Promise<JobExecution>
-  observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecution>
+  admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpecRecord):Promise<JobExecutionRecord>
+  observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecutionRecord>
   acceptJobTerminal(ref:RepeatNodeRef,executionId:string):Promise<RepeatResolution>
 }
 export function workflowJobNodeAction(input:{runId:string;store:WorkflowJobNodeStore;driver:WorkflowJobDriver;limiter:ExecutionLimiter;signal:AbortSignal}) {

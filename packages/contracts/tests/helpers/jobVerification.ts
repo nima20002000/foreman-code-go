@@ -1,3 +1,4 @@
+import { verificationJobLifecycle } from '../../src/jobVerificationPolicy.js'
 import { JOB_RUNTIME_PROVISIONING_SUITE, JOB_RUNTIME_WORKSPACE_LAYOUT } from '../../src/jobRuntime.js'
 import { JOB_VERIFICATION_BASE_CHECKS } from '../../src/jobVerificationRuntime.js'
 import { ResolvedJobDefinitionSpecSchema, AcceptedJobSpecSchema } from '../../src/jobs.js'
@@ -89,7 +90,7 @@ export function verificationFixture() {
     process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
     publication: 'complete', requiredOutputsVerified: true,
   }
-  return { build, spec, profile, resources, definition, ticket, reservation, acceptedBuild, report, pass }
+  return { lifecycle: verificationJobLifecycle('2026-10-04T12:00:00.000Z', spec.policy), build, spec, profile, resources, definition, ticket, reservation, acceptedBuild, report, pass }
 }
 
 export function verificationMeasurementFixture() {
@@ -127,7 +128,7 @@ export function verificationMeasurementFixture() {
     network: profile.network, resources,
     approvalConfig: { schemaVersion: 1, revision: 1, approvalLifetimeMs: 3_600_000,
       review: { reviewedByPrincipalId: 'owner', reviewedAt: verificationTime, decisionDigest: digest } },
-    tools: [],
+    tools: [], seedReceiptSha256: digest,
   }
   const checkIds = [...JOB_VERIFICATION_BASE_CHECKS, 'network-none']
   return {

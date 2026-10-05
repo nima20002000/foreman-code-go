@@ -1,7 +1,11 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import { RemoteJobMainRpcRequestSchema, RemoteJobDispatchIntentSchema, type RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
+import {
+  RemoteJobMainRpcRequestRecordSchema,
+  RemoteJobDispatchIntentSchema,
+  type RemoteJobDispatchIntent,
+} from '@foreman-code/contracts/remote-job-execution'
 import { JobRepository } from '../../jobs/repository.js'
 import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import type { JobWorkerService } from '../../jobs/worker.js'
@@ -62,7 +66,7 @@ export class JobApplicationBridge {
     } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
   async handle(raw: unknown, binding: Readonly<DeviceSessionBinding>) {
-    const frame = RemoteJobMainRpcRequestSchema.parse(raw)
+    const frame = RemoteJobMainRpcRequestRecordSchema.parse(raw)
     const intent = frame.method === 'job-report' ? frame.receipt.intent : frame.intent
     if (frame.method === 'job-source') return this.resolveAcceptedSource(intent, binding)
     const execution = await this.authorize(intent, binding, frame.method === 'job-authorize' ? frame.action : 'read')

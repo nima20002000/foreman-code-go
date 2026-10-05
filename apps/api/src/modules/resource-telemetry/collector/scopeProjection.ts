@@ -2,7 +2,7 @@ import type { HarnessExecution, NativeSessionLane, NativeSessionReference } from
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { JobExecution } from '@foreman-code/contracts/jobs'
-import type { RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { TelemetrySelectorSchema, telemetryCanonical, type TelemetryIdentity, type TelemetryOwner } from '@foreman-code/contracts/resource-telemetry'
 import type { OCIHostCertificate } from '../../jobs/executorContainerOwner.js'
 import type { TrustedNativeScope } from './registryAdapter.js'
@@ -30,7 +30,7 @@ function scope(identity: TelemetryIdentity, owner: TelemetryOwner, capture: Capt
     leaseId: capture.lane.id, observedDeviceId: identity.host.deviceId, observedInstallationId: identity.host.applicationInstallationId,
     shared: capture.shared, lifecycle: capture.lifecycle }
 }
-function connectionMatches(identity: TelemetryIdentity, connection: RemoteJobOperationReceipt['connection']): boolean {
+function connectionMatches(identity: TelemetryIdentity, connection: RemoteJobOperationReceiptRecord['connection']): boolean {
   const h = identity.host
   if ('kind' in connection) return h.hostRef.kind === 'main' && connection.mainId === identity.mainId
     && connection.mainInstallationId === h.applicationInstallationId && connection.bootId === h.bootId
@@ -78,9 +78,9 @@ export function projectConversationScope(input: {
 }
 /** Existing OCI certificate + accepted job receipt only; qualifications are host overhead, never job owners. */
 export function projectCIJobScope(input: {
-  identity: TelemetryIdentity; receipt: RemoteJobOperationReceipt; certificate: OCIHostCertificate
+  identity: TelemetryIdentity; receipt: RemoteJobOperationReceiptRecord; certificate: OCIHostCertificate
   nativeOwner: string; attributionRevision: string; shared: boolean; accepted: JobExecution
-  lease: { id: string; owner: RemoteJobOperationReceipt['intent']['owner']; expiresAt: string }; nowUnixMs: number
+  lease: { id: string; owner: RemoteJobOperationReceiptRecord['intent']['owner']; expiresAt: string }; nowUnixMs: number
 }): TrustedNativeScope | null {
   const { identity, receipt: r, certificate: c } = input, i = r.intent, s = c.scope, t = r.execution.acceptedSpec.target
   if (!('leaseId' in s) || s.subject.kind !== 'job') return null

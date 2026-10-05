@@ -2,17 +2,17 @@ import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job
 import { randomUUID } from 'node:crypto'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { JobRunCleanupSchema,type JobRunCleanup } from '@foreman-code/contracts/job-run-cleanup'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
 import { assertGraphTransaction,beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
 import { canonical,JobRepository,type JobSql } from './repository.js'
 
-export function requireCleanupPins(execution:JobExecution,cleanup:JobRunCleanup) {
+export function requireCleanupPins(execution:JobExecutionRecord,cleanup:JobRunCleanup) {
   if(!execution.workflow||cleanup.workspaceId!==execution.workspaceId||cleanup.workflowId!==execution.workflow.workflowId||cleanup.runId!==execution.workflow.runId||cleanup.nodeId!==execution.workflow.nodeId||cleanup.nodeExecutionId!==execution.workflow.nodeExecutionId||cleanup.executionId!==execution.id||cleanup.attemptId!==execution.attemptId||cleanup.operationId!==execution.operationId||cleanup.bindingHash!==execution.acceptedSpec.bindingHash||canonical(cleanup.jobOwner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Owned cleanup cannot stop another placement, attempt or operation.',409)
 }
-async function requireRunJobMapping(sql:JobSql,execution:JobExecution,workflowVersionId:string) {
+async function requireRunJobMapping(sql:JobSql,execution:JobExecutionRecord,workflowVersionId:string) {
   const workflow=execution.workflow
   if(!workflow)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Manual jobs cannot borrow a Run-node mapping.',409)
   const row=(await sql.query<{reference:unknown;run_id:string;node_execution_id:string;job_execution_id:string}>('select reference,run_id,node_execution_id,job_execution_id from workflow_job_executions where job_execution_id=$1',[execution.id])).rows[0]
@@ -22,7 +22,7 @@ async function requireRunJobMapping(sql:JobSql,execution:JobExecution,workflowVe
 }
 /** Request is recorded before any native control. Existing Run cleanup must
  * already be persisted by the common lifecycle before it aborts job drivers. */
-export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:JobExecution,owner:RunOwnership,reason:JobRunCleanup['reason']):Promise<JobRunCleanup> {
+export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:JobExecutionRecord,owner:RunOwnership,reason:JobRunCleanup['reason']):Promise<JobRunCleanup> {
   assertGraphTransaction(sql);owner.assertOwned()
   if(execution.workflow?.runId!==owner.runId)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Cleanup belongs to a different actual Run owner.',409)
   const readAuthority=async()=>{
@@ -52,7 +52,7 @@ export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:Job
 }
 /** The committed receipt may outlive its Run owner session. Reconciliation only
  * uses this original stop authority; it never authorizes a fresh launch/publication. */
-export async function readRunJobCleanup(sql:JobSql,execution:JobExecution):Promise<JobRunCleanup|null> {
+export async function readRunJobCleanup(sql:JobSql,execution:JobExecutionRecord):Promise<JobRunCleanup|null> {
   const row=(await sql.query<{cancel_cleanup:unknown;cancel_command_id:string|null}>('select cancel_cleanup,cancel_command_id from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
   if(!row?.cancel_cleanup)return null
   const cleanup=JobRunCleanupSchema.parse(row.cancel_cleanup);requireCleanupPins(execution,cleanup)

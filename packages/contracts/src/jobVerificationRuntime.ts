@@ -9,10 +9,11 @@ import {
   JobRuntimeQualificationRpcResponseSchema,
   JobRuntimeProfileSaveSchema,
   InstalledJobRuntimeDescriptorSchema,
+  ProvisionedQualifiedJobRuntimeSchema, validateProvisionedRuntime,
   ProvisionedJobRuntimeQualificationRpcRequestSchema, ProvisionedJobRuntimeQualificationRpcResponseSchema,
   validateJobRuntimeNativeContext,
 } from './jobRuntime.js'
-import { JobVerificationSuiteSchema } from './jobVerification.js'
+import { JobVerificationSuiteSchema, JobVerificationPassSchema } from './jobVerification.js'
 import {
   JobNetworkPolicySchema, JobResourceRequestSchema, JobVerificationApprovalConfigInputSchema,
   JobVerificationApprovalConfigSchema, JobVerificationPolicyRequirementsSchema, JobVerificationProfileIdentitySchema,
@@ -37,6 +38,18 @@ export const JobVerificationPreseedFactsSchema = z.object({
   provenanceDigest: DeviceDigestSchema,
   minimumReleaseAgeMinutes: z.literal(2880),
   releaseAgeVerified: z.literal(true),
+}).strict()
+export const JobVerificationRepositoryContextSchema = z.object({
+  identity: JobVerificationPassSchema.shape.expected,
+  privateGit: JobVerificationPrivateGitSchema,
+  executionTimeoutMs: DeviceSafeIntegerSchema.positive(),
+  cancellationTimeoutMs: DeviceSafeIntegerSchema.positive(),
+  qualifiedUnitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
+  limits: z.object({ summaryBytes: DeviceSafeIntegerSchema.positive(), junitBytes: DeviceSafeIntegerSchema.positive(),
+    vitestBytes: DeviceSafeIntegerSchema.positive(), logsArchiveBytes: DeviceSafeIntegerSchema.positive(),
+    logBytes: DeviceSafeIntegerSchema.positive() }).strict(),
+  mutableDirectory: z.literal('/job-scratch'), storeDirectory: z.literal('/job-scratch/pnpm-store'),
+  preseedReceipt: JobVerificationPreseedFactsSchema,
 }).strict()
 
 export const JobVerificationProfileInputSchema = z.object({
@@ -79,6 +92,7 @@ export const JobVerificationRuntimeFingerprintSchema = z.object({
   resources: JobResourceRequestSchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
   tools: z.array(ToolIdentity).max(16),
+  seedReceiptSha256: DeviceDigestSchema,
 }).strict().superRefine((value, context) => {
   const buildFingerprint = Object.fromEntries(Object.keys(ProvisionedJobRuntimeFingerprintSchema.shape)
     .map(key => [key, value[key as keyof typeof value]]))
@@ -302,8 +316,24 @@ export const JobRuntimeNativeAdmissionRecordSchema = z.union([
   JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema,
 ])
 export type JobRuntimeNativeAdmissionRecord = z.infer<typeof JobRuntimeNativeAdmissionRecordSchema>
+export const QualifiedVerificationJobRuntimeSchema = z.object({
+  ...ProvisionedQualifiedJobRuntimeSchema.shape,
+  network: JobNetworkPolicySchema,
+}).strict().superRefine(validateProvisionedRuntime)
 export const JobVerificationRuntimeQualificationResultSchema = z.discriminatedUnion('outcome', [
-  z.object({ outcome: z.literal('qualified'), measurement: JobVerificationRuntimeMeasurementSchema }).strict(),
+  z.object({ outcome: z.literal('qualified'), measurement: JobVerificationRuntimeMeasurementSchema,
+    runtime: QualifiedVerificationJobRuntimeSchema }).strict().superRefine((value, context) => {
+    const { fingerprint, identity } = value.measurement
+    if (value.runtime.policyId !== identity.profileId || value.runtime.policyRevision !== identity.profileRevision
+      || value.runtime.qualificationId !== identity.qualificationId
+      || value.runtime.imageDigest !== fingerprint.imageDigest || value.runtime.toolchainDigest !== fingerprint.toolchainDigest
+      || JSON.stringify(value.runtime.network) !== JSON.stringify(fingerprint.network)
+      || Object.keys(fingerprint.limits).some(field => Reflect.get(value.runtime, field) !== Reflect.get(fingerprint.limits, field))
+      || JSON.stringify(value.runtime.quota) !== JSON.stringify(fingerprint.quota)
+      || value.runtime.aggregateCgroupIdentityDigest !== fingerprint.aggregateCgroupIdentityDigest) {
+      context.addIssue({ code: 'custom', message: 'Verification runtime must retain its measured profile and enforcement.' })
+    }
+  }),
   JobRuntimeQualificationResultSchema.options[1],
 ])
 export const JobRuntimeQualificationResultRecordSchema = z.union([

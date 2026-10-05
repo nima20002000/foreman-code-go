@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
@@ -11,7 +11,7 @@ import { createAdmittedJobOutputs } from '../../files/jobs/admittedFactory.js'
 import { VerifiedJobOutputReader, type AcceptedJobTransferResolver } from '../../files/jobs/transferReader.js'
 import type { JobOutputPublicationInput } from '../../files/jobs/port.js'
 import type { VerifiedArtifactReader } from '../../files/distributed/publication.js'
-import type { RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import type { JobSql } from '../../jobs/repository.js'
 
@@ -21,13 +21,13 @@ export function createJobCanonicalOutputs(input: { pool: pg.Pool; storageRoot: s
   const artifacts = createCanonicalJobArtifactPort({ pool: input.pool, storageRoot: input.storageRoot,
     ...(input.excludedRoots ? { excludedRoots: input.excludedRoots } : {}), authority: input.authority,
     reader: new VerifiedJobOutputReader(input.transfers, input.accepted) })
-  return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecution, receipt: RemoteJobOperationReceipt) =>
+  return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecutionRecord, receipt: RemoteJobOperationReceiptRecord) =>
     projectJobReceiptLocked(sql, execution, receipt, artifacts) }
 }
 /** Main uses persisted admission, the actual W07 receiver and the locked job projector together. */
 export function createAdmittedJobCanonicalOutputs(input: Parameters<typeof createAdmittedJobOutputs>[0]) {
   const outputs = createAdmittedJobOutputs(input)
-  return { ...outputs, projectReceipt: (sql: JobSql, execution: JobExecution, receipt: RemoteJobOperationReceipt) =>
+  return { ...outputs, projectReceipt: (sql: JobSql, execution: JobExecutionRecord, receipt: RemoteJobOperationReceiptRecord) =>
     projectJobReceiptLocked(sql, execution, receipt, outputs.artifacts) }
 }
 
@@ -43,8 +43,8 @@ export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRo
         || execution.acceptedSpec.target.hostRef.kind !== 'main') throw new Error('Original sealed main job output is unavailable')
       return Readable.from(snapshot.bytes)
     } } })
-  return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecution, receipt: RemoteJobOperationReceipt) => projectJobReceiptLocked(sql, execution, receipt, artifacts),
-    collectOutputs: async (execution: JobExecution) => {
+  return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecutionRecord, receipt: RemoteJobOperationReceiptRecord) => projectJobReceiptLocked(sql, execution, receipt, artifacts),
+    collectOutputs: async (execution: JobExecutionRecord) => {
       if (execution.acceptedSpec.target.hostRef.kind !== 'main') throw new Error('Local output reader cannot change the accepted host')
       for (const output of await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)) {
         const declared = execution.acceptedSpec.outputs.find(value => value.path === output.path)

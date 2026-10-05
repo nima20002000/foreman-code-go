@@ -29,7 +29,7 @@ function execution() {
   const f = verificationFixture()
   const spec = AcceptedVerificationJobSpecSchema.parse({
     ...f.acceptedBuild, ...f.spec, source: f.acceptedBuild.source, schemaVersion: 2,
-    profile: f.profile, reservationId: id,
+    profile: f.profile, reservationId: id, lifecycle: f.lifecycle,
     resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
   })
   const acceptedSpec = { ...spec, ...acceptedJobSpecDigests(spec) }
@@ -107,8 +107,25 @@ describe('verification records at qualification and Job transport boundaries', (
       admission: { ...request.admission, runtimeApprovalRevision: 2 } }).success).toBe(false)
     expect(JobRuntimeQualificationRpcRequestRecordSchema.safeParse({ ...request,
       candidate: { ...candidate, operationId: '22222222-2222-4222-8222-222222222222' } }).success).toBe(false)
-    const response = { ...request, result: { outcome: 'qualified', measurement: measured } }
+    const fingerprint = measured.fingerprint
+    const runtime = {
+      ...fingerprint.limits, policyId: fingerprint.profileId, policyRevision: fingerprint.profileRevision,
+      qualificationId: measured.identity.qualificationId, imageDigest: fingerprint.imageDigest,
+      toolchainDigest: fingerprint.toolchainDigest, runtimeVersion: 'podman-fixture',
+      ociRuntimeVersion: 'crun-fixture', kernelVersion: 'linux-fixture',
+      rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true,
+      network: fingerprint.network, workspaceLayout: fingerprint.workspaceLayout,
+      resourcePolicyRevision: fingerprint.resourcePolicyRevision,
+      resourcePolicyDigest: fingerprint.resourcePolicyDigest, runtimeApprovalId: fingerprint.runtimeApprovalId,
+      runtimeApprovalRevision: fingerprint.runtimeApprovalRevision, provisioningSuite: fingerprint.provisioningSuite,
+      deviceLimits: fingerprint.deviceLimits, quota: fingerprint.quota,
+      aggregateCgroupIdentityDigest: fingerprint.aggregateCgroupIdentityDigest,
+      imageManifestDigest: fingerprint.imageManifestDigest, imageConfigDigest: fingerprint.imageConfigDigest,
+    }
+    const response = { ...request, result: { outcome: 'qualified', measurement: measured, runtime } }
     expect(JobRuntimeQualificationRpcResponseRecordSchema.parse(response)).toEqual(response)
+    expect(JobRuntimeQualificationRpcResponseRecordSchema.safeParse({ ...response,
+      result: { ...response.result, runtime: { ...runtime, memoryBytes: runtime.memoryBytes + 1 } } }).success).toBe(false)
     expect(JobRuntimeQualificationRpcResponseRecordSchema.safeParse({ ...response, version: 1 }).success).toBe(false)
     expect(JobRuntimeQualificationRpcResponseRecordSchema.safeParse({ ...response,
       admission: { ...response.admission, fingerprintDigest: 'b'.repeat(64) } }).success).toBe(false)
