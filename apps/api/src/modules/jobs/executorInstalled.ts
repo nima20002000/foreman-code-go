@@ -211,25 +211,23 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     try {
       await input.journal.jobReserveProcess(execution.operationId, { launchId: scope.launchId, processOwner, binary, argv: exact })
       const status = await input.journal.jobStatus(execution.operationId)
-      if (exact[1] === 'create' || exact[1] === 'start' || exact[1] === 'exec') {
-        if (Date.parse(measurementExpiresAt) <= Date.now()) throw new Error('Original Job qualification expired before native entry')
-        if (status.status !== 'known' || status.receipt.stopFence || status.receipt.terminal) throw new Error('Job entry fenced')
-        await input.authorize(status.receipt.intent, execution, 'start')
-        await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: observedHost() })
-        if (execution.schemaVersion === 2 && execution.acceptedSpec.target.hostRef.kind === 'device') {
+      await authorizeJobContainerEntry({ argv: exact, execution, measurementExpiresAt,
+        readStatus: () => input.journal.jobStatus(execution.operationId),
+        async authorize() {
+          if (status.status !== 'known') throw new Error('Original Job receipt missing')
+          await input.authorize(status.receipt.intent, execution, 'start')
+        },
+        inspect: () => inspectInstalledJobRuntimeCandidate({ configuration: input.configuration,
+          candidate, host: observedHost() }),
+        async memoryHeadroom() {
           const operations = await input.journal.jobOperations()
           const running = operations.filter(receipt => receipt.execution.schemaVersion === 2
             && receipt.terminal?.processStopped !== true).length
           const meminfo = await readFile('/proc/meminfo', 'utf8')
           const availableKb = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1]
-          const bytes = availableKb ? Number(availableKb) * 1024 : NaN
-          const minimum = JOB_VERIFICATION_OWNER_CONFIGURATION.laptopMinimumAvailableBytes
-            + JOB_VERIFICATION_OWNER_CONFIGURATION.laptopPerRunningJobBytes * running
-          if (!Number.isSafeInteger(bytes) || bytes < minimum) {
-            throw new Error('Laptop memory headroom changed before verification entry.')
-          }
-        }
-      }
+          return { running, availableBytes: availableKb ? Number(availableKb) * 1024 : NaN }
+        },
+      })
       const child = spawnNativeProcess(binary, exact, { cwd: candidate.runtimeRoot, env, recovery: scope })
       launch.child = child; child.stdin.end()
       return { child, id: scope.launchId }
@@ -355,4 +353,38 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     markTimeout: () => input.journal.jobTimedOut(execution.operationId),
     async isTimedOut() { return (await input.journal.jobNativeOwner(execution.operationId))?.timedOut ?? false },
   }, verification)
+}
+
+export async function authorizeJobContainerEntry(input: {
+  argv: string[]
+  execution: JobExecutionRecord
+  measurementExpiresAt: string
+  readStatus(): ReturnType<RemoteJobExecutionHostPorts['journal']['jobStatus']>
+  authorize(): Promise<void>
+  inspect(): Promise<void>
+  memoryHeadroom(): Promise<{ running: number; availableBytes: number }>
+}): Promise<void> {
+  const subcommand = input.argv.find(argument => !argument.startsWith('-'))
+  if (!['create', 'start', 'exec'].includes(subcommand ?? '')) return
+  const assertEntry = async () => {
+    if (Date.parse(input.measurementExpiresAt) <= Date.now()) {
+      throw new Error('Original Job qualification expired before native entry')
+    }
+    const status = await input.readStatus()
+    if (status.status !== 'known' || status.receipt.stopFence || status.receipt.terminal) {
+      throw new Error('Job entry fenced')
+    }
+  }
+  await assertEntry()
+  await input.authorize()
+  await input.inspect()
+  if (input.execution.schemaVersion === 2 && input.execution.acceptedSpec.target.hostRef.kind === 'device') {
+    const { running, availableBytes } = await input.memoryHeadroom()
+    const minimum = JOB_VERIFICATION_OWNER_CONFIGURATION.laptopMinimumAvailableBytes
+      + JOB_VERIFICATION_OWNER_CONFIGURATION.laptopPerRunningJobBytes * running
+    if (!Number.isSafeInteger(availableBytes) || availableBytes < minimum) {
+      throw new Error('Laptop memory headroom changed before verification entry.')
+    }
+  }
+  await assertEntry()
 }
