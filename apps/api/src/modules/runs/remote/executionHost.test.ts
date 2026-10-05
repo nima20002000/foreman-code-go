@@ -438,3 +438,19 @@ describe('actual worker native-port adapter', () => {
   })
 
 })
+
+it('keeps the admitted mode in worker turn replay identity after journal restart', async () => {
+  const f = await setup()
+  await f.host.prepare({ intent: f.intent, placement: f.placement, request: f.request })
+  await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution', 'plan')
+  await expect(f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution', 'regular'))
+    .rejects.toThrow('Turn input binding conflict')
+  await f.journal.close()
+  const reopened = await RemoteOperationJournal.open(join(roots.at(-1)!, 'journal'))
+  journals.push(reopened)
+  await expect(reopened.reserveTurn(f.intent.operationId, {
+    correlationId: 'execution:execution', promptDigest: createHash('sha256').update('prompt').digest('hex'),
+    sessionMode: 'regular',
+  })).rejects.toThrow('Turn input binding conflict')
+  expect(f.state.turns).toBe(1)
+})

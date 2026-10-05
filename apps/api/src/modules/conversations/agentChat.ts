@@ -5,6 +5,8 @@ import { sessionTaskContent } from '@foreman-code/contracts'
 import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
+import { parseSessionCommand, sessionTaskContent } from '@foreman-code/contracts'
+import type { SessionControlRequest } from '@foreman-code/contracts'
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
@@ -674,7 +676,9 @@ export class AgentChatService {
 
   private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest, executionId?: string, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     this.assertOpen()
-    const input = SendAgentChatMessageRequestSchema.parse(value)
+    const parsed = SendAgentChatMessageRequestSchema.parse(value)
+    const input = parsed.intent === 'steer' && parseSessionCommand(parsed.content).kind === 'plan-task'
+      ? { ...parsed, intent: 'next_turn' as const } : parsed
     const context: AgentChatContext = { workspaceId, ...input.context }
     this.authorize(principal, 'agent_chat:write', context)
     this.authorize(principal, 'agent_chat:read', context)

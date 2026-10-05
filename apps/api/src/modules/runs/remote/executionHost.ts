@@ -301,7 +301,9 @@ export class RemoteExecutionHost {
   private async startTurnOwned(operationId: string, prompt: string, correlationId: string, sessionMode?: SessionMode) {
     const resident = await this.resident(operationId, 'start')
     if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
-    const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })
+    const reserved = await this.ports.journal.reserveTurn(operationId, {
+      correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex'), sessionMode: sessionMode ?? 'regular',
+    })
     if (!reserved.reserved) return this.ports.journal.status(operationId)
     resident.turn = (async () => {
       try {

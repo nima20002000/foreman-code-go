@@ -138,12 +138,13 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
-  reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string }) {
+  reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string; sessionMode?: 'regular' | 'plan' }) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
-      if (receipt.turnInput && !same(receipt.turnInput, input)) throw new Error('Turn input binding conflict')
+      const turnInput = { ...input, sessionMode: input.sessionMode ?? 'regular' }
+      if (receipt.turnInput && !same(receipt.turnInput, turnInput)) throw new Error('Turn input binding conflict')
       if (receipt.stopFence || receipt.turnEntryAttempted || receipt.phase !== 'start_acknowledged') return { reserved: false, receipt }
-      receipt.turnEntryAttempted = true; receipt.turnInput = input; receipt.sequence++; return { reserved: true, receipt }
+      receipt.turnEntryAttempted = true; receipt.turnInput = turnInput; receipt.sequence++; return { reserved: true, receipt }
     })
   }
   acknowledgeTurn(operationId: string, turnId: string) {
