@@ -1,79 +1,128 @@
 import { randomUUID } from 'node:crypto'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
-import { WorkspaceRootPolicySchema } from '@graphql/contracts/workspace-root-policies'
-import { HarnessInstanceRegistry, localHarnessDrivers } from '../../src/modules/harnesses/instanceRegistry.js'
-import { HarnessInstallationRegistry } from '../../src/modules/harnesses/installationRegistry.js'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type pg from 'pg'
+import type { ScheduleConfiguration } from '@foreman-code/contracts/schedules'
+import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
-import type { SourceAdmissionPort } from '../../src/modules/sources/admissionPorts.js'
-import type { WorkspaceRootPolicyPort } from '../../src/modules/sources/rootPolicyPorts.js'
-import type { Sch11Fixture } from './sch11Fixture.js'
+import { PostgresWorkspaceRootPolicies } from '../../src/modules/sources/rootPolicies.js'
+import { InstalledWorkspaceRootHosts, type RootWorkerClient } from '../../src/modules/sources/rootHosts.js'
+import { RegisteredWorkspaceSourceRoots } from '../../src/modules/sources/registeredSourceRoots.js'
+import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
+import { PostgresSourceService } from '../../src/modules/sources/service.js'
+import { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
+import { qualifiedGit } from '../../src/modules/sources/capture.js'
+import { sourceSha256 } from '../../src/modules/sources/manifest.js'
+import { WorkspaceBoundLocationService } from '../../src/modules/workspace-roots/service.js'
+import { sch11Actions, type Sch11Fixture } from './sch11Fixture.js'
+import { sch11Once } from './sch11ClockCases.js'
+import { scheduleHarnessFixture } from './scheduleHarnessFixture.js'
 
-/** Source/root host reads are synthetic. Workflow saves, instance selection,
- * producer rejection, schedule transactions and authentication remain real. */
+async function transaction<T>(pool: pg.Pool, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+  const sql = await pool.connect()
+  try {
+    await sql.query('begin')
+    const result = await work(sql)
+    await sql.query('commit')
+    return result
+  } catch (error) {
+    await sql.query('rollback')
+    throw error
+  } finally { sql.release() }
+}
+
+/** Admission uses persisted authorities and physical host discovery. */
 export async function schedulePlacementFixture(f: Sch11Fixture) {
-  const mainId = randomUUID()
-  const rootId = randomUUID()
-  const rootPolicyId = randomUUID()
-  const digest = 'a'.repeat(64)
+  const pool = f.database.pool
+  const mainId = (await pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
   const hostRef = { kind: 'main' as const, mainId }
-  const selection = { hostRef, rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' }
-  const source = { approvedSourceId: randomUUID(), snapshotId: randomUUID(), manifestDigest: digest }
-  const filesystem = { device: '1', inode: '2', mountId: '3' }
-  const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId, rootPolicyRevision: '1',
-    workspaceId: f.scope.workspaceId, hostRef, applicationInstallationId: mainId, registration: null,
-    locationRevision: '1', ownerPrincipalId: f.writer.principal.id, allowedBaseId: randomUUID(),
-    configurationRevision: '1', relativePath: '', accessMode: 'read-write', canonicalProjectRoot: f.projectRoot,
-    filesystem, directoryIdentityHash: digest, managedRuntimeRoot: f.runtimeRoot,
-    runtimeFilesystem: filesystem, attestationId: randomUUID(), attestationDigest: digest })
-  const root = SourceRootRecordSchema.parse({ version: 1, source, selection,
-    binding: { version: 1, mainId, deviceId: null, workerInstallationId: null,
-      workspaceId: f.scope.workspaceId, rootId, bindingRevision: 1, locationRevision: 1,
-      canonicalPath: f.projectRoot, filesystem, accessMode: 'exclusive-write',
-      snapshotId: source.snapshotId, manifestDigest: digest },
-    ownerPrincipalId: f.writer.principal.id, authorizedByPrincipalId: f.writer.principal.id,
-    registration: null, attestationId: policy.attestationId, attestationDigest: digest,
-    boundAt: '2030-01-07T09:00:00.000Z' })
-  const configured = f.fixture.configurations.map((configuration) => ({
-    instanceId: `instance-${configuration.agentId}`, instanceRevision: '1',
-    driverId: configuration.harness.harness, enabled: true, configuration: configuration.harness,
-  }))
-  const instances = new HarnessInstanceRegistry(localHarnessDrivers)
-  instances.reload(configured)
-  const installations = new HarnessInstallationRegistry(instances)
-  installations.refresh(configured.map((instance) => ({ hostRef,
-    harnessInstallationId: `installation-${instance.instanceId}`, installationFingerprint: digest,
-    driverId: instance.driverId, driverRevision: '1', protocolRevision: '1',
-    environmentGeneration: '1', connectionGeneration: '1', installed: true,
-    authenticated: true, compatible: true, qualified: true, observedVersion: 'synthetic',
-    launcher: { requested: instance.driverId, resolvedLauncher: `/synthetic/${instance.driverId}`,
-      fingerprint: digest, status: 'installed' as const, interpreter: null, diagnostics: [],
-      environment: { generation: '1', provenance: 'systemd' as const, cwd: '/synthetic', path: '/synthetic' },
-      checkedAt: '2030-01-07T09:00:00.000Z' },
-  })))
-  const workflow = await f.workflows.get(f.writer.principal, f.scope.workspaceId, f.scope.workflowId)
+  const writer = await f.access.issue({ name: 'Schedule placement owner', audience: 'operator',
+    expiresAt: new Date(Date.now() + 3_600_000), grants: [
+      { actions: [...sch11Actions, 'sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind',
+        'workspace_locations:update', 'workspace_locations:validate'], scope: { workspaceIds: [f.scope.workspaceId] } },
+      { actions: ['harnesses:read', 'harnesses:update'], scope: {} },
+    ] })
+  const location = f.fixture.run.executionLocation
+  if (!location) throw new Error('Schedule placement fixture requires an execution location.')
+  const project = location.rootPath
+  const canonical = join(f.database.directory, `schedule-source-${randomUUID()}`)
+  await mkdir(canonical, { mode: 0o700 })
+  await chmod(f.runtimeRoot, 0o700)
+  await qualifiedGit(project, ['init', '--template='])
+  await writeFile(join(project, 'source.ts'), 'export const scheduled = true\n')
+  await qualifiedGit(project, ['add', 'source.ts'])
+  await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source'])
+  const commit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
+  const allowlist = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef, applicationInstallationId: mainId,
+    configurationRevision: '1', bases: [{ baseId: randomUUID(), canonicalPath: project,
+      accessModes: ['read-only', 'read-write'] }], managedRuntimeRoot: f.runtimeRoot })
+  const unused = async (): Promise<never> => { throw new Error('Scheduled Start admission does not execute a provider.') }
+  let rootWorker: RootWorkerClient = { request: unused }
+  const createAuthorities = () => {
+    const hosts = new InstalledWorkspaceRootHosts(allowlist,
+      async (sql, _principal, host, installationId) => {
+        const registration = await assertDeviceHostInstallation(sql, host, installationId)
+        return registration ? { workerInstallationId: registration.workerInstallationId,
+          keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision } : null
+      }, { request: (...args) => rootWorker.request(...args) })
+    const policies = new PostgresWorkspaceRootPolicies(mainId, hosts)
+    const sources = new PostgresSourceService(pool, f.commands, f.locations, new PrivateSourceSnapshotStore(canonical),
+      mainId, new RegisteredWorkspaceSourceRoots(policies, hosts),
+      { authorize: unused, prepare: unused, verifyWorkingDirectory: unused, verify: unused,
+        releaseClaim: unused, authorizeFinal: unused }, { confirmedClosed: unused })
+    return { policies, sources }
+  }
+  let authorities = createAuthorities()
+  const publishConfiguration = async (configurationRevision: string) => transaction(pool, sql => {
+    const configuration = { ...allowlist, configurationRevision }
+    return authorities.policies.publishApprovedHostConfiguration(sql, configuration, { mainId, hostRef,
+      applicationInstallationId: mainId, configurationRevision,
+      configurationDigest: sourceSha256(Buffer.from(JSON.stringify(configuration))) })
+  })
+  await publishConfiguration('1')
+  const locations = new WorkspaceBoundLocationService(pool, f.commands, authorities.policies, 'local')
+  const bound = (await locations.set(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
+    commandId: randomUUID(), hostRef, allowedBaseId: allowlist.bases[0]!.baseId, configurationRevision: '1',
+    relativePath: '', accessMode: 'read-write', expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
+  if (bound.evidence !== 'bound') throw new Error('Expected a persisted workspace root policy.')
+  const policy = bound.binding
+  const approved = (await authorities.sources.approve(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
+    commandId: randomUUID(), expectedLocationRevision: bound.locationRevision, commit,
+    approvedPaths: ['source.ts'], executablePolicy: 'strip' })).value
+  const source = { approvedSourceId: approved.manifest.approvedSourceId, snapshotId: approved.manifest.snapshotId,
+    manifestDigest: approved.manifest.manifestDigest }
+  const selection = { hostRef, rootPolicyId: policy.rootPolicyId,
+    rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }
+  const root = (await authorities.sources.bindRoot(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
+    commandId: randomUUID(), source, selection, expectedBindingRevision: 0, accessMode: 'exclusive-write' })).value
+  const harness = await scheduleHarnessFixture(f, mainId, writer.principal)
+  const workflow = await f.workflows.get(writer.principal, f.scope.workspaceId, f.scope.workflowId)
   const graph = structuredClone(f.fixture.version.definition)
   for (const node of graph.nodes) {
-    const instance = configured.find((item) => item.instanceId === `instance-${node.agentId}`)!
+    const configurationIndex = f.fixture.configurations.findIndex(item => item.agentId === node.agentId)
+    const instance = harness.settings[configurationIndex]!
     node.placement = { schemaVersion: 1, ...selection, projectRoot: policy.canonicalProjectRoot,
-      cwdPolicy: 'project-root', relativeCwd: '', instanceId: instance.instanceId, instanceRevision: '1',
-      harnessInstallationId: `installation-${instance.instanceId}`, source,
-      rootBinding: { rootId, bindingRevision: 1 } }
+      cwdPolicy: 'project-root', relativeCwd: '', instanceId: instance.instanceId,
+      instanceRevision: instance.instanceRevision, harnessInstallationId: instance.target.harnessInstallationId,
+      source, rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision } }
   }
-  await f.workflows.current.save(f.writer.principal, 'http', { ...f.scope, commandId: randomUUID(),
+  await f.workflows.current.save(writer.principal, 'http', { ...f.scope, commandId: randomUUID(),
     executionSemanticsVersion: 3, expectedRevision: workflow.revision,
-    expectedWorkflowVersionId: f.fixture.version.id, expectedLocationRevision: 1,
+    expectedWorkflowVersionId: f.fixture.version.id, expectedLocationRevision: bound.locationRevision,
     expectedAgentConfigurationVersionIds: f.fixture.version.agentConfigurationVersionIds, graph })
-  let unavailable: Error | undefined
-  const sources = { resolveRootBinding: async () => {
-    if (unavailable) throw unavailable
-    return root
-  } } as unknown as SourceAdmissionPort
-  const roots = { resolve: async () => policy } as unknown as WorkspaceRootPolicyPort
+  const producer = () => new AgentPlacementProducer(pool, mainId, authorities.sources, authorities.policies,
+    harness.registry, harness.suites)
   return {
-    producer: new AgentPlacementProducer(f.database.pool, mainId, sources, roots, installations,
-      { codex: 'codex-live-4', opencode: 'opencode-live-4' }),
-    changeInstance: () => instances.reload(configured.map((instance, index) =>
-      ({ ...instance, instanceRevision: index === 0 ? '2' : '1' }))),
-    temporarilyUnavailable: (error: Error) => { unavailable = error },
+    writer, source, root, policy, harness, allowlist,
+    get policies() { return authorities.policies },
+    connectRootWorker: (worker: RootWorkerClient) => { rootWorker = worker },
+    get sources() { return authorities.sources },
+    get producer() { return producer() },
+    save: async (schedule: ScheduleConfiguration = sch11Once) =>
+      (await f.service.save(writer.principal, 'http', { ...f.command(0), schedule })).value,
+    changeInstance: () => harness.changeInstance(),
+    changeHostConfiguration: () => publishConfiguration('2'),
+    restart: () => { authorities = createAuthorities(); harness.restart() },
+    recover: () => harness.recover(),
   }
 }

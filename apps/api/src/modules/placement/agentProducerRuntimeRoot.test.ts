@@ -96,7 +96,9 @@ async function fixture() {
   const roots = { resolve: async () => ({ canonicalProjectRoot: project, managedRuntimeRoot: runtime, registration }) } as unknown as WorkspaceRootPolicyPort
   const sources = { resolveRootBinding: async () => sourceRoot } as unknown as SourceAdmissionPort
   const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool, binding.mainId, sources, roots,
-    installations, { codex: 'codex-live-4', opencode: 'opencode-live-4' },
+    { installations, pinOverride: value => installations.pin({ instanceId: value.instanceId,
+      hostRef: value.target.hostRef, harnessInstallationId: value.target.harnessInstallationId,
+      connectionGeneration: '1', environmentGeneration: '1' }) }, { codex: 'codex-live-4', opencode: 'opencode-live-4' },
     new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   const prepared = await producer.prepare(RunStartV3InputSchema.parse({ workspaceId: version.workspaceId, workflowId: version.workflowId,
     workflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds, commandId: 'root-admission',

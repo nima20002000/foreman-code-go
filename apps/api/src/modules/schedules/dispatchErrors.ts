@@ -1,5 +1,15 @@
 import { DomainError } from '../errors.js'
 import { RunGraphError } from '../run-graph/errors.js'
+import { DeviceAccessError } from '../devices/access.js'
+
+const deviceAccessCodes = new Map<DeviceAccessError['code'], string>([
+  ['unauthorized', 'DEVICE_ACCESS_UNAUTHORIZED'],
+  ['revoked', 'DEVICE_ACCESS_REVOKED'],
+  ['expired', 'DEVICE_ACCESS_EXPIRED'],
+  ['conflict', 'DEVICE_ACCESS_CONFLICT'],
+  ['forbidden', 'DEVICE_ACCESS_FORBIDDEN'],
+  ['wrong_main', 'DEVICE_ACCESS_WRONG_MAIN'],
+])
 
 export interface ScheduleDispatchContext {
   workspaceId: string
@@ -13,7 +23,13 @@ export type ScheduleDispatchErrorReporter = (error: unknown, context?: ScheduleD
 export function scheduleDispatchLog(error: unknown, context?: ScheduleDispatchContext) {
   let code = 'INTERNAL_ERROR'
   let cause = 'unexpected_error'
-  if (error instanceof DomainError || error instanceof RunGraphError) {
+  if (error instanceof DeviceAccessError) {
+    const diagnostic = deviceAccessCodes.get(error.code)
+    if (diagnostic) {
+      code = diagnostic
+      cause = 'application_error'
+    }
+  } else if (error instanceof DomainError || error instanceof RunGraphError) {
     if (/^[A-Z][A-Z0-9_]{0,79}$/.test(error.code)) {
       code = error.code
       cause = 'application_error'

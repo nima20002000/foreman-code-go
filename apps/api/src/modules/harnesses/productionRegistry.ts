@@ -26,7 +26,11 @@ export class ProductionHarnessRegistry {
   readonly installations = new HarnessInstallationRegistry(this.instances)
   private mainId: string | undefined
   private readonly mainGeneration = randomUUID()
-  private readonly snapshots = new Map<string, HarnessRegistryReadback>()
+  private readonly snapshots = new Map<string, {
+    value: HarnessRegistryReadback
+    connectionGeneration: string
+    environmentGeneration: string | null
+  }>()
   private readonly accepted = new Map<string, ConfiguredHarnessInstance>()
   private defaults: ConfiguredHarnessInstance[] = []
   private stopped = false
@@ -127,12 +131,13 @@ export class ProductionHarnessRegistry {
     const view = projectHarnessRegistry(this.instances.list(), records)
     view.hostMetadata = { hostRef, applicationInstallationId: hostRef.mainId,
       platform: { platform: process.platform, architecture: process.arch }, workspaceRoots: null, connection: null }
-    this.snapshots.set(harnessHostKey(hostRef), HarnessRegistryReadbackSchema.parse(view))
+    this.snapshots.set(harnessHostKey(hostRef), { value: HarnessRegistryReadbackSchema.parse(view),
+      connectionGeneration: this.mainGeneration, environmentGeneration: environment.generation })
     this.reloadInstallations()
   }
   private reloadInstances(): void { this.instances.reload([...this.defaults, ...this.accepted.values()]) }
   private reloadInstallations(): void {
-    const records = [...this.snapshots.values()].flatMap((snapshot) => snapshot.installations.map((installation) => ({ ...installation,
+    const records = [...this.snapshots.values()].flatMap((snapshot) => snapshot.value.installations.map((installation) => ({ ...installation,
       launcher: { ...installation.launcher, payloadFingerprints: installation.launcher.payloadFingerprints ?? [] } })))
     const identity = commandInputHash(records.map((record) => ({ ...record,
       launcher: { ...record.launcher, checkedAt: undefined, diagnostics: undefined } })))
@@ -150,7 +155,7 @@ export class ProductionHarnessRegistry {
       'HARNESS_CONFIGURATION_MISMATCH', 'The accepted configuration version is immutable.', 409)
     if (!prior) { this.accepted.set(instance.instanceId, instance); this.reloadInstances() }
     const hostRef = this.host()
-    const installation = this.snapshots.get(harnessHostKey(hostRef))?.installations.find((record) => record.driverId === value.harness)
+    const installation = this.snapshots.get(harnessHostKey(hostRef))?.value.installations.find((record) => record.driverId === value.harness)
     if (!installation) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The accepted driver has no local installation inventory.', 409)
     return this.installations.pin({ instanceId: instance.instanceId, hostRef, harnessInstallationId: installation.harnessInstallationId,
       connectionGeneration: this.mainGeneration, environmentGeneration: this.targetEnvironment().generation })
@@ -158,7 +163,7 @@ export class ProductionHarnessRegistry {
   pinDefault(harness: 'codex' | 'opencode'): RegistryHarnessSelection {
     this.assertOpen()
     const hostRef = this.host()
-    const installation = this.snapshots.get(harnessHostKey(hostRef))?.installations.find((record) => record.driverId === harness)
+    const installation = this.snapshots.get(harnessHostKey(hostRef))?.value.installations.find((record) => record.driverId === harness)
     if (!installation) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'Default qualification requires current host inventory.', 409)
     return this.installations.pin({ instanceId: `local-default:${harness}`, hostRef,
       harnessInstallationId: installation.harnessInstallationId, connectionGeneration: this.mainGeneration,
@@ -168,14 +173,29 @@ export class ProductionHarnessRegistry {
     this.assertOpen()
     const instance: ConfiguredHarnessInstance = { instanceId: value.instanceId, instanceRevision: value.instanceRevision,
       driverId: value.driverId, enabled: value.enabled, configuration: value.configuration }
-    const snapshot = this.snapshots.get(harnessHostKey(value.target.hostRef))
-    const installation = snapshot?.installations.find((record) => record.harnessInstallationId === value.target.harnessInstallationId)
-    if (snapshot?.hostMetadata?.applicationInstallationId !== value.target.applicationInstallationId || !installation || installation.installationFingerprint !== value.target.installationFingerprint) {
-      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The exact selected installation is unavailable or changed.', 409)
+    const hostRef = value.target.hostRef
+    const cached = this.snapshots.get(harnessHostKey(hostRef))
+    if (!cached) {
+      throw new DomainError('HARNESS_INVENTORY_UNAVAILABLE', 'The selected host installation inventory is unavailable.', 503)
+    }
+    const generation = hostRef.kind === 'main' ? this.mainGeneration : this.remoteGeneration(hostRef.deviceId)
+    if (cached.connectionGeneration !== generation
+      || hostRef.kind === 'main' && cached.environmentGeneration !== this.targetEnvironment().generation) {
+      throw new DomainError('HARNESS_INVENTORY_STALE', 'The selected host inventory needs to be refreshed.', 409)
+    }
+    const snapshot = cached.value
+    const installation = snapshot.installations.find((record) => record.harnessInstallationId === value.target.harnessInstallationId)
+    if (!installation) {
+      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The selected harness installation is no longer present.', 409)
+    }
+    if (!installation.installed || !installation.installationFingerprint) {
+      throw new DomainError('HARNESS_INSTALLATION_INVALID', 'The selected host has no usable harness installation.', 409)
+    }
+    if (snapshot.hostMetadata?.applicationInstallationId !== value.target.applicationInstallationId
+      || installation.installationFingerprint !== value.target.installationFingerprint) {
+      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The selected installation changed.', 409)
     }
     this.accepted.set(instance.instanceId, instance); this.reloadInstances()
-    const generation = value.target.hostRef.kind === 'main' ? this.mainGeneration
-      : this.remoteGeneration(value.target.hostRef.deviceId)
     return this.installations.pin({ instanceId: value.instanceId, hostRef: value.target.hostRef,
       harnessInstallationId: value.target.harnessInstallationId, connectionGeneration: generation,
       environmentGeneration: value.target.hostRef.kind === 'main' ? this.targetEnvironment().generation : installation.environmentGeneration })
@@ -193,7 +213,9 @@ export class ProductionHarnessRegistry {
         || record.connectionGeneration !== harnessConnectionGeneration(binding))) {
       throw new DomainError('HARNESS_INVENTORY_STALE', 'Worker inventory does not match its canonical authenticated host.', 409)
     }
-    this.snapshots.set(harnessHostKey(hostRef), structuredClone(view)); this.reloadInstallations()
+    this.snapshots.set(harnessHostKey(hostRef), { value: structuredClone(view),
+      connectionGeneration: harnessConnectionGeneration(binding), environmentGeneration: null })
+    this.reloadInstallations()
   }
   async get(principal: ManagementPrincipal, raw: CanonicalMachineReference): Promise<HarnessRegistryReadback> {
     this.assertOpen()
@@ -206,7 +228,7 @@ export class ProductionHarnessRegistry {
       const managed = await this.managedDefaults(client)
       const defaults = localDefaultInstances(managed.defaults, managed.revision)
       if (commandInputHash(defaults) !== commandInputHash(this.defaults)) { this.defaults = defaults; this.reloadInstances() }
-      const cached = this.snapshots.get(harnessHostKey(hostRef))
+      const cached = this.snapshots.get(harnessHostKey(hostRef))?.value
       const snapshot = cached?.hostMetadata?.applicationInstallationId === applicationInstallationId ? cached : undefined
       const registration = await assertDeviceHostInstallation(client, hostRef, applicationInstallationId)
       const observed = hostRef.kind === 'device' ? this.connection(hostRef.deviceId) : null
@@ -240,7 +262,7 @@ export class ProductionHarnessRegistry {
         || binding.keyRevision !== registration.keyRevision || binding.authorizationRevision !== registration.authorizationRevision) return null
     }
     const proof = await this.profiles.latest(value.instanceId, value.revision, client)
-    const snapshot = this.snapshots.get(harnessHostKey(value.target.hostRef))
+    const snapshot = this.snapshots.get(harnessHostKey(value.target.hostRef))?.value
     const installation = snapshot?.installations.find((record) => record.harnessInstallationId === value.target.harnessInstallationId)
     if (snapshot?.hostMetadata?.applicationInstallationId !== value.target.applicationInstallationId || !proof || !installation || !installation.installed || !installation.installationFingerprint) return null
     const target = { ...value.target, installationFingerprint: installation.installationFingerprint }

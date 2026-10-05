@@ -24,8 +24,8 @@ export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
 /** Uses real independent PostgreSQL sessions and an isolated random schema.
  * No DATABASE_URL fallback, public host, destructive shared-table cleanup or
  * paid native model. The integration runner supplies a disposable test DB. */
-export async function agent3Database() {
-  const url = process.env.TEST_DATABASE_URL
+export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL) {
+  const url = databaseUrl
   if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {

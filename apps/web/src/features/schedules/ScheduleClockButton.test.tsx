@@ -230,6 +230,25 @@ describe('schedule clock and compact modal', () => {
     expect(saves[0]).toMatchObject({ expectedRevision: 3, schedule: { enabled: true } })
     expect(disables).toHaveLength(0)
   })
+  it.each(['2000-01-01T09:00:00.000Z', null])('sends an unchanged elapsed enabled Once save with cursor %s', async (cursor) => {
+    const original: WorkflowSchedule = { ...scope, mode: 'once', localDate: '2000-01-01', time: '09:00', timezone: 'UTC',
+      enabled: true, policy: 'latest_saved', revision: 3, nextOccurrenceAt: cursor }
+    persisted = original
+    server.use(http.put(path, async ({ request }) => {
+      const input = ScheduleSaveInputSchema.parse({ ...scope, ...(await request.json() as object) })
+      saves.push(input)
+      persisted = { ...original, revision: original.revision + 1 }
+      return HttpResponse.json({ value: persisted, replayed: false })
+    }))
+    const { user } = mount()
+    await open(user)
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(saves).toHaveLength(1)
+    expect(saves[0]?.schedule).toEqual({ mode: 'once', localDate: '2000-01-01', time: '09:00',
+      timezone: 'UTC', enabled: true, policy: 'latest_saved' })
+    expect(persisted?.nextOccurrenceAt).toBe(cursor)
+  })
   it('shows only the server nextOccurrenceAt, even while editing time/enabled', async () => {
     persisted = { ...weekly }
     const { user } = mount(); const dialog = await open(user)

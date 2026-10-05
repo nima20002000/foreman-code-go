@@ -69,6 +69,24 @@ describe('schedule form validation and draft ownership', () => {
     store.getState().edit({ time: '10:00' })
     expect(buildScheduleCommand(scope, store.getState(), now).errors?.localDate).toBeDefined()
   })
+  it('saves an unchanged enabled Once after its due time without changing the instant', () => {
+    const once: ScheduleConfiguration = {
+      mode: 'once', localDate: '2020-01-01', time: '09:00', timezone: 'UTC', enabled: true, policy: 'latest_saved',
+    }
+    const store = editor(once)
+    expect(buildScheduleCommand(scope, store.getState(), now)).toEqual({
+      command: { kind: 'save', input: { ...scope, expectedRevision: 3, schedule: once } },
+    })
+    store.getState().edit({ time: '10:00' })
+    expect(buildScheduleCommand(scope, store.getState(), now).errors?.localDate).toBeDefined()
+  })
+  it('requires a future time when re-enabling an elapsed Once', () => {
+    const store = editor({
+      mode: 'once', localDate: '2020-01-01', time: '09:00', timezone: 'UTC', enabled: false, policy: 'latest_saved',
+    })
+    store.getState().edit({ enabled: true })
+    expect(buildScheduleCommand(scope, store.getState(), now).errors?.localDate).toBeDefined()
+  })
   it('uses the device zone without requiring Intl timezone choices', () => {
     const localZone = 'Asia/Dushanbe'
     mockDeviceTimezone(localZone)

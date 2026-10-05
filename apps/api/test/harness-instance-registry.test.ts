@@ -22,5 +22,9 @@ describe('configured harness instances', () => {
     registry.reload(['unknown', 'bad'].map((driverId) => ({ instanceId: driverId, instanceRevision: '1', driverId, configuration: {}, enabled: true })).concat([{ instanceId: 'disabled', instanceRevision: '1', driverId: 'bad', configuration: {}, enabled: false }]))
     expect(registry.list().map((value) => value.availability)).toEqual(['unknown-driver', 'invalid-configuration', 'disabled'])
     for (const id of ['unknown', 'bad', 'disabled', 'missing']) expect(() => registry.select(id)).toThrow('unavailable')
+    for (const id of ['unknown', 'bad', 'disabled']) {
+      expect(() => registry.select(id)).toThrow(expect.objectContaining({ code: 'HARNESS_INSTANCE_INVALID', status: 409 }))
+    }
+    expect(() => registry.select('missing')).toThrow(expect.objectContaining({ code: 'HARNESS_INSTANCE_UNAVAILABLE', status: 503 }))
   })
 })

@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, withAdvancedDefaults,
+  type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
+import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
 import { type AcceptedNodePlacement, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { type RunStartV3Input, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { readImmutableWorkflowVersion, IMMUTABLE_WORKFLOW_VERSION_COLUMNS, type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
 import type { SourceAdmissionPort } from '../sources/admissionPorts.js'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
-import type { HarnessInstallationRegistry, RegistryHarnessSelection } from '../harnesses/installationRegistry.js'
+import type { RegistryHarnessSelection } from '../harnesses/installationRegistry.js'
+import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import type { RepeatNodeRef } from '../runs/repeatResolution.js'
-import { beforeGraphCommit, type GraphTransactionSql, withExclusiveGraphConnection } from '../run-graph/connection.js'
+import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql,
+  withExclusiveGraphConnection } from '../run-graph/connection.js'
 import { requiredLocationAccess } from '../workspaces/location.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -27,7 +31,7 @@ import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from '.
 export class AgentPlacementProducer implements RunPlacementAdmissionPort {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly sources: SourceAdmissionPort, private readonly roots: WorkspaceRootPolicyPort,
-    private readonly installations: HarnessInstallationRegistry,
+    private readonly registry: Pick<ProductionHarnessRegistry, 'installations' | 'pinOverride'>,
     private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
     private readonly workerExecution = new WorkerExecutionPolicy()) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
@@ -67,12 +71,13 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         if (saved!.projectRoot !== policy.canonicalProjectRoot) this.conflict()
         if (!sameWorkflowValue(root.selection, { hostRef: saved!.hostRef, rootPolicyId: saved!.rootPolicyId,
           rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision }) || !sameWorkflowValue(policy.registration, root.registration)) this.conflict()
-        const installation = this.installations.list().find(item => item.harnessInstallationId === saved!.harnessInstallationId && sameWorkflowValue(item.hostRef, saved!.hostRef))
-        if (!installation?.installed || !installation.installationFingerprint) this.conflict()
-        const selection = this.installations.pin({ instanceId: saved!.instanceId, hostRef: saved!.hostRef,
-          harnessInstallationId: saved!.harnessInstallationId, connectionGeneration: installation!.connectionGeneration, environmentGeneration: installation!.environmentGeneration })
-        if (selection.instance.instanceRevision !== saved!.instanceRevision || !sameWorkflowValue(selection.instance.configuration, config.harness)
-          || selection.instance.driverId !== config.harness.harness) this.conflict()
+        const instance = await this.readInstance(sql, saved!.instanceId)
+        if (!instance.enabled || instance.instanceRevision !== saved!.instanceRevision
+          || !sameWorkflowValue(instance.target.hostRef, saved!.hostRef)
+          || instance.target.harnessInstallationId !== saved!.harnessInstallationId
+          || !sameWorkflowValue(withAdvancedDefaults(instance.configuration), withAdvancedDefaults(config.harness))
+          || instance.driverId !== config.harness.harness) this.conflict()
+        const selection = this.registry.pinOverride(instance)
         prepared.push({ selection, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
           nodeId: node.id, hostRef: saved!.hostRef, registration: root.registration,
           destination: { canonicalProjectRoot: policy.canonicalProjectRoot, canonicalCwd: posix.join(policy.canonicalProjectRoot, saved!.relativeCwd),
@@ -90,7 +95,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
             runtimeContractVersion: 1, protocolRevision: selection.installation.protocolRevision, credentialScopeRefs: [] } } })
       }
       for (const item of prepared) {
-        const facts = await readPlacementHarnessFacts(sql, item.pins, this.installations, this.qualificationSuites)
+        const facts = await readPlacementHarnessFacts(sql, item.pins, this.registry.installations, this.qualificationSuites)
         signal?.throwIfAborted()
         if (item.pins.payload.kind !== 'agent') this.conflict()
         item.pins.payload.profileProofDigest = placementDigest(facts.profileProof)
@@ -100,13 +105,16 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         fence: transaction => ({ assertCurrent: async pin => {
           const saved = prepared.find(item => item.pins.nodeId === pin.nodeId)
           if (!saved || !sameWorkflowValue(freezePlacement({ ...saved.pins, runId: pin.runId }), pin)) this.conflict()
-          this.installations.assertCurrent(saved!.selection)
+          this.registry.installations.assertCurrent(saved!.selection)
           await this.assertPinsCurrent(transaction, pin, await readLiveManagementPrincipal(transaction, principal.id), input.workspaceId)
         } }) }
     }))
   }
-  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement) { return readPlacementHarnessFacts(sql, pin, this.installations, this.qualificationSuites) }
-  async assertPinsCurrent(sql: import('../run-graph/connection.js').GraphSqlClient, pin: AcceptedNodePlacement, principal: ManagementPrincipal, workspaceId: string): Promise<void> {
+  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement) {
+    return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
+  }
+  async assertPinsCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
+    principal: ManagementPrincipal, workspaceId: string): Promise<void> {
     if (!('kind' in pin.source) || pin.source.kind !== 'pending') this.conflict()
     const source = pin.source as Extract<AcceptedNodePlacement['source'], { kind: 'pending' }>
     const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: source.rootId,
@@ -114,10 +122,22 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     if (!sameWorkflowValue(root.registration, pin.registration) || root.attestationDigest !== pin.destination.attestationHash) this.conflict()
     await this.roots.resolve(sql, principal, { workspaceId, hostRef: pin.hostRef, rootPolicyId: pin.destination.rootPolicyId,
       rootPolicyRevision: pin.destination.rootPolicyRevision, locationRevision: pin.destination.locationRevision })
-    await readPlacementHarnessFacts(sql, pin, this.installations, this.qualificationSuites)
+    if (pin.payload.kind !== 'agent') this.conflict()
+    const instance = await this.readInstance(sql, pin.payload.instanceId)
+    if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
+    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
     const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration?.workerInstallationId ?? pin.mainInstallationId)
     if (!sameWorkflowValue(registration === null ? null : { workerInstallationId: registration.workerInstallationId,
       keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, pin.registration)) this.conflict()
+  }
+  private async readInstance(sql: GraphSqlClient, instanceId: string) {
+    // Match settings append's lock so a new revision cannot cross the commit fence.
+    await sql.query('select pg_advisory_xact_lock_shared(hashtext($1))', [`harness-instance:${instanceId}`])
+    const row = (await sql.query<{ record: unknown }>(`select record from harness_instance_settings
+      where instance_id=$1 order by revision desc limit 1 for share`, [instanceId])).rows[0]
+    const parsed = HostHarnessOverrideSchema.safeParse(row?.record)
+    if (!parsed.success) this.conflict()
+    return parsed.data
   }
   /** Concrete same-owner admission callback after canonical execution/slot INSERT.
    * No worktree/native resource is allocated for an unselected occurrence. */

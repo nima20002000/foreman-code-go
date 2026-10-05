@@ -1,4 +1,5 @@
 import { HarnessConfigurationSchema, type HarnessDefaults } from '@foreman-code/contracts'
+import { DomainError } from '../errors.js'
 
 /** Reusable code/metadata only. A registration must not contain a live manager. */
 export interface HarnessDriverRegistration {
@@ -58,7 +59,10 @@ export class HarnessInstanceRegistry {
   list(): readonly HarnessInstanceProjection[] { return [...this.instances.values()] }
   select(instanceId: string): HarnessInstanceProjection {
     const instance = this.instances.get(instanceId)
-    if (!instance || instance.availability !== 'available') throw new Error(`Harness instance unavailable: ${instanceId}`)
+    if (!instance) throw new DomainError('HARNESS_INSTANCE_UNAVAILABLE', 'Harness instance inventory is unavailable.', 503)
+    if (instance.availability !== 'available') {
+      throw new DomainError('HARNESS_INSTANCE_INVALID', `Harness instance unavailable: ${instance.availability}.`, 409)
+    }
     return instance
   }
 }

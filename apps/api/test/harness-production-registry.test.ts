@@ -1,9 +1,47 @@
 import pg from 'pg'
+import { randomUUID } from 'node:crypto'
+import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
 import { expect, it, vi } from 'vitest'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { passiveDriverPayloads } from '../src/modules/harnesses/payloadDiscovery.js'
 import { discoverLauncher } from '../src/modules/harnesses/hostDiscovery.js'
+import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
+
+it('distinguishes unavailable and stale remote snapshots from a current empty installation inventory', async () => {
+  const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
+  let binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(),
+    workerInstallationId: randomUUID(), bootId: randomUUID(), connectionEpoch: randomUUID(),
+    keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
+  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+    async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }),
+    new HostHarnessProfileEvidenceRepository(pool), () => binding)
+  const profile: HostHarnessOverride = { instanceId: randomUUID(), instanceRevision: '1', revision: 1,
+    driverId: 'codex', presetId: 'local-default:codex', enabled: true, qualification: 'unqualified',
+    configuration: DEFAULT_HARNESS_DEFAULTS.codex, configurationFingerprint: 'saved-configuration', target: {
+      hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+      applicationInstallationId: binding.workerInstallationId,
+      harnessInstallationId: 'saved-installation', installationFingerprint: 'saved-payload',
+    } }
+  const collect = async () => {
+    const inspected = await inspectInstalledCodex({ binding, configuration: null, environment: process.env,
+      cwd: process.cwd(), signal: new AbortController().signal })
+    registry.acceptRemoteSnapshot(binding, inspected.inventory)
+  }
+  try {
+    expect(() => registry.pinOverride(profile))
+      .toThrow(expect.objectContaining({ code: 'HARNESS_INVENTORY_UNAVAILABLE' }))
+    await collect()
+    binding = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 2 }
+    expect(() => registry.pinOverride(profile))
+      .toThrow(expect.objectContaining({ code: 'HARNESS_INVENTORY_STALE' }))
+    await collect()
+    expect(() => registry.pinOverride(profile))
+      .toThrow(expect.objectContaining({ code: 'HARNESS_INSTALLATION_CHANGED' }))
+  } finally { registry.stop(); await pool.end() }
+})
 
 it('pins actual main installation payloads and invalidates selections after passive refresh', async () => {
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
