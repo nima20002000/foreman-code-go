@@ -22,6 +22,7 @@ import { OPENCODE_HTTP_BODY_LIMIT } from '../src/modules/harnesses/opencodeClien
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { eventually } from './helpers/agentChatF5.js'
+import { waitForDelivery } from './helpers/agentChatDelivery.js'
 import { agent3Database, deferred, seedAgent3 } from './helpers/wave25Agent3.js'
 import { nativeConfigurationFixture } from './support/opencodeNativeConfiguration.js'
 
@@ -97,7 +98,7 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
     }
     const id = await send(original.mcp, 'establish', null)
     try {
-      await eventually(async () => (await repository.turn(id, 'establish'))?.delivery === 'completed')
+      await waitForDelivery(service!, repository, id, 'establish', 'completed')
     } catch (cause) {
       const turn = await repository.turn(id, 'establish')
       const conversation = await repository.get(id)
@@ -173,8 +174,10 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
     await app!.close()
     const restarted = await openApi()
     await service!.recover()
-    await eventually(async () => (await repository.turn(id, 'first'))?.delivery === 'completed'
-      && (await repository.turn(id, 'next'))?.delivery === 'completed')
+    await Promise.all([
+      waitForDelivery(service!, repository, id, 'first', 'completed'),
+      waitForDelivery(service!, repository, id, 'next', 'completed'),
+    ])
     assert.equal(allocations.length, 2)
     assert.notEqual(allocations[0]!.native, allocations[1]!.native)
     assert.notEqual(originalPid, allocations[1]!.server.nativePid)

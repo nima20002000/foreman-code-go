@@ -36,36 +36,7 @@ import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeS
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { agent3Database, deferred, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { configuration, FixtureServer, json } from './opencode-fixtures.js'
-
-function waitForDelivery(chat: AgentChatService, repository: PostgresAgentChatRepository,
-  id: string, requestId: string, delivery: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    let settled = false
-    const finish = (error?: unknown) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      unsubscribe()
-      if (error) reject(error)
-      else resolve()
-    }
-    const check = async () => {
-      const turn = await repository.turn(id, requestId)
-      if (turn?.delivery === delivery) finish()
-      else if (turn && ['failed', 'canceled', 'completed'].includes(turn.delivery)) {
-        finish(new Error(`Expected ${delivery} for ${requestId}; observed ${JSON.stringify(turn)}.`))
-      }
-    }
-    const timeout = setTimeout(() => {
-      void Promise.all([repository.turn(id, requestId), repository.get(id)]).then(([turn, conversation]) => {
-        finish(new Error(`No persisted ${delivery} result for ${requestId}: `
-          + JSON.stringify({ turn, state: conversation?.turn_state, error: conversation?.last_error })))
-      }).catch(finish)
-    }, 30_000)
-    const unsubscribe = chat.events.subscribe(id, () => { void check().catch(finish) })
-    void check().catch(finish)
-  })
-}
+import { waitForDelivery } from './helpers/agentChatDelivery.js'
 
 it('retains current delivery listeners when an older subscription is released twice', () => {
   const events = new AgentChatEvents()
