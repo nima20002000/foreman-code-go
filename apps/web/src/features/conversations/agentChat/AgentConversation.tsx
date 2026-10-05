@@ -39,7 +39,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
   const conversationId = conversation?.id
-  const sessionControls = useSessionControls(conversationId, context.workspaceId)
+  const sessionControls = useSessionControls(conversationId, context.workspaceId, context, selected?.selection.executionId)
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
     download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
   }) : undefined, [context.workspaceId, conversationId])

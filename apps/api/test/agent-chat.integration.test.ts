@@ -33,6 +33,7 @@ const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:
 class FakeNative implements NativeHarnessSessionManager {
   static all: FakeNative[] = []
   created: NativeSessionStart[] = []; attached: NativeSessionStart[] = []; forked: Array<{ source: string; input: NativeSessionStart }> = []
+  modes: Array<string | undefined> = []
   prompts: string[] = []; steers: NativeSteerInput[] = []; cancels = 0
   hold = false
   deferCancelTerminal = false
@@ -56,6 +57,8 @@ class FakeNative implements NativeHarnessSessionManager {
   }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.prompts.push(input.prompt)
+    this.modes.push(input.sessionMode)
+    await input.onSettingsApplied?.()
     const id = `turn-${++this.turn}`
     this.histories.set(input.clientCorrelationId, { correlationId: input.clientCorrelationId, nativeTurnId: id, events: [], pendingInteractions: [] })
     await input.onSubmitted?.(id)
@@ -211,6 +214,31 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       expect(after.record.startupReceipt).toEqual(before.record.startupReceipt)
       expect((await repository.turn(id, active.activeTurn!.requestId))?.delivery).toBe('accepted')
       expect(native.prompts).toHaveLength(2)
+    } finally { await service.shutdown() }
+  })
+
+  it('creates only an application conversation for fresh control admission and applies Plan on the first message', async () => {
+    const { service } = makeService()
+    const context = { workspaceId: fixture.scope.workspaceId, ...query(codexNode) }
+    try {
+      const preview = await service.readContextControls(writer, context)
+      expect(preview.conversationId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const admitted = await service.changeContextControls(writer, context,
+        { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: 0 })
+      expect(admitted.conversationId).toBeTruthy()
+      expect(admitted.nativeSessionId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const state = await service.read(writer, context.workspaceId, query(codexNode))
+      expect(state.messages).toHaveLength(0)
+      expect(state.turns).toHaveLength(0)
+      const noop = await service.changeContextControls(writer, context,
+        { kind: 'compact', requestId: randomUUID(), expectedRevision: admitted.revision })
+      expect(noop.compaction?.status).toBe('no-op')
+      await service.send(writer, context.workspaceId, request(codexNode, 'First planned task', state.conversation!.id))
+      await settled(service, () => service.read(writer, context.workspaceId, query(codexNode)))
+      expect(FakeNative.all[0]!.modes).toEqual(['plan'])
+      expect(FakeNative.all[0]!.prompts).toEqual(['First planned task'])
     } finally { await service.shutdown() }
   })
 

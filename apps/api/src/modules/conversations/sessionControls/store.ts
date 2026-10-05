@@ -3,7 +3,7 @@ import type pg from 'pg'
 import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
   compactionBlocksSend, unavailableSessionControls,
-  type SessionControlState, type SessionControlRequest, type NativeSessionReference,
+  type SessionControlState, type SessionControlRequest, type NativeSessionReference, type SessionControlCapabilities,
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
@@ -19,6 +19,7 @@ export interface SessionControlBinding {
   busyReason: string | null
   session?: NativeSessionReference | undefined
   manager?: NativeHarnessSessionManager | undefined
+  pendingCapabilities?: SessionControlCapabilities
 }
 
 export class SessionControlStore {
@@ -40,7 +41,7 @@ export class SessionControlStore {
   async read(binding: SessionControlBinding): Promise<SessionControlState> {
     const { conversationId, manager, session } = binding
     const capabilities = manager?.sessionControlCapabilities && session
-      ? await manager.sessionControlCapabilities(session) : unavailableSessionControls(binding.profileKey)
+      ? await manager.sessionControlCapabilities(session) : binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
       where principal_id=$1 and role=$2 and subject=$3 and profile_key=$4`,
     [binding.principalId, this.role, binding.defaultSubject, binding.profileKey])
@@ -56,7 +57,7 @@ export class SessionControlStore {
     state.nativeSessionId = session?.nativeSessionId ?? null
     state.nativeProviderVersion = session?.providerVersion ?? null
     state.defaults = defaults
-    if (manager) state.capabilities = capabilities
+    state.capabilities = capabilities
     state.busyReason = binding.busyReason
     if (state.profileKey !== binding.profileKey) {
       if (compactionBlocksSend(state.compaction)) {
@@ -152,6 +153,11 @@ export class SessionControlStore {
           } else {
             state.desired = input.preferences
             state.applicability = current.session ? 'new-session' : 'next-turn'
+            if (current.session && current.session.harness === 'codex' && !current.busyReason && current.manager?.applySessionPreferences) {
+              markDispatch()
+              await current.manager.applySessionPreferences(current.session, input.preferences, signal)
+              state.applicability = 'next-turn'
+            }
           }
         }
         await this.save(state)
@@ -265,7 +271,7 @@ export class SessionControlStore {
     if (!result.rows[0]) return selectedMode ? { sessionMode: selectedMode } : {}
     const state = SessionControlStateSchema.parse(result.rows[0].record)
     const sessionMode = selectedMode ?? state.desiredMode
-    return { sessionMode, onSettingsApplied: () => this.appliedMode(conversationId, sessionMode) }
+    return { sessionMode, sessionPreferences: state.desired, onSettingsApplied: () => this.appliedMode(conversationId, sessionMode) }
   }
 
   private async claimCompaction(state: SessionControlState): Promise<void> {
@@ -278,7 +284,7 @@ export class SessionControlStore {
         and not exists(select 1 from operator_conversation_turns where conversation_id=$1 and delivery='queued')
     ) update conversation_session_controls set record=$2::jsonb from idle
       where conversation_id=idle.id and (record->>'revision')::bigint=$3`,
-    [state.conversationId, JSON.stringify(saved), revision])
+    [state.conversationId!, JSON.stringify(saved), revision])
     if (result.rowCount !== 1) throw new DomainError('SESSION_BUSY', 'The conversation changed or another turn started. Refresh its status.', 409)
     state.revision = saved.revision
   }
@@ -294,7 +300,7 @@ export class SessionControlStore {
     const saved = { ...state, revision: revision + 1 }
     const result = await this.pool.query(`update conversation_session_controls set record=$2::jsonb
       where conversation_id=$1 and (record->>'revision')::bigint=$3`,
-    [state.conversationId, JSON.stringify(saved), revision])
+    [state.conversationId!, JSON.stringify(saved), revision])
     if (result.rowCount !== 1) throw new DomainError('SESSION_CONTROL_CONFLICT', 'Session settings changed. Refresh the conversation.', 409)
     state.revision = saved.revision
   }

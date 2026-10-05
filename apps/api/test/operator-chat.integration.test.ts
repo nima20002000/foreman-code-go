@@ -42,6 +42,7 @@ const connectionString = process.env.TEST_DATABASE_URL
 class ChatManager implements NativeHarnessSessionManager {
   constructor(readonly harness: 'codex' | 'opencode' = 'codex') {}
   sessions = 0; turns = 0; attachments = 0; closes = 0; disposals = 0
+  modes: Array<string | undefined> = []
   prompts: string[] = []
   publicMessages: string[] = []
   autoFinish = true; failAttach = false; cancelAcknowledged = true
@@ -62,6 +63,8 @@ class ChatManager implements NativeHarnessSessionManager {
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.turns++
     this.prompts.push(input.prompt)
+    this.modes.push(input.sessionMode)
+    await input.onSettingsApplied?.()
     const correlation = input.clientCorrelationId
     const nativeTurnId = `turn-${this.turns}`
     this.active.set(session.nativeSessionId, correlation)
@@ -165,6 +168,26 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
+  it('admits Plan and preferences before the first native message without creating a turn', async () => {
+    const conversation = await chat.create(owner)
+    const empty = await chat.readSessionControls(conversation.id, owner)
+    expect(empty.nativeSessionId).toBeNull()
+    expect(manager.sessions).toBe(0)
+    const plan = await chat.changeSessionControls(conversation.id, { kind: 'mode', mode: 'plan',
+      requestId: randomUUID(), expectedRevision: empty.revision }, owner)
+    expect(plan.desiredMode).toBe('plan')
+    expect(plan.appliedMode).toBeNull()
+    const noop = await chat.changeSessionControls(conversation.id, { kind: 'compact', requestId: randomUUID(),
+      expectedRevision: plan.revision }, owner)
+    expect(noop.compaction?.status).toBe('no-op')
+    expect(manager.sessions).toBe(0)
+    expect(manager.turns).toBe(0)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'First planned task' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    expect(manager.modes).toEqual(['plan'])
+    expect(manager.turns).toBe(1)
+  }, 30000)
+
   it('shares authenticated HTTP/MCP controls, retry identity and persisted readback without model turns', async () => {
     const writer = await access.issue({ name: 'Session controls writer', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'settings:update'], scope: {} }],

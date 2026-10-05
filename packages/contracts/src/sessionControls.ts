@@ -15,6 +15,7 @@ export const SessionControlCapabilitiesSchema = z.object({
   plan: CapabilitySchema,
   autoCompact: CapabilitySchema,
   autoCompactBudget: CapabilitySchema,
+  contextBudgetReason: z.string().nullable().optional(),
   contextBudgets: z.array(z.number().int().positive()),
   contextProfiles: z.array(z.object({ id: z.string(), label: z.string(), capacity: z.number().int().positive() }).strict()),
   modelCapacity: z.number().int().positive().nullable(),
@@ -42,6 +43,7 @@ export const CompactionStateSchema = z.object({
   nativeSessionId: z.string().nullable(),
   nativeOperationId: z.string().nullable(),
   baselineTurnId: z.string().nullable().optional(),
+  claudeCursor: z.object({ identity: z.string(), offset: z.number().int().nonnegative(), scope: z.string() }).strict().optional(),
   status: z.enum(['accepted', 'running', 'completed', 'no-op', 'failed', 'uncertain']),
   message: z.string(),
   beforeTokens: z.number().nonnegative().nullable(),
@@ -49,7 +51,7 @@ export const CompactionStateSchema = z.object({
 }).strict()
 export type CompactionState = z.infer<typeof CompactionStateSchema>
 export const SessionControlStateSchema = z.object({
-  conversationId: z.string(),
+  conversationId: z.string().nullable(),
   revision: z.number().int().nonnegative(),
   profileKey: z.string(),
   desiredMode: SessionModeSchema,

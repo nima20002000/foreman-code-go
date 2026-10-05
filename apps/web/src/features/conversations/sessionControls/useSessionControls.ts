@@ -1,3 +1,4 @@
+import type { AgentChatContext } from '@graphql/contracts/agent-chat'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseSessionCommand, type SessionControlRequest } from '@graphql/contracts'
 import { sessionControlsApi } from '../../../shared/api/sessionControls'
@@ -7,23 +8,25 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 type Change = SessionControlRequest extends infer Request ? Request extends SessionControlRequest
   ? Omit<Request, 'requestId' | 'expectedRevision'> : never : never
 
-export function useSessionControls(conversationId: string | undefined, workspaceId?: string) {
+export function useSessionControls(conversationId: string | undefined, workspaceId?: string, context?: AgentChatContext, executionId?: string) {
   const client = useQueryClient()
   const generation = sessionGeneration()
-  const key = ['session-controls', generation, workspaceId ?? 'operator', conversationId]
-  const query = useQuery({ queryKey: key, enabled: !!conversationId,
-    queryFn: ({ signal }) => sessionControlsApi.read(conversationId!, workspaceId, { signal }),
+  const key = ['session-controls', generation, workspaceId ?? 'operator', conversationId, context, executionId]
+  const query = useQuery({ queryKey: key, enabled: !!conversationId || !!context,
+    queryFn: ({ signal }) => conversationId ? sessionControlsApi.read(conversationId, workspaceId, { signal })
+      : sessionControlsApi.readContext(context!, executionId, { signal }),
     retry: false, refetchInterval: 3000 })
   const mutation = useMutation({ mutationKey: key, retry: false, networkMode: 'always',
     mutationFn: async (request: SessionControlRequest) => {
       assertSession(generation)
-      if (!conversationId) throw new Error('Send a message before changing native session settings.')
+      if (!conversationId && !context) throw new Error('Select a conversation or workflow node first.')
       if (!navigator.onLine) throw new Error('You are offline. Your draft is kept.')
-      const result = await sessionControlsApi.change(conversationId, request, workspaceId)
+      const result = conversationId ? await sessionControlsApi.change(conversationId, request, workspaceId)
+        : await sessionControlsApi.changeContext(context!, request, executionId)
       assertSession(generation)
       return result
     },
-    onSuccess: state => client.setQueryData(key, state),
+    onSuccess: state => { client.setQueryData(key, state); void client.invalidateQueries({ queryKey: ['agent-chat'] }) },
     onSettled: () => { void client.invalidateQueries({ queryKey: key }) },
   })
   const change = async (input: Change) => {

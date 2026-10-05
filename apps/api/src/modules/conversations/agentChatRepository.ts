@@ -142,6 +142,35 @@ export class PostgresAgentChatRepository {
     return (await query.query<AgentConversationRow>(
       `select * from operator_conversations where kind='agent' and agent_key=$1 and deleted_at is null`, [key])).rows[0]
   }
+  async ensureForControls(key: string, create: NewAgentConversation,
+    authorize: (client: pg.PoolClient) => Promise<void>): Promise<AgentConversationRow> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${key}`])
+      await authorize(client)
+      let row = await this.byKey(key, client)
+      if (!row) {
+        const id = randomUUID()
+        const { context, origin, workingDirectory, runtimeDirectory } = create
+        await client.query(`insert into operator_conversations
+          (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,agent_configuration_version_id,
+           origin_run_id,origin_execution_id,harness,record)
+          values($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+        [id,key,context.workspaceId,context.workflowId,context.workflowNodeId,context.agentId,
+          create.agentConfigurationVersionId,origin.kind === 'run_execution' ? origin.runId : null,
+          origin.kind === 'run_execution' ? origin.executionId : null,create.harness,
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory })])
+        row = (await this.get(id, client))!
+      }
+      await client.query('commit')
+      return row
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally { client.release() }
+  }
+
   async get(id: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
     return (await query.query<AgentConversationRow>(
       `select * from operator_conversations where kind='agent' and id=$1 and deleted_at is null`, [id])).rows[0]

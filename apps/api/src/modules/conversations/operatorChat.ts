@@ -4,6 +4,7 @@ import { publicOperatorConversation } from './operatorConversationRecord.js'
 import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { sessionTaskContent } from '@foreman-code/contracts'
+import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import type { SessionControlStore } from './sessionControls/store.js'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
@@ -331,7 +332,7 @@ export class OperatorChatService {
     } : undefined)
     return { conversationId: id, principalId: principal.id, defaultSubject: 'application-operator', profileKey: configuration.contentHash,
       busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
-      session, manager: runtime?.manager }
+      session, manager: runtime?.manager, pendingCapabilities: pendingSessionControls(configuration.harness) }
   }
 
   async readSessionControls(id: string, principal: ManagementPrincipal) {
@@ -509,7 +510,7 @@ export class OperatorChatService {
     }
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
-    if (configuration.harness.harness === 'claude' && !existing) {
+    if (!runtime.environment) {
       const preferences = await this.sessionControls().preferences(id)
       if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)
     }

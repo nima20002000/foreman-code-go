@@ -2,6 +2,8 @@ import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interac
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { sessionTaskContent } from '@foreman-code/contracts'
+import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
+import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
@@ -523,7 +525,63 @@ export class AgentChatService {
     return { conversationId: id, principalId: principal.id, defaultSubject: `${workspaceId}:${row.agent_id}`, profileKey: row.agent_configuration_version_id,
       busyReason: row.active_request_id || row.pending_interaction || state.turns.some(turn => turn.delivery === 'queued')
         ? 'Wait for the active and queued turns and their approvals to finish.' : null,
-      session, manager: runtime?.manager }
+      session, manager: runtime?.manager,
+      ...(configuration ? { pendingCapabilities: pendingSessionControls(configuration.harness) } : {}) }
+  }
+
+  private async resolveControlContext(principal: ManagementPrincipal, context: AgentChatContext, executionId?: string) {
+    if (!context.runId) return this.resolve(context)
+    return withRunChatAuthority(this.pool, principal, { workspaceId: context.workspaceId, workflowId: context.workflowId,
+      runId: context.runId, workflowNodeId: context.workflowNodeId, ...(executionId ? { executionId } : {}) },
+    ['agent_chat:read'], async client => {
+      const selected = await resolveRunChatSelection(client, this.runs, { workspaceId: context.workspaceId,
+        workflowId: context.workflowId, runId: context.runId!, workflowNodeId: context.workflowNodeId,
+        ...(executionId ? { executionId } : {}) })
+      if (selected.kind !== 'selected') throw new DomainError('AGENT_CHAT_EXECUTION_REQUIRED', 'Select the Run execution before changing its chat controls.', 409)
+      if (selected.context.agentId !== context.agentId) staleRunChat()
+      return this.resolve(selected.context, selected.selection.executionId, true)
+    })
+  }
+
+  async readContextControls(principal: ManagementPrincipal, context: AgentChatContext, executionId?: string) {
+    this.authorize(principal, 'agent_chat:read', context)
+    const live = await readLiveManagementPrincipal(this.pool, principal.id)
+    this.authorize(live, 'agent_chat:read', context)
+    const resolved = await this.resolveControlContext(principal, context, executionId)
+    if (resolved.row) return this.readSessionControls(principal, context.workspaceId, resolved.row.id)
+    if (resolved.blocked || !resolved.configuration) {
+      throw new DomainError('AGENT_CHAT_UNAVAILABLE', resolved.blocked?.message ?? 'This node has no chat configuration.', 409)
+    }
+    const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
+      where principal_id=$1 and role='agent' and subject=$2 and profile_key=$3`,
+    [principal.id, `${context.workspaceId}:${context.agentId}`, resolved.configuration.id])
+    const defaults = defaultsRow.rows[0]?.record ?? {}
+    return SessionControlStateSchema.parse({ conversationId: null, revision: 0,
+      profileKey: resolved.configuration.id, desiredMode: 'regular', appliedMode: null,
+      defaults, desired: defaults, applied: null, applicability: 'next-turn',
+      capabilities: pendingSessionControls(resolved.configuration.harness), context: null,
+      nativeSessionId: null, nativeProviderVersion: null, compaction: null, compactions: [], busyReason: null })
+  }
+
+  async changeContextControls(principal: ManagementPrincipal, context: AgentChatContext,
+    input: SessionControlRequest, source: 'http' | 'mcp' = 'http', executionId?: string) {
+    this.authorize(principal, 'agent_chat:write', context)
+    this.authorize(principal, 'agent_chat:read', context)
+    const resolved = await this.resolveControlContext(principal, context, executionId)
+    if (resolved.blocked || !resolved.configuration) {
+      throw new DomainError('AGENT_CHAT_UNAVAILABLE', resolved.blocked?.message ?? 'This node has no chat configuration.', 409)
+    }
+    let row = resolved.row
+    if (!row) {
+      if (!resolved.create || input.expectedRevision !== 0) staleRunChat()
+      row = await this.repository.ensureForControls(resolved.key ?? agentChatKey(context),
+        { ...resolved.create, context }, async client => {
+          const current = await readLiveManagementPrincipal(client, principal.id)
+          this.authorize(current, 'agent_chat:read', context)
+          this.authorize(current, 'agent_chat:write', context)
+        })
+    }
+    return this.changeSessionControls(principal, context.workspaceId, row.id, input, source)
   }
 
   async readSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string) {
@@ -879,7 +937,7 @@ export class AgentChatService {
     this.assertOpen()
     signal.throwIfAborted()
     const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
-    if (configuration.harness.harness === 'claude' && !existing) {
+    if (!existing) {
       const preferences = await this.sessionControls.preferences(row.id)
       if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)
     }
