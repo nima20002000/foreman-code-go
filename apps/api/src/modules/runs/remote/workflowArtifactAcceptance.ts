@@ -81,10 +81,12 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
       turnId = native.turnId
     } else {
       const first = rows[0]!.record
-      const closure = (await sql.query<{ expected_reference: unknown; closed: boolean }>(
-        `select expected_reference,closed_at is not null as closed from execution_native_closures
-          where execution_id=$1 and generation=$2 for share`, [execution.id, first.closureGeneration])).rows[0]
-      if (!closure || !same(closure.expected_reference, first.session)) return conflict()
+      const closure = (await sql.query<{ expected_reference: unknown; native_reference: unknown; closed: boolean }>(
+        `select c.expected_reference,s.reference as native_reference,c.closed_at is not null as closed
+          from execution_native_closures c join execution_native_sessions s using(execution_id)
+          where c.execution_id=$1 and c.generation=$2 for share of c,s`, [execution.id, first.closureGeneration])).rows[0]
+      if (!closure || !same(closure.native_reference, first.session)
+        || closure.expected_reference !== null && !same(closure.expected_reference, first.session)) return conflict()
       turnId = first.lane?.providerId ?? undefined
     }
     if (!turnId || rows.some(({ record }) => record.lane?.providerId !== turnId)) return conflict()

@@ -10,10 +10,10 @@ import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persi
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { bindingIdentity } from '../../files/tools/context.js'
 import type { FileToolContext } from '../../files/tools/types.js'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedWorkflowArtifactPublication } from '../../files/distributed/publication.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import { NativeArtifactOutputSchema } from './nativeArtifactOutputs.js'
+import { MainNativeArtifactOutputSchema, NativeArtifactOutputSchema } from './nativeArtifactOutputs.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { createWorkflowArtifactOutputsGate } from './workflowArtifactAcceptance.js'
 
@@ -27,7 +27,7 @@ beforeEach(() => vi.resetAllMocks())
 // Scripted SQL and authority boundaries only; real gate, graph transaction,
 // immutable mapping reader, publication metadata verifier and parsers. These
 // fixtures do not establish physical qualification, bytes or live grants.
-function fixture() {
+function fixture(host: 'device' | 'main' = 'device') {
   const f = makeCurrentWorkflowFixture('artifact-acceptance', 'single'), node = f.version.definition.nodes[0]!
   node.artifactOutputs = { version: 1, outputKeys: ['z', 'a'] }
   const run = { ...f.run, authorizationPrincipalId: 'owner' } as AcceptedWorkflowRunV3
@@ -38,7 +38,8 @@ function fixture() {
     result: { outcome: 'succeeded', output: { text: JSON.stringify({ data: null, artifactOutputs: { version: 1,
       outputs: ['z', 'a'].map(outputKey => ({ outputKey, commandId: `original-command-${outputKey}` })) } }) } } }
   const placement = freezePlacement({ schemaVersion: 1, mainId, mainInstallationId: mainId, runId: run.id, nodeId: node.id,
-    hostRef: { kind: 'device', mainId, deviceId }, registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    hostRef: host === 'device' ? { kind: 'device', mainId, deviceId } : { kind: 'main', mainId },
+    registration: host === 'device' ? { workerInstallationId, keyRevision: 1, authorizationRevision: 1 } : null,
     destination: { canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/runtime', directoryIdentityHash: digest,
       rootPolicyId: 'policy', rootPolicyRevision: '1', locationRevision: '1', attestationId: 'attestation', attestationHash: digest },
     source: { kind: 'pending', approvedSourceId: randomUUID(), snapshotId: randomUUID(), rootId: randomUUID(), bindingRevision: 1,
@@ -54,10 +55,12 @@ function fixture() {
     nativeSessionId: 'original-session', turnId: 'original-turn', allowMutation: true, allowedTools: ['files.list', 'files.publish_result'] }
   const producer = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, nodeId: node.id,
     executionId: execution.id, attemptId: intent.attemptId, placementHash: intent.bindingHash }
-  const accepted: AcceptedArtifactPublication = { attempt: producer, context, transferContext }
+  const accepted: AcceptedWorkflowArtifactPublication = host === 'device'
+    ? { attempt: producer, context, transferContext }
+    : { attempt: producer, context, location: { kind: 'main', mainId } }
   const records = ['z', 'a'].map((outputKey, index) => {
     const sha256 = (index ? 'b' : 'c').repeat(64), transferId = randomUUID()
-    return NativeArtifactOutputSchema.parse({ version: 1, producer, outputKey, commandId: `original-command-${outputKey}`,
+    const remoteOutput = NativeArtifactOutputSchema.parse({ version: 1, producer, outputKey, commandId: `original-command-${outputKey}`,
       nativeIdentity: { nativeSessionId: context.nativeSessionId, turnId: context.turnId }, scope: context.scope,
       publication: { ownerPrincipalId: 'owner', requestId: `original-command-${outputKey}`, binding: bindingIdentity(context) },
       pins: { fileId: randomUUID(), revisionId: randomUUID(), sha256, byteSize: 12 },
@@ -65,6 +68,10 @@ function fixture() {
         intent: { version: 1, ...transferContext, transferId, operationId: intent.operationId, executionId: execution.id, attemptId: intent.attemptId,
           placementHash: intent.bindingHash, rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'artifact',
           sha256, byteSize: 12, manifestDigest: digest, chunkBytes: 1024, expiresAt: '2099-01-01T00:00:00.000Z' } } })
+    if (host === 'device') return remoteOutput
+    const { transferReceipt: _transferReceipt, ...output } = remoteOutput
+    return MainNativeArtifactOutputSchema.parse({ ...output,
+      mainPublication: { kind: 'main', mainId, attempt: producer, sha256, byteSize: 12 } })
   })
   const proof: WorkflowNativeProofRecord = { proofId: randomUUID(), scope: f.scope, ref: { nodeId: node.id, occurrence: null },
     execution: repeatExecutionIdentity(execution), inputDigest: repeatDigest(execution.input), commandId: `execution:${execution.id}`,
@@ -80,17 +87,20 @@ function fixture() {
     entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
     terminal: { kind: 'completed', closureEvidenceDigest: digest, result: execution.result, artifactDigests: ['b'.repeat(64), 'c'.repeat(64)] } })
   const state = { missing: '', expired: false, revoked: false, proofDigest: repeatDigest(proof, 4 * 1024 * 1024), committed: false, queries: [] as string[] }
+  const lifetime = { expected_reference: proof.session as unknown, native_reference: proof.session as unknown, closed: true }
   const client = { query: vi.fn(async (text: string, values: unknown[] = []) => {
     state.queries.push(text); let rows: unknown[] = []
     if (text === 'commit') state.committed = true
     else if (text.includes('from workflow_native_proofs')) rows = [{ record: proof, source_digest: state.proofDigest }]
     else if (text.includes('from remote_execution_receipts')) rows = [{ receipt: remote }]
+    else if (text.includes('from execution_native_closures')) rows = [lifetime]
     else if (text.includes('from management_command_receipts')) {
       const key = JSON.parse(values[1] as string)[3] as string
       rows = key === state.missing ? [] : [{ result: records.find(output => output.outputKey === key) }]
     } else if (text.includes('select p.record from file_tool_publications')) {
       const output = records.find(output => output.publication.requestId === values[1])!
-      rows = [{ record: { ...output.publication, context, ref: { fileId: output.pins.fileId, revisionId: output.pins.revisionId }, transferReceipt: output.transferReceipt } }]
+      rows = [{ record: { ...output.publication, context, ref: { fileId: output.pins.fileId, revisionId: output.pins.revisionId },
+        ...('mainPublication' in output ? { mainPublication: output.mainPublication } : { transferReceipt: output.transferReceipt }) } }]
     } else if (text.startsWith('select file_id from files')) rows = state.expired ? [] : [{ file_id: values[0] }]
     return { rows, rowCount: rows.length, fields: [], command: '', oid: 0 }
   }) }
@@ -103,10 +113,23 @@ function fixture() {
   vi.mocked(readDispatchIntent).mockResolvedValue(intent); vi.mocked(readReconciledDispatchIntent).mockResolvedValue(intent)
   const gate = createWorkflowArtifactOutputsGate(mainId, authority)
   const check = (after = async () => {}) => connection.transaction(async sql => { await gate(sql, run, f.version, execution); await after() })
-  return { check, state, records, proof, remote, execution, f, authority }
+  return { check, state, records, proof, remote, execution, f, authority, lifetime }
 }
 
 describe('durable original artifact completeness before result acceptance', () => {
+  it('accepts Main artifacts whose lifetime predates native session acknowledgment', async () => {
+    const f = fixture('main')
+    f.lifetime.expected_reference = null
+    await f.check()
+    expect(f.state.committed).toBe(true)
+    expect(f.authority.authorize).toHaveBeenCalled()
+  })
+  it.each(['native_reference', 'expected_reference'] as const)('rejects Main artifacts with a different %s', async field => {
+    const f = fixture('main')
+    f.lifetime[field] = { ...f.proof.session, nativeSessionId: 'different-session' }
+    await expect(f.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' })
+    expect(f.state.committed).toBe(false)
+  })
   it('resamples all original canonical mappings and authority before COMMIT and on replay', async () => {
     const f = fixture(); await f.check(); await f.check()
     expect(f.state.committed).toBe(true)

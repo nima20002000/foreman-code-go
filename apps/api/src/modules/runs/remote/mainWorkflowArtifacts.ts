@@ -24,11 +24,13 @@ export function createMainWorkflowArtifactTerminals(mainId: string): WorkflowArt
         || proof.original.type !== 'history' || proof.original.history.terminalTurn?.result.outcome !== 'succeeded'
         || proof.lane?.providerId !== proof.original.history.terminalTurn.providerId
         || !capture.closureGeneration) throw unavailable()
-      const closure = (await sql.query<{ expected_reference: unknown; closed: boolean }>(
-        `select expected_reference,closed_at is not null as closed from execution_native_closures
-          where execution_id=$1 and generation=$2 for share`,
+      const closure = (await sql.query<{ expected_reference: unknown; native_reference: unknown; closed: boolean }>(
+        `select c.expected_reference,s.reference as native_reference,c.closed_at is not null as closed
+          from execution_native_closures c join execution_native_sessions s using(execution_id)
+          where c.execution_id=$1 and c.generation=$2 for share of c,s`,
         [capture.execution.id, capture.closureGeneration])).rows[0]
-      if (!closure || !same(closure.expected_reference, capture.session)) throw unavailable()
+      if (!closure || !same(closure.native_reference, capture.session)
+        || closure.expected_reference !== null && !same(closure.expected_reference, capture.session)) throw unavailable()
       if (!closure.closed) capture.assertCurrent()
       owner.assertOwned()
     },
