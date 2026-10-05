@@ -1,0 +1,51 @@
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import pg from 'pg'
+import { expect, it } from 'vitest'
+
+it('acceptance bootstrap supplies an isolated database and removes it after success and failure', async () => {
+  const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
+  const { withNativeAcceptanceDatabase } = await import(script)
+  const configured = process.env.TEST_DATABASE_URL
+  if (!configured) throw new Error('TEST_DATABASE_URL is required')
+  const server = new URL(configured)
+  server.pathname = '/postgres'
+  const admin = new pg.Pool({ connectionString: server.toString(), max: 1 })
+  const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-'))
+  try {
+    for (const exitCode of [0, 1]) {
+      const record = await withNativeAcceptanceDatabase(configured, directory,
+        async ({ databaseUrl }: { databaseUrl: string }) => {
+          expect(databaseUrl).not.toBe(configured)
+          const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 })
+          try {
+            await pool.query('create table retained_result (value text)')
+            await pool.query('insert into retained_result values ($1)', ['native bootstrap'])
+            expect((await pool.query('select value from retained_result')).rows).toEqual([{ value: 'native bootstrap' }])
+            return exitCode
+          } finally {
+            await pool.end()
+          }
+        })
+      expect(record).toMatchObject({ created: true, removed: true, exitCode })
+      expect((await admin.query('select 1 from pg_database where datname=$1', [record.name])).rowCount).toBe(0)
+      expect(JSON.parse(await readFile(join(directory, record.name, 'database.json'), 'utf8'))).toEqual(record)
+      expect((await admin.query('select 1 from pg_database where datname=$1',
+        [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
+    }
+    await expect(withNativeAcceptanceDatabase(configured, directory, async () => {
+      throw new Error('Native launch failed')
+    })).rejects.toThrow('Native launch failed')
+    for (const name of await readdir(directory)) {
+      const record = JSON.parse(await readFile(join(directory, name, 'database.json'), 'utf8')) as {
+        created: boolean; removed: boolean
+      }
+      expect(record).toMatchObject({ created: true, removed: true })
+      expect((await admin.query('select 1 from pg_database where datname=$1', [name])).rowCount).toBe(0)
+    }
+  } finally {
+    await admin.end()
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)

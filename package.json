@@ -20,7 +20,7 @@
     "lint": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
     "test": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && node --test scripts/local-production.test.mjs\"",
     "test:integration": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- sh -c \"corepack pnpm --filter @graphql/contracts build && node scripts/test-integration.mjs\"",
-    "test:acceptance": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api test:acceptance\"",
+    "test:acceptance": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @graphql/contracts build && node scripts/test-native-acceptance.mjs\"",
     "test:production": "node scripts/heavy-job.mjs -- node scripts/production-smoke.mjs",
     "test:production:installed": "node scripts/heavy-job.mjs -- node scripts/test-local-production.mjs",
     "build": "node scripts/heavy-job.mjs -- corepack pnpm -r --if-present build",
