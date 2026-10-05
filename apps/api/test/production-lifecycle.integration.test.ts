@@ -11,6 +11,7 @@ import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
@@ -265,8 +266,8 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
       harness: 'opencode' as const, model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
       autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
         { permission: '*', pattern: '*', effect: 'deny' as const },
-        { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' as const },
-        { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' as const },
+        { permission: 'foreman-code_interaction_get', pattern: '*', effect: 'allow' as const },
+        { permission: 'foreman-code_interaction_respond', pattern: '*', effect: 'allow' as const },
       ] },
     } : fixture.configurations[1]!.harness,
   }))
@@ -310,8 +311,10 @@ it('answers a production User approval through the local API while excluding Ope
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.FOREMAN_CODE_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
-  const denied = await mcp(worker.environment.variables.FOREMAN_CODE_MCP_TOKEN!, payload)
+  const workerToken = readProductEnvironment(worker.environment.variables, 'MCP_TOKEN')
+  expect(workerToken).toEqual(expect.any(String))
+  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${workerToken}` }, payload })).statusCode).toBe(403)
+  const denied = await mcp(workerToken!, payload)
   expect(denied.isError).toBe(true)
   expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
   const headers = {}
