@@ -12,6 +12,7 @@ import {
 import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
 import { PairedMcpEndpointSchema } from './mcpDetection.js'
+import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -24,6 +25,7 @@ export const WorkerConversationOwnerSchema = z.discriminatedUnion('kind', [
 ])
 export const WorkerConversationBindingSchema = z.object({
   owner: WorkerConversationOwnerSchema,
+  directoryBinding: AgentChatDirectoryBindingSchema.optional(),
   harness: z.lazy(() => AgentHarnessSchema),
   profile: HarnessProfileSelectionSchema,
   workingDirectory: directory,
@@ -34,6 +36,9 @@ export const WorkerConversationBindingSchema = z.object({
   }
   if (value.owner.kind === 'agent' && value.appMcpAccess !== 'none') {
     context.addIssue({ code: 'custom', message: 'Agent chat cannot receive management MCP access.' })
+  }
+  if (value.owner.kind === 'operator' && value.directoryBinding) {
+    context.addIssue({ code: 'custom', message: 'Saved node directories belong only to Agent chat.' })
   }
 })
 export type WorkerConversationBinding = z.infer<typeof WorkerConversationBindingSchema>

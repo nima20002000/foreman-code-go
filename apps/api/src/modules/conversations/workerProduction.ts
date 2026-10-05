@@ -28,6 +28,8 @@ import type { PostgresAccessService } from '../access/postgres.js'
 import type { SelectedMainMcpForward } from '../placement/workerMcpRelay.js'
 import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
+import { AgentChatDirectoryBindingSchema } from '@foreman-code/contracts/agent-chat'
+import { revalidateAgentChatDirectory } from './agentChatDirectory.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -39,7 +41,8 @@ interface OwnerRow {
   workflow_node_id: string | null; agent_id: string | null; owner_principal_id: string | null
   operator_configuration_version_id: string | null; agent_configuration_version_id: string | null
   active_request_id: string | null; native_session_id: string | null; deleted_at: unknown
-  record: { status?: string; origin?: { kind: string; runId?: string; executionId?: string; sourceNativeSessionId?: string } }
+  record: { status?: string; directoryBinding?: unknown;
+    origin?: { kind: string; runId?: string; executionId?: string; sourceNativeSessionId?: string } }
   payload: { ownerPrincipalId?: string } | null
   worker_conversation_binding: unknown
 }
@@ -85,6 +88,11 @@ export function createProductionWorkerConversations(input: {
     const profiles = configuration.harness.harness === 'claude' ? input.claudeProfiles : input.profiles
     const admitted = createAdmittedNativeManager(configuration.harness.harness, async signal => {
       const original = await row(options.conversationId)
+      const directoryBinding = original.kind === 'agent' && original.record.directoryBinding
+        ? AgentChatDirectoryBindingSchema.parse(original.record.directoryBinding) : undefined
+      if ('agentId' in configuration && directoryBinding) {
+        await revalidateAgentChatDirectory(input.pool, configuration, directoryBinding, options.workingDirectory)
+      }
       const principalId = caller ?? original.payload?.ownerPrincipalId ?? original.owner_principal_id
       if (!principalId) unavailable('The chat has no admitted sender or control caller.')
       const profileOwner = { ...owner, ...(options.observationPrincipalId
@@ -107,7 +115,8 @@ export function createProductionWorkerConversations(input: {
       const requestedBinding = WorkerConversationBindingSchema.parse({ owner: { ...ownerFields,
         conversationId: options.conversationId, configurationVersionId: configuration.id,
         configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
-        profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess })
+        profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
+        ...(directoryBinding ? { directoryBinding } : {}) })
       if (requestedBinding.owner.kind === 'operator') {
         const rootChannel = input.endpoint().captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
         if (!rootChannel || !isDeepStrictEqual(rootChannel.binding, channel.binding)) {
@@ -136,6 +145,10 @@ export function createProductionWorkerConversations(input: {
         if (live.kind !== kind || configurationId !== configuration.id
           || 'agentId' in configuration && (live.workspace_id !== configuration.workspaceId || live.agent_id !== configuration.agentId)) {
           unavailable('The original conversation configuration changed.')
+        }
+        if ('agentId' in configuration && directoryBinding) {
+          if (!isDeepStrictEqual(live.record.directoryBinding, directoryBinding)) unavailable('The saved node directory changed.')
+          await revalidateAgentChatDirectory(input.pool, configuration, directoryBinding, binding.workingDirectory)
         }
         let currentCaller = requestCallers.get(request)
         if (!currentCaller) {

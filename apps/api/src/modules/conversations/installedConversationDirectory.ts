@@ -1,4 +1,4 @@
-import { isAbsolute, relative, basename } from 'node:path'
+import { isAbsolute, relative, basename, posix } from 'node:path'
 import { realpath } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
@@ -40,6 +40,29 @@ export async function installedConversationDirectory(input: {
     throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE', 'This worker has no approved roots for the selected profile.', 409)
   }
   const harness = input.configuration.harness
+  const directoryBinding = input.binding.directoryBinding
+  const inspectProject = async () => {
+    if (!directoryBinding) return
+    const { policy, placement } = directoryBinding
+    if (input.binding.owner.kind !== 'agent' || !isDeepStrictEqual(policy.hostRef, approved.hostRef)
+      || policy.applicationInstallationId !== approved.applicationInstallationId
+      || policy.configurationRevision !== approved.configurationRevision
+      || policy.workspaceId !== input.binding.owner.workspaceId
+      || placement.projectRoot !== policy.canonicalProjectRoot
+      || !isDeepStrictEqual(placement.hostRef, policy.hostRef)
+      || placement.rootPolicyId !== policy.rootPolicyId || placement.rootPolicyRevision !== policy.rootPolicyRevision
+      || placement.locationRevision !== policy.locationRevision
+      || posix.isAbsolute(placement.relativeCwd) || placement.relativeCwd.includes('\0')
+      || placement.relativeCwd !== '' && placement.relativeCwd.split('/').some(part => ['.', '..', ''].includes(part))
+      || input.binding.workingDirectory !== posix.join(policy.canonicalProjectRoot, placement.relativeCwd)
+      || !approved.bases.some(base => base.baseId === policy.allowedBaseId && base.accessModes.includes(policy.accessMode))) {
+      throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The saved node root differs from its approved worker settings.', 409)
+    }
+    const observed = await inspectApprovedDirectory(approved, policy.canonicalProjectRoot, policy.accessMode)
+    if (!isDeepStrictEqual(observed, policy.filesystem)) throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED',
+      'The saved node project folder was replaced.', 409)
+  }
+  await inspectProject()
   const writablePaths = harness.harness === 'codex' ? harness.advanced?.additionalWritableDirectories ?? [] : []
   const writable = await Promise.all(writablePaths.map(path => inspectApprovedDirectory(approved, path, 'read-write')))
   const assertWritable = async () => {
@@ -93,6 +116,7 @@ export async function installedConversationDirectory(input: {
       if (!isDeepStrictEqual(current, approved)) throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED',
         'The worker’s approved chat roots changed.', 409)
       const observed = await inspect()
+      await inspectProject()
       await assertWritable()
       signal?.throwIfAborted()
       if (!isDeepStrictEqual(observed, original)) {

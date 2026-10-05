@@ -4,6 +4,13 @@ import { z } from "zod";
 import { ActivitySnapshotV1Schema } from "./activity.js";
 import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
+import { SavedNodePlacementSchema } from './nodePlacement.js';
+import { WorkspaceRootPolicySchema } from './workspaceRootPolicies.js';
+
+export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.string().min(1),
+  placement: SavedNodePlacementSchema, policy: WorkspaceRootPolicySchema,
+}).strict();
+export type AgentChatDirectoryBinding = z.infer<typeof AgentChatDirectoryBindingSchema>;
 
 import {
   AgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,

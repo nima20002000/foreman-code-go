@@ -11,6 +11,7 @@ import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, t
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
+  type AgentChatDirectoryBinding,
 } from '@foreman-code/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
@@ -47,6 +48,7 @@ export interface AgentConversationRow {
   last_result: ExecutionResult | null
   record: {
     origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string
+    directoryBinding?: AgentChatDirectoryBinding
     sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
@@ -131,6 +133,7 @@ export interface NewAgentConversation {
   origin: AgentChatOrigin
   workingDirectory: string
   runtimeDirectory: string
+  directoryBinding?: AgentChatDirectoryBinding
 }
 
 export class PostgresAgentChatRepository {
@@ -152,7 +155,7 @@ export class PostgresAgentChatRepository {
       let row = await this.byKey(key, client)
       if (!row) {
         const id = randomUUID()
-        const { context, origin, workingDirectory, runtimeDirectory } = create
+        const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = create
         await client.query(`insert into operator_conversations
           (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,agent_configuration_version_id,
            origin_run_id,origin_execution_id,harness,record)
@@ -160,7 +163,7 @@ export class PostgresAgentChatRepository {
         [id,key,context.workspaceId,context.workflowId,context.workflowNodeId,context.agentId,
           create.agentConfigurationVersionId,origin.kind === 'run_execution' ? origin.runId : null,
           origin.kind === 'run_execution' ? origin.executionId : null,create.harness,
-          JSON.stringify({ origin, workingDirectory, runtimeDirectory })])
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
         row = (await this.get(id, client))!
       }
       await client.query('commit')
@@ -333,14 +336,14 @@ export class PostgresAgentChatRepository {
       if (!row) {
         if (!input.create) throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
         const id = randomUUID()
-        const { context, origin, workingDirectory, runtimeDirectory } = input.create
+        const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = input.create
         await client.query(`insert into operator_conversations (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,
             agent_configuration_version_id,origin_run_id,origin_execution_id,harness,record)
           values ($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
         [id, input.key, context.workspaceId, context.workflowId, context.workflowNodeId, context.agentId,
           input.create.agentConfigurationVersionId, origin.kind === 'run_execution' ? origin.runId : null,
           origin.kind === 'run_execution' ? origin.executionId : null, input.create.harness,
-          JSON.stringify({ origin, workingDirectory, runtimeDirectory })])
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
         row = (await this.get(id, client))!
         created = true
       }

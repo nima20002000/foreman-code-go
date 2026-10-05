@@ -1,5 +1,6 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
+import { resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agentChatDirectory.js'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
@@ -357,19 +358,34 @@ export class AgentChatService {
     if (row) {
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
       const unavailable = this.sessionUnavailable(row, configuration)
+      if (configuration && row.record.directoryBinding) {
+        try { await revalidateAgentChatDirectory(this.pool, configuration, row.record.directoryBinding, row.record.workingDirectory) }
+        catch (error) {
+          if (!(error instanceof DomainError) || error.code !== 'AGENT_CHAT_DIRECTORY_UNAVAILABLE') throw error
+          return { ...blocked('context_stale', error.message), configuration }
+        }
+      }
       return { context, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
     }
     const agent = (await this.pool.query<{ current_configuration_version_id: string | null; archived_at: Date | null }>(
       'select current_configuration_version_id,archived_at from agents where workspace_id=$1 and id=$2', [context.workspaceId, context.agentId])).rows[0]
     if (!agent || agent.archived_at || !agent.current_configuration_version_id) return blocked('agent_missing', 'This Agent has no saved configuration.')
-    const configuration = await this.workflows.getAgentConfiguration(agent.current_configuration_version_id)
+    const configurationId = node.placement ? version.agentConfigurationVersionIds[context.agentId]
+      : agent.current_configuration_version_id
+    const configuration = configurationId ? await this.workflows.getAgentConfiguration(configurationId) : undefined
     if (!configuration) return blocked('agent_missing', 'This Agent has no saved configuration.')
     const workspace = (await this.pool.query<{ execution_location: unknown }>('select execution_location from workspaces where id=$1', [context.workspaceId])).rows[0]
     const location = ExecutionLocationSchema.safeParse(workspace?.execution_location)
-    if (!location.success) return blocked('execution_location_missing', 'Set a workspace folder before chatting with this Agent.')
+    let directory
+    try { directory = await resolveAgentChatDirectory({ sql: this.pool, configuration, workflowVersionId: version.id,
+      ...(node.placement ? { placement: node.placement } : {}), ...(location.success ? { location: location.data } : {}) }) }
+    catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'AGENT_CHAT_DIRECTORY_UNAVAILABLE') throw error
+      return { ...blocked('execution_location_missing', error.message), configuration }
+    }
     return { context, configuration, create: {
       agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness, origin: { kind: 'fresh' },
-      workingDirectory: location.data.rootPath, runtimeDirectory: '',
+      ...directory, runtimeDirectory: '',
     } }
   }
 
