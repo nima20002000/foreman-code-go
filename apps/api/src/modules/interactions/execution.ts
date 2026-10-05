@@ -1094,6 +1094,23 @@ export class ApprovalExecutionCoordinator {
     await this.validateContinuation?.(interaction.executionId, signal)
   }
 
+  async withInteractionOwner<T>(interaction: DurableInteraction, signal: AbortSignal,
+    work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const owned = this.ownedSessions.get(interaction.executionId)
+    if (owned?.context.acceptedPlacement?.hostRef.kind !== 'device') return work(signal)
+    if (owned.execution.runId !== interaction.runId) throw new DomainError(
+      'INTERACTION_RUN_MISMATCH', 'The native interaction does not belong to this Run.', 409)
+    signal.throwIfAborted()
+    const controller = new AbortController()
+    const retained = await this.retainRunOwner(owned.execution, () => controller.abort())
+    try {
+      const ownedSignal = AbortSignal.any([signal, controller.signal])
+      ownedSignal.throwIfAborted()
+      this.adoptRunOwner(retained.owner)
+      return await work(ownedSignal)
+    } finally { await retained.release() }
+  }
+
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
@@ -1126,19 +1143,7 @@ export class ApprovalExecutionCoordinator {
       const placementContext = await this.managerContext(execution, configuration)
       if (placementContext.acceptedPlacement?.hostRef.kind === 'device') {
         const controller = new AbortController()
-        let owner = this.ownedSessions.get(execution.id)?.runOwner
-        try { owner?.assertOwned() }
-        catch (error) {
-          if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
-          owner = undefined
-        }
-        let releaseOwner: () => Promise<void>
-        if (owner) releaseOwner = owner.retain(() => controller.abort())
-        else {
-          owner = await this.runs.acquireOwnership(execution.runId, () => controller.abort())
-          releaseOwner = () => owner!.release()
-        }
-        if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still completing its current native operation.', 409)
+        const { owner, release: releaseOwner } = await this.retainRunOwner(execution, () => controller.abort())
         try {
           await this.recoverRetainedReviewer(execution, owner, signal, context.reviewJob)
           const owned = this.ownedSessions.get(execution.id)
@@ -1250,6 +1255,19 @@ export class ApprovalExecutionCoordinator {
       || interaction.nativeSessionId !== execution.nativeSessionId) {
       throw new DomainError('GRAPH_INTERRUPT_RESUME_INVALID', 'The resume value is not a delivered interaction for this execution.', 409)
     }
+  }
+
+  private async retainRunOwner(execution: HarnessExecution, onLost: () => void) {
+    let owner = this.ownedSessions.get(execution.id)?.runOwner
+    try { owner?.assertOwned() }
+    catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+      owner = undefined
+    }
+    if (owner) return { owner, release: owner.retain(onLost) }
+    const acquired = await this.runs.acquireOwnership(execution.runId, onLost)
+    if (!acquired) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still completing its current native operation.', 409)
+    return { owner: acquired, release: () => acquired.release() }
   }
 
   private adoptRunOwner(owner: RunOwnership): void {

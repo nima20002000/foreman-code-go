@@ -191,6 +191,8 @@ export interface AttachedInteractionSession {
 }
 
 export interface InteractionNativeRuntime {
+  withInteractionOwner<T>(interaction: DurableInteraction, signal: AbortSignal,
+    work: (signal: AbortSignal) => Promise<T>): Promise<T>
   finishReview?(executionId: string): Promise<void>
   validateInteraction?(interaction: DurableInteraction, signal?: AbortSignal): Promise<void>
   releaseOwnedSession?(context: NativeManagerOwnershipContext, session: NativeSessionReference): Promise<void>

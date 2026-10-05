@@ -241,6 +241,7 @@ function fixture(ms = 30_000) {
     close: async () => undefined,
   } as unknown as NativeHarnessSessionManager
   const runtime: ReviewerNativeRuntime = {
+    withInteractionOwner: (_interaction, signal, work) => work(signal),
     attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
     captureReviewNative: coordination.captureNative,
   }
@@ -409,6 +410,7 @@ async function remoteReviewerFixture() {
   for await (const _event of manager.startTurn(session, { prompt: 'Initialize the Orchestrator', clientCorrelationId: activeCorrelation })) { void _event }
   await host.drain()
   const runtime: ReviewerNativeRuntime = { captureReviewNative: coordination.captureNative,
+    withInteractionOwner: (_interaction, signal, work) => work(signal),
     attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
     prepareReviewTurn: async (_executionId, reference, job) => manager.prepareReview(reference, job) }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime)
