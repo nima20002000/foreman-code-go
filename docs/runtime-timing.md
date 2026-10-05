@@ -18,6 +18,12 @@ acceptance, settlement, process closure, and Run cleanup. Heartbeat and batching
 intervals are recorded without changing them. RPC records include their deadline,
 so a deadline can be distinguished from an interval actually spent waiting.
 
+Snapshot read spans include the immutable Run and execution validation. Graph
+finalization spans separate public projection capture, its commit check, and
+canonical receipt checks from other transaction work. These spans include SQL
+and validation CPU time; compare them with their nested SQL spans to distinguish
+database waits from validation work.
+
 Spans overlap. Do not add their durations as elapsed Run time: a healthy wrapper
 can wait for a provider while heartbeats and persistence proceed concurrently.
 For a critical-path breakdown, merge interval ranges, compare native output and

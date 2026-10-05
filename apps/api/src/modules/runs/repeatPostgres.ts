@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
@@ -1192,18 +1193,20 @@ async function readRepeatEffectReceipt(sql: GraphTransactionSql, scope: RepeatSc
 
 /** The caller must have read the exact accepted Run/version on THIS transaction
  * and authorized the requested detail. Never opens a native host or progresses. */
-export async function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+export function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
   executionId: string): Promise<StoredRepeatExecution> {
-  assertGraphTransaction(sql)
-  const { run, version } = snapshot
-  const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
-    workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
-  const head = await sql.query<{ protocol_version: number }>(
-    'select protocol_version from run_graph_heads where run_id=$1 for share', [run.id])
-  if (head.rows.length !== 1 || head.rows[0]?.protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
-  const stored = await readStoredRepeatExecution(sql, scope, version, executionId, 'share')
-  await readRepeatEffectReceipt(sql, scope, 'input.bind', executionId)
-  return stored
+  return timeRuntimeOperation('db', 'snapshot.read_execution', async () => {
+    assertGraphTransaction(sql)
+    const { run, version } = snapshot
+    const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+      workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
+    const head = await sql.query<{ protocol_version: number }>(
+      'select protocol_version from run_graph_heads where run_id=$1 for share', [run.id])
+    if (head.rows.length !== 1 || head.rows[0]?.protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
+    const stored = await readStoredRepeatExecution(sql, scope, version, executionId, 'share')
+    await readRepeatEffectReceipt(sql, scope, 'input.bind', executionId)
+    return stored
+  }, { runId: snapshot.run.id, executionId })
 }
 
 /** An accepted flag alone is not an accepted v3 result. The immutable terminal,

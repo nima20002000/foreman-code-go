@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readPublicRunStateLocked } from './publicRunState.js'
 import { capturePublicProjectionLocked, assertPublicProjectionUnchangedLocked, assertPublicProjectionCommittedLocked } from './publicProjectionReceipt.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -141,7 +142,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     if (key !== constructionKey) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
     this.sql = sql
     this.scope = Object.freeze({ ...scope })
-    beforeGraphCommit(sql, () => this.finalize())
+    beforeGraphCommit(sql, () => timeRuntimeOperation('db', 'graph.finalize', () => this.finalize(),
+      { runId: this.scope.runId }))
   }
   /** Source/projection bookkeeping; grants no authority for a workflow effect.
    * Exact duplicate sources do not call mutate; conflicts poison the transaction. */
@@ -690,7 +692,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         })))],
       )
     }
-    const projection = await capturePublicProjectionLocked(this.sql, this.scope)
+    const projection = await timeRuntimeOperation('db', 'graph.capture_projection',
+      () => capturePublicProjectionLocked(this.sql, this.scope), { runId: this.scope.runId })
     if (projection) {
       const key = canonicalGraphJson(projection.evidence)
       if (this.#sources.has(key)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
@@ -698,7 +701,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         semanticDigest: projection.semanticDigest, events: [RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(),
           evidence: projection.evidence, sourceDigest: projection.sourceDigest, semanticDigest: projection.semanticDigest,
           effect: null, fact: projection.fact })] })
-      beforeGraphCommit(this.sql, () => assertPublicProjectionUnchangedLocked(this.sql, this.scope, projection))
+      beforeGraphCommit(this.sql, () => timeRuntimeOperation('db', 'graph.recheck_projection',
+        () => assertPublicProjectionUnchangedLocked(this.sql, this.scope, projection), { runId: this.scope.runId }))
     }
     if (this.#sources.size > RUN_GRAPH_LIMITS.transactionSources
       || graphJsonBytes([...this.#sources.values()]) > RUN_GRAPH_LIMITS.transactionBytes) throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
