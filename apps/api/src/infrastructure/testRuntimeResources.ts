@@ -9,13 +9,15 @@ import { logFilePath } from './logger.js'
 
 function assertTestRoot(resource: { directory: string; token: string }): void {
   if (!resource.directory || !/^[0-9a-f-]{36}$/.test(resource.token)) throw new Error('Test root ownership is required')
+  const uid = process.getuid?.()
+  if (uid === undefined) throw new Error('Owned test resources require Unix file ownership support')
   const stat = lstatSync(resource.directory)
   if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(resource.directory) !== resolve(resource.directory)
-    || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()) throw new Error('Test root is not privately owned')
+    || (stat.mode & 0o077) !== 0 || stat.uid !== uid) throw new Error('Test root is not privately owned')
   const marker = join(resource.directory, '.graphql-test-owner.json')
   const markerStat = lstatSync(marker)
   if (!markerStat.isFile() || markerStat.isSymbolicLink() || (markerStat.mode & 0o077) !== 0
-    || markerStat.uid !== process.getuid()) throw new Error('Test root ownership marker is unsafe')
+    || markerStat.uid !== uid) throw new Error('Test root ownership marker is unsafe')
   const owner = JSON.parse(readFileSync(marker, 'utf8')) as { directory?: unknown; token?: unknown }
   if (owner.directory !== resource.directory || owner.token !== resource.token) throw new Error('Test root ownership mismatch')
 }
