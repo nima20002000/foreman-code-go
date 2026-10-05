@@ -193,8 +193,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             throw error
           }
         })
+      let production: ReturnType<typeof buildProductionApp> | undefined
       const mcpClients: Client[] = []
       let artifactBoundary: pg.PoolClient | undefined
+      let failure: { error: unknown } | undefined
+      let cleanupRun: { workspaceId: string; id: string; token: string } | undefined
       try {
         await database.migrate()
         await checkpoints.setup()
@@ -205,10 +208,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
-        let production = buildProductionApp(config, database, checkpoints, false)
+        production = buildProductionApp(config, database, checkpoints, false)
         const redact = nativePersistenceRedactor(Object.values(process.env)
           .filter((value): value is string => typeof value === 'string' && value.length >= 8))
-        const startupErrors: Array<{ code: string; message: string; cause: string | null; inspectionCodes: string[] }> = []
+        const startupErrors: Array<{ code: string; message: string; cause: string | null;
+          inspectionCodes: string[]; probe: unknown }> = []
         const recordFailure = (error: unknown) => {
           if (nativeFailures.length < 16) nativeFailures.push({ stage: 'engine',
             error: describeNativeFailure(error, [...secrets]) })
@@ -218,14 +222,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             message: redact.text(error instanceof Error ? error.message : 'Unknown engine failure').slice(0, 2048),
             cause: error instanceof Error && error.cause instanceof Error
               ? redact.text(error.cause.message).slice(0, 2048) : null,
+            probe: error instanceof DomainError && error.code === 'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED'
+              ? redact.value(error.details ?? null) : null,
             inspectionCodes: error instanceof DomainError && Array.isArray(error.details?.inspectionCodes)
               ? error.details.inspectionCodes.filter((value): value is string =>
                 typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(value)) : [] })
         }
-        const observeEngine = (runtime: typeof production) => {
+        const observeEngine = (runtime: ReturnType<typeof buildProductionApp>) => {
           const start = runtime.engine.start.bind(runtime.engine)
           runtime.engine.start = async (runId) => {
             try { return await start(runId) }
+            catch (error) { recordFailure(error); throw error }
+          }
+          const resume = runtime.engine.resumeInteraction.bind(runtime.engine)
+          runtime.engine.resumeInteraction = async (interaction, claim) => {
+            try { return await resume(interaction, claim) }
             catch (error) { recordFailure(error); throw error }
           }
         }
@@ -482,6 +493,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           expect(started.statusCode, started.body).toBe(202)
           runId = started.json().run.id as string
         }
+        cleanupRun = { workspaceId: workspace.id, id: runId, token: writer.token }
         if (restartOnArtifacts) {
           artifactBoundary = await pool.connect()
           await artifactBoundary.query('begin')
@@ -605,6 +617,20 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           }))
         const activityKinds = (await pool.query<{ kind: string }>(
           'select kind from run_activity where run_id=$1 order by sequence', [runId])).rows.map((row) => row.kind)
+        const approvalProgress = (await pool.query<{ id: string; status: string; delivery: string | null;
+          resume: string | null; acknowledged: boolean | null }>(`select i.id,i.status,
+          i.record->>'deliveryState' as delivery,g.state as resume,
+          g.approval_native_ack_id is not null as acknowledged from durable_interactions i
+          left join interaction_graph_resumes g on g.interaction_id=i.id
+          where i.run_id=$1 order by i.id`, [runId])).rows
+        const invalidNativeResults = (await pool.query<{ execution_id: string; result: unknown }>(
+          `select p.execution_id,p.record#>'{original,history,terminalTurn,result}' as result
+            from workflow_native_proofs p join harness_executions e on e.id=p.execution_id
+            where p.run_id=$1 and e.record#>>'{result,error,code}'='WORK_RESULT_INVALID'
+              and p.record#>'{original,history,terminalTurn,result}' is not null
+            order by p.proof_id limit 5`, [runId])).rows.map(row => ({
+          executionId: row.execution_id, result: redact.text(JSON.stringify(row.result)).slice(0, 4096),
+        }))
         const publicEvents = await app.inject({ method: 'GET', headers,
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
@@ -624,7 +650,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted'),
           JSON.stringify({ state, outcome, runError, executions, startupErrors })).toBe(true)
-        expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
+        expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors,
+          approvalProgress, invalidNativeResults }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
         if (artifacts) {
@@ -869,6 +896,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           where b.run_id=$1 and p.revoked_at is null`, [runId])).rows[0]
         expect(Number(liveCredentials?.count)).toBe(0)
       } catch (error) {
+        failure = { error }
         const directory = process.env.ENG03_A_EVIDENCE_DIR
         if (directory) {
           try {
@@ -894,12 +922,37 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         executionObserver.mockRestore()
         sessionObserver.mockRestore()
         cancellationObserver.mockRestore()
+        const cleanupErrors: unknown[] = []
         if (artifactBoundary) {
-          try { await artifactBoundary.query('rollback') } finally { artifactBoundary.release() }
+          try { await artifactBoundary.query('rollback') }
+          catch (error) { cleanupErrors.push(error) }
+          finally { artifactBoundary.release() }
         }
-        await Promise.allSettled(mcpClients.map(client => client.close()))
-        await app?.close().catch(() => undefined)
-        await Promise.allSettled([checkpoints.close(), database.close()])
+        if (failure && cleanupRun && app) {
+          try {
+            const current = (await pool.query<{ execution_state: string }>(
+              'select execution_state from runs where id=$1', [cleanupRun.id])).rows[0]
+            if (current && current.execution_state !== 'completed') {
+              const stopped = await app.inject({ method: 'POST',
+                headers: { host: 'localhost', authorization: `Bearer ${cleanupRun.token}` },
+                url: `/api/management/workspaces/${cleanupRun.workspaceId}/runs/${cleanupRun.id}/stop`,
+                payload: { workspaceId: cleanupRun.workspaceId, runId: cleanupRun.id, commandId: randomUUID() } })
+              if (stopped.statusCode !== 200) throw new Error(`Owned native cleanup Stop failed: ${stopped.body}`)
+            }
+          } catch (error) { cleanupErrors.push(error) }
+        }
+        const clients = await Promise.allSettled(mcpClients.map(client => client.close()))
+        for (const result of clients) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+        try { await production?.shutdown() }
+        catch (error) { cleanupErrors.push(error) }
+        try { await production?.drainShutdown() }
+        catch (error) { cleanupErrors.push(error) }
+        const resources = await Promise.allSettled([checkpoints.close(), database.close()])
+        for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+        if (cleanupErrors.length) {
+          if (failure) cleanupErrors.unshift(failure.error)
+          throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.')
+        }
         await rm(directory, { recursive: true, force: true })
       }
     })

@@ -178,7 +178,9 @@ export class LocalWorkflowArtifacts {
       const output = await this.publication(this.pool, execution.id, mapping.outputKey, mapping.commandId)
       if (output.nativeIdentity.turnId !== original.proof.lane?.providerId) return conflict()
       const { caller } = await this.authority.context(execution.id)
-      const opened = await this.files().download(caller.principal, targetOf(caller.context), output.pins)
+      const opened = await this.files().download(caller.principal, targetOf(caller.context), {
+        fileId: output.pins.fileId, revisionId: output.pins.revisionId,
+      })
       opened.stream.destroy()
       await this.outputs.bindLocal(output, async sql => {
         const current = await this.publication(sql, execution.id, mapping.outputKey, mapping.commandId)

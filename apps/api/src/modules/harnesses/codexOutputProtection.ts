@@ -105,6 +105,7 @@ export async function qualifyCodexOutputProtection(input: {
       runtimeWorkspaceRoots: [policy.cwd], sandbox: 'workspace-write', approvalPolicy: 'never', ephemeral: true,
       model: selected.configuration.model,
       config: { ...Object.fromEntries(disabled.map((name) => [`mcp_servers.${name}.enabled`, false])),
+        model_reasoning_effort: selected.configuration.reasoningEffort,
         sandbox_workspace_write: { writable_roots: [...policy.writableRoots], network_access: policy.networkAccess,
           exclude_tmpdir_env_var: policy.excludeTmpdirEnvVar, exclude_slash_tmp: policy.excludeSlashTmp } },
     }, signal))
@@ -167,6 +168,8 @@ export async function qualifyCodexOutputProtection(input: {
             ? /^[A-Za-z]{1,12}/u.exec(observed[0]!.item.aggregatedOutput)?.[0] ?? null : null,
           hasMatchingMarker: typeof observed[0]!.item.aggregatedOutput === 'string'
             && observed[0]!.item.aggregatedOutput.includes(marker),
+          output: typeof observed[0]!.item.aggregatedOutput === 'string'
+            ? redact.text(observed[0]!.item.aggregatedOutput).slice(0, 8192) : null,
         })
     }
     const witness: unknown = JSON.parse(await readFile(witnessPath, 'utf8'))
