@@ -83,7 +83,8 @@ export function ownedClaudeSdkQueries(input: {
           interrupt: () => query.interrupt(),
           initializationResult: () => query.initializationResult(),
           mcpServerStatus: () => query.mcpServerStatus(),
-          setMcpServers: servers => query.setMcpServers(servers as Record<string, McpServerConfig>),
+          setMcpServers: (servers: Readonly<Record<string, unknown>>) =>
+            query.setMcpServers(servers as Record<string, McpServerConfig>),
           close: () => { stopped = true; query.close() },
           joinClosed,
         }

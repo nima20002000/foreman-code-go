@@ -7,6 +7,7 @@ import { NativeProcessRegistry } from '../recovery/processRegistry.js'
 import { ownedClaudeSdkQueries } from './official.js'
 import type { ClaudeSdkClient } from './port.js'
 import { createClaudeSdkRunner } from './runner.js'
+import type { ClaudeSdkQuery } from './port.js'
 
 it('persists no-start closure when SDK dispatch throws before native spawn, including fresh-registry recovery', async () => {
   const root = await mkdtemp(join(tmpdir(), 'claude-query-start-'))
@@ -35,4 +36,29 @@ it('persists no-start closure when SDK dispatch throws before native spawn, incl
     await runner.dispose()
     await rm(root, { recursive: true, force: true })
   }
+})
+
+it('joins a query returned after startup cancellation before releasing its opening session', async () => {
+  let enter!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  let finish!: (query: ClaudeSdkQuery) => void
+  const query = new Promise<ClaudeSdkQuery>(resolve => { finish = resolve })
+  const close = vi.fn()
+  const joinClosed = vi.fn(async () => {})
+  const client: ClaudeSdkClient = { sdkVersion: '0.3.284',
+    query: () => { enter(); return query }, getSessionInfo: async sessionId => ({ sessionId }),
+    getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'unused' }) }
+  const runner = createClaudeSdkRunner({ loadClient: async () => client })
+  const controller = new AbortController()
+  const opening = runner.open({ scope: { deviceId: 'test', profilePath: '/profile', cwd: '/work', configRevision: '1' },
+    options: {}, signal: controller.signal })
+  const failed = expect(opening).rejects.toThrow('Startup canceled')
+  try {
+    await entered
+    controller.abort(new Error('Startup canceled'))
+    finish({ async *[Symbol.asyncIterator]() {}, interrupt: async () => {}, close, joinClosed })
+    await failed
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(joinClosed).toHaveBeenCalledTimes(1)
+  } finally { await runner.dispose() }
 })
