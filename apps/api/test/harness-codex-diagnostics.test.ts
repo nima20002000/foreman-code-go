@@ -3,7 +3,6 @@ import { expect, it, vi } from 'vitest'
 import type { CodexSessionDependencies, CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { } from '../src/modules/harnesses/codexProtocol.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 import { ReplayGate } from './support/harnessReplay.js'
 

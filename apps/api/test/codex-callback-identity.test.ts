@@ -6,7 +6,6 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies, type Codex
 import { randomUUID } from 'node:crypto'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'
 import type { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
-import { } from '../src/modules/harnesses/codexProtocol.js'
 import type { RpcRequest } from '../src/modules/harnesses/codexStdioTransport.js'
 import { translateCodexInteraction } from '../src/modules/harnesses/codexInteractions.js'
 import { errorCode, fixtureProtocol, input } from './fixtures/codex-test-helpers.js'

@@ -2,7 +2,6 @@ import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager, type CodexDiagnosticPin, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
-import { } from '../src/modules/harnesses/codexProtocol.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 
 function gate() {

@@ -1,7 +1,6 @@
 import { RECORDED_CODEX_VERSION } from '../fixtures/codex-version.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { CodexSessionDependencies, CodexTransport } from '../../src/modules/harnesses/codexAppServer.js'
-import { } from '../../src/modules/harnesses/codexProtocol.js'
 import { CodexRpcError, type JsonObject, type RpcRequest } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import type { ProductionHarnessInfrastructure } from '../../src/modules/harnesses/productionInfrastructure.js'
