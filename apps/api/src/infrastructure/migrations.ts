@@ -1,4 +1,5 @@
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
+import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
 import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
 import { workJoinRoundMigration } from './workJoinRoundMigration.js'
 import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
@@ -835,6 +836,7 @@ export const migrations = [
   workUnresolvedRoutesMigration,
   workJoinDispatchMigration,
   workJoinDispositionMigration,
+  localWorkflowNativeOutputMigration,
   localHumanMigration,
 ] as const
 

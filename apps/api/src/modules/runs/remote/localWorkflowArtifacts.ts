@@ -58,36 +58,39 @@ export class LocalWorkflowArtifacts {
   async admitContextLocked(sql: GraphTransactionSql, capture: WorkflowNativeCapture,
     proof: WorkflowNativeProofRecord): Promise<void> {
     assertGraphTransaction(sql)
-    if (capture.session.harness !== 'codex' || !capture.lane?.providerId
+    if (!['codex', 'opencode'].includes(capture.session.harness) || !capture.lane?.providerId
       || !['running', 'waiting'].includes(capture.execution.state)
-      || capture.source.type === 'event' && capture.source.event.type !== 'turn.started'
+      || capture.source.type === 'event' && capture.session.harness === 'codex' && capture.source.event.type !== 'turn.started'
       || capture.source.type !== 'event' && capture.source.type !== 'history'
       || capture.source.type === 'history' && capture.source.history.terminalTurn) return
     const current = await this.authority.execution(sql, capture.execution.id)
     const key = workflowNativeFileConversationKey(this.authority.mainId, current.execution.id, current.attempt.attemptId)
     const conversationId = `workflow-native-files-${digest(key)}`
     const harness = current.configuration.harness
-    if (harness.harness !== 'codex' || !same(proof.execution, repeatExecutionIdentity(capture.execution))
+    if (harness.harness === 'claude' || !same(proof.execution, repeatExecutionIdentity(capture.execution))
       || proof.inputDigest !== repeatDigest(capture.execution.input) || !same(proof.original, capture.source)
       || !same(proof.session, capture.session) || proof.lane?.providerId !== capture.lane.providerId) return conflict()
     const context: FileToolContext = { ownerPrincipalId: current.principal.id,
       scope: { kind: 'temporary', chat: { kind: 'agent', conversationId, workspaceId: current.run.workspaceId,
         workflowId: current.run.workflowId, runId: current.run.id, executionId: current.execution.id,
         agentId: current.execution.agentId } }, nativeSessionId: capture.session.nativeSessionId,
-      turnId: capture.lane.providerId, allowMutation: harness.sandbox === 'workspace-write',
-      allowedTools: codexChatFileTools(harness) }
+      turnId: capture.lane.providerId,
+      allowMutation: harness.harness === 'codex' ? harness.sandbox === 'workspace-write' : harness.nativeAgent === 'build',
+      allowedTools: harness.harness === 'codex' ? codexChatFileTools(harness)
+        : ['files.list', 'files.read', 'files.write_working_copy', 'files.publish_result'] }
     const record = { origin: { kind: 'run_execution', runId: current.run.id, executionId: current.execution.id,
       sourceNativeSessionId: capture.session.nativeSessionId }, workingDirectory: current.execution.workingDirectory,
       runtimeDirectory: current.execution.runtimeDirectory, localWorkflowFileContext: { context, attempt: current.attempt, proof } }
     const inserted = await sql.query(`insert into operator_conversations(id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,
       agent_configuration_version_id,origin_run_id,origin_execution_id,harness,provider_version,native_session_id,record)
-      values($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,'codex',$10,$11,$12::jsonb) on conflict do nothing`,
+      values($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$13,$10,$11,$12::jsonb) on conflict do nothing`,
     [conversationId, key, current.run.workspaceId, current.run.workflowId, current.node.id, current.execution.agentId,
       current.configuration.id, current.run.id, current.execution.id, capture.session.providerVersion,
-      capture.session.nativeSessionId, JSON.stringify(record)])
+      capture.session.nativeSessionId, JSON.stringify(record), capture.session.harness])
     const verify = async () => {
       capture.assertCurrent()
-      const admitted = await this.authority.context(current.execution.id, { query: sql, mutation: true })
+      const admitted = await this.authority.context(current.execution.id, { query: sql })
+      if (context.allowMutation) await this.authority.assertDeclarations(current.execution.id, sql)
       if (!same(admitted.caller.context, context) || !same(admitted.attempt, current.attempt)) return conflict()
       capture.assertCurrent()
     }
@@ -102,13 +105,14 @@ export class LocalWorkflowArtifacts {
 
   async publish(executionId: string, raw: unknown, snapshot: {
     sha256: string; byteSize: number; open(): Promise<Readable>
-  }) {
+  }, assertNativeCurrent?: (sql: FileQuery) => Promise<void>) {
     const accepted = await this.authority.context(executionId, { mutation: true })
     const { caller, attempt } = accepted
     const input = AgentFilePublishInputSchema.parse(raw)
     if (fileScopeIdentity(input.scope) !== fileScopeIdentity(caller.context.scope)) return conflict()
     const requestId = `fil05:local:${digest(input.commandId)}`
     const check = async (sql: FileQuery = this.pool) => {
+      await assertNativeCurrent?.(sql)
       const current = await this.authority.context(executionId, { query: sql, mutation: true })
       if (!same(current, accepted)) return conflict()
       return current.caller
@@ -116,6 +120,7 @@ export class LocalWorkflowArtifacts {
     const guard = { source: 'mcp' as const, authorize: async (sql: FileQuery) => { await check(sql) } }
     const identity = digest(JSON.stringify([caller.binding, attempt, input.artifactId, snapshot.sha256, snapshot.byteSize]))
     const files = this.files()
+    await check()
     const allocated = await files.allocateAgentResult(caller.principal, targetOf(caller.context), {
       requestId, filename: input.filename, mediaType: input.mediaType, sha256: snapshot.sha256, byteSize: snapshot.byteSize,
     }, 'agent_output', identity, guard)

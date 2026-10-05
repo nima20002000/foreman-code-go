@@ -89,7 +89,9 @@ export function createLocalWorkflowNativeOutputs(input: {
             break
           }
           catch (error) {
-            if (!(error instanceof DomainError) || error.code !== 'NATIVE_ARTIFACT_AUTHORITY_DENIED') throw error
+            if (!(error instanceof DomainError) || ![
+              'NATIVE_ARTIFACT_AUTHORITY_DENIED', 'NATIVE_ARTIFACT_CONTEXT_PENDING',
+            ].includes(error.code)) throw error
             await current(bounded)
             await delay(25, undefined, { signal: bounded })
           }

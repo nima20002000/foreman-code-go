@@ -97,6 +97,8 @@ import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflo
 import { LocalWorkflowArtifactAuthority, workflowArtifactsAreLocal } from './modules/runs/remote/localWorkflowArtifactAuthority.js'
 import { LocalWorkflowArtifacts } from './modules/runs/remote/localWorkflowArtifacts.js'
 import { createLocalWorkflowNativeOutputs } from './modules/runs/remote/localWorkflowNativeOutputs.js'
+import { LocalWorkflowNativeOutputMcp } from './modules/runs/remote/localWorkflowNativeOutputMcp.js'
+import { assertOpenCodeNativeOutputCall } from './modules/runs/remote/localWorkflowOutputApproval.js'
 import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
 import { WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
@@ -387,6 +389,7 @@ export function buildProductionApp(
   let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
   let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
   let localWorkflowArtifacts: LocalWorkflowArtifacts | undefined
+  let localNativeOutputMcp: LocalWorkflowNativeOutputMcp | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
@@ -413,6 +416,7 @@ export function buildProductionApp(
       if (await workflowArtifactsAreLocal(database.pool, execution.runId, execution.workflowNodeId)) {
         if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
           'Local workflow artifact storage is unavailable.', 503)
+        await localNativeOutputMcp?.cleanupClosed()
         await localWorkflowArtifacts.recover(owner, execution)
         return
       }
@@ -1202,7 +1206,19 @@ export function buildProductionApp(
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
-    workerArtifacts: () => workflowArtifacts?.extension,
+    workerArtifacts: () => {
+      const local = localNativeOutputMcp, remote = workflowArtifacts?.extension
+      if (!local) return remote
+      return {
+        async register(server, request, principal) {
+          if (await local.isLocal(principal)) await local.register(server, request, principal)
+          else await remote?.register(server, request, principal)
+        },
+        async call(request, principal, body) {
+          return await local.call(request, principal, body) ?? await remote?.call(request, principal, body)
+        },
+      }
+    },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
@@ -1265,6 +1281,7 @@ export function buildProductionApp(
     dispose: [
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
+      { name: 'closed local native output bytes', run: async () => { await localNativeOutputMcp?.cleanupClosed() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
@@ -1423,6 +1440,15 @@ export function buildProductionApp(
             'Local workflow artifact storage is unavailable.', 503)
           return fileStorage
         })
+      localNativeOutputMcp = new LocalWorkflowNativeOutputMcp({ pool: database.pool, commands,
+        artifacts: () => {
+          if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+            'Local workflow artifact storage is unavailable.', 503)
+          return localWorkflowArtifacts
+        }, nativeCall: (executionId, toolName, args, signal) =>
+          captureLocalNativeOutputCall(executionId, toolName, args, signal),
+        authorizeNativeCall: (sql, executionId, command, capture) =>
+          assertOpenCodeNativeOutputCall(sql, capture, { executionId, command }) })
       const outputAuthorization = infrastructure?.nativeOutputAuthorization?.(artifactAuthority)
         ?? createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (input, connection, sql) => {
           const binding = deviceRuntime.currentBinding(connection.deviceId)
@@ -1542,6 +1568,7 @@ export function buildProductionApp(
     reconciliation = (async () => {
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
+      await localNativeOutputMcp?.cleanupClosed()
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {
