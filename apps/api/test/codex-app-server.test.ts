@@ -582,6 +582,35 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.history(session)).terminalResult?.outcome, 'canceled')
   })
 
+  it('withdraws unsent preparation without interrupting the previous completed turn', async () => {
+    let preparing!: () => void
+    const prepared = new Promise<void>((resolve) => { preparing = resolve })
+    const fileManager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none', {
+      prepare: async ({ clientCorrelationId, signal }) => {
+        if (clientCorrelationId !== 'unsent') return undefined
+        preparing()
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => { reject(signal.reason) }, { once: true })
+        })
+        return undefined
+      },
+    })
+    managers.push(fileManager)
+    const session = await fileManager.createSession(source)
+    await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'previous' }))
+    const previous = (await fileManager.history(session)).terminalResult
+    const stream = collect(fileManager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'unsent' }))
+    const rejected = assert.rejects(stream, (error: unknown) => error instanceof Error && error.name === 'AbortError')
+    await prepared
+    assert.equal(await fileManager.cancel(session), false)
+    await rejected
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('turn/interrupt')).length, 0)
+    assert.deepEqual((await fileManager.history(session)).terminalResult, previous)
+    await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'after-cancel' }))
+    assert.equal((await wire('turn/start')).length, 2)
+  })
+
   it('F05: foreign, old-turn and malformed notifications cannot clear approval or replace the answer', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' }))

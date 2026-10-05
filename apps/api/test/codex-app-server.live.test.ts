@@ -64,16 +64,25 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert(isObject(appMcp) && isObject(appMcp.tools) && 'operator_handoff_history_get' in appMcp.tools,
         'The native App MCP server must expose the actual conversation-scoped handoff tool.')
 
-      // Cancel while startup may still be in progress; the manager must target the new ID.
+      const previousTurn = await manager.reconcile(session, 'continue', signal)
+      assert(previousTurn.terminalTurn?.providerId)
+      let acknowledgeSubmission!: (nativeTurnId: string) => void
+      const submitted = new Promise<string>((resolve) => { acknowledgeSubmission = resolve })
       const interrupt = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: 'Run this exact shell command and wait for it to finish before answering: sleep 120. Do not simulate the command.',
           clientCorrelationId: 'interrupt',
+          onSubmitted: async (nativeTurnId) => { acknowledgeSubmission(nativeTurnId) },
         }, signal)) void event
       })()
       void interrupt.catch(() => undefined)
+      // Qualification must interrupt a submitted native turn, rather than withdraw unsent preparation.
+      const nativeTurnId = await Promise.race([submitted, interrupt.then(() => {
+        throw new Error('The native turn finished without a submission acknowledgement.')
+      })])
+      assert.notEqual(nativeTurnId, previousTurn.terminalTurn.providerId)
       try {
-        assert.equal(await manager.cancel(session, signal), true)
+        assert.equal(await manager.cancel(session, signal, nativeTurnId), true)
       } catch (error) {
         if (error instanceof CodexRpcError) assert.fail(`Native turn/interrupt failed: ${error.nativeMessage ?? 'no provider diagnostic'}`)
         throw error
