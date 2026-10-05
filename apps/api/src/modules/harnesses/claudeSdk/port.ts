@@ -68,6 +68,8 @@ export interface ClaudeSdkOpenInput {
 export class ClaudeInputNotDeliveredError extends HarnessExecutionError {
   readonly code = 'CLAUDE_INPUT_NOT_DELIVERED'
   readonly deliveryState = 'not-delivered'
+  readonly certainty = 'definite'
+  readonly uncertain = false
 
   constructor(message: string) {
     super('CLAUDE_INPUT_NOT_DELIVERED', message, true)
@@ -91,6 +93,7 @@ export interface ClaudeSdkSession {
 }
 
 export interface ClaudeSdkRunner {
+  requiresRuntimeClosure?(): boolean
   open(input: ClaudeSdkOpenInput): Promise<ClaudeSdkSession>
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>

@@ -627,6 +627,7 @@ export function createClaudeNativeSessionManager(options: {
   }
   const manager: ClaudeNativeSessionManager = {
     harness,
+    requiresRuntimeClosure: () => options.runner.requiresRuntimeClosure?.() ?? all.size > 0,
     callbackAuthority(context) {
       const runtime = resident.get(context.nativeSessionId)
       const turn = runtime?.turns.get(context.clientCorrelationId)

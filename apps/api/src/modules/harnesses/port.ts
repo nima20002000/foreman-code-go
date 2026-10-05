@@ -139,6 +139,8 @@ export interface NativeSubagentHistoryPage {
 
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
+  /** True after native query dispatch; false proves this manager never launched work. */
+  requiresRuntimeClosure?(): boolean
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

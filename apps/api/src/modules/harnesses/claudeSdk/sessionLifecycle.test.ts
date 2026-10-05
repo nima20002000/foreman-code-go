@@ -68,9 +68,10 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
       close: () => { close(); output.close() },
     }
   })
+  const transcript: unknown[] = []
   const client: ClaudeSdkClient = {
     sdkVersion: qualification.sdkVersion, query, getSessionInfo: async sessionId => ({ sessionId }),
-    getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'unused' }),
+    getSessionMessages: async (_sessionId, page) => transcript.slice(page.offset, (page.offset ?? 0) + (page.limit ?? 256)), forkSession: async () => ({ sessionId: 'unused' }),
   }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
   const offers = vi.fn()
@@ -102,12 +103,18 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   })
   const nextMessage = async () => {
     await opened
-    return (await messages.next()).value!
+    const message = (await messages.next()).value!
+    transcript.push({ ...message, session_id: saved.nativeSessionId })
+    return message
   }
-  const assistant = (id: string, content: unknown[], promptUuid?: string) => frames.offer({
+  const assistant = (id: string, content: unknown[], promptUuid?: string) => {
+    const frame = {
     type: 'assistant', session_id: saved.nativeSessionId, uuid: `frame-${id}`, parent_tool_use_id: null,
     message: { id, content }, ...(promptUuid ? { user_message_uuid: promptUuid } : {}),
-  })
+    }
+    if (!promptUuid || promptUuid === (transcript.findLast(entry => (entry as { type: string }).type === 'user') as { uuid: string })?.uuid) transcript.push(frame)
+    return frames.offer(frame)
+  }
   const result = (promptUuid: string, extra: Record<string, unknown> = {}) => frames.offer({
     type: 'result', session_id: saved.nativeSessionId, uuid: `result-${promptUuid}`,
     user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done', ...extra,
@@ -142,6 +149,11 @@ describe('Claude response ownership through SDK callbacks', () => {
       void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'late-older',
         message: { id: 'older-reply', content: [{ type: 'text', text: 'late older' }] } })
       void f.assistant('new-older-id', [{ type: 'text', text: 'late echoed older' }], oldMessage.uuid)
+      // This unseen delayed frame has no native ancestry and must never inherit the new request.
+      void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'unknown-delayed',
+        message: { id: 'unknown-delayed', content: [{ type: 'tool_use', id: 'delayed-tool', name: 'Read', input: {} }] } })
+      void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unrelated-wake',
+        subtype: 'success', is_error: false, result: 'wake' })
       const second = permission('tool-2')
       void f.assistant('A2', [{ type: 'tool_use', id: 'tool-2', name: 'Read', input: { file_path: '/work/file' } }])
       const hook = f.callbacks.hooks!.PreToolUse![0]!.hooks[0]!
@@ -161,6 +173,7 @@ describe('Claude response ownership through SDK callbacks', () => {
         .toEqual(['tool-1', 'tool-1', 'tool-2'])
       expect(events.some(event => ['late older', 'late echoed older'].includes(String(event.payload.text)))).toBe(false)
       expect(events.find(event => event.payload.text === 'final answer')?.payload.clientCorrelationId).toBe('request')
+      expect(f.manager.nativeCallbackContext(session.nativeSessionId, 'delayed-tool')).toBeUndefined()
       expect(f.validate.mock.calls.filter(([identity]) => identity.toolUseId === 'tool-2')).not.toHaveLength(0)
       expect((await f.manager.reconcile(session, 'older')).events.some(event => event.payload.text === 'late older')).toBe(true)
 
@@ -185,6 +198,7 @@ describe('Claude response ownership through SDK callbacks', () => {
       })
       void stream('start-1', { type: 'message_start', message: { id: 'stream-1' } })
       void stream('text-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'first' } }, message.uuid)
+      void f.assistant('stream-2', [{ type: 'tool_use', id: 'stream-tool', name: 'Read', input: {} }])
       void stream('start-2', { type: 'message_start', message: { id: 'stream-2' } })
       void stream('tool-start', { type: 'content_block_start', index: 0,
         content_block: { type: 'tool_use', id: 'stream-tool', name: 'Read' } })

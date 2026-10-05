@@ -4,13 +4,14 @@ import type { AgentFileToolService } from '../../files/tools/service.js'
 import { productionClaudeFileAdmission } from './fileProduction.js'
 import type pg from 'pg'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { NativeSessionReference } from '@graphql/contracts'
 import { DomainError } from '../../errors.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { NativeSessionStart } from '../port.js'
 import type { ProductionHarnessRegistry } from '../productionRegistry.js'
 import type { AcceptedClaudeProfileAdmission, AcceptedProfileSelector } from '../instanceSettings/acceptedProfile.js'
-import type { ClaudeSdkClient } from './port.js'
+import { ClaudeInputNotDeliveredError, type ClaudeSdkClient } from './port.js'
 import { compileClaudeConfiguration } from './configuration.js'
 import { createPostgresClaudeInteractionBridge, type ClaudeDomainBinding } from './domainAuthority.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
@@ -128,11 +129,16 @@ export function productionClaudeManager(input: {
       }
       const turn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, effectSignal) {
-        callbackAuthority = await domain.callbackAdmission()
-        effectSignal?.throwIfAborted()
-        if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
-          'The message requires its admitted native session context.', 409)
-        const attached = await attach(session, sessionStart, effectSignal)
+        let attached: NativeSessionReference
+        try {
+          callbackAuthority = await domain.callbackAdmission()
+          effectSignal?.throwIfAborted()
+          if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
+            'The message requires its admitted native session context.', 409)
+          attached = await attach(session, sessionStart, effectSignal)
+        } catch (error) {
+          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.')
+        }
         const acceptedMessage = { ...message, callbackAuthority }
         yield* turn(attached, acceptedMessage, effectSignal)
       }
