@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
+import { sessionControlHeaders } from './session-control-client.mjs'
 
 // Run against the integrated production-wired app and twelve separately owned native chats.
 // Tokens are referenced by environment-variable name in the manifest and never written to the report.
@@ -40,9 +41,7 @@ function endpoint(row, suffix) {
   return new URL(`${path}${suffix}`, base)
 }
 function headers(row) {
-  const token = row.httpTokenEnv ? process.env[row.httpTokenEnv] : undefined
-  if (row.httpTokenEnv) assert.ok(token, `Missing ${row.httpTokenEnv}`)
-  return { 'content-type': 'application/json', origin: base.origin, ...(token ? { authorization: `Bearer ${token}` } : {}) }
+  return sessionControlHeaders(matrix, row)
 }
 async function request(url, row, body) {
   const response = await fetch(url, { headers: headers(row), ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
