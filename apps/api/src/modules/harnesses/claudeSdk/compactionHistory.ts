@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { constants, createReadStream } from 'node:fs'
+import { constants } from 'node:fs'
 import { open, readdir, realpath } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -49,7 +49,7 @@ export async function readClaudeCompactionHistory(session: ClaudePersistedSessio
       const newline = tail.lastIndexOf(10)
       const completeSize = newline < 0 ? start : info.size - tailSize + newline + 1
       if (completeSize > start) {
-        const stream = createReadStream(path, { fd: file.fd, autoClose: false, start, end: completeSize - 1,
+        const stream = file.createReadStream({ autoClose: false, start, end: completeSize - 1,
           ...(signal ? { signal } : {}) })
         const lines = createInterface({ input: stream, crlfDelay: Infinity })
         try {

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, appendFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, appendFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -25,5 +25,12 @@ it('recovers only the new manual boundary from the same persisted session and sc
     expect(recoveredClaudeCompaction(state, after.boundaries)).toMatchObject({ status: 'completed', nativeOperationId: 'new-boundary', beforeTokens: 123000 })
     await expect(readClaudeCompactionHistory({ ...session, configRevision: 'other' }, before.cursor)).rejects.toThrow('identity changed')
     expect(recoveredClaudeCompaction(state, [frame('a', 'manual'), frame('b', 'manual')]).status).toBe('uncertain')
+    const unchanged = await readClaudeCompactionHistory(session, after.cursor)
+    expect(unchanged.boundaries).toEqual([])
+    expect(unchanged.cursor).toEqual(after.cursor)
+    await appendFile(path, '{"incomplete":\n')
+    await expect(readClaudeCompactionHistory(session, after.cursor)).rejects.toBeInstanceOf(SyntaxError)
+    await writeFile(path, `${JSON.stringify(frame('repaired-boundary', 'manual'))}\n`)
+    expect((await readClaudeCompactionHistory(session)).boundaries).toMatchObject([{ uuid: 'repaired-boundary' }])
   } finally { await rm(profilePath, { recursive: true, force: true }) }
 })
