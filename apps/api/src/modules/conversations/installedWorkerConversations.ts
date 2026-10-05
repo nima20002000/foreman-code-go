@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationRpcRequestSchema, type WorkerConversationBinding,
   type WorkerConversationConfiguration, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -37,6 +36,8 @@ import { allocateInstalledWorkerClaude } from './installedWorkerClaude.js'
 import { WorkerConversationFiles } from './workerFiles.js'
 import { localCodexChatHost } from '../harnesses/codexFiles/localHost.js'
 import { assertCodexChatHost } from '../harnesses/codexFiles/localHost.js'
+import { workerConversationProcessDigest } from './workerNativeOwner.js'
+import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { join } from 'node:path'
 
 function unavailable(message: string): never {
@@ -68,7 +69,7 @@ export async function createInstalledWorkerConversations(input: {
   const callbacks = workerConversationCallbacks({ currentBinding: input.current, capture: input.capture })
   const files = new WorkerConversationFiles(callbacks)
   const allocate = async (binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
-    connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read'): Promise<WorkerConversationAllocation> => {
+    connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read' | 'preparation'): Promise<WorkerConversationAllocation> => {
     const harness = binding.harness
     if (harness === 'claude') return allocateInstalledWorkerClaude({ binding, configuration, connection, purpose,
       stateDirectory: input.stateDirectory, selection: input.configuration, launcher: selected.appMcpLauncher,
@@ -94,6 +95,7 @@ export async function createInstalledWorkerConversations(input: {
       scopeOwner = `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
       appMcpAccess = 'none'
     }
+    if (purpose === 'preparation') scopeOwner = `conversation-prepare:${binding.owner.conversationId}:${randomUUID()}`
     const scope = input.registry.scope(scopeOwner)
     const before = async (signal?: AbortSignal) => {
       await directory.assertCurrent(signal)
@@ -161,9 +163,7 @@ export async function createInstalledWorkerConversations(input: {
         unavailable('The original native chat process is unavailable or changed.')
       }
       launch ??= current
-      return { sessionId: session.nativeSessionId, processIdentityDigest: commandInputHash({ owner: scope.owner,
-        binding, launchId: launch.launchId, bootId: launch.bootId, guardian: launch.guardian,
-        provider: launch.provider, boundary: launch.boundary }).slice('sha256:'.length) }
+      return { sessionId: session.nativeSessionId, processIdentityDigest: workerConversationProcessDigest(binding, launch) }
     }
     const start: WorkerConversationAllocation['start'] = async options => {
       await before(input.signal)
@@ -193,13 +193,20 @@ export async function createInstalledWorkerConversations(input: {
       async close() {
         await manager.dispose?.()
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
-        await files.closeConversation(binding.owner.conversationId)
+        if (purpose === 'chat') await files.closeConversation(binding.owner.conversationId)
         await mcp?.close()
       } }
   }
+  const conversationJournal = (await input.journal()).conversations
   const host = new WorkerConversationHost({ ...callbacks, currentBinding: input.current,
-    journal: (await input.journal()).conversations,
+    journal: conversationJournal,
     allocate: (binding, configuration, connection) => allocate(binding, configuration, connection, 'chat'),
+    prepare: (binding, configuration, connection) => allocate(binding, configuration, connection, 'preparation'),
+    recover: (record, configuration, connection, signal, request) => recoverWorkerConversation({
+      record, configuration, connection, signal, request, registry: input.registry, journal: conversationJournal,
+      allocate: () => allocate(record.binding, configuration, connection, 'chat'),
+      assertCurrent: () => callbacks.authorize(request, connection, signal),
+    }),
     readCompaction: async (request, _record, connection, signal) => {
       const observer = await allocate(request.binding, request.configuration, connection, 'compaction-read')
       try {

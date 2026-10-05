@@ -117,3 +117,29 @@ it('fences a closing chat before physical closure and preserves it when capacity
     .rejects.toThrow('full')
   expect((await j.chats.read(f.binding))?.closed).toBe(true)
 })
+
+it('retains native session and input records when a settled owner is recovered on the same paired installation', async () => {
+  const f = await opened()
+  const next = { ...f.nativeOwner, processIdentityDigest: 'd'.repeat(64) }
+  const connection = { ...f.connection, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 2 }
+  const before = await f.chats.read(f.binding)
+  await f.chats.recoveredOwner(f.binding, connection, f.nativeOwner, next)
+  const after = await f.chats.read(f.binding)
+  expect(after?.nativeOwner).toEqual(next)
+  expect(after?.session).toEqual(before?.session)
+  expect(after?.turns).toEqual(before?.turns)
+  expect(after?.creation).toEqual(before?.creation)
+  expect(after?.connection).toEqual(connection)
+})
+
+it('refuses owner recovery across a pending input, foreign session or changed device authority', async () => {
+  const f = await opened()
+  const next = { ...f.nativeOwner, processIdentityDigest: 'd'.repeat(64) }
+  await expect(f.chats.recoveredOwner(f.binding, { ...f.connection, authorizationRevision: 2 }, f.nativeOwner, next))
+    .rejects.toThrow('authority changed')
+  await expect(f.chats.recoveredOwner(f.binding, f.connection, f.nativeOwner, { ...next, sessionId: 'foreign-session' }))
+    .rejects.toThrow('settled conversation')
+  await f.chats.reserveTurn(f.binding, 'pending-message', commandInputHash('pending-input'))
+  await expect(f.chats.recoveredOwner(f.binding, f.connection, f.nativeOwner, next)).rejects.toThrow('settled conversation')
+  expect((await f.chats.read(f.binding))?.nativeOwner).toEqual(f.nativeOwner)
+})

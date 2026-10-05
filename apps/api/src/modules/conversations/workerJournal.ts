@@ -99,6 +99,23 @@ export class WorkerConversationJournal {
     })
   }
 
+  recoveredOwner(binding: WorkerConversationBinding, connection: DeviceSessionBinding,
+    previous: RemoteNativeIdentity, next: RemoteNativeIdentity) {
+    return this.change(binding, record => {
+      writable(record)
+      if (unsettled(record) || !record.session || !isDeepStrictEqual(record.nativeOwner, previous)
+        || previous.sessionId !== record.session.nativeSessionId || next.sessionId !== previous.sessionId) {
+        conflict('The recovered process does not own the settled conversation session.')
+      }
+      for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
+        if (record.connection[field] !== connection[field]) conflict('The original paired worker authority changed.')
+      }
+      record.nativeOwner = next
+      record.connection = connection
+      return record
+    })
+  }
+
   reserveTurn(binding: WorkerConversationBinding, correlationId: string, inputHash: string) {
     return this.change(binding, record => {
       writable(record)

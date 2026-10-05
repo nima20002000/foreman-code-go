@@ -1,0 +1,139 @@
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { expect, it, vi } from 'vitest'
+import { PendingNativeInteractionSchema, type AgentHarness } from '@foreman-code/contracts'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import type { NativeHistory, NativeHarnessSessionManager, NativeSessionStart } from '../harnesses/port.js'
+import type { NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
+import { workerConversationFixture } from './workerFixtures.test-support.js'
+import { workerConversationProcessDigest } from './workerNativeOwner.js'
+import { recoverWorkerConversation } from './recoverWorkerConversation.js'
+import type { WorkerConversationAllocation } from './workerHost.js'
+
+/** Recorded native/process ports verify recovery behavior, not installed harness qualification. */
+async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agent' = 'agent') {
+  const f = workerConversationFixture(kind, harness)
+  const directory = await privateFixtureDirectory('worker-recovery-')
+  const journal = await RemoteOperationJournal.open(join(directory, 'operations.json'), { initializeNewInstallation: true })
+  const launch: NativeLaunchObservation = { owner: `conversation:${f.binding.owner.conversationId}`,
+    launchId: randomUUID(), bootId: f.connection.bootId, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty',
+    guardian: { pid: 11111, startTicks: '10' }, provider: { pid: 11112, startTicks: '11' },
+    boundary: { kind: 'cgroup-v2', path: '/recorded/native-boundary', device: '1', inode: '2' } }
+  const owner = { sessionId: f.session.nativeSessionId,
+    processIdentityDigest: workerConversationProcessDigest(f.binding, launch) }
+  const result = { outcome: 'succeeded' as const, output: { text: 'Remembered context' } }
+  const submission = { kind: 'message' as const, nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'native-message', clientCorrelationId: 'original-input' }
+  await journal.conversations.receive(f.binding, f.connection)
+  await journal.conversations.reserveCreation(f.binding, 'original-create', commandInputHash({ mode: 'create' }))
+  await journal.conversations.bindSession(f.binding, f.session, owner)
+  await journal.conversations.reserveTurn(f.binding, 'original-input', commandInputHash({ prompt: 'Remembered context' }))
+  await journal.conversations.submitted(f.binding, 'original-input', harness === 'claude'
+    ? { nativeSubmission: submission } : { nativeTurnId: 'native-turn' })
+  await journal.conversations.finishTurn(f.binding, 'original-input', result)
+  const record = (await journal.conversations.read(f.binding))!
+  const connection = { ...f.connection, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 2 }
+  const attach = vi.fn(async () => f.session)
+  const observed: NativeHistory = { correlationId: 'original-input', events: [], pendingInteractions: [],
+    ...(harness === 'claude' ? { nativeSubmission: submission } : { nativeTurnId: 'native-turn' }), terminalResult: result }
+  const reconcile = vi.fn(async () => observed)
+  const forbidden = async (): Promise<never> => { throw new Error('Recovery cannot submit a new model input') }
+  const manager: NativeHarnessSessionManager = { harness, attachSession: attach, reconcile,
+    capabilities: forbidden, inspectMcp: forbidden, createSession: forbidden,
+    startTurn() { throw new Error('Recovery cannot submit a new model input') },
+    pending: forbidden, respond: forbidden, cancel: forbidden, history: forbidden, close: forbidden }
+  const start = vi.fn(async (): Promise<NativeSessionStart> => {
+    const configuration = f.configuration
+    if ('operatorId' in configuration) return { kind: 'operator', configuration,
+      correlationId: 'original-create', workingDirectory: f.binding.workingDirectory }
+    if (f.binding.owner.kind !== 'agent') throw new Error('Recorded Agent owner required')
+    return { kind: 'agent-chat', configuration, conversationId: f.binding.owner.conversationId,
+      workflowId: f.binding.owner.workflowId, workflowNodeId: f.binding.owner.workflowNodeId,
+      correlationId: 'original-create', workingDirectory: f.binding.workingDirectory, instructionsDelivered: true }
+  })
+  const nextOwner = { sessionId: f.session.nativeSessionId, processIdentityDigest: 'd'.repeat(64) }
+  const close = vi.fn(async () => {})
+  const allocation: WorkerConversationAllocation = { manager, start, close, nativeOwner: async () => nextOwner }
+  const allocate = vi.fn(async () => allocation)
+  const closeOwner = vi.fn(async () => true)
+  const assertCurrent = vi.fn(async () => {})
+  const recover = () => recoverWorkerConversation({ record, configuration: f.configuration, connection,
+    request: { method: 'conversation.open', binding: f.binding, configuration: f.configuration,
+      operationId: 'original-create', mode: 'attach', source: f.session },
+    registry: { snapshot: () => ({ revision: 'recorded-registry', launches: [launch] }), closeOwner },
+    journal: journal.conversations, allocate, assertCurrent, signal: AbortSignal.timeout(1000) })
+  return { ...f, record, connection, launch, owner, nextOwner, observed, result,
+    attach, reconcile, start, close, allocate, closeOwner, assertCurrent, recover, allocation, journal,
+    async cleanup() { await journal.close(); await rm(directory, { recursive: true, force: true }) } }
+}
+
+for (const harness of ['codex', 'opencode', 'claude'] as const) {
+  it.each(['operator', 'agent'] as const)(`${harness}: reattaches the same settled %s chat after verified process closure`, async kind => {
+    const f = await fixture(harness, kind)
+    try {
+      expect(await f.recover()).toBe(f.allocation)
+      expect(f.attach).toHaveBeenCalledWith(f.session, expect.objectContaining({ correlationId: 'original-create' }), expect.any(AbortSignal))
+      expect(f.start).toHaveBeenCalledWith({ correlationId: 'original-create', instructionsDelivered: true })
+      expect(f.reconcile).toHaveBeenCalledWith(f.session, 'original-input', expect.any(AbortSignal))
+      const saved = await f.journal.conversations.read(f.binding)
+      expect(saved?.nativeOwner).toEqual(f.nextOwner)
+      expect(saved?.session).toEqual(f.session)
+      expect(saved?.connection).toEqual(f.connection)
+      expect(saved?.turns).toEqual(f.record.turns)
+      expect(f.close).not.toHaveBeenCalled()
+      expect(f.assertCurrent).toHaveBeenCalledTimes(2)
+    } finally { await f.cleanup() }
+  })
+}
+
+it.each(['active-process', 'foreign-process', 'unfinished-turn', 'unfinished-compaction', 'revoked-device'] as const)(
+  'refuses %s before allocating or stopping native work', async fault => {
+    const f = await fixture()
+    try {
+      if (fault === 'active-process') Object.assign(f.launch, { lifecycle: 'active', closureEvidence: undefined })
+      if (fault === 'foreign-process') Object.assign(f.launch, { provider: { pid: 22222, startTicks: '20' } })
+      if (fault === 'unfinished-turn') f.record.turns[0]!.status = 'uncertain'
+      if (fault === 'unfinished-compaction') f.record.compactions.push({ inputHash: commandInputHash('compact'), state: {
+        requestId: 'compact', nativeSessionId: f.session.nativeSessionId, nativeOperationId: null,
+        status: 'uncertain', dispatchPhase: 'dispatched', beforeTokens: null,
+        observedAt: new Date().toISOString(), message: 'Pending native result',
+      } })
+      if (fault === 'revoked-device') f.connection.authorizationRevision++
+      await expect(f.recover()).rejects.toMatchObject({ status: 409 })
+      expect(f.allocate).not.toHaveBeenCalled()
+      expect(f.closeOwner).not.toHaveBeenCalled()
+      expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+    } finally { await f.cleanup() }
+  })
+
+it.each(['foreign-session', 'missing-result', 'different-turn', 'pending-approval'] as const)(
+  'closes only the new allocation after %s and keeps the original journal owner', async fault => {
+    const f = await fixture()
+    try {
+      if (fault === 'foreign-session') f.attach.mockResolvedValueOnce({ ...f.session, nativeSessionId: randomUUID() })
+      if (fault === 'missing-result') delete f.observed.terminalResult
+      if (fault === 'different-turn') f.observed.nativeTurnId = 'different-turn'
+      if (fault === 'pending-approval') f.observed.pendingInteractions = [PendingNativeInteractionSchema.parse({
+        session: f.session, turn: { nativeTurnId: 'native-turn', nativeRequestId: 'approval' },
+        nativeRequestType: 'command_approval', request: { command: 'recorded permission request' },
+        responseOptions: [{ optionId: 'reject', semantic: 'reject', label: 'Reject', persistence: 'request',
+          affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
+      })]
+      await expect(f.recover()).rejects.toMatchObject({ status: 409 })
+      expect(f.close).toHaveBeenCalledOnce()
+      expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+    } finally { await f.cleanup() }
+  })
+
+it('rechecks revoked Main authority before ownership persistence and closes the new allocation', async () => {
+  const f = await fixture()
+  try {
+    f.assertCurrent.mockResolvedValueOnce().mockRejectedValueOnce(new Error('Original caller revoked'))
+    await expect(f.recover()).rejects.toThrow('Original caller revoked')
+    expect(f.close).toHaveBeenCalledOnce()
+    expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+  } finally { await f.cleanup() }
+})

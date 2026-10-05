@@ -130,6 +130,39 @@ function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
 
+it('inspects a cold saved chat on a separate preparation and rechecks its scoped credential before attachment', async () => {
+  const f = await setup('claude')
+  f.binding.appMcpAccess = 'scoped'
+  const created = receipt(await f.request(f.open))
+  expect(created.session).toEqual(f.session)
+  await f.host.shutdown()
+  const inspectManager = new ProviderFixture('claude', f.session)
+  const preparedClose = vi.fn(async () => {})
+  const delivered = vi.fn(async () => {})
+  const allocated = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const prepare = vi.fn(async () => ({ ...allocated, manager: inspectManager,
+    deliverClaudeCredential: delivered, close: preparedClose }))
+  const recover = vi.fn(async () => allocated)
+  const restored = new WorkerConversationHost({ ...f.ports, prepare, recover })
+  const request = (input: Record<string, unknown>) => restored.handle({ ...input, binding: f.binding }, f.connection)
+  try {
+    await Promise.all([request({ method: 'conversation.capabilities', configuration: f.configuration }),
+      request({ method: 'conversation.capabilities', configuration: f.configuration })])
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(recover).not.toHaveBeenCalled()
+    await request({ method: 'conversation.refresh-mcp', configuration: f.configuration,
+      applicationAccess: { kind: 'operator-chat-mcp', token: 'recorded-scoped-credential' } })
+    expect(delivered).toHaveBeenCalledWith('recorded-scoped-credential', expect.any(AbortSignal))
+    await request({ ...f.open, mode: 'attach', source: f.session,
+      applicationAccess: { kind: 'operator-chat-mcp', token: 'recorded-scoped-credential' } })
+    expect(recover).toHaveBeenCalledWith(expect.objectContaining({ session: f.session }), f.configuration,
+      f.connection, expect.any(AbortSignal), expect.objectContaining({ applicationAccess: {
+        kind: 'operator-chat-mcp', token: 'recorded-scoped-credential' } }))
+    expect(preparedClose).toHaveBeenCalledOnce()
+    expect((await f.journal.conversations.read(f.binding))?.session).toEqual(f.session)
+  } finally { await restored.shutdown() }
+})
+
 it('closes an unused prepared owner without closing a conversation that has admitted native input', async () => {
   const f = await setup('claude')
   const allocate = f.ports.allocate

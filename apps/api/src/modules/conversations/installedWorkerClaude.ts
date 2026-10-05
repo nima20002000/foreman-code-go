@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
@@ -23,6 +22,7 @@ import { installedConversationDirectory } from './installedConversationDirectory
 import { createInstalledClaudeConversationProfile } from './installedClaudeConversationProfile.js'
 import { createWorkerClaudeAuthority } from './workerClaudeAuthority.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
+import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 
@@ -30,7 +30,7 @@ export async function allocateInstalledWorkerClaude(input: {
   binding: WorkerConversationBinding
   configuration: WorkerConversationConfiguration
   connection: Readonly<DeviceSessionBinding>
-  purpose: 'chat' | 'compaction-read'
+  purpose: 'chat' | 'compaction-read' | 'preparation'
   stateDirectory: string
   selection: InstalledWorkflowConfigurationLocation | null
   launcher: string
@@ -56,8 +56,9 @@ export async function allocateInstalledWorkerClaude(input: {
   if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The installed Claude executable is unavailable.', 409)
   const compiled = compileClaudeConfiguration(configuration.harness, binding.workingDirectory, original.accepted)
   const reader = input.purpose === 'compaction-read'
-  const owner = reader ? `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
-    : `conversation:${binding.owner.conversationId}`
+  let owner = `conversation:${binding.owner.conversationId}`
+  if (reader) owner = `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
+  if (input.purpose === 'preparation') owner = `conversation-prepare:${binding.owner.conversationId}:${randomUUID()}`
   const recovery = input.registry.scope(owner)
   let reserved = false
   const before = async (signal?: AbortSignal) => {
@@ -173,9 +174,7 @@ export async function allocateInstalledWorkerClaude(input: {
         throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', 'The original Claude process is unavailable or changed.', 409)
       }
       launch ??= current
-      return { sessionId: session.nativeSessionId, processIdentityDigest: commandInputHash({ owner, binding,
-        launchId: current.launchId, bootId: current.bootId, guardian: current.guardian,
-        provider: current.provider, boundary: current.boundary }).slice('sha256:'.length) }
+      return { sessionId: session.nativeSessionId, processIdentityDigest: workerConversationProcessDigest(binding, current) }
     },
     async close() {
       await manager.dispose?.()

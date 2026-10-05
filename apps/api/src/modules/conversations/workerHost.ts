@@ -36,8 +36,11 @@ export interface WorkerConversationHostPorts {
   authorize(request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<void>
   allocate(binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<WorkerConversationAllocation>
-  recover?(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
+  prepare?(binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<WorkerConversationAllocation>
+  recover?(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal,
+    request: WorkerConversationRpcRequest): Promise<WorkerConversationAllocation>
   readCompaction?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.compact-read' }>,
     record: WorkerConversationReceipt, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<CompactionState>
   /** Native callbacks stay behind Main's persisted identity acknowledgement. */
@@ -76,6 +79,7 @@ function validateConfiguration(binding: WorkerConversationBinding, configuration
 /** Conversation operations share execution-v1 and the existing native adapters. */
 export class WorkerConversationHost {
   private readonly residents = new Map<string, Resident>()
+  private readonly preparations = new Map<string, Resident>()
   private readonly allocating = new Map<string, Promise<Resident>>()
   private readonly tasks = new Set<Promise<void>>()
   private readonly running = new Map<string, Promise<void>>()
@@ -121,14 +125,50 @@ export class WorkerConversationHost {
       const record = await this.ports.journal.read(request.binding)
       if (record?.closed || record?.closing) unavailable('The native chat is closing or closed.')
       const allocation = record?.session
-        ? await this.recover(record, request.configuration, connection, signal)
+        ? await this.recover(record, request.configuration, connection, signal, request)
         : await this.ports.allocate(request.binding, request.configuration, connection, signal)
       try {
         this.current(request.binding, connection, signal)
         if (allocation.manager.harness !== request.binding.harness) unavailable('The worker allocated another native driver.')
         const resident = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
         this.residents.set(id, resident)
+        const preparation = this.preparations.get(id)
+        if (preparation) {
+          await preparation.allocation.close()
+          this.preparations.delete(id)
+        }
         return resident
+      } catch (error) { this.residents.delete(id); await allocation.close(); throw error }
+    })()
+    this.allocating.set(id, task)
+    try { return await task } finally { if (this.allocating.get(id) === task) this.allocating.delete(id) }
+  }
+
+  private async prepare(request: Extract<WorkerConversationRpcRequest, { configuration: WorkerConversationConfiguration }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<Resident> {
+    validateConfiguration(request.binding, request.configuration)
+    const id = request.binding.owner.conversationId
+    const resident = this.residents.get(id) ?? this.preparations.get(id)
+    if (resident) {
+      if (!isDeepStrictEqual(resident.binding, request.binding)
+        || !isDeepStrictEqual(resident.configuration, request.configuration)) unavailable('The native chat owner changed.')
+      return resident
+    }
+    const record = await this.ports.journal.read(request.binding)
+    if (!record?.session) return this.allocate(request, connection, signal)
+    if (!this.ports.prepare || record.closing || record.closed) unavailable('The original chat is not available for inspection.')
+    const opening = this.allocating.get(id)
+    if (opening) {
+      await opening
+      return this.prepare(request, connection, signal)
+    }
+    const task = (async () => {
+      const allocation = await this.ports.prepare!(request.binding, request.configuration, connection, signal)
+      try {
+        this.current(request.binding, connection, signal)
+        const prepared = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
+        this.preparations.set(id, prepared)
+        return prepared
       } catch (error) { await allocation.close(); throw error }
     })()
     this.allocating.set(id, task)
@@ -136,9 +176,9 @@ export class WorkerConversationHost {
   }
 
   private recover(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
-    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal, request: WorkerConversationRpcRequest) {
     if (!this.ports.recover) unavailable('The original worker process needs native recovery before it can be attached.')
-    return this.ports.recover(record, configuration, connection, signal)
+    return this.ports.recover(record, configuration, connection, signal, request)
   }
 
   private async resident(request: WorkerConversationRpcRequest & { session: NativeSessionReference }) {
@@ -313,6 +353,13 @@ export class WorkerConversationHost {
     await this.authorize(request, connection, signal)
     if (request.method === 'conversation.status') return { receipt: await this.ports.journal.read(request.binding) }
     if (request.method === 'conversation.release-preparation') {
+      const preparation = this.preparations.get(request.binding.owner.conversationId)
+      if (preparation) {
+        if (!isDeepStrictEqual(preparation.binding, request.binding)) unavailable('The prepared native owner changed.')
+        await preparation.allocation.close()
+        this.preparations.delete(request.binding.owner.conversationId)
+        return { acknowledged: true }
+      }
       const record = await this.ports.journal.read(request.binding)
       if (record?.session || record?.turns.length) unavailable('A prepared owner cannot close an admitted model message.')
       const resident = this.residents.get(request.binding.owner.conversationId)
@@ -325,7 +372,7 @@ export class WorkerConversationHost {
     }
     if (request.method === 'conversation.compact-read') return this.readCompaction(request, connection, signal)
     if (request.method === 'conversation.inspect-entry') {
-      const resident = await this.allocate(request, connection, signal)
+      const resident = await this.prepare(request, connection, signal)
       if (request.inspection.harness !== request.binding.harness
         || request.inspection.workingDirectory !== request.binding.workingDirectory || !resident.allocation.inspector) {
         unavailable('The native MCP inspector does not address this selected worker profile.')
@@ -337,7 +384,7 @@ export class WorkerConversationHost {
     }
     if (request.method === 'conversation.open') return this.open(request, connection, signal)
     if (request.method === 'conversation.refresh-mcp') {
-      const resident = await this.allocate(request, connection, signal)
+      const resident = await this.prepare(request, connection, signal)
       if (!resident.allocation.deliverClaudeCredential || request.binding.harness !== 'claude') {
         unavailable('This native owner has no scoped Claude credential delivery.')
       }
@@ -346,7 +393,7 @@ export class WorkerConversationHost {
       return { acknowledged: true }
     }
     if (request.method === 'conversation.capabilities' || request.method === 'conversation.inspect-mcp') {
-      const resident = await this.allocate(request, connection, signal)
+      const resident = await this.prepare(request, connection, signal)
       return request.method === 'conversation.capabilities' ? resident.allocation.manager.capabilities(signal)
         : resident.allocation.manager.inspectMcp(signal)
     }
@@ -469,9 +516,11 @@ export class WorkerConversationHost {
     this.closing = true
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'The worker native owner is shutting down.', 503))
     await Promise.allSettled([...this.tasks, ...this.allocating.values()])
-    const results = await Promise.allSettled([...this.residents.values()].map(resident => resident.allocation.close()))
+    const results = await Promise.allSettled([...this.residents.values(), ...this.preparations.values()]
+      .map(resident => resident.allocation.close()))
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (failures.length) throw new AggregateError(failures, 'Worker conversation cleanup is incomplete.')
     this.residents.clear()
+    this.preparations.clear()
   }
 }
