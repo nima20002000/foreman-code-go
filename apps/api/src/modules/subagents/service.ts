@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { subagentCapabilities, RunSubagentSchema, RunSubagentGetInputSchema, RunSubagentsListInputSchema, RunSubagentItemsInputSchema,
@@ -71,7 +72,7 @@ export class RunSubagentService {
     if (child.nativeMode !== 'opencode-task'
       || harnessProfile('opencode', child.profile.providerVersion) !== 'opencode-1.18.31') return child
     const capabilities = subagentCapabilities(child.nativeMode, '1.18.31')
-    if (JSON.stringify(child.capabilities) === JSON.stringify(capabilities)) return child
+    if (isDeepStrictEqual(child.capabilities, capabilities)) return child
     const updated = RunSubagentSchema.parse({ ...child, capabilities, revision: String(BigInt(child.revision) + 1n) })
     await scope.sql.query('update run_subagents set revision=$2,record=$3::jsonb where id=$1',
       [child.id, updated.revision, JSON.stringify(updated)])

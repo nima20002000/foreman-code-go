@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { it } from 'vitest'
-import { RunSubagentCommandReceiptSchema, RunSubagentsPageSchema } from '@graphql/contracts/subagents'
+import { RunSubagentCommandReceiptSchema, RunSubagentDetailSchema, RunSubagentsPageSchema } from '@graphql/contracts/subagents'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
@@ -124,6 +124,16 @@ it('dispatches qualified native child input through authenticated MCP with scope
     })
     assert.equal(refused.isError, true)
     assert.equal((await pool.query('select count(*)::int as count from run_subagent_command_receipts')).rows[0].count, 0)
+    const snapshots: ReturnType<typeof RunSubagentDetailSchema.parse>[] = []
+    for (let index = 0; index < 2; index++) {
+      const read = await allowed.callTool({ name: 'run_subagent_get_v1', arguments: {
+        ...input, subagentId: detail.subagent.id,
+      } })
+      assert.notEqual(read.isError, true, JSON.stringify(read))
+      snapshots.push(RunSubagentDetailSchema.parse(read.structuredContent))
+    }
+    assert.deepEqual(snapshots[1], snapshots[0])
+    command.expectedRevision = snapshots[1]!.subagent.revision
     const response = await allowed.callTool({ name: 'run_subagent_input_v1', arguments: command })
     assert.notEqual(response.isError, true, JSON.stringify(response))
     const receipt = RunSubagentCommandReceiptSchema.parse(response.structuredContent)
