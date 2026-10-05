@@ -138,7 +138,15 @@ async function shutdown() {
 async function readyHttp(url, accepts, headers = {}) {
   interrupted()
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) })
-  if (!response.ok || !accepts(await response.text())) throw new Error('Service readiness failed.')
+  const body = await response.text()
+  if (!response.ok) {
+    let code = 'ACCEPTANCE_READINESS_FAILED'
+    try { code = publicError(JSON.parse(body).error) } catch { /* A non-JSON response has no public error code. */ }
+    throw Object.assign(new Error('Service readiness failed.'), { code })
+  }
+  if (!accepts(body)) throw Object.assign(new Error('Service readiness response is invalid.'), {
+    code: 'ACCEPTANCE_READINESS_INVALID',
+  })
 }
 async function main() {
   const opts = options(process.argv.slice(2))
