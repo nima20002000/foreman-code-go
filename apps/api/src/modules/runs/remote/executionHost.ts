@@ -116,8 +116,13 @@ export class RemoteExecutionHost {
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
     if (frame.method === 'reconcile-response') {
       const resident = await this.resident(frame.intent.operationId, 'read')
-      if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable')
-      const history = await resident.manager.reconcileResponse(resident.session, frame.response)
+      // Settlement retains the last provider history before closing its runtime.
+      // The caller still verifies the exact decision against that original source.
+      let history = resident.settlementHistory
+      if (!history) {
+        if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable')
+        history = await resident.manager.reconcileResponse(resident.session, frame.response)
+      }
       return { ...pageNativeHistory(history), status: await this.ports.journal.status(frame.intent.operationId) }
     }
     if (frame.method === 'control') return this.control(frame.command, frame)

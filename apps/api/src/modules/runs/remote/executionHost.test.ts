@@ -312,6 +312,27 @@ describe('actual worker native-port adapter', () => {
     expect(ports.settle).toHaveBeenCalledTimes(1)
   })
 
+  it('recovers response history after terminal settlement disposes the original provider', async () => {
+    const f = await setup()
+    const history = { events: [], pendingInteractions: [], correlationId: 'execution:execution',
+      terminalResult: { outcome: 'succeeded' as const, output: { text: 'Original result' } } }
+    f.manager.reconcile = async () => history
+    f.manager.reconcileResponse = vi.fn(async () => { throw new Error('Original provider was disposed') })
+    f.ports.settle = async () => ({ kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
+      result: history.terminalResult })
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'original prompt', 'execution:execution')
+    await f.host.drain()
+    const request = { method: 'reconcile-response', intent: f.intent, placement: f.placement,
+      response: { nativeRequestId: 'question', nativeRequestType: 'approval', option: CODEX_APPROVAL_OPTIONS_FIXTURE[0]! } }
+    const reply = HistoryReplySchema.parse(await f.host.handle(request))
+    expect(reply.history).toMatchObject(history)
+    expect(reply.history.responseDeliveries).toBeUndefined()
+    expect(f.manager.reconcileResponse).not.toHaveBeenCalled()
+    f.state.allowed = false
+    await expect(f.host.handle(request)).rejects.toThrow('revoked')
+  })
+
   it('releases acknowledged terminal residents while preserving status and rejecting replacement launch', async () => {
     const f = await setup()
     f.ports.settle = async () => ({ kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
