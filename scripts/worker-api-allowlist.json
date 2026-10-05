@@ -95,6 +95,7 @@
   "apps/api/src/modules/jobs/inputs.ts",
   "apps/api/src/modules/jobs/installedRuntimeHost.ts",
   "apps/api/src/modules/jobs/installedRuntimeQualification.ts",
+  "apps/api/src/modules/jobs/installedVerificationConfiguration.ts",
   "apps/api/src/modules/jobs/installedVerificationRuntime.ts",
   "apps/api/src/modules/jobs/lifecycle.ts",
   "apps/api/src/modules/jobs/privateGitMounts.ts",

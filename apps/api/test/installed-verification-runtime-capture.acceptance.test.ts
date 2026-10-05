@@ -3,8 +3,9 @@ import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { JobVerificationProfileInputSchema } from '@foreman-code/contracts/job-verification-runtime'
-import { captureInstalledVerificationRuntimeConfiguration, InstalledVerificationRuntimeCaptureInputSchema,
-  MAX_VERIFICATION_CONFIGURATION_BYTES } from '../src/modules/jobs/installedVerificationRuntime.js'
+import { captureInstalledVerificationRuntimeConfiguration } from '../src/modules/jobs/installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeCaptureInputSchema, MAX_VERIFICATION_CONFIGURATION_BYTES }
+  from '../src/modules/jobs/installedVerificationConfiguration.js'
 import { createInstalledJobRuntimeHost, readProtectedRuntimeConfiguration, readProtectedRuntimeFile }
   from '../src/modules/jobs/installedRuntimeHost.js'
 import { createVerificationProfile } from '../src/modules/jobs/verificationProfiles.js'

@@ -7,7 +7,7 @@ import type { JobSystemInput } from '../files/jobInputs/delivery.js'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
-import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 import { requireJobGitMounts, verifyJobGitMounts } from './privateGitMounts.js'
 import { verificationRepositoryContext } from './executorOutputs.js'
 

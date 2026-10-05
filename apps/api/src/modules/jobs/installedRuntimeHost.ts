@@ -15,10 +15,10 @@ import { JobRuntimeFingerprintRecordSchema, InstalledJobRuntimeDescriptorRecordS
   type JobRuntimeProfileRecord, type JobRuntimeFingerprintRecord, type JobRuntimeNativeAdmissionRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import { inspectInstalledVerificationCandidate, inspectInstalledVerificationRuntime,
-  InstalledVerificationRuntimeConfigurationSchema, InstalledVerificationRuntimeCaptureInputSchema,
-  MAX_VERIFICATION_CONFIGURATION_BYTES,
-  captureInstalledVerificationRuntimeConfiguration, type InstalledVerificationRuntimeConfiguration }
-  from './installedVerificationRuntime.js'
+  captureInstalledVerificationRuntimeConfiguration } from './installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, InstalledVerificationRuntimeCaptureInputSchema,
+  MAX_VERIFICATION_CONFIGURATION_BYTES, type InstalledVerificationRuntimeConfiguration }
+  from './installedVerificationConfiguration.js'
 import { qualifyVerificationRuntime } from './verificationQualification.js'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'

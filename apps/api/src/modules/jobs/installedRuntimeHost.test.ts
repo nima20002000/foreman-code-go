@@ -1,8 +1,11 @@
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
 import { chmod, mkdir, open, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobQualificationCandidateSchema, JobRuntimeFingerprintSchema, JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
 import { identity } from '../sources/privateFilesystem.js'
@@ -44,6 +47,28 @@ async function fixture() {
 }
 
 describe('protected installed runtime reader, no DB or native runtime execution', () => {
+  it.each(['./installedVerificationRuntime.ts', '../sources/materialization.ts'])(
+    'loads %s in a fresh process and preserves missing-configuration denial', async entrypoint => {
+      const script = `
+        await import(process.argv[1]);
+        const { readInstalledRuntimeConfiguration } = await import(process.argv[2]);
+        try {
+          await readInstalledRuntimeConfiguration(null);
+          throw new Error('Missing configuration was accepted');
+        } catch (error) {
+          if (error.code !== 'JOB_RUNTIME_INSTALLATION_UNAVAILABLE') throw error;
+          process.stdout.write(error.code);
+        }
+      `
+      const { stdout } = await promisify(execFile)(process.execPath,
+        ['--import', 'tsx', '--input-type=module', '--eval', script,
+          new URL(entrypoint, import.meta.url).href,
+          new URL('./installedRuntimeHost.ts', import.meta.url).href],
+        { cwd: fileURLToPath(new URL('../../../', import.meta.url)) })
+      expect(stdout).toBe('JOB_RUNTIME_INSTALLATION_UNAVAILABLE')
+    },
+  )
+
   it('installer capture computes host pins instead of accepting supplied digests or readiness', async () => {
     const f = await fixture()
     const { pins, ...installation } = f.configuration

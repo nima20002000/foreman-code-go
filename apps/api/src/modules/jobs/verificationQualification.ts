@@ -14,7 +14,7 @@ import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryC
   JobVerificationOfflineSeedReceiptSchema, JOB_VERIFICATION_BASE_CHECKS,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks } from './executorPodman.js'
