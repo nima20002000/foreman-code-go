@@ -53,7 +53,8 @@ function producerFixture(placed: boolean) {
   const sources={resolveRootBinding:async()=>{throw new Error('No source may be invented')}} as unknown as SourceAdmissionPort
   const roots={} as WorkspaceRootPolicyPort
   const registry=new HarnessInstallationRegistry(new HarnessInstanceRegistry([]))
-  const producer=new AgentPlacementProducer(pool,mainId,sources,roots,registry,{codex:'codex-live-4',opencode:'opencode-live-4'})
+  const producer=new AgentPlacementProducer(pool,mainId,sources,roots,{ installations: registry,
+    pinOverride: () => { throw new Error('Missing source pins cannot select a harness') } },{codex:'codex-live-4',opencode:'opencode-live-4'})
   return {producer,input:RunStartV3InputSchema.parse({workspaceId:version.workspaceId,workflowId:version.workflowId,workflowVersionId:version.id,expectedAgentConfigurationVersionIds:version.agentConfigurationVersionIds,commandId:'command-one',executionSemanticsVersion:3,expectedWorkflowRevision:1,expectedLocationRevision:1,input:{}}),principal:{id:'principal',name:'test',audience:'operator' as const,grants:[],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null}}
 }
 it('real producer preserves unplaced local admission without source/resource allocation',async()=>{const f=producerFixture(false);expect(await f.producer.prepare(f.input,f.principal)).toBeUndefined()})

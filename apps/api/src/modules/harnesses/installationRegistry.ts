@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import type { HarnessInstanceProjection, HarnessInstanceRegistry } from './instanceRegistry.js'
 import type { LauncherEvidence } from './hostDiscovery.js'
+import { DomainError } from '../errors.js'
 
 export interface HarnessInstallationRecord {
   readonly hostRef: CanonicalMachineReference
@@ -72,17 +73,30 @@ export class HarnessInstallationRegistry {
     const instance = this.instances.select(input.instanceId)
     const key = `${hostKey(input.hostRef)}:${input.harnessInstallationId}`
     const record = this.installations.get(key)
-    if (!record || !record.installationFingerprint || !record.installed || record.launcher.status !== 'installed' || record.launcher.fingerprint !== record.installationFingerprint
-      || record.driverId !== instance.driverId || record.driverRevision !== instance.driverRevision
-      || record.connectionGeneration !== input.connectionGeneration || record.environmentGeneration !== input.environmentGeneration) {
-      throw new Error('Harness installation unavailable or stale on selected host.')
+    if (!record) {
+      throw new DomainError('HARNESS_INVENTORY_UNAVAILABLE', 'Harness installation inventory is unavailable on the selected host.', 503)
+    }
+    if (!record.installationFingerprint || !record.installed || record.launcher.status !== 'installed'
+      || record.launcher.fingerprint !== record.installationFingerprint) {
+      throw new DomainError('HARNESS_INSTALLATION_INVALID', 'The selected host has no usable harness installation.', 409)
+    }
+    if (record.driverId !== instance.driverId || record.driverRevision !== instance.driverRevision) {
+      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The selected harness installation no longer matches its driver.', 409)
+    }
+    if (record.connectionGeneration !== input.connectionGeneration || record.environmentGeneration !== input.environmentGeneration) {
+      throw new DomainError('HARNESS_INVENTORY_STALE', 'Harness inventory belongs to another connection or environment.', 409)
     }
     // Return independent serializable snapshots; no process/session/token state is shared.
     return { inventoryRevision: this.revisions.get(key)!, instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
   }
   assertCurrent(binding: RegistryHarnessSelection): void {
     const key = `${hostKey(binding.selection.hostRef)}:${binding.selection.harnessInstallationId}`
-    if (binding.inventoryRevision !== this.revisions.get(key) || this.instances.select(binding.instance.instanceId).instanceRevision !== binding.instance.instanceRevision) throw new Error('Harness metadata binding is stale.')
+    if (this.instances.select(binding.instance.instanceId).instanceRevision !== binding.instance.instanceRevision) {
+      throw new DomainError('HARNESS_INSTANCE_CHANGED', 'Harness metadata binding is stale because its instance changed.', 409)
+    }
+    if (binding.inventoryRevision !== this.revisions.get(key)) {
+      throw new DomainError('HARNESS_INVENTORY_STALE', 'Harness metadata binding is stale.', 409)
+    }
   }
   async metadata<T>(binding: RegistryHarnessSelection, suiteRevision: string, load: () => Promise<T>): Promise<T> {
     this.assertCurrent(binding)

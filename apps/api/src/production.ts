@@ -1279,7 +1279,7 @@ export function buildProductionApp(
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
-          harnessRegistry.installations, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision },
+          harnessRegistry, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision },
           workerExecution)
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)

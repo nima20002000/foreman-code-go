@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
+import { ScheduleGetResultSchema, ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
+import { ApprovedSourceSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { HostHarnessOverrideListSchema } from '@graphql/contracts/harness-registry'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { DomainError } from '../src/modules/errors.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'
@@ -23,7 +24,8 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
   it('records an instance revision rejection through authenticated HTTP/MCP history with denied callers', async () => {
     const placement = await schedulePlacementFixture(f)
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access: f.access, services: { workflows: f.workflows, commands: f.commands } as OperatorServices } })
+      operator: { access: f.access, services: { workflows: f.workflows, commands: f.commands,
+        sources: placement.sources, harnessInstances: placement.harness.service } as OperatorServices } })
     const clients: Client[] = []
     try {
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -35,14 +37,35 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
         }))
         return client
       }
-      const owner = await connect(f.writer.token)
+      const owner = await connect(placement.writer.token)
       const reader = await connect(f.reader.token)
       const root = `/api/management/workspaces/${f.scope.workspaceId}/workflows/${f.scope.workflowId}/schedule`
       const input = { ...f.command(0), schedule: { ...sch11Once, localDate: '2099-01-01' } }
       const created = await owner.callTool({ name: 'workflow_schedule_save', arguments: input })
       expect(created.isError).not.toBe(true)
       const saved = ScheduleSaveResultSchema.parse(created.structuredContent).value
-      placement.changeInstance()
+      const approved = await owner.callTool({ name: 'source_get', arguments: {
+        workspaceId: f.scope.workspaceId, ...placement.source,
+      } })
+      expect(approved.isError).not.toBe(true)
+      expect(ApprovedSourceSchema.parse(approved.structuredContent).manifest.manifestDigest).toBe(placement.source.manifestDigest)
+      const bound = await owner.callTool({ name: 'source_root_get', arguments: {
+        workspaceId: f.scope.workspaceId, rootId: placement.root.binding.rootId,
+        bindingRevision: placement.root.binding.bindingRevision,
+      } })
+      expect(bound.isError).not.toBe(true)
+      expect(SourceRootRecordSchema.parse(bound.structuredContent)).toEqual(placement.root)
+      const profiles = await owner.callTool({ name: 'harness_instances_list', arguments: {
+        hostRef: placement.policy.hostRef, applicationInstallationId: placement.policy.applicationInstallationId,
+      } })
+      expect(profiles.isError).not.toBe(true)
+      expect(HostHarnessOverrideListSchema.parse(profiles.structuredContent).overrides).toHaveLength(placement.harness.settings.length)
+      const deniedSource = await reader.callTool({ name: 'source_get', arguments: {
+        workspaceId: f.scope.workspaceId, ...placement.source,
+      } })
+      expect(deniedSource.isError).toBe(true)
+      expect(JSON.stringify(deniedSource.content)).toContain('ACCESS_DENIED')
+      await placement.changeInstance()
       f.time.now = saved.nextOccurrenceAt!
       const dispatcher = f.dispatcher(async (principal, start, schedule) => {
         await admitRepeatRun(database.pool, f.locations, principal, 'schedule', start,
@@ -59,6 +82,9 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       expect(http.statusCode).toBe(200)
       expect(http.json()).toEqual(page)
       expect((await f.current())?.nextOccurrenceAt).toBeNull()
+      const readback = await reader.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
+      expect(readback.isError).not.toBe(true)
+      expect(ScheduleGetResultSchema.parse(readback.structuredContent).schedule).toEqual(await f.current())
       expect(await f.countRuns()).toBe(0)
       const before = await sch11DomainState(f)
       const denied = await reader.callTool({ name: 'workflow_schedule_save', arguments: {
@@ -78,21 +104,45 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
     }
   }, 30_000)
 
-  it('retains the occurrence for retry after temporary source-host unavailability', async () => {
+  it('retains a due Once across restart and retries the real path after inventory recovery', async () => {
     const placement = await schedulePlacementFixture(f)
-    const saved = await f.save()
-    placement.changeInstance()
-    const temporary = new DomainError('WORKER_CONNECTION_UNAVAILABLE', 'Temporary carrier outage.', 503)
-    placement.temporarilyUnavailable(temporary)
+    const saved = await placement.save()
     f.time.now = saved.nextOccurrenceAt!
-    const before = await sch11DomainState(f)
-    await expect(f.dispatcher(async (principal, input, schedule) => {
+    placement.restart()
+    const dispatcher = () => f.dispatcher(async (principal, input, schedule) => {
       await admitRepeatRun(database.pool, f.locations, principal, 'schedule', input,
         { ...repeatStartPublication, placementAdmission: placement.producer }, { schedule })
-    }).dispatch(saved)).rejects.toBe(temporary)
+    })
+    const before = await sch11DomainState(f)
+    await expect(dispatcher().dispatch(saved)).rejects.toMatchObject({ code: 'HARNESS_INVENTORY_UNAVAILABLE' })
     expect(await sch11DomainState(f)).toEqual(before)
     expect(await f.history()).toEqual([])
     expect(await f.current()).toEqual(saved)
     expect(await f.countRuns()).toBe(0)
-  }, 15_000)
+    await placement.recover()
+    // Native qualification has not run in this database test. Inventory recovery
+    // reaches its real persisted profile check while retaining the same occurrence.
+    await expect(dispatcher().dispatch((await f.current())!)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    expect(await sch11DomainState(f)).toEqual(before)
+    expect(await f.history()).toEqual([])
+    expect(await f.current()).toEqual(saved)
+    expect(await f.countRuns()).toBe(0)
+  }, 30_000)
+
+  it.each(['host configuration', 'disabled instance'] as const)('rejects changed %s before grace expires', async (change) => {
+    const placement = await schedulePlacementFixture(f)
+    const saved = await placement.save()
+    if (change === 'host configuration') await placement.changeHostConfiguration()
+    else await placement.harness.changeInstance({ enabled: false })
+    f.time.now = saved.nextOccurrenceAt!
+    await f.dispatcher(async (principal, input, schedule) => {
+      await admitRepeatRun(database.pool, f.locations, principal, 'schedule', input,
+        { ...repeatStartPublication, placementAdmission: placement.producer }, { schedule })
+    }).dispatch(saved)
+    expect(await f.history()).toEqual([expect.objectContaining({
+      dueAt: saved.nextOccurrenceAt, status: 'rejected', reason: 'workflow_not_executable',
+    })])
+    expect((await f.current())?.nextOccurrenceAt).toBeNull()
+    expect(await f.countRuns()).toBe(0)
+  }, 30_000)
 })

@@ -170,8 +170,15 @@ export class ProductionHarnessRegistry {
       driverId: value.driverId, enabled: value.enabled, configuration: value.configuration }
     const snapshot = this.snapshots.get(harnessHostKey(value.target.hostRef))
     const installation = snapshot?.installations.find((record) => record.harnessInstallationId === value.target.harnessInstallationId)
-    if (snapshot?.hostMetadata?.applicationInstallationId !== value.target.applicationInstallationId || !installation || installation.installationFingerprint !== value.target.installationFingerprint) {
-      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The exact selected installation is unavailable or changed.', 409)
+    if (!snapshot || !installation) {
+      throw new DomainError('HARNESS_INVENTORY_UNAVAILABLE', 'The selected host installation inventory is unavailable.', 503)
+    }
+    if (!installation.installed || !installation.installationFingerprint) {
+      throw new DomainError('HARNESS_INSTALLATION_INVALID', 'The selected host has no usable harness installation.', 409)
+    }
+    if (snapshot.hostMetadata?.applicationInstallationId !== value.target.applicationInstallationId
+      || installation.installationFingerprint !== value.target.installationFingerprint) {
+      throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The selected installation changed.', 409)
     }
     this.accepted.set(instance.instanceId, instance); this.reloadInstances()
     const generation = value.target.hostRef.kind === 'main' ? this.mainGeneration

@@ -27,11 +27,12 @@ export const sch11Actions: ManagementGrant['actions'] = [
 /** Uses the existing loopback/test-name guard, registered migrations and real
  * current-workflow authoring. No direct Run inserts, fake canonical receipts,
  * provider processes, production DB fallback, auth bypass or migration shim. */
-export async function sch11Fixture(database: Sch11Database, initialNow = '2030-01-07T09:00:00.000Z') {
+export async function sch11Fixture(database: Sch11Database, initialNow = '2030-01-07T09:00:00.000Z',
+  initialFixture = makeCurrentWorkflowFixture(randomUUID())) {
   const projectRoot = join(database.directory, 'projects'), runtimeRoot = join(database.directory, 'runtime')
   const directory = join(projectRoot, randomUUID())
   await Promise.all([mkdir(directory, { recursive: true }), mkdir(runtimeRoot, { recursive: true })])
-  const fixture = await seedAgent3(database.pool, directory, makeCurrentWorkflowFixture(randomUUID()), { run: false })
+  const fixture = await seedAgent3(database.pool, directory, initialFixture, { run: false })
   const scope = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId }
   const identity = await stat(directory, { bigint: true })
   await database.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',

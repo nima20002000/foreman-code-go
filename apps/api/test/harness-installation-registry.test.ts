@@ -28,6 +28,17 @@ describe('canonical host harness inventory', () => {
     const { registry, input } = fixture()
     expect(registry.pin(input).installation).toMatchObject({ installed: true, authenticated: null, compatible: null, qualified: null })
   })
+  it('separates absent inventory from known invalid installations and stale generations', () => {
+    const { registry, input, record } = fixture()
+    registry.refresh([])
+    expect(() => registry.pin(input)).toThrow(expect.objectContaining({ code: 'HARNESS_INVENTORY_UNAVAILABLE' }))
+    registry.refresh([{ ...record, installed: false }])
+    expect(() => registry.pin(input)).toThrow(expect.objectContaining({ code: 'HARNESS_INSTALLATION_INVALID' }))
+    registry.refresh([record])
+    expect(() => registry.pin({ ...input, connectionGeneration: 'old' })).toThrow(
+      expect.objectContaining({ code: 'HARNESS_INVENTORY_STALE' }))
+    expect(() => registry.pin(input)).not.toThrow()
+  })
   it('ignores stale async evidence after explicit invalidation or instance edits', async () => {
     const { registry, input, instances } = fixture()
     let finish!: (value: string) => void
