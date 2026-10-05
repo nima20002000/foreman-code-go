@@ -16,7 +16,17 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 
-export async function workspaceMcpFixture() {
+export async function workspaceMcpFixture(options: {
+  port?: number
+  configure?(fixture: {
+    app: ReturnType<typeof buildApp>
+    pool: pg.Pool
+    access: PostgresAccessService
+    commands: PostgresCommandCoordinator
+    parentPath: string
+    services: OperatorServices
+  }): Promise<void>
+} = {}) {
   const connectionString = process.env.TEST_DATABASE_URL
   if (!connectionString) throw new Error('TEST_DATABASE_URL is required')
   const databaseUrl = new URL(connectionString)
@@ -50,7 +60,8 @@ export async function workspaceMcpFixture() {
   }
   try {
     await applyApplicationMigrations(pool)
-    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    await options.configure?.({ app, pool, access, commands, parentPath, services })
+    const address = await app.listen({ host: '127.0.0.1', port: options.port ?? 0 })
     async function connect(token: string) {
       const client = new Client({ name: 'workspace-regression', version: '1.0.0' })
       clients.push(client)
@@ -67,7 +78,7 @@ export async function workspaceMcpFixture() {
       return { ...issued, client: await connect(issued.token) }
     }
     const owner = await issue()
-    return { pool, access, commands, defaults, parentPath, owner, connect, issue, close, services, address }
+    return { app, pool, access, commands, defaults, parentPath, owner, connect, issue, close, services, address }
   } catch (error) {
     await close()
     throw error

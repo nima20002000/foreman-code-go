@@ -1,15 +1,26 @@
-import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import assert from 'node:assert/strict'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type NativeHarnessEvent,
-  type NativeSessionReference } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, CreateOperatorConversationResponseSchema,
+  GetOperatorConversationResponseSchema, SendOperatorMessageResponseSchema, type NativeHarnessEvent } from '@graphql/contracts'
+import { FileWithRevisionSchema } from '@graphql/contracts/files'
 import { ManagedWorkspaceCommandResultSchema } from '@graphql/contracts/management'
 import { SavedManagedWorkflowSchema } from '@graphql/contracts/wave25'
+import type { ApiConfig } from '../src/config.js'
+import { OperatorChatService, PostgresOperatorConversationRepository,
+  type NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
+import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
+import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
-import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
+import { productionOperatorManagers } from '../src/modules/harnesses/operatorFiles/managers.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
@@ -17,52 +28,45 @@ import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.j
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1' && Boolean(process.env.TEST_DATABASE_URL)
 const binaries = harnessBinaries(process.env)
 
-function managementCallCompleted(event: NativeHarnessEvent, harness: 'codex' | 'opencode', name: string) {
+function nativeCallCompleted(event: NativeHarnessEvent, harness: 'codex' | 'opencode', name: string) {
   if (harness === 'codex') {
     const item = event.payload.item as Record<string, unknown> | undefined
-    return event.type === 'item.completed' && item?.type === 'mcpToolCall'
-      && item.server === 'graphql' && item.tool === name
+    return event.type === 'item.completed' && item?.tool === name
+      && (name === 'files_read' ? item.type === 'dynamicToolCall' && item.success === true
+        : item.type === 'mcpToolCall' && item.server === 'graphql')
   }
   const part = event.payload.part as Record<string, unknown> | undefined
   const state = part?.state as Record<string, unknown> | undefined
-  return event.type === 'message.part.updated' && part?.type === 'tool'
-    && part.tool === `graphql_${name}` && ['completed', 'error'].includes(String(state?.status))
+  const tool = String(part?.tool)
+  const matches = name === 'files_read' ? /^graphql_files_.+_files_read$/.test(tool) : tool === `graphql_${name}`
+  return event.type === 'message.part.updated' && part?.type === 'tool' && matches
+    && (name === 'files_read' ? state?.status === 'completed'
+      : ['completed', 'error'].includes(String(state?.status)))
+}
+
+async function availablePort() {
+  const reservation = createServer()
+  await new Promise<void>((done, reject) => {
+    reservation.once('error', reject)
+    reservation.listen(0, '127.0.0.1', done)
+  })
+  const address = reservation.address()
+  assert(address && typeof address !== 'string')
+  await new Promise<void>((done, reject) => reservation.close(error => error ? reject(error) : done()))
+  return address.port
 }
 
 describe.skipIf(!enabled)('installed native Operator management MCP', () => {
   for (const harness of ['codex', 'opencode'] as const) {
-    it.each([false, true])(`${harness}: reads a spec and applies live management scope (denied: %s)`, async denied => {
-      const f = await workspaceMcpFixture()
-      let manager: NativeHarnessSessionManager | undefined
-      let session: NativeSessionReference | undefined
+    it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
+      const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
+      let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
+      const nativeEvents: NativeHarnessEvent[] = []
       try {
-        f.services.workflows = new WorkflowManagementService(f.pool, f.commands)
-        const workspace = await callWorkspaceTool(f.owner.client, 'workspace_create',
-          ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Native management target' })
-        const foreign = await callWorkspaceTool(f.owner.client, 'workspace_create',
-          ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Other native project' })
-        const credential = await f.access.issue({ name: 'Native management caller', audience: 'operator',
-          grants: [{ actions: ['workflows:create', 'workflows:read'],
-            scope: { workspaceIds: [denied ? foreign.value.workspace.id : workspace.value.workspace.id] } }],
-          expiresAt: new Date(Date.now() + 600000) })
-        const caller = { ...credential, client: await f.connect(credential.token) }
-        const operators = new PostgresOperatorRepository(f.pool)
-        const current = await operators.ensure()
-        const native = harness === 'codex'
-          ? { harness: 'codex' as const, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-            reasoningEffort: 'low' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
-          : { harness: 'opencode' as const, model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna',
-            variant: 'low', nativeAgent: 'plan', thinking: false, autoApprove: false,
-            advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
-              { permission: '*', pattern: '*', effect: 'deny' as const },
-              { permission: 'read', pattern: '*', effect: 'allow' as const },
-              { permission: 'graphql_*', pattern: '*', effect: 'allow' as const },
-            ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp, serverEnabled: { graphql: true } } } }
-        const { configuration } = await operators.update(native, current.configuration.id)
-        const directory = join(f.parentPath, 'native-runtime')
-        await mkdir(directory)
-        const endpoint = new URL('/mcp', f.address).toString()
-        await mkdir(join(directory, '.codex'))
+        const port = await availablePort()
+        const endpoint = `http://127.0.0.1:${port}/mcp`
+        const directory = join(home, 'runtime', 'operator')
+        await mkdir(join(directory, '.codex'), { recursive: true })
         await writeFile(join(directory, '.codex', 'config.toml'), [
           '[mcp_servers.graphql]', `url = ${JSON.stringify(endpoint)}`,
           'bearer_token_env_var = "GRAPHQL_MCP_TOKEN"', '',
@@ -71,42 +75,128 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           type: 'remote', url: endpoint, enabled: true,
           headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
         } } }))
+        f = await workspaceMcpFixture({ port, async configure({ app, pool, access, commands, parentPath, services }) {
+          const config: ApiConfig = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
+            database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
+              connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
+            workspaceStorageRoot: parentPath, fileStorageRoot: join(home, 'vault'), harnesses: {
+              ...binaries, workspaceRoot: join(home, 'runtime'), timeoutMs: 180000,
+            } }
+          const operators = new PostgresOperatorRepository(pool)
+          const current = await operators.ensure()
+          const native = harness === 'codex'
+            ? { harness: 'codex' as const, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+              reasoningEffort: 'low' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
+            : { harness: 'opencode' as const, model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna',
+              variant: 'low', nativeAgent: 'plan', thinking: false, autoApprove: false,
+              advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
+                { permission: '*', pattern: '*', effect: 'deny' as const },
+                { permission: 'read', pattern: '*', effect: 'allow' as const },
+                { permission: 'graphql_*', pattern: '*', effect: 'allow' as const },
+              ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp, serverEnabled: { graphql: true } } } }
+          await operators.update(native, current.configuration.id)
+          const responseJournal = new NativeResponseJournal(join(home, 'responses'))
+          const factories = new NativeHarnessFactories({ ...binaries, appMcpEndpoint: endpoint, responseJournal })
+          const resolver = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: directory,
+            endpointHost: '127.0.0.1', appMcpEndpoint: endpoint, managers: new Map(), nativeFactories: factories,
+            processRegistry: new NativeProcessRegistry(join(home, 'processes')), responseJournal })
+          const recorded = new WeakSet()
+          // Record the genuine provider stream while the conversation service owns admission and submission.
+          const recordingResolver: NativeManagerResolver = Object.assign((...args: Parameters<NativeManagerResolver>) => {
+            const manager = resolver(...args)
+            if (!recorded.has(manager)) {
+              recorded.add(manager)
+              const turn = manager.startTurn.bind(manager)
+              manager.startTurn = async function* (...input: Parameters<typeof turn>) {
+                for await (const event of turn(...input)) {
+                  nativeEvents.push(event)
+                  yield event
+                }
+              }
+            }
+            return manager
+          }, resolver)
+          const authority = new PostgresOperatorChatAuthority(pool, access,
+            new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), directory, endpoint,
+            manager => factories.inspector(manager))
+          const chat = new OperatorChatService(new PostgresOperatorConversationRepository(pool),
+            operators, recordingResolver, directory, authority)
+          services.operatorChat = chat
+          services.workflows = new WorkflowManagementService(pool, commands)
+          registerProductionFileStorage(app, pool, config)
+          app.addHook('preClose', () => chat.shutdown())
+        } })
+        const workspace = await callWorkspaceTool(f.owner.client, 'workspace_create',
+          ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Native management target' })
+        const foreign = await callWorkspaceTool(f.owner.client, 'workspace_create',
+          ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Other native project' })
+        const credential = await f.access.issue({ name: 'Native conversation owner', audience: 'operator', grants: [
+          { actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'harnesses:read'], scope: {} },
+          { actions: ['workflows:create', 'workflows:read'], scope: {
+            workspaceIds: [denied ? foreign.value.workspace.id : workspace.value.workspace.id],
+          } },
+        ], expiresAt: new Date(Date.now() + 600000) })
+        const caller = { ...credential, client: await f.connect(credential.token) }
+        const { conversation } = await callWorkspaceTool(caller.client, 'operator_chat_create',
+          CreateOperatorConversationResponseSchema, { commandId: randomUUID(), title: 'Implement attached specification' })
         const command = { workspaceId: workspace.value.workspace.id, commandId: randomUUID(),
           name: `Native spec ${randomUUID()}` }
         const spec = `Call the graphql MCP workflow_create tool exactly once with ${JSON.stringify(command)}.\n`
           + 'If creation succeeds, call workflow_get with its workspaceId and workflowId.\n'
           + 'If access is denied, report ACCESS_DENIED and stop. Do not change any files.\n'
-        const specPath = join(directory, 'spec.md')
-        await writeFile(specPath, spec)
-        manager = harness === 'codex'
-          ? new CodexAppServerSessionManager(binaries.codexBinary)
-          : new OpenCodeNativeSessionManager({ ownerAgentId: configuration.operatorId,
-            expectedAppMcpEndpoint: endpoint, server: new ManagedOpenCodeServer({
-              binary: binaries.openCodeBinary, workingDirectory: directory, ownerAgentId: configuration.operatorId,
-              credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
-              ...(native.harness === 'opencode' ? { advancedConfiguration: native.advanced } : {}),
-            }) })
-        const correlation = `native-management:${randomUUID()}`
-        session = await manager.createSession({ kind: 'operator', configuration, workingDirectory: directory,
-          correlationId: correlation,
-          environment: { agentId: configuration.operatorId, variables: { GRAPHQL_MCP_TOKEN: caller.token } } })
+        const bytes = Buffer.from(spec)
+        const uploadId = randomUUID()
+        const root = `/api/operator/conversations/${conversation.id}/files`
+        const headers = { authorization: `Bearer ${caller.token}` }
+        const allocated = await f.app.inject({ method: 'POST', url: `${root}/uploads`, headers, payload: {
+          requestId: uploadId, filename: 'spec.md', mediaType: 'text/markdown', byteSize: bytes.length,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        } })
+        expect(allocated.statusCode, allocated.body).toBe(201)
+        const uploaded = await f.app.inject({ method: 'PUT', url: `${root}/uploads/${uploadId}`,
+          headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: bytes })
+        expect(uploaded.statusCode, uploaded.body).toBe(200)
+        const finalized = await f.app.inject({ method: 'POST', url: `${root}/uploads/${uploadId}/finalize`, headers, payload: {} })
+        expect(finalized.statusCode, finalized.body).toBe(200)
+        const attachment = FileWithRevisionSchema.parse(finalized.json().value)
+        const ref = { fileId: attachment.file.fileId, revisionId: attachment.revision.revisionId }
+        const request = { requestId: randomUUID(), attachments: [ref], content:
+          'Use the attached-file files_read tool to read spec.md, decode contentBase64, and follow its instructions using graphql MCP. '
+          + 'Use the supplied pinned file and revision IDs. Do not use shell commands or change any files.' }
+        const accepted = await callWorkspaceTool(caller.client, 'operator_chat_send', SendOperatorMessageResponseSchema,
+          { conversationId: conversation.id, request })
+        expect(accepted.replayed).toBe(false)
         const signal = AbortSignal.timeout(180000)
-        const nativeEvents: NativeHarnessEvent[] = []
-        for await (const event of manager.startTurn(session, {
-          clientCorrelationId: correlation,
-          prompt: `Read ${specPath} with the native read tool and follow its instructions using graphql MCP.`,
-        }, signal)) nativeEvents.push(event)
-        expect((await manager.reconcile(session, correlation, signal)).terminalResult?.outcome).toBe('succeeded')
-        expect(nativeEvents.some(event => managementCallCompleted(event, harness, 'workflow_create'))).toBe(true)
-        if (!denied) expect(nativeEvents.some(event => managementCallCompleted(event, harness, 'workflow_get'))).toBe(true)
-        expect(await readFile(specPath, 'utf8')).toBe(spec)
+        let state: ReturnType<typeof GetOperatorConversationResponseSchema.parse>
+        do {
+          signal.throwIfAborted()
+          await new Promise(done => setTimeout(done, 500))
+          state = await callWorkspaceTool(caller.client, 'operator_chat_get', GetOperatorConversationResponseSchema,
+            { conversationId: conversation.id })
+        } while (state.activeRequestId)
+        expect(state.lastResult).toMatchObject({ outcome: 'succeeded' })
+        expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'files_read'))).toBe(true)
+        expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_create'))).toBe(true)
+        if (!denied) expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_get'))).toBe(true)
+        expect(state.messages.some(message => message.role === 'user'
+          && message.attachments?.some(item => item.file.fileId === ref.fileId
+            && item.revision.revisionId === ref.revisionId))).toBe(true)
+        const download = await f.app.inject({ method: 'GET',
+          url: `${root}/${ref.fileId}/revisions/${ref.revisionId}/content`, headers })
+        expect(download.statusCode).toBe(200)
+        expect(download.rawPayload).toEqual(bytes)
+        const delegated = (await f.pool.query<{ principal_id: string }>(
+          'select principal_id from operator_chat_credentials where conversation_id=$1', [conversation.id])).rows
+        expect(delegated).toHaveLength(1)
+        expect(delegated[0]!.principal_id).not.toBe(caller.principal.id)
         const workflows = await f.pool.query<{ id: string }>('select id from workflows where workspace_id=$1',
           [workspace.value.workspace.id])
         const audits = await f.pool.query<{ action: string; outcome: string }>(
-          'select action,outcome from management_audit where principal_id=$1 and source=$2', [caller.principal.id, 'mcp'])
+          'select action,outcome from management_audit where principal_id=$1 and source=$2', [delegated[0]!.principal_id, 'mcp'])
         if (denied) {
           expect(workflows.rows).toEqual([])
           expect(audits.rows).toContainEqual({ action: 'workflow_create', outcome: 'denied' })
+          expect(state.messages.some(message => message.role === 'assistant' && message.content.includes('ACCESS_DENIED'))).toBe(true)
           expect((await f.pool.query('select command_id from management_command_receipts where command_id=$1',
             [command.commandId])).rows).toEqual([])
         } else {
@@ -121,11 +211,8 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
             [command.commandId])).rows).toEqual([{ result: readback }])
         }
       } finally {
-        try { if (session) await manager?.close(session) }
-        finally {
-          try { await manager?.dispose?.() }
-          finally { await f.close() }
-        }
+        try { await f?.close() }
+        finally { await rm(home, { recursive: true, force: true }) }
       }
     }, 240000)
   }
