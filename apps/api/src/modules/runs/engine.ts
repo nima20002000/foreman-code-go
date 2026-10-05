@@ -382,6 +382,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           void this.start(candidate.id).catch(error => {
             // A retained reviewer can own the Run between engine passes; retry on the next sweep.
             if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
+            if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
             onError(error)
           })
         }
