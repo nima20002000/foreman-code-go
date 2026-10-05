@@ -14,11 +14,13 @@ function docker(args) {
   return result.stdout.trim()
 }
 const containers = docker(['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`]).split('\n').filter(Boolean)
+let running = false
 for (const container of containers) {
   const [record] = JSON.parse(docker(['inspect', container]))
   if (record.Config.Labels['graphql.test-owner'] !== 'disposable-tests') {
     throw new Error('Refusing to modify a container without the disposable test ownership label')
   }
+  if (record.Config.Labels['com.docker.compose.service'] === 'postgres' && record.State.Running) running = true
 }
 const volume = `${project}_graphql-test-data`
 if (docker(['volume', 'ls', '-q']).split('\n').includes(volume)) {
@@ -28,7 +30,8 @@ if (docker(['volume', 'ls', '-q']).split('\n').includes(volume)) {
   }
 }
 const args = ['compose', '--project-name', project, '--file', file]
-if (action === 'up') args.push('up', '-d', '--wait', 'postgres')
+// Snapshot checkouts have different bind-mount paths; replacing this shared server interrupts active tests.
+if (action === 'up') args.push('up', '-d', '--wait', running ? '--no-recreate' : '--force-recreate', 'postgres')
 else if (action === 'stop') args.push('stop', 'postgres')
 else args.push('down', '--volumes')
 process.stdout.write(`${docker(args)}\n`)

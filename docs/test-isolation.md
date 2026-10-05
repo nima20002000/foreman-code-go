@@ -5,6 +5,10 @@ Run `corepack pnpm db:up` before database-backed tests. It starts only
 `graphql-tests_graphql-test-data`, loopback port 55439, and test-only credentials.
 The application Compose file and its database are independent. `db:down` checks
 test ownership labels before removing only this test project and its volume.
+`db:up` preserves the existing owned server across checkout and snapshot paths
+so another test request cannot replace it while clients are connected.
+An owned stopped server is recreated with the current configuration and its
+existing volume, so stale snapshot mounts cannot prevent the next startup.
 The disposable server disables crash durability to avoid cluster-wide checkpoint
 stalls while concurrent fixtures create and remove databases. Committed rows
 remain visible across connections and application restarts; host-crash durability
