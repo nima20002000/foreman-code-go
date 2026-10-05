@@ -2,11 +2,11 @@ import type { AgentChatContext } from '@graphql/contracts/agent-chat'
 import { createElement, type PropsWithChildren } from 'react'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SessionControlStateSchema, unavailableSessionControls } from '@graphql/contracts'
 import { sessionControlsApi } from '../../../shared/api/sessionControls'
 import { useConversationDraftStore } from '../conversationDraftStore'
-import { pendingControl } from './controlRequest'
+import { pendingControl, reservePendingControl, clearPendingControl, recoverPendingControl } from './controlRequest'
 import { useSessionControls } from './useSessionControls'
 
 const initial = SessionControlStateSchema.parse({ conversationId: 'chat', revision: 1, profileKey: 'profile',
@@ -18,6 +18,25 @@ function mount(context?: AgentChatContext) {
   const wrapper = ({ children }: PropsWithChildren) => createElement(QueryClientProvider, { client }, children)
   return renderHook(() => useSessionControls(context ? undefined : 'chat', context?.workspaceId, context), { wrapper })
 }
+let originalLocks: PropertyDescriptor | undefined
+beforeEach(() => {
+  originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
+  const tails = new Map<string, Promise<unknown>>()
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+    request<T>(name: string, options: LockOptions, callback: () => T): Promise<T> {
+      const work = (tails.get(name) ?? Promise.resolve()).catch(() => undefined).then(() => {
+        options.signal?.throwIfAborted()
+        return callback()
+      })
+      tails.set(name, work)
+      return work
+    },
+  } })
+})
+afterEach(() => {
+  if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks)
+  else Reflect.deleteProperty(navigator, 'locks')
+})
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); useConversationDraftStore.getState().clearAllDrafts() })
 
 it('reuses the original compact input after a lost response and remount, then clears the confirmed draft', async () => {
@@ -95,4 +114,35 @@ it('keeps node control identity across reloads that reconstruct context fields i
     message: 'Context compacted.', observedAt: new Date().toISOString() } })
   await act(async () => { await second.result.current.change({ kind: 'compact' }) })
   expect(change.mock.calls[1]![1]).toEqual(original)
+})
+
+it('reserves one compact identity across competing tabs and preserves it through a lost winner response', async () => {
+  const scope = JSON.stringify(['operator', 'chat', null])
+  const ids = vi.spyOn(crypto, 'randomUUID')
+  const [first, second] = await Promise.all([
+    reservePendingControl(scope, { kind: 'compact' }, 1),
+    reservePendingControl(scope, { kind: 'compact' }, 2),
+  ])
+  expect(second).toEqual(first)
+  expect(ids).toHaveBeenCalledTimes(1)
+  await clearPendingControl(scope, 'losing-request')
+  expect(pendingControl(scope)).toEqual(first)
+  expect(await reservePendingControl(scope, { kind: 'compact' }, 3)).toEqual(first)
+  await recoverPendingControl(scope, { ...initial, compaction: {
+    requestId: first.request.requestId, nativeSessionId: 'native', nativeOperationId: 'turn', status: 'completed',
+    beforeTokens: 100, message: 'Done', observedAt: new Date().toISOString(),
+  } })
+  expect(pendingControl(scope)).toBeNull()
+})
+
+it('clears a superseded settings journal using the original completed receipt', async () => {
+  const scope = JSON.stringify(['operator', 'chat', null])
+  const original = await reservePendingControl(scope, { kind: 'mode', mode: 'plan' }, 1)
+  await recoverPendingControl(scope, { ...initial, lastRequestId: 'later-writer' })
+  expect(pendingControl(scope)).toEqual(original)
+  await recoverPendingControl(scope, { ...initial, lastRequestId: 'later-writer',
+    completedRequestId: original.request.requestId })
+  expect(pendingControl(scope)).toBeNull()
+  expect((await reservePendingControl(scope, { kind: 'mode', mode: 'regular' }, 3)).request.requestId)
+    .not.toBe(original.request.requestId)
 })

@@ -1,6 +1,7 @@
 import { z } from 'zod'
-import { SessionControlRequestSchema, compactionBlocksSend, type SessionControlState } from '@graphql/contracts'
+import { SessionControlRequestSchema, compactionBlocksSend, type SessionControlState, type SessionControlRequest } from '@graphql/contracts'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
+import { assertSession, sessionGeneration, sessionSignal } from '../../../shared/api/sessionBoundary'
 import { useConversationDraftStore } from '../conversationDraftStore'
 
 const PendingControlSchema = z.object({
@@ -14,27 +15,58 @@ export function pendingControl(scope: string): PendingControl | null {
   const raw = localStorage.getItem(storageKey(scope))
   return raw === null ? null : PendingControlSchema.parse(JSON.parse(raw))
 }
-export function savePendingControl(scope: string, control: PendingControl) {
-  // Sending requires a saved identity so a reload cannot issue the effect twice.
-  localStorage.setItem(storageKey(scope), JSON.stringify(PendingControlSchema.parse(control)))
+type ControlChange = SessionControlRequest extends infer Request ? Request extends SessionControlRequest
+  ? Omit<Request, 'requestId' | 'expectedRevision'> : never : never
+
+async function exclusive<T>(scope: string, work: () => T): Promise<T> {
+  const generation = sessionGeneration()
+  const key = storageKey(scope)
+  return navigator.locks.request(key, { mode: 'exclusive', signal: sessionSignal() }, () => {
+    assertSession(generation)
+    return work()
+  })
 }
-export function clearPendingControl(scope: string, requestId: string) {
-  if (pendingControl(scope)?.request.requestId === requestId) localStorage.removeItem(storageKey(scope))
-}
-export function recoverPendingControl(scope: string, state: SessionControlState) {
-  const pending = pendingControl(scope)
-  if (!pending) return
-  const { request, draft } = pending
-  const compact = state.compaction?.requestId === request.requestId ? state.compaction
-    : state.compactions.find(entry => entry.requestId === request.requestId)
-  if (request.kind === 'compact') {
-    if (!compact || compactionBlocksSend(compact)) return
-    if (compact.status !== 'failed' && draft) {
-      useConversationDraftStore.getState().clearDraft(draft.key, draft.content)
+
+export function reservePendingControl(scope: string, input: ControlChange, expectedRevision: number,
+  draft?: PendingControl['draft']): Promise<PendingControl> {
+  return exclusive(scope, () => {
+    const pending = pendingControl(scope)
+    if (pending) {
+      const { requestId: _id, expectedRevision: _revision, ...original } = pending.request
+      if (JSON.stringify(original) !== JSON.stringify(input)) {
+        throw new Error('Recover the previous session control before changing settings.')
+      }
+      if (draft && !pending.draft) pending.draft = draft
     }
-  } else {
-    if (state.lastRequestId !== request.requestId) return
-    if (draft) useConversationDraftStore.getState().clearDraft(draft.key, draft.content)
-  }
-  clearPendingControl(scope, request.requestId)
+    const control = pending ?? { request: { ...input, requestId: crypto.randomUUID(), expectedRevision },
+      ...(draft ? { draft } : {}) }
+    localStorage.setItem(storageKey(scope), JSON.stringify(PendingControlSchema.parse(control)))
+    return control
+  })
+}
+
+export function clearPendingControl(scope: string, requestId: string): Promise<void> {
+  return exclusive(scope, () => {
+    if (pendingControl(scope)?.request.requestId === requestId) localStorage.removeItem(storageKey(scope))
+  })
+}
+
+export function recoverPendingControl(scope: string, state: SessionControlState): Promise<void> {
+  return exclusive(scope, () => {
+    const pending = pendingControl(scope)
+    if (!pending) return
+    const { request, draft } = pending
+    const compact = state.compaction?.requestId === request.requestId ? state.compaction
+      : state.compactions.find(entry => entry.requestId === request.requestId)
+    if (request.kind === 'compact') {
+      if (!compact || compactionBlocksSend(compact)) return
+      if (compact.status !== 'failed' && draft) {
+        useConversationDraftStore.getState().clearDraft(draft.key, draft.content)
+      }
+    } else {
+      if (state.lastRequestId !== request.requestId && state.completedRequestId !== request.requestId) return
+      if (draft) useConversationDraftStore.getState().clearDraft(draft.key, draft.content)
+    }
+    localStorage.removeItem(storageKey(scope))
+  })
 }

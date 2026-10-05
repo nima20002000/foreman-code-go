@@ -215,6 +215,22 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(applications).toBe(1)
   }, 30000)
 
+  it('replays a completed settings receipt after another caller supersedes its settings', async () => {
+    const conversation = await chat.create(owner)
+    const before = await chat.readSessionControls(conversation.id, owner)
+    const request = { kind: 'preferences' as const, preferences: SessionPreferencesSchema.parse({}),
+      requestId: randomUUID(), expectedRevision: before.revision }
+    await chat.changeSessionControls(conversation.id, request, owner)
+    const updated = await chat.readSessionControls(conversation.id, owner)
+    await chat.changeSessionControls(conversation.id, { ...request, requestId: randomUUID(),
+      expectedRevision: updated.revision }, owner)
+    const current = await chat.readSessionControls(conversation.id, owner)
+    const replay = await chat.changeSessionControls(conversation.id, request, owner)
+    expect(replay.lastRequestId).toBe(current.lastRequestId)
+    expect(replay.completedRequestId).toBe(request.requestId)
+    expect(replay.revision).toBe(current.revision)
+  })
+
   it('reads persisted controls after restart with read-only ownership and no credentials', async () => {
     const conversation = await chat.create(owner)
     const before = await chat.readSessionControls(conversation.id, owner)

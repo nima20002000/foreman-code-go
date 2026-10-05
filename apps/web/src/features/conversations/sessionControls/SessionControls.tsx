@@ -9,6 +9,12 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const state = controls.state
   const id = useId()
   const [open, setOpen] = useState(false)
+  const [budget, setBudget] = useState('')
+  const [budgetEdited, setBudgetEdited] = useState(false)
+  useEffect(() => {
+    setBudget(String(state?.desired.autoCompactTokens ?? ''))
+    setBudgetEdited(false)
+  }, [state?.conversationId, state?.desired.autoCompactTokens])
   const anchor = useRef<HTMLButtonElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const restoringFocus = useRef(false)
@@ -75,8 +81,14 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
           {state.capabilities.autoCompact.supported ? <Select label="Auto compact" options={[{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]} value={state.desired.autoCompact} disabled={pending}
             onChange={event => update({ ...state.desired, autoCompact: event.target.value as SessionPreferences['autoCompact'] })} /> : null}
           {state.capabilities.autoCompactBudget.supported ? <TextField label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
-              placeholder="Native default" defaultValue={state.desired.autoCompactTokens ?? ''} disabled={pending}
-              onBlur={event => update({ ...state.desired, autoCompactTokens: event.target.value ? Number(event.target.value) : null })} /> : null}
+              placeholder="Native default" value={budget} disabled={pending}
+              onChange={event => { setBudget(event.target.value); setBudgetEdited(true) }}
+              onBlur={() => {
+                if (!budgetEdited) return
+                setBudgetEdited(false)
+                const tokens = budget ? Number(budget) : null
+                if (tokens !== state.desired.autoCompactTokens) update({ ...state.desired, autoCompactTokens: tokens })
+              }} /> : null}
           <p>{state.applicability === 'applied' ? 'Applied now' : `Applies ${state.applicability.replace('-', ' ')}`}</p>
           <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
             void controls.change({ kind: 'save-default', preferences: state.desired }).catch(() => undefined)

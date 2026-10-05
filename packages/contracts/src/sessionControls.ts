@@ -61,6 +61,8 @@ export const SessionControlStateSchema = z.object({
   conversationId: z.string().nullable(),
   revision: z.number().int().nonnegative(),
   lastRequestId: z.string().optional(),
+  // Successful command responses identify the receipt even when a later writer changed settings.
+  completedRequestId: z.string().optional(),
   lastRequestPrincipalId: z.string().optional(),
   profileKey: z.string(),
   desiredMode: SessionModeSchema,

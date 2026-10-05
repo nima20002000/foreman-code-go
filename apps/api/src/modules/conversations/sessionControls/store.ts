@@ -150,7 +150,7 @@ export class SessionControlStore {
     bind: () => Promise<SessionControlBinding>, signal?: AbortSignal): Promise<SessionControlState> {
     const input = SessionControlRequestSchema.parse(raw)
     const binding = await bind()
-    return this.commands.execute(principal, source, binding.conversationId, input.requestId, input,
+    const result = await this.commands.execute(principal, source, binding.conversationId, input.requestId, input,
       async markDispatch => {
         const current = await bind()
         const state = await this.read(current)
@@ -197,6 +197,7 @@ export class SessionControlStore {
         }
         return state
       }, async () => this.read(await bind()))
+    return { ...result, completedRequestId: input.requestId }
   }
 
   private async compact(binding: SessionControlBinding, state: SessionControlState, requestId: string,
