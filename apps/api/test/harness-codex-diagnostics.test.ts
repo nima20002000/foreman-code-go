@@ -43,6 +43,9 @@ function fixture() {
       if (args[0] === 'mcp' && args[1] === 'list') return {
         stdout: JSON.stringify([{ name: 'foreman-code' }]), stderr: '', exitCode: 0, exitSignal: null,
       }
+      if (args[0] === 'mcp' && args[1] === 'get' && args[2] === 'graphql') return {
+        stdout: '', stderr: "Error: No MCP server named 'graphql' found.", exitCode: 1, exitSignal: null,
+      }
       if (args[0] !== 'mcp' || args[1] !== 'get' || args[2] !== 'foreman-code') {
         throw new Error(`Unexpected command ${args.join(' ')}`)
       }

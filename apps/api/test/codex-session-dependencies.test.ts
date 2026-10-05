@@ -19,7 +19,9 @@ function replay() {
     assertUnchanged: async () => { calls.push('assertUnchanged') },
     runCommand: async (_binary, args) => {
       calls.push(args.join(' '))
-      return { stdout: args[1] === 'list' ? '[]' : '', stderr: '', exitCode: args[1] === 'get' ? 1 : 0, exitSignal: null }
+      return { stdout: args[1] === 'list' ? '[]' : '',
+        stderr: args[1] === 'get' ? `Error: No MCP server named '${args[2]}' found.` : '',
+        exitCode: args[1] === 'get' ? 1 : 0, exitSignal: null }
     },
     qualifyModel: async () => { calls.push('qualifyModel') },
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'),
@@ -93,6 +95,8 @@ describe('Codex original placed inspection directory', () => {
             stdout: JSON.stringify(serverName ? [{ name: serverName }] : []),
             stderr: '', exitCode: 0, exitSignal: null,
           }
+          if (args[1] === 'get' && args[2] !== serverName) return { stdout: '',
+            stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1, exitSignal: null }
           assert.deepEqual(args, ['mcp', 'get', serverName, '--json'])
           return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
             url: 'http://127.0.0.1:3000/mcp', bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } }),
@@ -106,8 +110,7 @@ describe('Codex original placed inspection directory', () => {
           await manager.qualificationEvidence()
           const cwd = workingDirectory ?? process.cwd()
           assert.deepEqual(qualified, [cwd, cwd, cwd])
-          const expected = [{ args: ['mcp', 'list', '--json'], cwd }]
-          if (serverName) expected.push({ args: ['mcp', 'get', serverName, '--json'], cwd })
+          const expected = ['foreman-code', 'graphql'].map((name) => ({ args: ['mcp', 'get', name, '--json'], cwd }))
           assert.deepEqual(commands, expected)
           assert.equal(detected.serverName, serverName ?? 'foreman-code')
           assert.equal(detected.state, serverName ? 'status_unavailable' : 'not_detected')

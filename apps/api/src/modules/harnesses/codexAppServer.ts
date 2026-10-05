@@ -1,3 +1,4 @@
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
@@ -1498,23 +1499,25 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
     providerVersion: string, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies): Promise<CodexMcpConfigurationInspection> {
-    const listed = await io.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
-    let entries: unknown
-    try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
-    const validList = listed.exitCode === 0 && Array.isArray(entries) && entries.length <= 500
-      && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
-    if (!validList) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
-      'Codex could not establish the configured MCP names.')
-    let serverName = this.appMcpServerName
-    if (validList) {
-      const names = Object.fromEntries((entries as { name: string }[]).map((entry) => [entry.name, entry]))
-      serverName = appMcpServerName(names, this.appMcpServerName)
-      if (!Object.hasOwn(names, serverName)) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED',
-        'The named native MCP entry is absent.')
+    const candidates = isSupportedAppMcpServerName(this.appMcpServerName)
+      ? APP_MCP_SERVER_NAMES : [this.appMcpServerName]
+    const entries: Record<string, Awaited<ReturnType<typeof runCommand>>> = Object.create(null)
+    for (const name of candidates) {
+      const result = await io.runCommand(binary, ['mcp', 'get', name, '--json'], cwd, signal, environment)
+      if (result.exitCode === 0) {
+        entries[name] = result
+        continue
+      }
+      // A failed command alone cannot prove absence: retain only the CLI's definite missing-entry reply.
+      if (result.exitCode !== 1 || result.stdout.trim() !== ''
+        || result.stderr.trim() !== `Error: No MCP server named '${name}' found.`) {
+        throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
+          'Codex could not establish the named MCP configuration.')
+      }
     }
-    const result = await io.runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
-      'Codex MCP configuration inspection failed; absence was not established.')
+    const serverName = appMcpServerName(entries, this.appMcpServerName)
+    const result = entries[serverName]
+    if (!result) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The named native MCP entry is absent.')
     try {
       const parsed = object(JSON.parse(result.stdout))
       const transport = isObject(parsed.transport) ? parsed.transport : {}

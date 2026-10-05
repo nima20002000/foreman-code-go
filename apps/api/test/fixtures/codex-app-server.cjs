@@ -36,11 +36,17 @@ if (args[0] === 'debug') {
 if (args[0] === 'mcp') {
   if (flag('no-mcp')) {
     if (args[1] === 'list') { console.log('[]'); process.exit(0) }
+    console.error(`Error: No MCP server named '${args[2]}' found.`)
     process.exit(1)
   }
   if (args[1] === 'list') {
     console.log(JSON.stringify([{ name: read('mcp.json', { name: 'graphql' }).name || 'graphql' }]))
     process.exit(0)
+  }
+  const entryName = read('mcp.json', { name: 'graphql' }).name || 'graphql'
+  if (args[1] === 'get' && args[2] !== entryName) {
+    console.error(`Error: No MCP server named '${args[2]}' found.`)
+    process.exit(1)
   }
   console.log(JSON.stringify(read('mcp.json', {
     name: args[2], enabled: true, required: true,

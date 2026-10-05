@@ -1,3 +1,4 @@
+import { publicationSignal } from './publicationSignal.js'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -78,6 +79,7 @@ export interface Eng03NativeControl extends Eng03NativeRuntime {
   projectDirectory: string
   runtimeDirectory: string
   startTask: Promise<void>
+  publicationChanged(): Promise<void>
   stop(): Promise<boolean>
   restartWaitingRuntime(): Promise<Eng03NativeRuntime>
   restartRecoverableRuntime(): Promise<Eng03NativeRuntime>
@@ -138,6 +140,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
+  const publications = publicationSignal()
   const scenarioBegan = performance.now()
   const timing = { startedAt: new Date().toISOString(), setupMs: 0, engineMs: 0, totalMs: 0 }
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
@@ -277,7 +280,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const workflows = new PostgresWorkflowRepository(livePool)
       const workflowCapture = createWorkflowNativeCaptureChannel(), reviewCapture = createReviewNativeCaptureChannel()
       const runs = new PostgresRunRepository(livePool, workflows, locations,
-        { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+        { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) },
+        async () => { publications.notify() })
       const appendNativeEvent = runs.appendNativeEvent.bind(runs)
       const pendingNativeEvents = new Map<string, { executionId: string; type: string; sequence: number; startedAt: string }>()
       runs.appendNativeEvent = async (...args) => {
@@ -430,6 +434,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const recordEngineFinish = () => {
       timing.engineMs = Math.round(performance.now() - engineBegan)
       evidence.engineFinishedAt = new Date().toISOString()
+      publications.notify()
     }
     void startTask.then(recordEngineFinish, recordEngineFinish)
     evidence.startTaskState = 'pending'
@@ -502,7 +507,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, ...activeRuntime, startTask, stop: () => engine!.cancel(run.id, authorizeStop), restartWaitingRuntime, restartRecoverableRuntime })
+          runtimeDirectory, ...activeRuntime, startTask, publicationChanged: publications.next, stop: () => engine!.cancel(run.id, authorizeStop), restartWaitingRuntime, restartRecoverableRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {

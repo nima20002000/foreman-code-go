@@ -171,7 +171,8 @@ beforeEach(() => {
     if (args[0] === '--version') return { exitCode: 0, stdout: '1.18.31', stderr: '' }
     if (args[0] === 'mcp' && args[1] === 'list') return { exitCode: 0, stdout: JSON.stringify(codexServers.map((name) => ({ name }))), stderr: '' }
     assert.deepEqual(args.slice(0, 2), ['mcp', 'get'])
-    if (!codexServers.includes(args[2]!) && args[2] !== 'docs') return { exitCode: 1, stdout: '', stderr: '' }
+    if (!codexServers.includes(args[2]!) && args[2] !== 'docs') return { exitCode: 1, stdout: '',
+      stderr: `Error: No MCP server named '${args[2]}' found.` }
     const launcher = appLauncherConnection()
     return { exitCode: 0, stdout: JSON.stringify({ name: args[2], enabled: true, required: args[2] === 'graphql',
       transport: { type: 'stdio', command: launcher.executable, args: launcher.arguments, env_vars: launcher.environmentVariables } }), stderr: '' }

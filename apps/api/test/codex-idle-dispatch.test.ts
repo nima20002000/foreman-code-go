@@ -32,7 +32,9 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
       providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
     assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
-    runCommand: async (_binary, args) => ({ stdout: args[1] === 'list' ? '[{"name":"graphql"}]'
+    runCommand: async (_binary, args) => args[1] === 'get' && args[2] !== 'graphql'
+      ? { stdout: '', stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1 }
+      : ({ stdout: args[1] === 'list' ? '[{"name":"graphql"}]'
       : JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
         url: 'http://127.0.0.1:3000/mcp/app', bearer_token_env_var: 'CUSTOM_APP_BEARER' } }), stderr: '', exitCode: 0 }),
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'),
