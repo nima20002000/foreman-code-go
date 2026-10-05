@@ -116,7 +116,9 @@ export async function qualifyVerificationRuntime(input: {
       throw new Error('Local rootless cgroup-v2 runtime required.')
     }
     const images = JSON.parse(await checked(['image', 'inspect', fingerprint.imageDigest]))
-    if (images.length !== 1 || images[0].Id !== fingerprint.imageDigest) {
+    const imageId = images[0]?.Id?.replace(/^sha256:/, '')
+    if (images.length !== 1 || !/^[a-f0-9]{64}$/.test(imageId ?? '')
+      || `sha256:${imageId}` !== fingerprint.imageDigest) {
       throw new Error('The approved immutable verification image changed.')
     }
     const identity = `graphql-ci-qualification-${candidate.qualificationId}`
