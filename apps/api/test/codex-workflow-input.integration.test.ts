@@ -8,6 +8,9 @@ import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/bu
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { codexWorkflowRuntime } from './helpers/codexWorkflowRuntime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { calls, until } from './fixtures/codex-test-helpers.js'
@@ -18,7 +21,12 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
     const clients: Client[] = []
     const services = { commands: new PostgresCommandCoordinator(f.db.pool),
       interactions: new OperatorInteractionService(f.service) } as unknown as OperatorServices
-    const app = buildApp({ readiness: { database: { ping: async () => undefined },
+    const workflows = new PostgresWorkflowRepository(f.db.pool)
+    const app = buildApp({ product: {
+      workspaces: new PostgresWorkspaceRepository(f.db.pool, workflows, f.runs),
+      workflows, runs: f.runs, settings: new PostgresSettingsRepository(f.db.pool),
+      engine: f.engine, interactions: f.service,
+    }, readiness: { database: { ping: async () => undefined },
       checkpoints: { ping: async () => undefined } }, operator: { access: f.access, services } })
     try {
       await f.engine.start(f.f.run.id)

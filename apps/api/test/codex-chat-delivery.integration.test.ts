@@ -109,7 +109,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           assert(openCodeServer)
           const server = openCodeServer
           owner = createAdmittedNativeManager('opencode', async () => ({
-            manager: new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId, appMcpAccess: 'none' }),
+            manager: new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId, appMcpAccess: 'scoped' }),
           })).manager
         } else owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
         operatorOwners.set(id, owner)
