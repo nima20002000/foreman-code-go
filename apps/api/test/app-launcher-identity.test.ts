@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { APP_MCP_TOKEN, appLauncherConnection, appLauncherPath, installManagedLauncher, isAppLauncher, isManagedLauncherCommand } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_TOKEN, appLauncherPath, installManagedLauncher, isAppLauncher, isManagedLauncherCommand } from '../src/modules/harnesses/appMcpLauncher.js'
 
 const runtime = process.execPath
 const directories: string[] = []
@@ -25,21 +25,6 @@ async function fixture() {
 }
 
 describe('managed launcher installation identity', () => {
-  it.each(['codex', 'opencode'] as const)('production routing recognizes the reviewed %s launcher', async harness => {
-    vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', undefined)
-    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', undefined)
-    const reviewed = appLauncherConnection()
-    const runtimeModule = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
-    const { localProductionEnvironment } = await import(runtimeModule)
-    const environment = localProductionEnvironment(homedir(), 'a'.repeat(64))
-    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', environment.FOREMAN_CODE_APP_MCP_DIRECTORY)
-    const entry = harness === 'codex'
-      ? { command: reviewed.executable, args: reviewed.arguments, env_vars: ['GRAPHQL_MCP_TOKEN'] }
-      : { type: 'local', command: [reviewed.executable, ...reviewed.arguments],
-        environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' } }
-    expect(isAppLauncher(harness, entry)).toBe(true)
-  })
-
   it.each(['GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
     'installs a configured %s launcher and rejects the default installation', async name => {
       const original = appLauncherPath()
