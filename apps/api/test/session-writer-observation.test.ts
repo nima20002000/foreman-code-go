@@ -1,9 +1,15 @@
 import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 import { deferred } from './helpers/wave25Agent3.js'
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 const session: NativeSessionReference = {
   harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'stream-session',
@@ -42,6 +48,56 @@ function silentProvider() {
   }
   return { manager, reading, release, detached, signal: () => nativeSignal }
 }
+
+it('batches ready output independently of database lease-check latency', async () => {
+  vi.useFakeTimers()
+  const frames = Array.from({ length: 35 }, (_, sequence) => ({ ...frame, sequence }))
+  const provider = silentProvider()
+  provider.manager.startTurn = async function* () { yield* frames }
+  const coordination = nativeLanes()
+  const assertLease = coordination.assertLaneLease.bind(coordination)
+  vi.spyOn(coordination, 'assertLaneLease').mockImplementation(async (...args) => {
+    await assertLease(...args)
+    // Each database check outlasts the partial-batch deadline, without delaying the provider.
+    vi.setSystemTime(Date.now() + 30)
+  })
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const batches: NativeHarnessEvent[][] = []
+  for await (const batch of writer.startTurnBatches(session, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn',
+  })) {
+    expect(writer.capturedLease(session)).toBeDefined()
+    batches.push(batch)
+  }
+  expect(batches.map((batch) => batch.length)).toEqual([16, 16, 3])
+  expect(batches.flat()).toEqual(frames)
+  expect(writer.isActive(session)).toBe(false)
+  expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseToken).toBeUndefined()
+})
+
+it('rejects a collected batch when its writer lease is lost during collection', async () => {
+  const provider = silentProvider()
+  let lost = false
+  provider.manager.startTurn = async function* () {
+    yield frame
+    lost = true
+    yield { ...frame, sequence: 1 }
+  }
+  const coordination = nativeLanes()
+  const assertLease = coordination.assertLaneLease.bind(coordination)
+  vi.spyOn(coordination, 'assertLaneLease').mockImplementation(async (...args) => {
+    if (lost) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The lane changed owners.', 409)
+    await assertLease(...args)
+  })
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const iterator = writer.startTurnBatches(session, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn',
+  })[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+  expect(writer.isActive(session)).toBe(false)
+})
 
 it.each(['turn', 'initial'] as const)(
   'releases the %s writer after a failed timed publication while the provider read stays silent', async (mode) => {
