@@ -56,3 +56,7 @@ acceptance commands use the same provisioner; standalone local acceptance also
 uses this dedicated instance. Prepared native acceptance also checks that the
 selected API identity matches its owned database before submitting work. Lifecycle and suite runs must not overlap with
 `db:down` or the opt-in dependency restart in `test:production`.
+
+The production workspace and MCP-directory selectors are replaced by owned test paths, and inherited built-web deployment paths are discarded. The compiled API validates test-owned paths before startup without depending on repository test scripts. Native acceptance bootstrap uses a marked child database on the dedicated test server with a private default schema and retains it when native cleanup is unconfirmed.
+
+Installed-host validation is available separately as `corepack pnpm production:verify`. It changes live production data/services and cannot run inside a disposable test invocation. It is not part of the test suites.

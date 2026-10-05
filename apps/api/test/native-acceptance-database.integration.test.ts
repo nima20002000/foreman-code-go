@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { completeTestResourceCleanup, dropFixtureDatabase, ownedTestDatabaseUrl,
+  registerTestResourceCleanup } from '../../../scripts/test-resources.mjs'
 
 it('acceptance bootstrap supplies an isolated database and removes it after success and failure', async () => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
@@ -23,6 +25,7 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
           expect(new URL(databaseUrl).pathname.endsWith('_test')).toBe(true)
           const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 })
           try {
+            expect((await pool.query('select current_schema() as name')).rows[0].name).toBe('native_acceptance')
             await pool.query('create table retained_result (value text)')
             await pool.query('insert into retained_result values ($1)', ['native bootstrap'])
             expect((await pool.query('select value from retained_result')).rows).toEqual([{ value: 'native bootstrap' }])
@@ -40,6 +43,8 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
       expect((await admin.query('select 1 from pg_database where datname=$1',
         [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
     }
+    await expect(withNativeAcceptanceDatabase('postgresql://graphql_production:invalid@127.0.0.1:55440/graphql_production',
+      directory, async () => { throw new Error('Unowned callback must not run') })).rejects.toThrow('owned test database')
     await expect(withNativeAcceptanceDatabase(configured, directory, async () => {
       throw new Error('Native launch failed')
     })).rejects.toThrow('Native launch failed')
@@ -52,6 +57,45 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
     }
   } finally {
     await admin.end()
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)
+
+it('retains the native bootstrap database until registered cleanup is confirmed', async () => {
+  const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
+  const { withNativeAcceptanceDatabase } = await import(script)
+  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-retained-'))
+  let cleanupId: string | undefined
+  let databaseName: string | undefined
+  const parent = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 })
+  try {
+    const record = await withNativeAcceptanceDatabase(process.env.TEST_DATABASE_URL, directory,
+      async () => {
+        cleanupId = registerTestResourceCleanup(invocation, { kind: 'native-qualification' })
+        return 0
+      })
+    databaseName = record.name
+    expect(record).toMatchObject({ created: true, removed: false, exitCode: 1 })
+    expect((await parent.query('select 1 from pg_database where datname=$1', [record.name])).rowCount).toBe(1)
+    completeTestResourceCleanup(invocation, cleanupId!)
+    cleanupId = undefined
+    const folder = join(invocation.directory, '.graphql-test-cleanup')
+    for (const file of await readdir(folder)) {
+      const pending = JSON.parse(await readFile(join(folder, file), 'utf8')) as {
+        id: string; kind: string; name?: string
+      }
+      if (pending.kind === 'native-acceptance-database' && pending.name === record.name) {
+        await dropFixtureDatabase(parent, record.name)
+        completeTestResourceCleanup(invocation, pending.id)
+        databaseName = undefined
+      }
+    }
+    expect((await parent.query('select 1 from pg_database where datname=$1', [record.name])).rowCount).toBe(0)
+  } finally {
+    if (cleanupId) completeTestResourceCleanup(invocation, cleanupId)
+    if (databaseName) await dropFixtureDatabase(parent, databaseName)
+    await parent.end()
     await rm(directory, { recursive: true, force: true })
   }
 }, 30_000)

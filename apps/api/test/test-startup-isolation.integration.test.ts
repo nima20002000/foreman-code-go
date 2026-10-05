@@ -95,7 +95,8 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
   }
 }, 120_000)
 
-it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
+it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT',
+  'WORKSPACE_STORAGE_ROOT', 'GRAPHQL_APP_MCP_DIRECTORY'])(
   'refuses prepared native acceptance when the real API uses an unowned %s', async variable => {
     const resources = await provisionTestResources({ PATH: process.env.PATH })
     const outside = createTestRoot()
@@ -112,10 +113,11 @@ it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
     const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL, max: 1 })
     let restarted: ChildProcess | undefined
     try {
-      await ready(child, port)
-      await expect(assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment))
-        .rejects.toThrow('identity is unavailable')
-      expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
+      const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(30_000) })
+      expect(code).toBe(1)
+      await expect(fetch(`http://127.0.0.1:${port}/health/ready`)).rejects.toThrow()
+      expect((await pool.query("select count(*)::int as count from pg_tables where schemaname not in ('pg_catalog','information_schema')"))
+        .rows[0].count).toBe(0)
       expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
       await stopGroup(child.pid, { signal: 'SIGTERM' })
       restarted = spawn(process.execPath, ['--import', require.resolve('tsx'), join(root, 'apps/api/src/server.ts')], {
@@ -126,6 +128,7 @@ it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
       restarted.stderr?.resume()
       await ready(restarted, port)
       await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment)
+      expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
     } finally {
       await stopGroup(restarted?.pid, { signal: 'SIGTERM' })
       await stopGroup(child.pid, { signal: 'SIGTERM' })

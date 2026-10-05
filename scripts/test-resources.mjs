@@ -111,7 +111,8 @@ export function testEnvironment(environment, resource) {
   const clean = { ...environment }
   for (const key of Object.keys(clean)) {
     if (/^PG/.test(key) || (!key.startsWith('GRAPHQL_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
-      || ['GRAPHQL_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE', 'NODE_OPTIONS'].includes(key)) delete clean[key]
+      || ['GRAPHQL_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE',
+        'GRAPHQL_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
   }
   for (const key of new Set([...databaseVariables, ...Object.keys(clean).filter(key => key.endsWith('DATABASE_URL'))])) {
     clean[key] = resource.databaseUrl
@@ -121,6 +122,7 @@ export function testEnvironment(environment, resource) {
     XDG_CONFIG_HOME: 'home/.config', XDG_DATA_HOME: 'home/.local/share',
     XDG_CACHE_HOME: 'home/.cache', XDG_STATE_HOME: 'home/.local/state', XDG_RUNTIME_DIR: 'xdg-runtime',
     OPENCODE_CONFIG_DIR: 'home/.config/opencode', FILE_STORAGE_ROOT: 'app/files',
+    WORKSPACE_STORAGE_ROOT: 'app/projects', GRAPHQL_APP_MCP_DIRECTORY: 'home/.local/share/graphql/mcp',
     HARNESS_WORKSPACE_ROOT: 'app/workspaces', LOG_DIR: 'logs', ENG03_A_EVIDENCE_DIR: 'evidence',
     TMPDIR: 'tmp', TMP: 'tmp', TEMP: 'tmp',
   }

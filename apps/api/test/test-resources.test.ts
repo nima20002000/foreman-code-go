@@ -101,19 +101,22 @@ describe('disposable test resources', () => {
     try {
       const environment = testEnvironment({ HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
         OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
-        GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log',
+        GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log', WORKSPACE_STORAGE_ROOT: '/real/projects',
+        GRAPHQL_APP_MCP_DIRECTORY: '/real/mcp', GRAPHQL_WEB_DIST: '/real/web',
         GRAPHQL_API_ENV_FILE: '/real/api.env',
         GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key',
         GRAPHQL_TEST_OPENCODE_AUTH_FILE: opencodeAuth, GRAPHQL_TEST_OPENCODE_API_KEY: 'test-opencode-key' },
       { ...resource, name: 'graphql_test_unit', databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
-        'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR']) {
+        'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR',
+        'WORKSPACE_STORAGE_ROOT', 'GRAPHQL_APP_MCP_DIRECTORY']) {
         expect(environment[key]).toMatch(resource.directory + '/')
       }
       expect(await readFile(join(environment.HOME!, '.local/share/graphql/mcp/launcher.mjs'), 'utf8')).toBeTruthy()
       expect(environment.PGHOST).toBeUndefined()
       expect(environment.GRAPHQL_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
+      expect(environment.GRAPHQL_WEB_DIST).toBeUndefined()
       expect(await readFile(environment.GRAPHQL_API_ENV_FILE!, 'utf8')).toBe('')
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
