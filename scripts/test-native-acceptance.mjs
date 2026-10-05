@@ -7,6 +7,7 @@ import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
 import { withNativeAcceptanceStorage } from './native-acceptance-storage.mjs'
+import { stopGroup } from './integration-process.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
@@ -86,6 +87,43 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   return record
 }
 
+async function runNativeAcceptance(environment, files) {
+  const child = spawn(process.execPath, [
+    'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
+    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
+  ], {
+    cwd: root, stdio: 'inherit', detached: true,
+    env: environment,
+  })
+  let interrupted
+  let stopping
+  let cleanupError
+  const stop = signal => {
+    interrupted = signal
+    stopping ??= stopGroup(child.pid, { signal }).catch(error => { cleanupError = error })
+  }
+  const interrupt = () => stop('SIGINT')
+  const terminate = () => stop('SIGTERM')
+  process.on('SIGINT', interrupt)
+  process.on('SIGTERM', terminate)
+  let code
+  try {
+    code = await new Promise((yes, no) => {
+      child.once('error', no)
+      child.once('exit', (status, signal) => yes(status ?? (signal === 'SIGINT' ? 130 : 143)))
+    })
+  } finally {
+    process.off('SIGINT', interrupt)
+    process.off('SIGTERM', terminate)
+    await stopping
+    await stopGroup(child.pid)
+  }
+  if (cleanupError) throw cleanupError
+  if (interrupted === 'SIGINT') return 130
+  if (interrupted) return 143
+  return code
+}
+
 async function main() {
   const files = nativeAcceptanceFiles(process.argv.slice(2))
   const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
@@ -110,14 +148,8 @@ async function main() {
         NIM2691_ADMIN_DATABASE_URL: databaseUrl,
       }
       delete environment.TEST_DATABASE_URL
-      return withNativeAcceptanceStorage(environment, nativeEnvironment => new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [
-          'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-          'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
-        ], { cwd: root, env: nativeEnvironment, stdio: 'inherit' })
-        child.once('error', reject)
-        child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))
-      }))
+      console.log(`[acceptance] Native evidence: ${evidence}`)
+      return withNativeAcceptanceStorage(environment, nativeEnvironment => runNativeAcceptance(nativeEnvironment, files))
     })
   process.exitCode = record.exitCode
 }

@@ -13,6 +13,7 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
   server.pathname = '/postgres'
   const admin = new pg.Pool({ connectionString: server.toString(), max: 1 })
   const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-'))
+  const ownedNames = new Set<string>()
   try {
     for (const exitCode of [0, 1]) {
       const record = await withNativeAcceptanceDatabase(configured, directory,
@@ -31,6 +32,9 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
           }
         })
       expect(record).toMatchObject({ created: true, removed: true, exitCode })
+      expect(record.name).toMatch(/^graphql_native_test_[a-f0-9]{32}$/)
+      expect(ownedNames.has(record.name)).toBe(false)
+      ownedNames.add(record.name)
       expect((await admin.query('select 1 from pg_database where datname=$1', [record.name])).rowCount).toBe(0)
       expect(JSON.parse(await readFile(join(directory, record.name, 'database.json'), 'utf8'))).toEqual(record)
       expect((await admin.query('select 1 from pg_database where datname=$1',
