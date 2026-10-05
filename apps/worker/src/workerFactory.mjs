@@ -16,7 +16,8 @@ import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 import { fileURLToPath } from 'node:url';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
-import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
+import { createInstalledWorkflowNativeOutputFactory, createInstalledWorkflowBufferedNativeOutputFactory,
+  ensureInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
 
 export { createWorkerConnection };
 export { approvedRootExtensions, createWorkerExecutionDomains };
@@ -114,11 +115,14 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       const selection = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
       const jobSelection = await lstat(jobConfigurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      const bufferedOutputs = createInstalledWorkflowBufferedNativeOutputFactory({ connection: () => connection });
       installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId,
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         nativeOutputs: createInstalledWorkflowNativeOutputFactory({ stateDirectory, pairing, connection: () => connection }),
+        openCodeNativeOutputs: context => bufferedOutputs(context).opencode,
+        bufferedCodexNativeOutputs: context => bufferedOutputs(context).codex,
         ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
         codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision),
         openCodeSuiteRevision: qualificationRevisionWithIdentity(opencodeQualificationSuite.revision) });
