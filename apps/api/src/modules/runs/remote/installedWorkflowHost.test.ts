@@ -21,7 +21,7 @@ import { bootIdentity, processIdentity } from '../../harnesses/recovery/linuxIde
 import { writeRecord } from '../../harnesses/recovery/storage.js'
 import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
 import { remoteWorkflowProcessDigest } from './workflowPhysicalReadout.js'
-import { hasPositiveRemoteEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
 import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { readInstalledWorkflowConfiguration } from './installedWorkflowConfiguration.js'
@@ -638,6 +638,25 @@ async function restartedInstalledFixture(options: { acknowledged?: boolean; sess
 }
 
 describe('installed worker cold recovery', () => {
+  it('stops an unentered retained operation without qualification or a native launch', async () => {
+    const f = await restartedInstalledFixture()
+    const intent = { ...f.intent, executionId: 'unentered-execution', operationId: 'unentered-operation', attemptId: 'unentered-attempt' }
+    await f.journal.accept(intent, DeviceConnectionIdentitySchema.strip().parse(f.context.binding), randomUUID())
+    await f.journal.close()
+    const host = await f.startHost()
+    const reserve = vi.spyOn(NativeProcessRegistry.prototype, 'reserveLaunch')
+    const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex')
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'control', intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-unentered', operationId: intent.operationId,
+          attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash,
+          owner: intent.owner, action: { kind: 'stop' } } }, f.context)
+      const receipt = RemoteOperationReceiptSchema.parse((reply.payload as { receipt: unknown }).receipt)
+      expect(hasPositiveRemoteNonEntryClosure(receipt)).toBe(true)
+      expect(reserve).not.toHaveBeenCalled()
+      expect(inspect).not.toHaveBeenCalled()
+    } finally { await host.close() }
+  })
   it.each([false, true])('closes entry interrupted before ACK with session capture %s, retaining the same outcome after restart', async sessionCaptured => {
     const f = await restartedInstalledFixture({ acknowledged: false, sessionCaptured })
     await f.journal.close()
