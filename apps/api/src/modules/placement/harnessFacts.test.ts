@@ -68,6 +68,13 @@ it('admits passive inventory only with its exact measured binary and qualified p
   expect(f.installations.list()[0]?.observedVersion).toBeNull()
 })
 
+it('identifies a missing Main binary measurement without exposing private qualification data', async () => {
+  const f = fixture()
+  f.records.length = 0
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
+    details: { reason: 'main_qualification_identity_missing', hostKind: 'main' } })
+})
+
 it.each(['payload', 'generation', 'host', 'missing', 'profile', 'suite-check'] as const)(
   'rejects unconfirmed %s qualification without promoting passive metadata', async failure => {
     const f = fixture()
