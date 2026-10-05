@@ -24,6 +24,8 @@ import {
   input, nativeThread, processesForRequests, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
 import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, createTestRoot, registerTestResourceCleanup, removeTestRoot,
+  type TestRoot } from '../../../scripts/test-resources.mjs'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
 // below runs the repository implementation, including the pinned native schema gate.
@@ -44,6 +46,9 @@ const managers: Manager[] = []
 let f: Fixture
 let manager: Manager
 let source: WorkflowNativeSessionStart
+let scratch: TestRoot
+let scratchCleanupId: string
+const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
 function makeManager(): Manager { const value = new CodexAppServerSessionManager(f.binary); managers.push(value); return value }
 function codex(value = source): CodexHarnessConfiguration {
   const harness = value.request.configuration.harness
@@ -189,7 +194,12 @@ describe('Codex fixture user-message contract', () => {
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
   beforeEach(async () => {
-    f = await fixture()
+    // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
+    scratch = createTestRoot('/tmp', 'foreman-code-codex-wire-')
+    scratchCleanupId = registerTestResourceCleanup(invocation, {
+      kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
+    })
+    f = await fixture({ root: scratch })
     await flag('record-wire-timing')
     manager = makeManager()
     source = input(f.directory)
@@ -205,9 +215,10 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
         wireTiming: timing.split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown),
       })
     }
-    await rm(f.directory, { recursive: true, force: true })
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+    removeTestRoot(scratch)
+    completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
   it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {
