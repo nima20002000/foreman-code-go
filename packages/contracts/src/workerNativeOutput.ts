@@ -23,9 +23,9 @@ export const WorkerNativeOutputToolInputSchemas = {
   publish: WorkerNativeOutputPublicationInputSchema,
 }
 export const WorkerNativeOutputCommandSchema = z.discriminatedUnion('operation', [
-  WorkerNativeOutputToolInputSchemas.create.safeExtend({ operation: z.literal('create') }),
-  WorkerNativeOutputToolInputSchemas.append.extend({ operation: z.literal('append') }),
-  WorkerNativeOutputToolInputSchemas.seal.extend({ operation: z.literal('seal') }),
+  FileDescriptionSchema.safeExtend({ operation: z.literal('create'), commandId }),
+  z.object({ operation: z.literal('append'), ...WorkerNativeOutputToolInputSchemas.append.shape }).strict(),
+  z.object({ operation: z.literal('seal'), ...WorkerNativeOutputToolInputSchemas.seal.shape }).strict(),
   z.object({ operation: z.literal('publish'), publication: WorkerNativeOutputPublicationInputSchema }).strict(),
 ])
 export type WorkerNativeOutputCommand = z.infer<typeof WorkerNativeOutputCommandSchema>
