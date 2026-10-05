@@ -114,6 +114,21 @@ beforeEach(() => {
   installFlowLayout(320, 480); installChatSource()
   server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
     HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })), selectedChatUnavailable,
+    http.get('*/api/management/workspaces/workspace-1/runs/:runId/activities', ({ params, request }) => {
+      const runId = String(params.runId)
+      const snapshot = reply(runId, scope).snapshot
+      if (snapshot.kind !== 'available') throw new Error('The Activities fixture requires a saved Run')
+      const runScope: RunGraphScope = {
+        ...scope, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3,
+      }
+      const newer = new URL(request.url).searchParams.has('cursor')
+      return HttpResponse.json(RunActivitiesPageSchema.parse({
+        scope: runScope, mode: newer ? 'newer' : 'initial', highWater: '1', retainedFrom: '1',
+        nextCursor: `cursor-${runId}`, olderCursor: null, hasMore: false,
+        items: newer ? [] : [{ id: `activity-${runId}`, scope: runScope, sequence: '1', occurredAt: snapshot.capturedAt,
+          source: 'backend', kind: 'run', status: 'recorded', severity: 'info', summary: `Saved run ${runId}`, refs: {} }],
+      }))
+    }),
     http.get('*/api/management/workspaces/:workspaceId/runs/:runId/activities', ({ params }) => {
       const runId = String(params.runId)
       const snapshot = reply(runId, scope).snapshot
@@ -131,20 +146,6 @@ beforeEach(() => {
     http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
       workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
     })),
-    http.get('*/api/management/workspaces/workspace-1/runs/:runId/activities', ({ params }) => {
-      const runId = String(params.runId)
-      const snapshot = reply(runId, scope).snapshot
-      if (snapshot.kind !== 'available') throw new Error('The Activities fixture requires a saved Run')
-      const runScope: RunGraphScope = {
-        ...scope, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3,
-      }
-      return HttpResponse.json(RunActivitiesPageSchema.parse({
-        scope: runScope, mode: 'initial', highWater: '1', retainedFrom: '1',
-        nextCursor: `cursor-${runId}`, olderCursor: null, hasMore: false,
-        items: [{ id: `activity-${runId}`, scope: runScope, sequence: '1', occurredAt: snapshot.capturedAt,
-          source: 'backend', kind: 'run', status: 'recorded', severity: 'info', summary: `Saved run ${runId}`, refs: {} }],
-      }))
-    }),
   )
 })
 afterEach(() => {

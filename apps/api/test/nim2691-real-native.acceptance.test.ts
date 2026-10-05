@@ -113,6 +113,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
       const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
       const createSession = CodexAppServerSessionManager.prototype.createSession
       const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
         .mockImplementation(async function (this: CodexAppServerSessionManager, source, signal) {
@@ -123,6 +124,20 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               error: describeNativeFailure(error, [...secrets]) })
             throw error
           }
+        })
+      const cancelSession = CodexAppServerSessionManager.prototype.cancel
+      const cancellationObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel')
+        .mockImplementation(async function (this: CodexAppServerSessionManager, session, signal) {
+          if (cancellations.length < 16) {
+            const redactor = nativePersistenceRedactor([...secrets])
+            const request: (typeof cancellations)[number] = { nativeSessionId: session.nativeSessionId,
+              caller: (new Error('Native cancellation requested.').stack ?? '').split('\n').slice(1, 9)
+                .map(line => redactor.text(line)),
+            }
+            if (signal?.reason !== undefined) request.reason = describeNativeFailure(signal.reason, [...secrets])
+            cancellations.push(request)
+          }
+          return cancelSession.call(this, session, signal)
         })
       const observeExact = ApprovalExecutionCoordinator.prototype.observeExact
       const executionObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'observeExact')
@@ -548,7 +563,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               [observedRunId],
             )).rows : []
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, executions,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
               failure: describeNativeFailure(error, [...secrets]),
             })
             const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
@@ -564,6 +579,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       } finally {
         executionObserver.mockRestore()
         sessionObserver.mockRestore()
+        cancellationObserver.mockRestore()
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
         await rm(projectPath, { recursive: true, force: true })
