@@ -198,8 +198,10 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         const attachment = FileWithRevisionSchema.parse(finalized.json().value)
         const ref = { fileId: attachment.file.fileId, revisionId: attachment.revision.revisionId }
         const request = { requestId: randomUUID(), attachments: [ref], content:
-          'Use the attached-file files_read tool to read spec.md, decode contentBase64, and follow its instructions using graphql MCP. '
-          + 'Use the supplied pinned file and revision IDs. Do not use shell commands or change any files.' }
+          `Read spec.md by calling the attached-file files_read tool with this exact JSON: ${JSON.stringify({
+            ...ref, offset: 0, length: bytes.length,
+          })}. Copy both IDs completely. Decode contentBase64 and follow its instructions using graphql MCP. `
+          + 'Do not use shell commands or change any files.' }
         const accepted = await callWorkspaceTool(caller.client, 'operator_chat_send', SendOperatorMessageResponseSchema,
           { conversationId: conversation.id, request })
         expect(accepted.replayed).toBe(false)
