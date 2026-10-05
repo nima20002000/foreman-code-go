@@ -213,10 +213,10 @@ export class RepeatRunRepository {
       assertActive: () => this.active(context),
     }, sourceExecutionId, 'finish_with_findings'))
   }
-  resolveWaitingWorkJoins(): Promise<string[]> {
+  resolveWaitingWorkJoins(sourceActivationId: string): Promise<string[]> {
     return this.transaction((context) => resolveWaitingWorkJoinsLocked({ ...context,
       assertActive: () => this.active(context),
-    }))
+    }, sourceActivationId))
   }
   ensureWorkEntry(): Promise<string> {
     return this.transaction((context) => ensureWorkEntryLocked({ ...context,

@@ -95,7 +95,7 @@ export async function workHandoffFixture(pool: pg.Pool, suffix: string,
         admitWorkRequest: (id, relationship) => store.admitWorkRequest(id, relationship),
         returnWork: (id) => store.returnWork(id),
         recordWorkUnresolved: (id) => store.recordWorkUnresolved(id),
-        resolveWaitingWorkJoins: () => store.resolveWaitingWorkJoins(),
+        resolveWaitingWorkJoins: (id) => store.resolveWaitingWorkJoins(id),
       },
       // The result is already accepted; this port isolates subsequent routing from native execution.
       driver: { candidate: () => { throw new Error('Accepted routing allocated another native execution') },

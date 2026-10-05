@@ -1,7 +1,9 @@
-import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
 import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
 import { workJoinRoundMigration } from './workJoinRoundMigration.js'
+import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
+import { workJoinDispatchMigration } from './workJoinDispatchMigration.js'
+import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
 import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
@@ -831,6 +833,8 @@ export const migrations = [
   workExhaustedRouteMigration,
   workDeliverySettlementMigration,
   workUnresolvedRoutesMigration,
+  workJoinDispatchMigration,
+  workJoinDispositionMigration,
   localHumanMigration,
 ] as const
 

@@ -186,17 +186,35 @@ async function resolveWorkJoinLocked(context: AdmissionContext, activationId: st
   return required.length > 0
 }
 
-export async function resolveWaitingWorkJoinsLocked(context: AdmissionContext): Promise<string[]> {
+async function claimWorkJoinDispatchLocked(context: AdmissionContext,
+  activationId: string, sourceActivationId: string): Promise<boolean> {
+  context.assertActive()
+  await context.sql.query(`insert into run_work_join_dispatches(run_id,activation_id,source_activation_id)
+    values($1,$2,$3) on conflict do nothing`, [context.scope.runId, activationId, sourceActivationId])
+  const row = (await context.sql.query<{ source_activation_id: string }>(
+    'select source_activation_id from run_work_join_dispatches where run_id=$1 and activation_id=$2',
+    [context.scope.runId, activationId])).rows[0]
+  return row?.source_activation_id === sourceActivationId
+}
+
+export async function resolveWaitingWorkJoinsLocked(context: AdmissionContext,
+  sourceActivationId: string): Promise<string[]> {
   await context.hooks.assertAuthorityLocked(context.sql)
   const rows = (await context.sql.query<{ activation_id: string; workflow_node_id: string; state: string }>(
-    `select activation_id,workflow_node_id,state from run_work_activations a
-      where run_id=$1 and cause_kind='join' and (state='waiting' or state='queued'
+    `select a.activation_id,a.workflow_node_id,a.state from run_work_activations a
+      left join run_work_join_dispatches d on d.run_id=a.run_id and d.activation_id=a.activation_id
+      where a.run_id=$1 and a.cause_kind='join' and (d.source_activation_id=$2 or d.activation_id is null
+        and (a.state='waiting' or a.state='queued'
         and not exists(select 1 from harness_executions e where e.run_id=a.run_id
-          and e.work_activation_id=a.activation_id)) order by activation_id for update`,
-    [context.scope.runId])).rows
+          and e.work_activation_id=a.activation_id))) order by a.activation_id for update of a`,
+    [context.scope.runId, sourceActivationId])).rows
   const ready: string[] = []
   for (const row of rows) {
-    if (row.state === 'queued' || await resolveWorkJoinLocked(context, row.activation_id, row.workflow_node_id)) {
+    const owned = (await context.sql.query(`select 1 from run_work_join_dispatches
+      where run_id=$1 and activation_id=$2 and source_activation_id=$3`,
+    [context.scope.runId, row.activation_id, sourceActivationId])).rowCount === 1
+    if (owned || (row.state === 'queued' || await resolveWorkJoinLocked(context, row.activation_id, row.workflow_node_id))
+      && await claimWorkJoinDispatchLocked(context, row.activation_id, sourceActivationId)) {
       ready.push(row.activation_id)
     }
   }
@@ -377,11 +395,15 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       || request.relationshipId !== relationship.id || !sameRepeatValue(request.scope, scope)) {
       return repeatConflict('WORK_REQUEST_REPLAY_CONFLICT')
     }
-    const state = (await sql.query<{ state: string }>(
-      'select state from run_work_activations where run_id=$1 and activation_id=$2',
+    const state = (await sql.query<{ state: string; cause_kind: string }>(
+      'select state,cause_kind from run_work_activations where run_id=$1 and activation_id=$2',
       [scope.runId, request.destinationActivationId])).rows[0]
     if (!state) return repeatConflict('WORK_ACTIVATION_MISSING')
-    return { kind: 'accepted', request, replayed: true, destinationReady: state.state !== 'waiting' }
+    const destinationReady = state.cause_kind === 'join'
+      ? state.state !== 'waiting' && await claimWorkJoinDispatchLocked(context,
+        request.destinationActivationId, activation.activationId)
+      : state.state !== 'waiting'
+    return { kind: 'accepted', request, replayed: true, destinationReady }
   }
   const denied = (await sql.query<{ record: unknown; payload_digest: string }>(
     'select record,payload_digest from run_work_denials where request_id=$1 and run_id=$2',
@@ -496,6 +518,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     sourceExecutionId, activationId, node.id, destinationNodeId, payloadDigest, canonicalGraphJson(request), context.now])
   let destinationReady = !join
   if (join) destinationReady = await resolveWorkJoinLocked(context, activationId, destinationNodeId)
+    && await claimWorkJoinDispatchLocked(context, activationId, activation.activationId)
   await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
     values($1,'backend','work_handoff_accepted',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
     context.now, canonicalGraphJson({ requestId, relationshipId: relationship.id, requesterNodeId: node.id,

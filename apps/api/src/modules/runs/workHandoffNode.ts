@@ -55,7 +55,7 @@ export function workHandoffNodeAction(input: {
   }
   return async (activationId: string): Promise<readonly string[]> => {
     const selected = await execute(activationId)
-    const joined = await input.store.resolveWaitingWorkJoins()
+    const joined = await input.store.resolveWaitingWorkJoins(activationId)
     return [...new Set([...selected, ...joined])]
   }
 }

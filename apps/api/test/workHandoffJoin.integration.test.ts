@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { Command, MemorySaver, interrupt } from '@langchain/langgraph'
+import { buildWorkHandoffGraph } from '../src/modules/runs/workHandoffGraph.js'
 import { randomUUID } from 'node:crypto'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveInputSchema,
-  CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
+  CurrentWorkflowSaveResultSchema, WorkActivationInputSchema } from '@graphql/contracts/wave25'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { describe, expect, it } from 'vitest'
@@ -83,7 +85,7 @@ describe.skipIf(!postgresEnabled)('work join routing and rounds', () => {
         const input = await t.input(joined.request.destinationActivationId)
         assert.equal(input.work.kind, 'join')
         expect(input.work.sources.map((source) => source.request.requesterExecutionId)).toEqual([b.id])
-        expect(await t.store.resolveWaitingWorkJoins()).toEqual([])
+        expect(await t.store.resolveWaitingWorkJoins(left.request.destinationActivationId)).toEqual([])
       } finally { await t.close(); await db.close() }
     }, 120000)
 
@@ -103,7 +105,7 @@ describe.skipIf(!postgresEnabled)('work join routing and rounds', () => {
       try {
         await t.accept(await t.store.ensureWorkEntry(), { ...finished(1), routing: { kind: 'finish', outcome: 'skip' } })
         if (recover) await t.restart()
-        expect(await t.store.resolveWaitingWorkJoins()).toEqual([])
+        expect(await t.store.resolveWaitingWorkJoins(await t.store.ensureWorkEntry())).toEqual([])
         expect((await db.pool.query('select required from (select work_join_required_edges($1,$1,$2) as required) q',
           [t.run.id, t.version.definition.nodes[3]!.id])).rows[0]?.required).toEqual([])
         expect((await db.pool.query('select activation_id from run_work_activations where run_id=$1 and cause_kind=$2',
@@ -171,6 +173,120 @@ describe.skipIf(!postgresEnabled)('work join routing and rounds', () => {
       } finally { await t.close(); await db.close() }
     }, 120000)
   }
+  it('dispatches one join approval task and preserves its dispatch on checkpoint replay', async () => {
+    const db = await currentDatabase()
+    const t = await workHandoffFixture(db.pool, 'concurrent-join-approval', (version) => ({ ...version,
+      definition: { ...version.definition, handoffs: { contractVersion: 1 },
+        executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 } } }))
+    try {
+      const entryId = await t.store.ensureWorkEntry()
+      const entry = await t.accept(entryId, finished(1))
+      const branches = []
+      for (const edge of t.version.definition.edges.filter((item) => item.source === t.version.entryNodeId)) {
+        const request = await t.store.admitWorkRequest(entry.id, edge.id)
+        assert.equal(request.kind, 'accepted')
+        branches.push(await t.accept(request.request.destinationActivationId, finished(1)))
+      }
+      const results = new Map([entry, ...branches].map((execution) =>
+        [WorkActivationInputSchema.parse(execution.input).work.activation.activationId, execution]))
+      const checkpointer = new MemorySaver()
+      const compose = () => buildWorkHandoffGraph({ runId: t.run.id, version: t.version, checkpointer,
+        signal: new AbortController().signal, port: {
+          ensureEntryActivation: () => t.store.ensureWorkEntry(),
+          executeActivation: async (id) => {
+            const execution = results.get(id)
+            if (execution) return t.route(execution)(id)
+            interrupt({ approval: 'join' })
+            await t.accept(id, finished(2))
+            return []
+          },
+        } })
+      let work = compose()
+      await work.graph.invoke(work.initial, work.config)
+      const waiting = await work.graph.getState(work.config)
+      expect(waiting.tasks.flatMap((task) => task.interrupts ?? [])).toHaveLength(1)
+      expect(waiting.tasks.filter((task) => task.interrupts?.length)).toHaveLength(1)
+      const claims = (await db.pool.query<{ activation_id: string; source_activation_id: string }>(
+        'select activation_id,source_activation_id from run_work_join_dispatches where run_id=$1', [t.run.id])).rows
+      expect(claims).toHaveLength(1)
+      await t.restart()
+      const routed = await Promise.all(branches.map((execution) => {
+        const id = [...results].find(([, item]) => item.id === execution.id)![0]
+        return t.route(execution)(id)
+      }))
+      expect(routed.flat()).toEqual([claims[0]!.activation_id])
+      work = compose()
+      await work.graph.invoke(new Command({ resume: true }), work.config)
+      expect((await work.graph.getState(work.config)).tasks).toHaveLength(0)
+      expect((await db.pool.query('select id from harness_executions where run_id=$1 and workflow_node_id=$2',
+        [t.run.id, t.version.definition.nodes[3]!.id])).rowCount).toBe(1)
+    } finally { await t.close(); await db.close() }
+  }, 120000)
+
+  it('releases a revised join after an incoming connection is exhausted and its notice finishes', async () => {
+    const db = await currentDatabase()
+    const t = await workHandoffFixture(db.pool, 'denied-join-round', (version) => ({ ...version,
+      definition: { ...version.definition, handoffs: { contractVersion: 1 },
+        executionPolicy: { maxParallelism: 3, maxNodeExecutions: 30 },
+        nodes: [...version.definition.nodes, { id: 'reviewer', agentId: version.definition.nodes[3]!.agentId }],
+        edges: [...version.definition.edges.map((edge, index) => index === 3
+          ? { ...edge, maxWorkHandoffsPerRun: 1 } : edge),
+        { id: 'a-reviewer', kind: 'execution', source: version.entryNodeId, target: 'reviewer' }],
+      } }))
+    try {
+      const entry = await t.accept(await t.store.ensureWorkEntry(), finished(1))
+      const runBranches = async (sourceId: string, revision: number) => {
+        const results = []
+        for (const edge of t.version.definition.edges.slice(0, 2)) {
+          const request = await t.store.admitWorkRequest(sourceId, edge.id)
+          assert.equal(request.kind, 'accepted')
+          results.push(await t.accept(request.request.destinationActivationId, finished(revision)))
+        }
+        return results
+      }
+      const first = await runBranches(entry.id, 1)
+      for (const [index, execution] of first.entries()) {
+        const request = await t.store.admitWorkRequest(execution.id, t.version.definition.edges[index + 2]!.id)
+        assert.equal(request.kind, 'accepted')
+        if (request.destinationReady) await t.accept(request.request.destinationActivationId, finished(1))
+      }
+      const reviewRequest = await t.store.admitWorkRequest(entry.id, 'a-reviewer')
+      assert.equal(reviewRequest.kind, 'accepted')
+      const review = await t.accept(reviewRequest.request.destinationActivationId, {
+        routing: { kind: 'return', requestId: reviewRequest.request.requestId, outcome: 'needs_changes' },
+        data: { latestDeliverable: { revision: 1 }, remainingFindings: ['revise'] },
+      })
+      const returned = await t.store.returnWork(review.id)
+      assert.ok(returned.value.continuationActivationId)
+      const revised = await t.accept(returned.value.continuationActivationId, finished(2))
+      const finalReviewRequest = await t.store.admitWorkRequest(revised.id, 'a-reviewer')
+      assert.equal(finalReviewRequest.kind, 'accepted')
+      const finalReview = await t.accept(finalReviewRequest.request.destinationActivationId, {
+        routing: { kind: 'return', requestId: finalReviewRequest.request.requestId, outcome: 'accepted' },
+        data: { latestDeliverable: { revision: 2 }, remainingFindings: [] },
+      })
+      await t.store.returnWork(finalReview.id)
+      const second = await runBranches(revised.id, 2)
+      const joined = await t.store.admitWorkRequest(second[0]!.id, t.version.definition.edges[2]!.id)
+      assert.equal(joined.kind, 'accepted')
+      expect(joined.destinationReady).toBe(false)
+      const denied = await t.store.admitWorkRequest(second[1]!.id, t.version.definition.edges[3]!.id)
+      assert.equal(denied.kind, 'limit_reached')
+      const closed = await t.accept(denied.notice.continuationActivationId, {
+        routing: { kind: 'finish' },
+        data: { latestDeliverable: { revision: 2 }, remainingFindings: ['incoming review exhausted'] },
+      })
+      await t.restart()
+      expect(await t.route(closed)(denied.notice.continuationActivationId)).toEqual([joined.request.destinationActivationId])
+      await t.restart()
+      const input = await t.input(joined.request.destinationActivationId)
+      assert.equal(input.work.kind, 'join')
+      expect(input.work.sources.map((source) => source.request.requesterExecutionId)).toEqual([second[0]!.id])
+      await t.accept(joined.request.destinationActivationId, finished(2))
+      expect(await t.store.completeWorkRun()).toBe('needs_direction')
+    } finally { await t.close(); await db.close() }
+  }, 120000)
+
   it('saves and reads a choice feeding an all-join through authenticated Operator MCP', async () => {
     const db = await currentDatabase()
     const t = await writerFixture(db, 'parallel')
