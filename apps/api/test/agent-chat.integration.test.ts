@@ -247,6 +247,8 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     const firstNode = twin.version.definition.nodes[0]!
     const secondNode = twin.version.definition.nodes[1]!
     secondNode.agentId = firstNode.agentId
+    twin.configurations = twin.configurations.filter(configuration => configuration.agentId === firstNode.agentId)
+    twin.version.agentConfigurationVersionIds = { [firstNode.agentId]: twin.configurations[0]!.id }
     const seeded = await seedAgent3(pool, root, twin, { run: false })
     const { service, managers } = makeService()
     const context = (nodeId: string) => ({ workflowId: seeded.scope.workflowId, workflowNodeId: nodeId, agentId: firstNode.agentId })
