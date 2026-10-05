@@ -52,7 +52,7 @@ import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/i
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 import { OpenCodeFileCleanupError } from './opencodeFiles/types.js'
 import { checkOpenCodeSchema } from './compatibility/schema.js'
-import { harnessProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
+import { rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
@@ -593,7 +593,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const combined = AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)])
     const state = this.sessions.get(session.nativeSessionId)
     if (!state || combined.aborted) return unavailable('session_closed')
-    if (session.harness !== 'opencode' || session.providerVersion !== this.providerVersion) return unavailable('identity_mismatch')
+    if (session.harness !== 'opencode') return unavailable('identity_mismatch')
     if (query.nativeRequestType !== 'permission.asked' || usesOpenCodeNativeAuto(state.configuration)) return unavailable('unsupported')
     const generation = this.generation
     const resident = this.options.server.requestResident
@@ -823,7 +823,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const state = this.sessions.get(session.nativeSessionId)
-    if (session.harness === 'opencode' && harnessProfile('opencode', session.providerVersion) === 'opencode-1.18.31'
+    if (session.harness === 'opencode'
       && state && (!nativeTurnId || state.turn?.messageID === nativeTurnId)) {
       state.autoReplies.stop()
       state.admissionPending?.abort(new Error('OpenCode turn admission canceled.'))
