@@ -532,7 +532,7 @@ describe('authenticated namespace carrier mechanics', () => {
         expect(pair.rawMain.frames.filter(text => JSON.parse(text).type === 'pong').length).toBeGreaterThan(pongs)
         const stop = stopRequest()
         await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
-        expect(handled).toHaveBeenCalledWith(stop)
+        expect(handled).toHaveBeenCalledWith(stop, expect.any(Object))
         expect(pair.rawMain.closed).toBe(false)
         expect(pair.rawWorker.closed).toBe(false)
         abort.abort()

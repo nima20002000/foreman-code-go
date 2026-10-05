@@ -3,10 +3,38 @@ import { DEVICE_HISTORY_PAGE_BYTES, type DeviceHistoryPage,
 import type { NativeHarnessEvent } from '@graphql/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
-import { pageJsonContinuation } from './jsonContinuation.js'
+import { isDeepStrictEqual } from 'node:util'
+import { DEVICE_JSON_CONTINUATION_LIMIT } from '@graphql/contracts/device-application'
+import { pageJsonContinuationBytes } from './jsonContinuation.js'
 import { encodeResultCopies, historyResultPaths } from './executionResultCodec.js'
 
 const historySource = Symbol('original native history page')
+type HistoryFields = Omit<NativeHistory, 'events' | 'firstRetainedSequence' | 'nextSequence' | 'gap'>
+const metadataTransfers = new Map<string, { fields: HistoryFields; bytes: Buffer }>()
+let retainedMetadataBytes = 0
+
+function metadataPage(fields: HistoryFields, request?: DeviceJsonContinuationRequest) {
+  const retained = request && metadataTransfers.get(request.digest)
+  if (retained && isDeepStrictEqual(retained.fields, fields)) {
+    return pageJsonContinuationBytes(retained.bytes, request)
+  }
+  const bytes = Buffer.from(JSON.stringify(encodeResultCopies(fields, historyResultPaths())))
+  const page = pageJsonContinuationBytes(bytes, request)
+  if (!metadataTransfers.has(page.digest)) {
+    while (metadataTransfers.size >= 64
+      || retainedMetadataBytes + bytes.byteLength > DEVICE_JSON_CONTINUATION_LIMIT * 4) {
+      const oldest = metadataTransfers.entries().next().value
+      if (!oldest) break
+      metadataTransfers.delete(oldest[0])
+      retainedMetadataBytes -= oldest[1].bytes.byteLength
+    }
+    metadataTransfers.set(page.digest, {
+      fields: structuredClone(fields), bytes,
+    })
+    retainedMetadataBytes += bytes.byteLength
+  }
+  return page
+}
 export function nativeHistoryPageSource(reply: unknown): NativeHistory | undefined {
   if (!reply || typeof reply !== 'object') return undefined
   return (reply as { [historySource]?: NativeHistory })[historySource]
@@ -28,9 +56,9 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   const limit = DEVICE_HISTORY_PAGE_BYTES - 256
   let metadata: DeviceHistoryPage['metadata']
   if (bytes > limit || metadataRequest) {
-    const fields: Omit<NativeHistory, 'events' | 'firstRetainedSequence' | 'nextSequence' | 'gap'> = { ...history }
+    const fields: HistoryFields = { ...history }
     for (const key of ['events', 'firstRetainedSequence', 'nextSequence', 'gap']) Reflect.deleteProperty(fields, key)
-    metadata = pageJsonContinuation(encodeResultCopies(fields, historyResultPaths()), metadataRequest)
+    metadata = metadataPage(fields, metadataRequest)
     value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
       ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }),

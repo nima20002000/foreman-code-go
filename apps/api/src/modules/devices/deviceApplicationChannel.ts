@@ -351,10 +351,14 @@ export class DeviceApplicationChannel {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
         componentLogger('devices').error({ err: error, namespace: assembly.namespace }, 'Device extension request failed')
         const failure = deviceApplicationFailure(error)
+        this.handlers.delete(id)
+        if (!this.rawHandlers.has(id)) this.releaseIncoming(assembly)
         await this.sendReply(id, assembly, registration, 'error', { payload: failure })
         return
       }
       if (!assembly.abort.signal.aborted) {
+        this.handlers.delete(id)
+        if (!this.rawHandlers.has(id)) this.releaseIncoming(assembly)
         await this.sendReply(id, assembly, registration, 'response', result)
       }
     } catch (error) {

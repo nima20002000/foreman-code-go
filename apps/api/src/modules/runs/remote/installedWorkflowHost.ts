@@ -800,7 +800,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         unavailable('original_operation_generation_changed')
       }
       if (isDeepStrictEqual(pending.binding,context.binding)) return pending.task
-      if (pending.binding.bootId !== context.binding.bootId) unavailable('original_operation_generation_changed')
+      if (pending.binding.bootId !== context.binding.bootId
+        || pending.binding.connectionGeneration === context.binding.connectionGeneration)
+        unavailable('original_operation_generation_changed')
       await Promise.allSettled([pending.task])
       current(context.binding)
       return construct(context,intent,placement,action,renewal)

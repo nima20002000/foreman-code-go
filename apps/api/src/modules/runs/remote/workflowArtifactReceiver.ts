@@ -72,10 +72,10 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
     const attempt = ArtifactAttemptSchema.parse({ workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: row.run_id,
       nodeId: intent.nodeId, executionId: row.execution_id, attemptId: intent.attemptId, placementHash: intent.bindingHash })
     const authority = { principalId: row.authorization_principal_id, grantId: intent.owner.grantId, grantRevision: intent.owner.epoch }
-    await this.fence.assertCurrent(attempt, authority, sql)
-    if (worker.revokedAt || Date.parse(worker.expiresAt) <= Date.now()) return denied()
     if (placement.hostRef.kind === 'main') {
       if (placement.hostRef.mainId !== this.mainId) return denied()
+      await this.fence.assertCurrent(attempt, authority, sql)
+      if (worker.revokedAt || Date.parse(worker.expiresAt) <= Date.now()) return denied()
       return { worker, attempt, authority, binding: null, intent, placement }
     }
     if (!placement.registration) return denied()
@@ -84,6 +84,8 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
     if (!binding || binding.mainId !== this.mainId || binding.deviceId !== placement.hostRef.deviceId
       || binding.workerInstallationId !== placement.registration.workerInstallationId || binding.keyRevision !== placement.registration.keyRevision
       || binding.authorizationRevision !== placement.registration.authorizationRevision) return denied()
+    await this.fence.assertCurrent(attempt, authority, sql)
+    if (worker.revokedAt || Date.parse(worker.expiresAt) <= Date.now()) return denied()
     this.assertConnection(binding)
     return { worker, attempt, authority, binding: structuredClone(binding), intent, placement }
   }

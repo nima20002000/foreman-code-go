@@ -10,10 +10,51 @@ const ServiceOwnerSchema = z.object({
   pid: z.number().int().min(2), startTicks: z.string().regex(/^[0-9]+$/),
 }).strict()
 
+const kernelLeaseProbe = `
+import errno, fcntl, signal, sys
+leased = False
+def interrupted(*args):
+    raise BlockingIOError(errno.EAGAIN, 'Owner inode is in use')
+signal.signal(signal.SIGIO, interrupted)
+try:
+    fcntl.fcntl(3, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+    leased = True
+except BlockingIOError:
+    sys.exit(3)
+except (AttributeError, OSError) as error:
+    unsupported = isinstance(error, AttributeError) or error.errno in [errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP]
+    sys.exit(2 if unsupported else 4)
+finally:
+    if leased:
+        fcntl.fcntl(3, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+`
+
+async function proveOwnerInodeIdle(file: Awaited<ReturnType<typeof open>>): Promise<boolean> {
+  // The stdlib helper uses the inherited open description, without opening
+  // other processes or acquiring privileges. An exclusive inode lease fails
+  // while any other reader or writer retains the legacy owner descriptor.
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-c', kernelLeaseProbe], {
+      stdio: ['ignore', 'ignore', 'ignore', file.fd],
+    })
+    child.once('error', error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') resolve(false)
+      else reject(error)
+    })
+    child.once('close', code => {
+      if (code === 0) resolve(true)
+      else if (code === 2) resolve(false)
+      else if (code === 3) reject(Object.assign(new Error('Legacy journal service owner is still alive'), { code: 'EEXIST' }))
+      else reject(new Error('Legacy journal kernel ownership could not be verified'))
+    })
+  })
+}
+
 async function assertLegacyOwnerClosed(file: Awaited<ReturnType<typeof open>>) {
   const owner = await file.stat()
   if (!owner.isFile() || owner.nlink !== 1 || (owner.mode & 0o077)
     || owner.uid !== process.getuid?.()) throw new Error('Unsafe legacy journal owner record')
+  if (await proveOwnerInodeIdle(file)) return
   // Legacy owners retain this inode's descriptor until close. Scan that kernel
   // ownership before upgrading, rather than treating an unknown UUID as stale.
   for (const pid of await readdir('/proc')) {

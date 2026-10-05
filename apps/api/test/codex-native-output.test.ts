@@ -103,7 +103,7 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
       for (const sandbox of ['read-only', 'danger-full-access'] as const) {
         f.config.sandbox = sandbox
         delete f.config.advanced!.workspaceWrite
-        await assert.rejects(f.manager.createSession(f.source), /no promotion/)
+        await assert.rejects(f.manager.createSession(f.source), { code: 'CODEX_NATIVE_OUTPUT_UNQUALIFIED' })
         assert.throws(() => codexNativeOutputDeclarations(f.config, 'codex-cli 0.154.0'))
       }
       assert.throws(() => new CodexAppServerSessionManager('/unused', undefined, undefined, undefined, 'scoped',

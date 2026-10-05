@@ -42,7 +42,7 @@ it('uses authenticated turn-scoped HTTP tools for OpenCode and seals through the
         isError?: boolean; structuredContent?: { artifactId?: string; operation?: string; byteSize?: number }
       } }).result }
     }
-    const create = { operation: 'create', commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' }
+    const create = { operation: 'create', commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' }
     expect((await call('files.native_output_create', create, 'Bearer foreign')).status).toBe(401)
     const immediate = call('files.native_output_create', create)
     await turn.activate()

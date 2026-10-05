@@ -1518,9 +1518,9 @@ describe('installed workflow construction concurrency', () => {
     const tasks = [f.intent, other].map(intent => f.handler({ method: 'status', intent, placement: f.placement }, f.context))
     try {
       await opened.promise
-      await vi.waitFor(() => { expect(f.inspect).toHaveBeenCalledTimes(4) })
       release.resolve()
       await Promise.all(tasks)
+      expect(f.inspect).toHaveBeenCalledTimes(4)
       expect(f.openJournal).toHaveBeenCalledOnce()
       const receipts = []
       for (const intent of [f.intent, other]) {
