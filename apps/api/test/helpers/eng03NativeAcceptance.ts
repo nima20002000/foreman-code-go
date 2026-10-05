@@ -154,15 +154,21 @@ function resultText(execution: HarnessExecution | undefined): string {
 
 async function version(binary: string, directory: string, registry: NativeProcessRegistry): Promise<string> {
   const scope = registry.reserveLaunch(`acceptance-version:${randomUUID()}`)
+  const errors: unknown[] = []
+  let observed = ''
   try {
     const result = await runNativeCommand(binary, ['--version'], directory, AbortSignal.timeout(10_000),
       process.env, { recovery: scope })
     if (result.exitCode !== 0) throw new Error('Native acceptance version probe failed')
-    return result.stdout.trim()
-  } finally {
+    observed = result.stdout.trim()
+  } catch (error) { errors.push(error) }
+  try {
     await registry.abandonReservedLaunch(scope)
     if (!await registry.closeOwner(scope.owner)) throw new Error('Native version probe closure remains unconfirmed')
-  }
+  } catch (error) { errors.push(error) }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length) throw new AggregateError(errors, 'Native version probe and closure failed.')
+  return observed
 }
 
 /** Opt-in live-provider qualification through current V3 admission and native proof composition. */
@@ -195,6 +201,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     { kind: 'native-acceptance', root, schema, databaseUrl: baseUrl, registryDirectory, artifactPath })
   const registry = new NativeProcessRegistry(registryDirectory)
   const cleanupErrors: unknown[] = []
+  let failure: { error: unknown } | undefined
+  let result: NativeScenarioResult | undefined
   const admin = new pg.Pool({ connectionString: baseUrl, max: 1 })
   let pool: pg.Pool | undefined
   let checkpoints: ReturnType<typeof createCheckpointStore> | undefined
@@ -205,8 +213,6 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let restoreNativeMcp: (() => Promise<void>) | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
-  let scenarioFailure: unknown
-  let scenarioResult: NativeScenarioResult | undefined
   const runtimeTimeline: RuntimeTimingRecord[] = []
   const nativeSecrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
     .map(([, value]) => value).filter((value): value is string => Boolean(value))
@@ -648,62 +654,66 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       nativeEventSummary: executions.map((execution) => ({ id: execution.id,
         events: nativeEvents.filter((event) => event.executionId === execution.id)
           .map(({ type, occurredAt, sequence }) => ({ type, occurredAt, sequence })) })) })
-    scenarioResult = { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
+    result = { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
-    scenarioFailure = error
+    failure = { error }
     evidence.error = describeNativeFailure(error, nativeSecrets)
     evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState
-    if (runId && pool) {
-      evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
-      try {
-        const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
-        evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
-          checkpointId: checkpoint?.checkpoint.id,
-          pendingWrites: checkpoint?.pendingWrites?.filter(([, channel]) =>
-            channel === '__interrupt__' || channel === '__error__'),
+    try {
+      if (runId && pool) {
+        evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
+        try {
+          const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
+          evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
+            checkpointId: checkpoint?.checkpoint.id,
+            pendingWrites: checkpoint?.pendingWrites?.filter(([, channel]) =>
+              channel === '__interrupt__' || channel === '__error__'),
+          })
+        } catch (checkpointError) {
+          evidence.failureCheckpoint = { readError: checkpointError instanceof Error
+            ? nativePersistenceRedactor([]).text(checkpointError.message) : typeof checkpointError }
+        }
+        if (activeRuntime) {
+          const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
+            session?: NativeSessionReference; manager: NativeHarnessSessionManager
+          }>
+          evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
+            if (!value.session) return { executionId }
+            const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
+            const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
+              value.session.nativeSessionId).catch(() => undefined)
+            return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
+              pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
+                nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
+              lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
+                currentTurnOrMessageId: lane.currentTurnOrMessageId },
+              lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
+          }))
+        }
+        const requests = await pool.query<{ record: unknown }>(
+          'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
+        evidence.failureInteractions = requests?.rows.map(({ record }) => {
+          const interaction = DurableInteractionSchema.parse(record)
+          return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
+            nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
+            status: interaction.status, deliveryState: interaction.deliveryState }
         })
-      } catch (checkpointError) {
-        evidence.failureCheckpoint = { readError: checkpointError instanceof Error
-          ? nativePersistenceRedactor([]).text(checkpointError.message) : typeof checkpointError }
+        const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
+        evidence.failureExecutions = rows?.rows.map((row) => {
+          const execution = HarnessExecutionSchema.parse(row.record)
+          return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
+            result: execution.result, nativeSessionId: execution.nativeSessionId }
+        })
+        const events = await pool.query<{ execution_id: string; type: string; occurred_at: string; item_type: string | null }>(
+          `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at,
+             record#>>'{payload,item,type}' as item_type
+           from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
+           order by execution_id,sequence`, [runId]).catch(() => undefined)
+        evidence.failureNativeEvents = events?.rows
       }
-      if (activeRuntime) {
-        const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
-          session?: NativeSessionReference; manager: NativeHarnessSessionManager
-        }>
-        evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
-          if (!value.session) return { executionId }
-          const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
-          const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
-            value.session.nativeSessionId).catch(() => undefined)
-          return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
-            pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
-              nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
-            lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
-              currentTurnOrMessageId: lane.currentTurnOrMessageId },
-            lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
-        }))
-      }
-      const requests = await pool.query<{ record: unknown }>(
-        'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
-      evidence.failureInteractions = requests?.rows.map(({ record }) => {
-        const interaction = DurableInteractionSchema.parse(record)
-        return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
-          nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
-          status: interaction.status, deliveryState: interaction.deliveryState }
-      })
-      const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
-      evidence.failureExecutions = rows?.rows.map((row) => {
-        const execution = HarnessExecutionSchema.parse(row.record)
-        return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
-          result: execution.result, nativeSessionId: execution.nativeSessionId }
-      })
-      const events = await pool.query<{ execution_id: string; type: string; occurred_at: string; item_type: string | null }>(
-        `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at,
-           record#>>'{payload,item,type}' as item_type
-         from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
-         order by execution_id,sequence`, [runId]).catch(() => undefined)
-      evidence.failureNativeEvents = events?.rows
+    } catch (diagnosticError) {
+      failure.error = new AggregateError([error, diagnosticError], 'Native scenario and diagnostic collection failed.')
     }
     try { await stopRun?.() }
     catch (cleanupError) { cleanupErrors.push(cleanupError) }
@@ -745,21 +755,19 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     if (evidence.error || evidence.startError || cleanupErrors.length) {
       console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
     }
-    await writeNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence))
+    await close(() => writeNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence)))
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
-    if (cleanupErrors.length) {
-      throw new AggregateError(cleanupErrors, `Native acceptance cleanup remains unconfirmed; resources retained at ${root}`)
-    }
-    if (!keepRuntime) {
-      await removeFixtureDirectory(root)
-      completeTestResourceCleanup(invocation, cleanupId)
+    if (!cleanupErrors.length && !keepRuntime) {
+      await close(async () => {
+        await removeFixtureDirectory(root)
+        completeTestResourceCleanup(invocation, cleanupId)
+      })
     }
   }
   if (cleanupErrors.length) {
-    const failures = [...cleanupErrors]
-    if (evidence.error) failures.unshift(scenarioFailure)
-    throw new AggregateError(failures, 'Native acceptance or cleanup failed.', { cause: scenarioFailure })
+    const errors = [...(failure ? [failure.error] : []), ...cleanupErrors]
+    throw new AggregateError(errors, `Native acceptance cleanup remains unconfirmed; resources retained at ${root}`, { cause: failure?.error })
   }
-  if (evidence.error) throw scenarioFailure
-  return scenarioResult!
+  if (failure) throw failure.error
+  return result!
 }
