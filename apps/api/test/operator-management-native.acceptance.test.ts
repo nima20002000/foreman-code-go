@@ -74,7 +74,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           'bearer_token_env_var = "GRAPHQL_MCP_TOKEN"', '',
         ].join('\n'))
         await writeFile(join(directory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
-          type: 'remote', url: endpoint, enabled: true,
+          type: 'remote', url: endpoint, enabled: true, oauth: false,
           headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
         } } }))
         f = await workspaceMcpFixture({ connectionString, port, async configure({ app, pool, access, commands, parentPath, services }) {
