@@ -9,6 +9,8 @@ it.each([undefined, '', 'default'])('reattaches an unnamed variant stored as %s'
   const restarted = manager(server)
   try {
     const session = await sessionFor(original, harness)
+    const user = server.user('before-restart', 'Initialize the native model', session.nativeSessionId)
+    user.info.model = { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' }
     const info = server.sessionInfos.get(session.nativeSessionId)!
     info.model = { providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant }
     assert.deepEqual(await restarted.attachSession(session, { request: request(harness), environment: environment() }), session)
@@ -100,5 +102,27 @@ it('sends the explicit unnamed choice even when the native agent has a named def
     assert.equal(prompt.variant, '')
   } finally {
     await native.dispose()
+  }
+})
+
+it('rejects an actual named default variant when the accepted configuration is unnamed', async () => {
+  const server = new FixtureServer()
+  const harness = { ...configuration(), variant: '' }
+  const original = manager(server)
+  const restarted = manager(server)
+  try {
+    const session = await sessionFor(original, harness)
+    server.sessionInfos.get(session.nativeSessionId)!.model = {
+      providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'default',
+    }
+    const user = server.user('before-restart', 'Named variant task', session.nativeSessionId)
+    user.info.model = { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash', variant: 'default' }
+    await assert.rejects(restarted.attachSession(session, {
+      request: request(harness), environment: environment(),
+    }), errorCode('OPENCODE_SESSION_CONFIGURATION_MISMATCH'))
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 0)
+  } finally {
+    await restarted.dispose()
+    await original.dispose()
   }
 })
