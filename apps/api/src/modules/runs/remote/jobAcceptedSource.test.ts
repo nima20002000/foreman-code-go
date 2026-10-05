@@ -4,7 +4,7 @@ import { verificationFixture } from '../../../../test/helpers/jobVerificationFix
 import { VerificationJobExecutionSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 import { createVerificationProfile } from '../../jobs/verificationProfiles.js'
 import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
-import { readAcceptedJobSource } from './jobAcceptedSource.js'
+import { readAcceptedJobSource, readAcceptedJobCleanupSource } from './jobAcceptedSource.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -107,8 +107,19 @@ describe('authenticated original Job source producer with SQL doubles, no DB/phy
     f.state.profile = profile
     expect(await readAcceptedJobSource(f.sql, execution)).toMatchObject({ execution, root: f.root,
       diskQuotaBytes: facts.resources.limits.diskBytes })
+    delete f.materialization.receipt.quota
+    const flatRoot = join(f.root.binding.canonicalPath, execution.acceptedSpec.source.materializationId, 'tree')
+    const historical = VerificationJobExecutionSchema.parse({ ...execution, acceptedSpec: {
+      ...execution.acceptedSpec, source: { ...execution.acceptedSpec.source,
+        materializationDigest: sourceMaterializationDigest(f.materialization) },
+      target: { ...execution.acceptedSpec.target, destination: { ...execution.acceptedSpec.target.destination,
+        canonicalProjectRoot: flatRoot, canonicalCwd: flatRoot } },
+    } })
+    await expect(readAcceptedJobSource(f.sql, historical)).rejects.toMatchObject({ code: 'JOB_ACCEPTED_SOURCE_CONFLICT' })
+    expect(await readAcceptedJobCleanupSource(f.sql, historical)).toMatchObject({ execution: historical, root: f.root })
     profile.spec.policy.toolchainDigest = '0'.repeat(64)
     await expect(readAcceptedJobSource(f.sql, execution)).rejects.toMatchObject({ code: 'JOB_ACCEPTED_SOURCE_CONFLICT' })
+    await expect(readAcceptedJobCleanupSource(f.sql, historical)).rejects.toMatchObject({ code: 'JOB_ACCEPTED_SOURCE_CONFLICT' })
   })
   it('denies the wrong authenticated installation before reading source metadata', async () => {
     const f = fixture(); await expect(f.bridge.resolveAcceptedSource(f.intent, { ...f.binding, workerInstallationId: randomUUID() })).rejects.toThrow('does not own')
