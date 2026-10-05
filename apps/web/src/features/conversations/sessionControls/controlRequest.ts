@@ -32,7 +32,8 @@ export function reservePendingControl(scope: string, input: ControlChange, expec
   return exclusive(scope, () => {
     const pending = pendingControl(scope)
     if (pending) {
-      const { requestId: _id, expectedRevision: _revision, ...original } = pending.request
+      const original = Object.fromEntries(Object.entries(pending.request)
+        .filter(([field]) => field !== 'requestId' && field !== 'expectedRevision'))
       if (JSON.stringify(original) !== JSON.stringify(input)) {
         throw new Error('Recover the previous session control before changing settings.')
       }
