@@ -5,6 +5,7 @@ import {
 import {
   AcceptedJobSpecSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobDefinitionSaveSchema, JobOutputSpecSchema,
   JobProcessStateSchema, JobTargetSchema, ResolvedJobDefinitionSpecSchema, AutoJobDefinitionSpecSchema, JobExecutionSchema,
+  PreparedJobSpecSchema, JobAuthoringChoicesSchema, JobPolicySchema, JobPolicyRequirementsSchema,
   validateJobDefinitionPaths,
 } from './jobs.js'
 import {
@@ -95,6 +96,23 @@ export const VerificationJobDefinitionSchema = JobDefinitionSchema.extend({
 export const JobDefinitionRecordSchema = z.union([JobDefinitionSchema, VerificationJobDefinitionSchema])
 export const JobDefinitionSpecRecordSchema = z.union([JobDefinitionSpecSchema, VerificationJobSpecSchema])
 export const JobDefinitionSaveRecordSchema = JobDefinitionSaveSchema.extend({ spec: JobDefinitionSpecRecordSchema }).strict()
+export const ResolvedJobDefinitionSpecRecordSchema = z.union([
+  ResolvedJobDefinitionSpecSchema, ResolvedVerificationJobSpecSchema,
+])
+export const PreparedVerificationJobSpecSchema = z.object({
+  ...ResolvedVerificationSpec.shape,
+  source: PreparedJobSpecSchema.shape.source,
+  computerSelection: PreparedJobSpecSchema.shape.computerSelection,
+}).strict().superRefine(validateJobDefinitionPaths).superRefine(validateVerificationPolicy)
+export const PreparedJobSpecRecordSchema = z.union([PreparedJobSpecSchema, PreparedVerificationJobSpecSchema])
+export const JobAuthoringChoicesRecordSchema = JobAuthoringChoicesSchema.extend({
+  policies: z.array(z.union([JobPolicySchema, JobVerificationPolicySchema])),
+  autoPolicies: z.array(z.object({
+    policy: z.union([JobPolicyRequirementsSchema, JobVerificationPolicyRequirementsSchema]),
+    limits: AutoJobDefinitionSpecSchema.shape.limits,
+  }).strict()).optional(),
+}).strict()
+export type JobAuthoringChoicesRecord = z.infer<typeof JobAuthoringChoicesRecordSchema>
 
 export const AcceptedVerificationJobSpecSchema = z.object({
   ...AcceptedJobSpecSchema.shape,
@@ -190,3 +208,22 @@ export const JobVerificationPassSchema = z.object({
 export type JobVerificationReport = z.infer<typeof JobVerificationReportSchema>
 export type VerificationJobSpec = z.infer<typeof VerificationJobSpecSchema>
 export type AcceptedVerificationJobSpec = z.infer<typeof AcceptedVerificationJobSpecSchema>
+export type JobDefinitionRecord = z.infer<typeof JobDefinitionRecordSchema>
+export type JobDefinitionSpecRecord = z.infer<typeof JobDefinitionSpecRecordSchema>
+export type JobDefinitionSaveRecord = z.infer<typeof JobDefinitionSaveRecordSchema>
+export type ResolvedJobDefinitionSpecRecord = z.infer<typeof ResolvedJobDefinitionSpecRecordSchema>
+export type PreparedJobSpecRecord = z.infer<typeof PreparedJobSpecRecordSchema>
+export type JobExecutionRecord = z.infer<typeof JobExecutionRecordSchema>
+export type JobAcceptedSpecRecord = z.infer<typeof JobAcceptedSpecRecordSchema>
+
+export function isAutoJobSpecRecord(spec: JobDefinitionSpecRecord): spec is
+  z.infer<typeof AutoJobDefinitionSpecSchema> | z.infer<typeof AutoVerificationJobSpecSchema> {
+  return 'kind' in spec.target && spec.target.kind === 'auto'
+}
+
+export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['policy']) {
+  const { isolationPolicyId, isolationPolicyRevision, ...requirements } = policy
+  void isolationPolicyId
+  void isolationPolicyRevision
+  return requirements
+}
