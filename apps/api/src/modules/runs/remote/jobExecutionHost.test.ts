@@ -1,19 +1,18 @@
 import { privateFixtureDirectory } from '../../../../test/helpers/privateFixtureDirectory.js'
-import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from '../../jobs/privateGitMounts.js'
+import { prepareJobRepositoryFixture } from '../../../../test/helpers/jobRepositoryFixture.js'
+import { JOB_PRIVATE_GIT_LAYOUT } from '../../jobs/privateGitMounts.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobSql } from '../../jobs/repository.js'
-import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
-import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
@@ -31,11 +30,9 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const root = await privateFixtureDirectory('w08-job-'); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
-  const sourceRoot=join(root,execution.acceptedSpec.source.materializationId,'tree');await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot,{mode:0o700})
-  const sourceHandle=await open(sourceRoot,constants.O_RDONLY|constants.O_DIRECTORY),sourceIdentity=await identity(sourceHandle);await sourceHandle.close()
-  Object.assign(execution.acceptedSpec.target.destination,{canonicalProjectRoot:sourceRoot,canonicalCwd:sourceRoot,directoryIdentityHash:createHash('sha256').update(JSON.stringify(sourceIdentity)).digest('hex')})
-  execution.acceptedSpec.target.destination.managedRuntimeRoot=join(root,'runtime');await mkdir(execution.acceptedSpec.target.destination.managedRuntimeRoot,{mode:0o700})
-  Object.assign(execution.acceptedSpec,jobSpecDigests(execution.acceptedSpec,execution.acceptedSpec.workflowInput))
+  const runtimeRoot = join(root, 'runtime')
+  await mkdir(runtimeRoot, { mode: 0o700 })
+  const { sourceRoot, gitMounts } = await prepareJobRepositoryFixture(execution, root, runtimeRoot)
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
@@ -58,7 +55,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   vi.spyOn(OwnedOCIContainer.prototype,'close').mockResolvedValue(true)
   const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
-    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts:mountFixture(execution,sourceIdentity)})},
+    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts})},
     inputs:{prepare:async current=>{
       const spec=current.acceptedSpec,hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
       const manifest=Buffer.from(JSON.stringify(JobBuildInputManifestSchema.parse({version:1,inputSnapshotDigest:jobInputSnapshotDigest(current),workflowInput:spec.workflowInput,files:[]}))),workflow=Buffer.from(JSON.stringify(spec.workflowInput))
@@ -176,13 +173,3 @@ describe('SQL-only current accepted job closure receipts',()=>{
     await expect(f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).rejects.toMatchObject({code:expect.stringMatching(/^JOB_CLOSURE_/)})
   })
 })
-
-// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
-function mountFixture(execution:JobExecutionRecord,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
-  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
-  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
-    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
-}
-
-// This suite models OCI/native boundaries; original filesystem receipts are independently tested.
-vi.mock('../../jobs/privateGitMounts.js',async original=>{const actual=await original<typeof import('../../jobs/privateGitMounts.js')>();return {...actual,verifyJobGitMounts:vi.fn(async()=>{})}})

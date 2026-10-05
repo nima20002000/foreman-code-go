@@ -79,6 +79,7 @@ async function fixture(device = false) {
     else if (text.startsWith('select record,state from source_execution_materializations')) rows = record ? [{ record, state: 'prepared' }] : []
     else if (text.startsWith('select record,availability from source_snapshots')) rows = [{ record: approved, availability: 'retained' }]
     else if (text.startsWith('select availability from source_snapshots')) rows = [{ availability: 'retained' }]
+    else if (text.startsWith('select spec from job_computer_selections')) rows = [{ spec }]
     else throw new Error(`Unexpected source policy SQL: ${text}`)
     return { rows, rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] }
   })

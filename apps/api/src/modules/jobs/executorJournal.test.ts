@@ -1,14 +1,13 @@
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
-import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from './privateGitMounts.js'
+import { prepareJobRepositoryFixture } from '../../../test/helpers/jobRepositoryFixture.js'
+import { JOB_PRIVATE_GIT_LAYOUT } from './privateGitMounts.js'
 import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { constants, readFileSync as requireRead } from 'node:fs'
 import { identity } from '../sources/privateFilesystem.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
-import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -21,10 +20,9 @@ async function fixture() {
   const root = await privateFixtureDirectory('ci-job-owner-'); roots.push(root)
   const path = join(root, 'job-runtime-operations.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
   const execution = jobExecution(); execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
-  const sourceRoot = join(root, execution.acceptedSpec.source.materializationId,'tree'), runtimeRoot = join(root, 'runtime'); await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 })
-  const handle = await open(sourceRoot, constants.O_RDONLY | constants.O_DIRECTORY), filesystem = await identity(handle); await handle.close()
-  Object.assign(execution.acceptedSpec.target.destination, { canonicalProjectRoot: sourceRoot, canonicalCwd: sourceRoot, managedRuntimeRoot: runtimeRoot, directoryIdentityHash: createHash('sha256').update(JSON.stringify(filesystem)).digest('hex') })
-  Object.assign(execution.acceptedSpec, jobSpecDigests(execution.acceptedSpec, null))
+  const runtimeRoot = join(root, 'runtime')
+  await mkdir(runtimeRoot, { mode: 0o700 })
+  const { gitMounts } = await prepareJobRepositoryFixture(execution, root, runtimeRoot)
   const intent: RemoteJobDispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: execution.acceptedSpec.target.mainId,
     subject: { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id, definitionId: execution.acceptedSpec.definitionId },
     executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash,
@@ -35,7 +33,7 @@ async function fixture() {
     leaseId: execution.operationId, owner: execution.owner, observedDeviceId: null, observedInstallationId: connection.mainInstallationId, bootId: connection.bootId },
     containerId: 'a'.repeat(64), process: { pid: 42, startTicks: '123', bootId: connection.bootId },
     boundary: { kind: 'cgroup-v2' as const, path: `/sys/fs/cgroup/libpod-${'a'.repeat(64)}.scope`, device: '1', inode: '2' }, helpers: [], lifecycle: 'active' as const }
-  return { root, path, journal, execution, intent, connection, certificate }
+  return { root, path, journal, execution, intent, connection, certificate, gitMounts }
 }
 describe('original Job native journal, no live isolation claim', () => {
   it('requires the admitted entry before launcher/container reservations', async () => {
@@ -234,7 +232,7 @@ describe('installed actual Job factory with native/process doubles', () => {
   it('journals guarded commands before spawn and keeps observed exit7 separate from publication transport', async () => {
     const f = await qualifiedFixture()
     const repeated = await qualifyAgain(f)
-    const mounts = await mountFixture(f.execution)
+    const mounts = f.gitMounts
     const { EventEmitter } = await import('node:events'), { PassThrough } = await import('node:stream')
     const processes = await import('../harnesses/recovery/processRegistry.js')
     const installed = await import('./installedRuntimeHost.js'), qualification = await import('./qualification.js')
@@ -306,20 +304,3 @@ describe('installed actual Job factory with native/process doubles', () => {
     } finally { vi.restoreAllMocks() }
   })
 })
-
-// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
-async function mountFixture(execution:JobExecution):Promise<VerifiedJobGitMounts> {
-  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
-  const directoryIdentity = async (directory: string) => {
-    await mkdir(directory, { mode: 0o700 })
-    const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-    try { return await identity(handle) } finally { await handle.close() }
-  }
-  const gitFilesystem = await directoryIdentity(join(parent, 'repository'))
-  const schedulerFilesystem = await directoryIdentity(join(parent, 'job-heavy-jobs'))
-  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
-    git:{directory:join(parent,'repository'),filesystem:gitFilesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:gitFilesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem:schedulerFilesystem},receiptDigest:digest}
-}
-
-// This suite models OCI/native boundaries; original filesystem receipts are independently tested.
-vi.mock('./privateGitMounts.js',async original=>{const actual=await original<typeof import('./privateGitMounts.js')>();return {...actual,verifyJobGitMounts:vi.fn(async()=>{})}})
