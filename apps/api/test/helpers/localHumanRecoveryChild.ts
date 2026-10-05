@@ -13,7 +13,7 @@ import type { NativeHistory } from '../../src/modules/harnesses/port.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
 import { registerOperatorChatRoutes } from '../../src/routes/operatorChat.js'
 
-export interface LocalHumanRecoveryInput { schema: string; directory: string; binary: string }
+export interface LocalHumanRecoveryInput { schema: string; directory: string; binary: string; databaseUrl: string }
 export interface NativeRecoveryInspection { kind: 'inspect'; conversationId: string }
 
 process.once('message', (input: LocalHumanRecoveryInput) => {
@@ -26,7 +26,7 @@ process.once('message', (input: LocalHumanRecoveryInput) => {
 
 async function start(input: LocalHumanRecoveryInput): Promise<void> {
   if (!/^eng04_b_[0-9a-f]+$/.test(input.schema)) throw new Error('Expected a private test schema.')
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL,
+  const pool = new pg.Pool({ connectionString: input.databaseUrl,
     options: `-c search_path=${input.schema},public`, max: 4 })
   const access = new PostgresAccessService(pool)
   const observations = new Map<string, NativeHistory>()

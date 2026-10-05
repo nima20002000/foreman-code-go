@@ -7,8 +7,8 @@ import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 /** The existing disposable loopback test gate, without importing retired
  * execution seeders. No DATABASE_URL fallback or live/shared data cleanup. */
-export async function currentDatabase(options: { beforeMigration?: number } = {}) {
-  const url = process.env.TEST_DATABASE_URL
+export async function currentDatabase(options: { beforeMigration?: number; databaseUrl?: string } = {}) {
+  const url = options.databaseUrl ?? process.env.TEST_DATABASE_URL
   if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {

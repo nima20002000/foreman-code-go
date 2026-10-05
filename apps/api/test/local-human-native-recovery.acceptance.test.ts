@@ -20,16 +20,17 @@ import { pendingResponseQuery } from '../src/modules/harnesses/responseAvailabil
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
-import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import type { LocalHumanRecoveryInput } from './helpers/localHumanRecoveryChild.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
-const enabled = postgresEnabled && process.env.RUN_REAL_HARNESS_TESTS === '1'
+const databaseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL
+const enabled = Boolean(databaseUrl) && process.env.RUN_REAL_HARNESS_TESTS === '1'
 
 describe.skipIf(!enabled)('local human production native recovery', { timeout: 240_000 }, () => {
   it.each(['respond', 'restart'] as const)(
     '%s retains ownership and uses production Codex response availability across upgrade', async action => {
-    const db = await currentDatabase()
+    const db = await currentDatabase({ databaseUrl: databaseUrl! })
     const directory = await privateFixtureDirectory('local-human-native-recovery-')
     const access = new PostgresAccessService(db.pool)
     const owner = await access.issue({ name: 'Native conversation owner', audience: 'operator',
@@ -121,7 +122,7 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
       child.stdout?.resume()
       child.stderr?.resume()
       const ready = message(child, 'address')
-      const input: LocalHumanRecoveryInput = { schema: db.schema, directory, binary }
+      const input: LocalHumanRecoveryInput = { schema: db.schema, directory, binary, databaseUrl: databaseUrl! }
       child.send(input)
       const address = String((await ready).address)
       const url = `${address}/api/operator/conversations/${conversation.id}`
