@@ -224,6 +224,28 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await turn.result
   })
 
+  it('recovers a cold compaction through thread read without resume or another dispatch', async () => {
+    const session = await manager.createSession(source)
+    await flag('drop-compact-events')
+    const abort = new AbortController()
+    let control: CompactionState | undefined
+    const operation = manager.compactSession(session, { requestId: 'cold-compact-request', clientCorrelationId: 'cold-control',
+      onProgress: async value => { control = value } }, abort.signal)
+    await until(async () => (await wire('thread/compact/start')).length === 1)
+    abort.abort(new Error('API observer lost'))
+    await assert.rejects(operation)
+    await manager.shutdown()
+    const before = (await wire()).length
+    const cold = makeManager()
+    const recovered = await cold.readCompaction(session, source, { ...control!, status: 'uncertain' })
+    assert.equal(recovered.status, 'completed')
+    const reads = (await wire()).slice(before).map(entry => entry.method)
+    assert(reads.includes('thread/read'))
+    assert(!reads.includes('thread/resume'))
+    assert(!reads.includes('turn/start'))
+    assert.equal((await wire('thread/compact/start')).length, 1)
+  })
+
   it('discovers budget choices from model facts when a saved override starts or resumes the session', async () => {
     await json('models.json', { models: [{ slug: 'test-model', context_window: 200000,
       supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] })

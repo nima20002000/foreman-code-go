@@ -16,8 +16,8 @@ import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 
 export type ClaudeDomainBinding =
   | { kind: 'workflow'; runId: string; executionId: string; attempt: number; getOwner(): RunOwnership | undefined }
-  | { kind: 'operator'; conversationId: string; controlPrincipalId?: string; repository: Pick<PostgresOperatorConversationRepository, 'pending'> }
-  | { kind: 'agent'; conversationId: string; workspaceId: string; controlPrincipalId?: string; repository: Pick<PostgresAgentChatRepository, 'pending'> }
+  | { kind: 'operator'; conversationId: string; controlPrincipalId?: string; observationPrincipalId?: string; repository: Pick<PostgresOperatorConversationRepository, 'pending'> }
+  | { kind: 'agent'; conversationId: string; workspaceId: string; controlPrincipalId?: string; observationPrincipalId?: string; repository: Pick<PostgresAgentChatRepository, 'pending'> }
 export interface ClaudeCurrentCallbackOwner {
   nativeCallbackContext(sessionId: string, toolUseId: string): { nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string; generation: string } | undefined
 }
@@ -68,6 +68,12 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
       'select * from operator_conversations where id=$1', [this.binding.conversationId])).rows[0]
     if (!row || row.kind !== this.binding.kind || row.deleted_at || row.cancel_requested || row.record.status === 'archived'
       || this.binding.kind === 'agent' && row.workspace_id !== this.binding.workspaceId) denied()
+    if (this.binding.observationPrincipalId) {
+      const caller = this.binding.observationPrincipalId
+      if (this.binding.kind === 'operator' && row.owner_principal_id !== caller) denied()
+      await this.chatPrincipal(caller, row, 'read')
+      return
+    }
     if (row.active_request_id) { await this.callbackAdmission(); return }
     const caller = this.binding.controlPrincipalId
     if (!caller || this.binding.kind === 'operator' && row.owner_principal_id !== caller) denied()
@@ -100,11 +106,12 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
       || row.deleted_at || row.record.status === 'archived' || this.binding.kind === 'agent' && row.workspace_id !== this.binding.workspaceId) denied()
     return row
   }
-  private async chatPrincipal(id: string, row: ChatRow, action: 'write' | 'respond'): Promise<ManagementPrincipal> {
+  private async chatPrincipal(id: string, row: ChatRow, action: 'read' | 'write' | 'respond'): Promise<ManagementPrincipal> {
     const principal = (await currentOperatorAuthority(this.database, id)).principal
     if (this.binding.kind === 'workflow') return denied()
     const scope = this.binding.kind === 'agent' ? { workspaceId: row.workspace_id!, workflowId: row.workflow_id!, ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) } : {}
     requireAuthorization(principal, this.binding.kind === 'agent' ? 'agent_chat:read' : 'operator_chat:read', scope)
+    if (action === 'read') return principal
     requireAuthorization(principal, this.binding.kind === 'agent' ? action === 'write' ? 'agent_chat:write' : 'agent_chat:respond' : action === 'write' ? 'operator_chat:write' : 'operator_chat:respond', scope)
     return principal
   }

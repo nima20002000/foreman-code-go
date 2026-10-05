@@ -141,6 +141,58 @@ describe('Claude native session manager admission', () => {
     expect((await f.manager.reconcile(session, 'request-2')).terminalResult?.output).toBe('again')
     await f.manager.close(session); await f.manager.close(session); await f.manager.dispose?.()
   })
+  it.each(['settings persistence', 'mode control'])(
+    'reports %s failure before offer as definite and accepts a later task', async stage => {
+      const f = fixture()
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, start)
+      const input: ClaudeMessageTurnInput = { prompt: 'unoffered task', clientCorrelationId: 'before-offer',
+        ...(stage === 'mode control' ? { sessionMode: 'plan' } : {}),
+        onSettingsApplied: async () => { if (stage === 'settings persistence') throw new Error('Storage failed') },
+      }
+      await expect(drain(f.manager.startTurn(session, input))).rejects.toMatchObject({
+        certainty: 'definite', deliveryState: 'not-delivered',
+      })
+      expect(f.offers).not.toHaveBeenCalled()
+      const output = drain(f.manager.startTurn(session, { prompt: 'next task', clientCorrelationId: 'next-offer',
+        sessionPreferences: SessionPreferencesSchema.parse({}) }))
+      const message = await f.nextMessage()
+      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await output
+      expect(f.offers).toHaveBeenCalledTimes(1)
+      await f.manager.dispose?.()
+    })
+
+  it('recovers safe-resume failure before offer and accepts the next task on the saved session', async () => {
+    const f = fixture()
+    const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+      nativeSessionId: 'native-session' }, start)
+    const open = f.runner.open.bind(f.runner)
+    vi.spyOn(f.runner, 'open').mockRejectedValueOnce(new Error('Resume failed')).mockImplementation(open)
+    await expect(drain(f.manager.startTurn(session, { prompt: 'unoffered', clientCorrelationId: 'resume-failure',
+      sessionPreferences: SessionPreferencesSchema.parse({ autoCompact: 'off' }) }))).rejects.toMatchObject({
+      certainty: 'definite', deliveryState: 'not-delivered',
+    })
+    expect(f.offers).not.toHaveBeenCalled()
+    const frames = new ClaudeBoundedQueue<unknown>(8)
+    let messages!: AsyncIterator<ClaudeSdkUserMessage>
+    f.client.query = input => {
+      messages = input.prompt[Symbol.asyncIterator]()
+      return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), interrupt: async () => {},
+        initializationResult: async () => ({ models: [], account: {} }), close: () => frames.close() }
+    }
+    const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'resume-follow-up',
+      sessionPreferences: SessionPreferencesSchema.parse({}) }))
+    await vi.waitFor(() => expect(messages).toBeDefined())
+    const message = (await messages.next()).value!
+    frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+      subtype: 'success', is_error: false, result: 'done' })
+    await output
+    expect(f.offers).toHaveBeenCalledTimes(1)
+    await f.manager.dispose?.()
+  })
+
   it('interrupts only the exact active message and settles its aborted result as canceled', async () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     expect((await f.manager.capabilities()).cancellation).toBe(true)

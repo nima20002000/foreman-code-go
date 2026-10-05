@@ -70,6 +70,10 @@ import {
 /** One native manager per conversation; its process is owned by this service, never by a UI connection. */
 export interface AgentChatManagerFactory {
   (conversationId: string, configuration: AgentConfigurationVersion, workingDirectory: string): NativeHarnessSessionManager
+  recoverCompaction?(configuration: AgentConfigurationVersion, conversationId: string,
+    session: NativeSessionReference, start: NativeSessionStart,
+    state: import('@graphql/contracts').CompactionState, principalId: string, signal: AbortSignal):
+    Promise<import('@graphql/contracts').CompactionState>
   release?(conversationId: string): void
 }
 
@@ -528,6 +532,11 @@ export class AgentChatService {
       busyReason: row.active_request_id || row.pending_interaction || state.turns.some(turn => turn.delivery === 'queued')
         ? 'Wait for the active and queued turns and their approvals to finish.' : null,
       session, manager: runtime?.manager,
+      ...(session && configuration && this.managers.recoverCompaction ? {
+        recoverCompaction: (state: import('@graphql/contracts').CompactionState) => this.managers.recoverCompaction!(
+          configuration, id, session, this.startInput(row, configuration, `session-control:${id}`, true),
+          state, principal.id, this.lifetime.signal),
+      } : {}),
       ...(configuration ? { pendingCapabilities: pendingSessionControls(configuration.harness) } : {}) }
   }
 
@@ -587,7 +596,7 @@ export class AgentChatService {
   }
 
   async readSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string) {
-    return this.control(id, async () => this.sessionControls.read(await this.sessionControlBinding(principal, workspaceId, id)))
+    return this.command(async () => this.sessionControls.read(await this.sessionControlBinding(principal, workspaceId, id)))
   }
 
   changeSessionControls(principal: ManagementPrincipal, workspaceId: string, id: string,
@@ -1202,7 +1211,8 @@ export class AgentChatService {
           await this.release(id)
         }
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
-        if (unavailable) await this.release(id)
+        if (unavailable || error && typeof error === 'object'
+          && 'deliveryState' in error && error.deliveryState === 'not-delivered') await this.release(id)
       } else {
         await this.repository.abandon(id, turn.requestId, error instanceof Error ? error.message : 'Native delivery is unconfirmed.')
         // Retain the manager: it may still own a late acknowledgement or a live native turn.
@@ -1464,7 +1474,8 @@ export class AgentChatService {
           `Native delivery is not yet confirmed. ${error instanceof Error ? error.message : ''}`.trim())
         // Also convert a crash-left provisional steer; missing evidence never means acceptance.
         for (const steer of steers) await this.repository.unknown(id, steer.requestId, 'Steer delivery is not yet confirmed.')
-        if (unavailable) await this.release(id)
+        if (unavailable || error && typeof error === 'object'
+          && 'deliveryState' in error && error.deliveryState === 'not-delivered') await this.release(id)
         else this.scheduleReconcile(id)
         this.events.publish(id, 'state', { delivery: 'unknown' })
       }

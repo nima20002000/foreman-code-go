@@ -246,6 +246,62 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(manager.attachments).toBe(0)
   }, 30000)
 
+  it.each(['codex', 'opencode'] as const)(
+    'recovers cold %s compaction through authenticated reads without execution credentials', async harness => {
+      manager = new ChatManager(harness)
+      chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
+      const conversation = await chat.create(owner)
+      await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed session' }, owner)
+      await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+      Object.assign(manager, {
+        sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'), compact: { supported: true, reason: null } }),
+        compactSession: async (session: NativeSessionReference, input: import('../src/modules/harnesses/port.js').NativeCompactInput) => {
+          await input.onDispatch?.()
+          return { requestId: input.requestId, nativeSessionId: session.nativeSessionId, nativeOperationId: 'compact-turn',
+            status: 'uncertain', message: 'Completion notification lost', beforeTokens: 100, observedAt: new Date().toISOString() }
+        },
+      })
+      const before = await chat.readSessionControls(conversation.id, owner)
+      const compact = { kind: 'compact' as const, requestId: randomUUID(), expectedRevision: before.revision }
+      await chat.changeSessionControls(conversation.id, compact, owner)
+      await chat.shutdown()
+      const reader = await access.issue({ name: 'cold control reader', audience: 'operator',
+        grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600000) })
+      await pool.query('update operator_conversations set owner_principal_id=$2 where id=$1', [conversation.id, reader.principal.id])
+      let reads = 0
+      const resolver = Object.assign(() => { throw new Error('Read allocated an execution manager') }, {
+        recoverCompaction: async (_configuration: unknown, _id: string, session: NativeSessionReference,
+          _start: unknown, state: import('@graphql/contracts').CompactionState) => {
+          reads++
+          expect(session.nativeSessionId).toBe(before.nativeSessionId)
+          return { ...state, status: 'completed' as const, message: 'Context compacted' }
+        },
+      })
+      authority.prepare = async () => { throw new Error('Read issued an execution credential') }
+      chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
+      const app = await buildApp({ auth: { mode: 'bearer', resolveBearer: async token => access.authenticate(token) },
+        operator: { access, services: { chat } as unknown as OperatorServices } })
+      registerOperatorChatRoutes(app, chat)
+      const client = new Client({ name: 'cold-control-reader', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+          authProvider: { token: async () => reader.token },
+        }))
+        const recovered = await client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId: conversation.id } })
+        expect(recovered.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(recovered.structuredContent).compaction?.status).toBe('completed')
+        const denied = await client.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id,
+          request: { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision } } })
+        expect(denied.isError).toBe(true)
+        const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}/session-controls`,
+          headers: { authorization: `Bearer ${reader.token}` } })
+        expect(http.statusCode).toBe(200)
+        expect(SessionControlStateSchema.parse(http.json()).compaction?.status).toBe('completed')
+        expect(reads).toBe(1)
+      } finally { await client.close(); await app.close() }
+    })
+
   it('commits defaults only for the command that wins a concurrent revision update', async () => {
     const conversation = await chat.create(owner)
     const binding = { conversationId: conversation.id, principalId: owner.id, defaultSubject: 'application-operator',

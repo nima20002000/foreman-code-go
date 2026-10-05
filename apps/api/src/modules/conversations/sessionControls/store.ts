@@ -21,6 +21,7 @@ export interface SessionControlBinding {
   busyReason: string | null
   session?: NativeSessionReference | undefined
   manager?: NativeHarnessSessionManager | undefined
+  recoverCompaction?(state: NonNullable<SessionControlState['compaction']>): Promise<NonNullable<SessionControlState['compaction']>>
   pendingCapabilities?: SessionControlCapabilities
 }
 
@@ -52,6 +53,16 @@ export class SessionControlStore {
 
   async read(binding: SessionControlBinding): Promise<SessionControlState> {
     const { conversationId, manager, session } = binding
+    if (this.compacting.size) {
+      const row = await this.pool.query<{ record: unknown }>(
+        'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+      if (row.rows[0]) {
+        const saved = SessionControlStateSchema.parse(row.rows[0].record)
+        if (saved.compaction && this.compacting.has(saved.compaction.requestId)) {
+          return { ...saved, busyReason: binding.busyReason }
+        }
+      }
+    }
     const capabilities = manager?.sessionControlCapabilities && session
       ? await manager.sessionControlCapabilities(session) : binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
@@ -102,6 +113,16 @@ export class SessionControlStore {
       }
       if (JSON.stringify(reconciled) !== JSON.stringify(state.compaction)) {
         state.compaction = { ...state.compaction, ...reconciled, principalId: state.compaction.principalId }
+        await this.save(state)
+      }
+    }
+    if (state.compaction && compactionBlocksSend(state.compaction) && !manager && binding.recoverCompaction) {
+      const recovered = CompactionStateSchema.parse(await binding.recoverCompaction(state.compaction))
+      if (recovered.requestId !== state.compaction.requestId || recovered.nativeSessionId !== state.compaction.nativeSessionId) {
+        throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The recovered compaction belongs to another session.', 409)
+      }
+      if (JSON.stringify(recovered) !== JSON.stringify(state.compaction)) {
+        state.compaction = recovered
         await this.save(state)
       }
     }
@@ -224,9 +245,10 @@ export class SessionControlStore {
       throw new DomainError('SESSION_COMPACT_UNSUPPORTED', state.capabilities.compact.reason ?? 'Compaction is unavailable.', 409)
     }
     state.compaction = initial
-    await this.claimCompaction(state)
     let dispatchAttempted = false
     this.compacting.add(requestId)
+    try { await this.claimCompaction(state) }
+    catch (error) { this.compacting.delete(requestId); throw error }
     try {
       await progress(await binding.manager.compactSession(binding.session, { requestId, clientCorrelationId: `session-control:${this.role}:${binding.conversationId}:${binding.principalId}:${requestId}`, onProgress: progress, onDispatch: async () => {
         await progress({ ...state.compaction!, dispatchPhase: 'dispatched' })

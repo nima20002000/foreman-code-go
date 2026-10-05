@@ -54,6 +54,10 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       if (!current.compactSession) throw new DomainError('SESSION_COMPACT_UNSUPPORTED', 'This harness cannot compact this session.', 409)
       return current.compactSession(session, input, signal)
     },
+    readCompaction: async (session, start, state, signal) => {
+      const current = await actual(signal)
+      return current.readCompaction ? current.readCompaction(session, start, state, signal) : state
+    },
     reconcileCompaction: async (session, state, signal) => {
       const current = await actual(signal)
       return current.reconcileCompaction ? current.reconcileCompaction(session, state, signal) : state

@@ -1135,6 +1135,7 @@ export function createClaudeNativeSessionManager(options: {
       runtime.turns.set(turn.correlationId, turn)
       runtime.startingTurn = turn
       runtime.controlPending = true
+      let offerStarted = false
       // Subscribe before offering. A returned iterable does not fabricate admission.
       const offer = async () => {
         if (options.messageSubmitted && await options.messageSubmitted(turn.correlationId)) {
@@ -1161,16 +1162,24 @@ export function createClaudeNativeSessionManager(options: {
           throw new HarnessExecutionError('CLAUDE_PLAN_UNAVAILABLE', 'The owned SDK query cannot enter Plan mode.')
         }
         await input.onSettingsApplied?.()
+        offerStarted = true
         await runtime.sdk.offer({ promptUuid: turn.promptUuid, content: input.prompt }, signal)
       }
       void offer().catch((error: unknown) => {
         runtime.controlPending = false
         runtime.startingTurn = undefined
-        turn.events.close(error)
-        if (error instanceof ClaudeInputNotDeliveredError) {
+        const notOffered = !offerStarted || error instanceof ClaudeInputNotDeliveredError || error && typeof error === 'object'
+          && 'deliveryState' in error && error.deliveryState === 'not-delivered'
+        if (notOffered) {
+          if (runtime.active === turn) runtime.active = undefined
           runtime.turns.delete(turn.correlationId)
-          if (runtime.active === turn) delete runtime.active
-        } else runtime.failure = error
+          const rejection = Object.assign(new Error(error instanceof Error ? error.message : 'Claude input was not offered.',
+            { cause: error }), { certainty: 'definite' as const, deliveryState: 'not-delivered' as const })
+          turn.events.close(rejection)
+        } else {
+          turn.events.close(error)
+          runtime.failure = error
+        }
       })
       return subscribe(turn, signal)
     },

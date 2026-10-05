@@ -87,6 +87,10 @@ export class OperatorConversationEvents {
 export interface NativeManagerResolver {
   (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs?: boolean): NativeHarnessSessionManager
   /** Resolve the accepted receipt, not the caller's current route or upload owner. */
+  recoverCompaction?(configuration: OperatorConfigurationVersion, conversationId: string,
+    session: NativeSessionReference, start: import('../harnesses/port.js').NativeSessionStart,
+    state: import('@graphql/contracts').CompactionState, principalId: string, signal: AbortSignal):
+    Promise<import('@graphql/contracts').CompactionState>
   hasFileInputs?(conversationId: string, requestId: string): Promise<boolean>
   /** After durable native acknowledgement, before either file bridge issues authority. */
   recordFileSubmission?(conversationId: string, requestId: string, nativeTurnId: string): Promise<void>
@@ -335,11 +339,15 @@ export class OperatorChatService {
     } : undefined)
     return { conversationId: id, principalId: principal.id, defaultSubject: 'application-operator', profileKey: configuration.contentHash,
       busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
-      session, manager: runtime?.manager, pendingCapabilities: pendingSessionControls(configuration.harness) }
+      session, manager: runtime?.manager,
+      ...(session && this.managers.recoverCompaction ? { recoverCompaction: (state: import('@graphql/contracts').CompactionState) =>
+        this.managers.recoverCompaction!(configuration, id, session, { kind: 'operator',
+          correlationId: `session-control:${id}`, configuration, workingDirectory: this.workingDirectory },
+        state, principal.id, this.lifetime.signal) } : {}), pendingCapabilities: pendingSessionControls(configuration.harness) }
   }
 
   async readSessionControls(id: string, principal: ManagementPrincipal) {
-    return this.control(id, async () => this.sessionControls().read(await this.sessionControlBinding(id, principal)))
+    return this.sessionControls().read(await this.sessionControlBinding(id, principal))
   }
 
   async changeSessionControls(id: string, input: SessionControlRequest, principal: ManagementPrincipal,

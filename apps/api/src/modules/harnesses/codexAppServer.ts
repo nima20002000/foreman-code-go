@@ -910,6 +910,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async readCompaction(session: NativeSessionReference, start: NativeSessionStart,
+    state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    this.assertSessionVersion(session)
+    if (state.nativeSessionId !== session.nativeSessionId) return state
+    const prepared = await this.prepareInput(start, signal)
+    const candidate = await this.transport(prepared, 0, signal)
+    try {
+      const result = await codexRequest(candidate.transport, 'thread/read', {
+        threadId: session.nativeSessionId, includeTurns: true,
+      }, signal)
+      if (result.thread.id !== session.nativeSessionId) throw new Error('Codex read a different native thread')
+      return this.compactionFromTurns(state, result.thread.turns)
+    } finally { await candidate.transport.close() }
+  }
+
   async reconcileCompaction(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
     const runtime = this.requireRuntime(session)
     if (runtime.compaction?.requestId === state.requestId) {
@@ -918,21 +933,26 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (state.nativeSessionId !== session.nativeSessionId) return state
     const result = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
-    let turn = result.thread.turns.find(entry => entry.id === state.nativeOperationId)
+    const recovered = this.compactionFromTurns(state, result.thread.turns)
+    runtime.compaction = recovered
+    if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
+    return recovered
+  }
+
+  private compactionFromTurns(state: CompactionState,
+    turns: Array<{ id: string; status: string; items: Array<{ type: string }> }>): CompactionState {
+    let turn = turns.find(entry => entry.id === state.nativeOperationId)
     if (!turn && state.baselineTurnId !== undefined) {
       const baseline = state.baselineTurnId === null ? -1
-        : result.thread.turns.findIndex(entry => entry.id === state.baselineTurnId)
-      const matches = baseline < 0 && state.baselineTurnId !== null ? [] : result.thread.turns.slice(baseline + 1)
+        : turns.findIndex(entry => entry.id === state.baselineTurnId)
+      const matches = baseline < 0 && state.baselineTurnId !== null ? [] : turns.slice(baseline + 1)
         .filter(entry => entry.items.some(item => item.type === 'contextCompaction'))
       if (matches.length === 1) turn = matches[0]
     }
     if (!turn) return state
-    const recovered = codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', {
+    return codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', {
       threadId: session.nativeSessionId, turn,
     })
-    runtime.compaction = recovered
-    if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
-    return recovered
   }
 
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {

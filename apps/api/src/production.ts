@@ -1,3 +1,4 @@
+import { recoverPersistedClaudeCompaction } from './modules/harnesses/claudeSdk/recoverCompaction.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
@@ -822,6 +823,36 @@ export function buildProductionApp(
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
+  const recoverChatCompaction: NonNullable<import('./modules/conversations/operatorChat.js').NativeManagerResolver['recoverCompaction']>
+    | NonNullable<AgentChatManagerFactory['recoverCompaction']> = async (
+      configuration: import('@graphql/contracts').OperatorConfigurationVersion | import('@graphql/contracts').AgentConfigurationVersion,
+      conversationId: string, session: import('@graphql/contracts').NativeSessionReference,
+      start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@graphql/contracts').CompactionState,
+      principalId: string, signal: AbortSignal,
+    ) => {
+      if (session.harness === 'claude') return recoverPersistedClaudeCompaction(state)
+      const binding: ClaudeProfileOwner = 'operatorId' in configuration
+        ? { kind: 'operator', conversationId, repository: operatorConversations, observationPrincipalId: principalId }
+        : { kind: 'agent', conversationId, workspaceId: configuration.workspaceId,
+          repository: agentConversations, observationPrincipalId: principalId }
+      const accepted = configuration.harnessProfileSelection
+        ? await selectedProfiles.admit({ ...binding, admissionSignal: signal }, configuration.harnessProfileSelection) : undefined
+      const selection = accepted ? harnessRegistry.pinOverride(accepted.override)
+        : harnessRegistry.pinAccepted({ id: configuration.id,
+          agentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
+          harness: configuration.harness })
+      const common = { selection, configured: selection.instance, role: 'diagnostics' as const,
+        workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory,
+        ownerAgentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
+        appMcpAccess: 'none' as const,
+        ...(accepted ? { revalidateSelection: (effectSignal?: AbortSignal) => selectedProfiles.revalidate(
+          { ...binding, admissionSignal: effectSignal ?? signal }, accepted) } : {}) }
+      const { manager } = nativeFactories.allocate({ ...common, harness: session.harness })
+      try {
+        nativeFactories.admitAuxiliary(manager)
+        return await manager.readCompaction!(session, start, state, signal)
+      } finally { await nativeFactories.disposeAuxiliary(manager) }
+    }
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
@@ -907,6 +938,7 @@ export function buildProductionApp(
       finally { await close() }
     },
   )
+  resolveOperatorManager.recoverCompaction = recoverChatCompaction
   const chat = new OperatorChatService(
     operatorConversations, operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
@@ -960,6 +992,7 @@ export function buildProductionApp(
     agentChatManagers.set(conversationId, manager)
     return manager
   }
+  resolveAgentChatManager.recoverCompaction = recoverChatCompaction
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
   const agentChat = new AgentChatService(database.pool, agentConversations,
     new PostgresOperatorConversationRepository(database.pool), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)

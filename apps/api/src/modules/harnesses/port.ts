@@ -165,6 +165,9 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   configureSessionPreferences?(preferences: SessionPreferences): Promise<void>
   sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
   compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>
+  /** Inspect persisted native history without attaching a writer or offering input. */
+  readCompaction?(session: NativeSessionReference, start: NativeSessionStart,
+    state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
   reconcileCompaction?(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
   appliedSessionPreferences?(session: NativeSessionReference): SessionPreferences | null
   contextSnapshot?(session: NativeSessionReference): ContextSnapshot | null

@@ -7,7 +7,7 @@ import { it } from 'vitest'
 import { SessionPreferencesSchema } from '@graphql/contracts'
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
-import { FixtureServer, json, permission, sessionFor } from './opencode-fixtures.js'
+import { FixtureServer, json, permission, sessionFor, request } from './opencode-fixtures.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 import { sdkQualificationClient } from './support/opencodeSdkQualification.js'
 
@@ -141,4 +141,28 @@ it('applies native default preferences through the admitted manager without a na
     await assert.rejects(manager.applySessionPreferences!(session, { ...defaults, autoCompact: 'off' }))
     assert.equal(server.calls.length, before)
   } finally { await manager.dispose!() }
+})
+
+it('recovers cold compaction history using only native reads and no attachment', async () => {
+  const server = new FixtureServer()
+  const writer = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+  const session = await sessionFor(writer)
+  server.messages.set(session.nativeSessionId, [
+    { info: { id: 'before', sessionID: session.nativeSessionId }, parts: [] },
+    { info: { id: 'manual', sessionID: session.nativeSessionId }, parts: [{ type: 'compaction', auto: false }] },
+    { info: { id: 'summary', sessionID: session.nativeSessionId, parentID: 'manual', role: 'assistant',
+      summary: true, finish: 'stop' }, parts: [] },
+  ])
+  await writer.dispose()
+  const cold = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+  try {
+    const before = server.calls.length
+    const recovered = await cold.readCompaction(session, { request: request() }, {
+      requestId: 'cold-command', nativeSessionId: session.nativeSessionId, nativeOperationId: 'before',
+      status: 'uncertain', message: 'Unconfirmed', beforeTokens: 100, observedAt: new Date().toISOString(),
+    })
+    assert.equal(recovered.status, 'completed')
+    assert(server.calls.slice(before).every(call => call.method === 'GET'))
+    assert.equal(server.environment, undefined)
+  } finally { await cold.dispose(); await writer.dispose() }
 })

@@ -442,20 +442,35 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async readCompaction(session: NativeSessionReference, start: NativeSessionStart,
+    control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    const combined = this.signal(signal)
+    await this.ready(combined)
+    this.validateReference(session)
+    const directory = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
+    const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
+    this.verifyAttachedSession(native, session.nativeSessionId, directory, this.configuration(start))
+    return this.compactionFromHistory(session, directory, control, combined)
+  }
+
   async reconcileCompaction(session: NativeSessionReference, control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
     const state = this.requireSession(session)
-    const combined = this.signal(signal)
+    const result = await this.compactionFromHistory(session, state.directory, control, this.signal(signal))
+    state.compaction = result
+    return result
+  }
+
+  private async compactionFromHistory(session: NativeSessionReference, directory: string,
+    control: CompactionState, signal: AbortSignal): Promise<CompactionState> {
     const messages: OpenCodeMessage[] = []
     let cursor: string | undefined
     for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
-      const page = await this.messagePage(session.nativeSessionId, state.directory, cursor, combined)
+      const page = await this.messagePage(session.nativeSessionId, directory, cursor, signal)
       messages.unshift(...page.messages)
       if (page.messages.some(message => message.info.id === control.nativeOperationId) || !page.nextCursor) break
       cursor = page.nextCursor
     }
-    const result = openCodeCompactionResult(control, messages)
-    state.compaction = result
-    return result
+    return openCodeCompactionResult(control, messages)
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
