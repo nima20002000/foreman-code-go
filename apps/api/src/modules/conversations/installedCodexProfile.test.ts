@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationProfileFactsSchema } from '@foreman-code/contracts/remote-execution-rpc'
@@ -39,7 +40,7 @@ function fixture() {
     inspect: async (): Promise<InstalledCodexInspection> => ({ inventory: { instances: [], installations: [installed] },
       currentTarget: { binding: connection, target, installation: installed, binarySha256: 'a'.repeat(64), expectedVersion: '0.154.0' } }) })
   return { ...f, facts, reader, replace: () => { installed = { ...installed, installationFingerprint: 'replacement' } },
-    revokeInstallation: () => { connection = { ...connection, workerInstallationId: 'replacement' } } }
+    revokeInstallation: () => { connection = { ...connection, workerInstallationId: randomUUID() } } }
 }
 
 it('reads the selected native profile through conversation ownership without dispatch facts', async () => {

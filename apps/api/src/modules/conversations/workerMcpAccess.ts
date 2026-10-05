@@ -1,4 +1,4 @@
-import { APP_MCP_TOKEN } from '@foreman-code/contracts/product'
+import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
 import { WORKER_MCP_EXTENSION, WorkerConversationMcpRequestSchema, WorkerConversationMcpAuthorizationSchema,
   WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
@@ -25,7 +25,8 @@ export async function prepareWorkerConversationMcp(input: {
   }
   const lease = WorkerConversationMcpAuthorizationSchema.parse(await request({ ...fields,
     operation: 'conversation-mcp.authorize' }, input.signal))
-  return { expiresAt: lease.expiresAt, environment: { agentId: owner.operatorId, variables: { [APP_MCP_TOKEN]: input.token } },
+  return { expiresAt: lease.expiresAt, environment: { agentId: owner.operatorId,
+    variables: { [APP_MCP_TOKEN]: input.token } },
     async request(body: unknown, protocolVersion?: string, signal = input.signal) {
       return WorkerMcpRelayResponseSchema.parse(await request({ ...fields, operation: 'conversation-mcp.request', body,
         ...(protocolVersion ? { protocolVersion } : {}) }, signal))

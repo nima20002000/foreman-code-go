@@ -1,7 +1,8 @@
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { NativeSessionReferenceSchema, withAdvancedDefaults, type HarnessQualification } from '@foreman-code/contracts'
+import { NativeSessionReferenceSchema, withAdvancedDefaults } from '@foreman-code/contracts'
+import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { WorkerConversationBindingSchema, type WorkerConversationConfiguration,
   WorkerConversationProfileFactsSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
