@@ -200,18 +200,6 @@ export function signalOwnedChildren(active, timers, signal, graceMs = 5000) {
   }
 }
 
-export function requireLoopbackTestDatabase(url) {
-  const parsed = new URL(url)
-  const databaseName = decodeURIComponent(parsed.pathname.slice(1))
-  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)
-    || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
-    || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(databaseName)
-    || parsed.search || parsed.hash) {
-    throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
-  }
-}
-
-
 export function integrationEnvironment(environment, slot) {
   return testEnvironment(environment, slot)
 }
