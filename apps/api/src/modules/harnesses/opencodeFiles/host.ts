@@ -152,8 +152,12 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
   private async snapshotReady(handle: string, signal: AbortSignal): Promise<Uint8Array> {
     const entry = this.entries.get(handle)
     checkFileCondition(entry?.writable && !entry.cleanup, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
+    return this.readSnapshot(entry.directory, entry.filename, signal)
+  }
+
+  private async readSnapshot(directory: FileHandle, filename: string, signal: AbortSignal): Promise<Uint8Array> {
     signal.throwIfAborted()
-    const file = await open(at(entry.directory, entry.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    const file = await open(at(directory, filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
       const before = await file.stat({ bigint: true })
       checkFileCondition(before.isFile() && before.nlink === 1n && before.size <= BigInt(this.options.maxFileBytes),
@@ -176,7 +180,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
         && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && after.nlink === 1n
         && sha256(first) === sha256(second), 'FILE_ARTIFACT_CHANGED', 'Finish native writes before publishing the working copy.')
       // Detect rename-based edits too; the FD must still be the currently registered directory entry.
-      const current = await lstat(at(entry.directory, entry.filename), { bigint: true })
+      const current = await lstat(at(directory, filename), { bigint: true })
       checkFileCondition(current.dev === after.dev && current.ino === after.ino
         && current.mtimeNs === after.mtimeNs && current.ctimeNs === after.ctimeNs,
       'FILE_ARTIFACT_CHANGED', 'The working copy was replaced during publication.')
@@ -216,16 +220,9 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
         await versions.sync()
         await entry.directory.sync()
         try {
-          const displaced = await open(at(versions, 'native'), constants.O_RDONLY | constants.O_NOFOLLOW)
-          try {
-            const stat = await displaced.stat()
-            checkFileCondition(stat.isFile() && stat.nlink === 1 && stat.size <= this.options.maxFileBytes,
-              'FILE_ARTIFACT_INVALID', 'The displaced working copy must remain a bounded regular file.')
-            checkFileCondition(sha256(await displaced.readFile()) === expectedSha256,
-              'FILE_ARTIFACT_CONFLICT', 'The native edit and file-tool edit are retained in the versions directory.')
-          } finally {
-            await displaced.close()
-          }
+          const displaced = await this.readSnapshot(versions, 'native', signal)
+          checkFileCondition(sha256(displaced) === expectedSha256,
+            'FILE_ARTIFACT_CONFLICT', 'The native edit and file-tool edit are retained in the versions directory.')
           // link is create-only: a concurrent native rename or write at the leaf is never overwritten.
           await link(at(versions, 'edited'), at(entry.directory, entry.filename))
           await unlink(at(versions, 'edited'))
