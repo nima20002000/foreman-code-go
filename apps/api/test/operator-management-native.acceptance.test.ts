@@ -41,8 +41,11 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Native management target' })
         const foreign = await callWorkspaceTool(f.owner.client, 'workspace_create',
           ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Other native project' })
-        const caller = await f.issue([{ actions: ['workflows:create', 'workflows:read'],
-          scope: { workspaceIds: [denied ? foreign.value.workspace.id : workspace.value.workspace.id] } }])
+        const credential = await f.access.issue({ name: 'Native management caller', audience: 'operator',
+          grants: [{ actions: ['workflows:create', 'workflows:read'],
+            scope: { workspaceIds: [denied ? foreign.value.workspace.id : workspace.value.workspace.id] } }],
+          expiresAt: new Date(Date.now() + 600000) })
+        const caller = { ...credential, client: await f.connect(credential.token) }
         const operators = new PostgresOperatorRepository(f.pool)
         const current = await operators.ensure()
         const native = harness === 'codex'
