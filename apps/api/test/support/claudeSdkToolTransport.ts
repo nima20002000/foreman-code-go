@@ -28,6 +28,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
   const offers: string[] = []
   const queries: Array<{ resume: unknown; closed: boolean }> = []
   const progress: Array<{ tool: string; stage: string }> = []
+  const errors: string[] = []
   let failResume = false
   const sdk: ClaudeSdkClient = {
     sdkVersion: '0.3.284', getSessionInfo: async sessionId => ({ sessionId }),
@@ -137,6 +138,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
           })) }
           send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response } })
         } else if (frame.type === 'user') void execute(frame as unknown as SDKUserMessage).catch(error => {
+          errors.push(error instanceof Error ? error.message : String(error))
           if (!state.closed) emitter.emit('error', error)
         })
       })
@@ -167,5 +169,5 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
       }
     },
   }
-  return { sdk, results, offers, queries, progress, failNextResume: () => { failResume = true } }
+  return { sdk, results, offers, queries, progress, errors, failNextResume: () => { failResume = true } }
 }

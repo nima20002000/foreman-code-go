@@ -111,14 +111,16 @@ it.each(['management', 'denied-management', 'files'] as const)(
           await vi.waitFor(async () => {
             await chat.reconcileActive()
             const state = await chat.get(conversation.id, owner.principal)
-            expect(state.activeRequestId, JSON.stringify({ error: state.error, progress: transport.progress })).toBeNull()
+            expect(state.activeRequestId, JSON.stringify({ error: state.error, progress: transport.progress,
+              transportErrors: transport.errors })).toBeNull()
           }, { timeout: 15_000 })
         } catch (error) {
           const waiting = (await pool.query(`select state,wait_event_type,wait_event,query
             from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()`)).rows
           const receipts = (await pool.query(`select operation,result->>'status' as status
             from management_command_receipts`)).rows
-          throw new Error(JSON.stringify({ progress: transport.progress, waiting, receipts }), { cause: error })
+          throw new Error(JSON.stringify({ progress: transport.progress, transportErrors: transport.errors,
+            waiting, receipts }), { cause: error })
         }
         expect(transport.offers).toHaveLength(1)
         expect(transport.results).toHaveLength(1)
