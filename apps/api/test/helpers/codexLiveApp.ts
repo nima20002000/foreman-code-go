@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { chmod, copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
 import { buildApp } from '../../src/app.js'
@@ -9,6 +12,9 @@ import { OperatorChatService } from '../../src/modules/conversations/operatorCha
 import { PostgresOperatorChatAuthority } from '../../src/modules/conversations/operatorChatAuthority.js'
 import { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
+import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
+import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
+import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { NativeRollout } from '../../src/modules/harnesses/nativeRollout.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
@@ -34,6 +40,9 @@ export async function createCodexLiveApplication(binary: string, directory: stri
   let chat: OperatorChatService | undefined
   let authority: PostgresOperatorChatAuthority | undefined
   let conversationId: string | undefined
+  let settings: HarnessMcpSettingsService | undefined
+  let profile: string | undefined
+  const originalProfile = process.env.CODEX_HOME
   const managers: CodexAppServerSessionManager[] = []
   async function close() {
     const failures: unknown[] = []
@@ -42,6 +51,7 @@ export async function createCodexLiveApplication(binary: string, directory: stri
     }
     try {
       for (const manager of managers) await release(() => manager.shutdown())
+      if (settings) await release(() => settings!.shutdown())
       if (chat) await release(() => chat!.shutdown())
       if (conversationId && authority) await release(() => authority!.release(conversationId!))
       if (app) await release(() => app!.close())
@@ -49,15 +59,30 @@ export async function createCodexLiveApplication(binary: string, directory: stri
       await release(() => pool.end())
       await release(() => admin.query(`drop database "${database}"`))
       await release(() => admin.end())
+      if (originalProfile === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = originalProfile
+      if (profile) await release(() => rm(profile!, { recursive: true, force: true }))
     }
     if (failures.length) throw new AggregateError(failures, 'Native application cleanup failed.')
   }
   try {
     await applyApplicationMigrations(pool)
+    profile = await mkdtemp(join(tmpdir(), 'codex-native-profile-'))
+    await writeFile(join(profile, 'config.toml'), '', { mode: 0o600, flag: 'wx' })
+    try {
+      await copyFile(join(originalProfile ?? join(homedir(), '.codex'), 'auth.json'), join(profile, 'auth.json'))
+      await chmod(join(profile, 'auth.json'), 0o600)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    process.env.CODEX_HOME = profile
     const access = new PostgresAccessService(pool)
     const owner = await access.issue({ name: 'Native lifecycle acceptance owner', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel',
         'operator_chat:respond', 'harnesses:read'], scope: {} }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const installer = await access.issue({ name: 'Native acceptance MCP installer', audience: 'operator',
+      grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
       expiresAt: new Date(Date.now() + 600_000) })
     const operators = new PostgresOperatorRepository(pool)
     const initial = await operators.ensure()
@@ -70,6 +95,23 @@ export async function createCodexLiveApplication(binary: string, directory: stri
       checkpoints: { ping: async () => undefined },
     }, operator: { access, services } })
     const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
+    settings = new HarnessMcpSettingsService(pool, services.commands, {
+      codex: new CodexMcpConnections(binary, directory),
+      opencode: new OpenCodeMcpConnections(process.env.OPENCODE_BINARY ?? 'opencode', directory),
+    }, () => {}, async () => {}, endpoint)
+    const before = await settings.list(installer.principal, 'codex')
+    const installed = await settings.applyManaged(installer.principal, { harness: 'codex', preset: 'graphql',
+      installed: true, expectedRevision: before.revision, commandId: randomUUID() })
+    if (installed.status !== 'applied') throw new Error(installed.error ?? 'Native App MCP installation did not settle.')
+    const configuredMcp = await settings.list(installer.principal, 'codex')
+    if (configuredMcp.presets?.graphql === 'disabled') {
+      const enabled = await settings.applyManaged(installer.principal, { harness: 'codex', preset: 'graphql',
+        enabled: true, expectedRevision: configuredMcp.revision, commandId: randomUUID() })
+      if (enabled.status !== 'applied') throw new Error(enabled.error ?? 'Native App MCP enabling did not settle.')
+    }
+    if ((await settings.list(installer.principal, 'codex')).presets?.graphql !== 'installed') {
+      throw new Error('The managed native App MCP connection is not installed and enabled.')
+    }
     const manager = new CodexAppServerSessionManager(binary)
     const restored = new CodexAppServerSessionManager(binary)
     managers.push(manager, restored)
