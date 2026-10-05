@@ -23,6 +23,7 @@ describe('original-parent no-dispatch retirement', () => {
       // A live parent and undispatched intent alone remain insufficient evidence.
       await assert.rejects(f.registry.closeRegistration(f.scope, f.scope.launchId!, AbortSignal.timeout(75)))
       assert.equal(await f.registry.abandonReservedLaunch(f.scope), true)
+      assert.equal(await f.registry.abandonReservedLaunch(f.scope), true)
       assert.equal(await f.registry.closeOwner(f.scope.owner), true)
       assert.deepEqual(readdirSync(f.ownerDirectory), ['retired.json'])
       assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'throw new Error("must never launch")'], {

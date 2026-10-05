@@ -1,6 +1,7 @@
 import type { Message, OperatorActivity } from '@foreman-code/contracts'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { ChatMessageFiles } from '../conversations/ChatMessageFiles'
+import { TextTruncationNotice } from '../conversations/TextTruncationNotice'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'
 import { OperatorThinking } from './OperatorThinking'
@@ -64,7 +65,8 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
   const lastActivity = new Map<string, bigint>()
   return <ol className="operator-messages" aria-label="Conversation history">
     {rows.map(({ key, message, requestId, live, reasoning }) => {
-      if (reasoning) return <li key={key}><OperatorThinking text={reasoning.content} onBrowse={onBrowse} /></li>
+      if (reasoning) return <li key={key}><OperatorThinking text={reasoning.content} onBrowse={onBrowse} />
+        <TextTruncationNotice truncation={reasoning.truncation} /></li>
       const role = message?.role ?? 'assistant'
       const assistant = role === 'assistant'
       const model = message?.acceptedModel ?? (requestId ? acceptedModels.get(requestId) : undefined)
@@ -94,7 +96,14 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
         }
       }
       const placed = orderedTimeline ? new Set(orderedTimeline.filter((entry) => entry.kind === 'activity').map((entry) => entry.id)) : undefined
-      if (!content && !entries.length && !active && !orderedTimeline?.length && !message?.attachments?.length) return null
+      let truncation = message?.truncation
+      if (streamed !== undefined && nativePartKey) truncation = timeline?.truncations?.[nativePartKey] ?? truncation
+      if (live && timeline?.requestId === requestId) {
+        truncation = Object.entries(timeline.truncations ?? {}).find(([partId, value]) => value.truncated
+          && !partId.startsWith('thinking:') && !savedIds.has(partId))?.[1]
+      }
+      if (!content && !entries.length && !active && !orderedTimeline?.length && !message?.attachments?.length
+        && !truncation?.truncated) return null
       return <li key={key} data-message-role={role}>
         <div aria-label={active ? 'Assistant response in progress' : undefined}>
           <MessageBubble author={assistant ? author : role === 'user' ? 'You' : role} role={assistant ? 'assistant' : role === 'user' ? 'user' : 'system'}>
@@ -111,6 +120,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
             </div> : null}
             {orderedTimeline && live && working && !partialText ? <div className="operator-chat-typing" role="status" aria-label="Operator is typing"><span /><span /><span /><span className="n-sr-only">Operator is typing…</span></div> : null}
             {message?.attachments?.length ? <ChatMessageFiles message={message} /> : null}
+            <TextTruncationNotice truncation={truncation} />
           </MessageBubble>
         </div>
       </li>

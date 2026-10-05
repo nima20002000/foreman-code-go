@@ -45,8 +45,8 @@ export async function qualifyClaudeNativeProfile(input: {
   evidence.hooks = hooks
   let observedTools: string[] = [], faultAfterResult = false, expectedFault = false
   const client = await (input.loadClient ?? loadOfficialClaudeSdk)(configuration.configDirectory, input.recovery, binary)
-  const faultClient: ClaudeSdkClient = { ...client, query(query) {
-    const actual = client.query(query)
+  const faultClient: ClaudeSdkClient = { ...client, async query(query) {
+    const actual = await client.query(query)
     return { ...actual, [Symbol.asyncIterator]() {
       const iterator = actual[Symbol.asyncIterator]()
       return { async next() {

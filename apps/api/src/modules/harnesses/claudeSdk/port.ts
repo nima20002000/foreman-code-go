@@ -21,7 +21,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
 
 export interface ClaudeSdkClient {
   readonly sdkVersion: string
-  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery
+  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery | Promise<ClaudeSdkQuery>
+  requiresRuntimeClosure?(): boolean
   getSessionInfo(sessionId: string, options: { dir: string }): Promise<{ sessionId: string } | undefined>
   getSessionMessages(sessionId: string, options: { dir: string; limit?: number; offset?: number }): Promise<readonly unknown[]>
   listSubagents?(sessionId: string, options: { dir: string }): Promise<string[]>
@@ -68,6 +69,8 @@ export interface ClaudeSdkOpenInput {
 export class ClaudeInputNotDeliveredError extends HarnessExecutionError {
   readonly code = 'CLAUDE_INPUT_NOT_DELIVERED'
   readonly deliveryState = 'not-delivered'
+  readonly certainty = 'definite'
+  readonly uncertain = false
 
   constructor(message: string) {
     super('CLAUDE_INPUT_NOT_DELIVERED', message, true)
@@ -91,6 +94,7 @@ export interface ClaudeSdkSession {
 }
 
 export interface ClaudeSdkRunner {
+  requiresRuntimeClosure?(): boolean
   open(input: ClaudeSdkOpenInput): Promise<ClaudeSdkSession>
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>

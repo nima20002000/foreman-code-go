@@ -7,10 +7,10 @@ import { registerWorkspaceTools } from '../../src/mcp/operator/tools/workspaces.
 import type { OperatorRequestContext } from '../../src/mcp/operator/types.js'
 import { vi } from 'vitest'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, OperatorConfigurationVersionSchema } from '@graphql/contracts'
-import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
-import { CLAUDE_QUALIFICATION_CHECKS } from '@graphql/contracts/claude-qualification'
-import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
+import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { CLAUDE_QUALIFICATION_CHECKS } from '@foreman-code/contracts/claude-qualification'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { AcceptedClaudeProfileAdmission } from '../../src/modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { HarnessInstanceSettingsRepository } from '../../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessProfileEvidenceRepository } from '../../src/modules/harnesses/instanceSettings/profileRepository.js'
@@ -31,13 +31,18 @@ export const deferred = <T>() => { let resolve!: (value: T) => void; const promi
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
-export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService) {
+export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService,
+  runtime?: { database: pg.Pool; binding: ClaudeDomainBinding; start: NativeSessionStart; sdk: ClaudeSdkClient }) {
   const kind = surface === 'selected-run' ? 'agent' : surface
   const target = { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
-  const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
+  const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
     configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
-    tools: [], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+    tools: ['mcp__graphql__workspace_list', 'mcp__graphql-files__files.read'], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+  const harness = runtime
+    ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)
+    : defaultHarness
+  if (harness.harness !== 'claude') throw new Error('The production fixture requires a Claude configuration.')
   const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: 'profile-1', revision: 1,
     target, presetId: 'recorded', enabled: true, driverId: 'claude', configuration: harness, configurationFingerprint: 'recorded-config', qualification: 'qualified' }
   const pin = { sdkVersion: '0.3.284', sdkIntegrity: 'recorded-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64),
@@ -45,7 +50,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const proof: HostHarnessProfileEvidence = { target, instanceRevision: override.instanceRevision, configurationFingerprint: override.configurationFingerprint,
     driverId: 'claude', driverRevision: '1', protocolRevision: 'recorded-protocol', suiteRevision: 'recorded-suite', environmentGeneration: 'recorded-env',
     connectionGeneration: 'recorded-connection', authenticated: true, compatible: true, qualified: true, checkedAt: createdAt,
-    claudeProof: { pin, checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check, { state: 'passed' as const,
+    claudeProof: { pin, observedTools: harness.tools.filter(tool => !tool.startsWith('mcp__')), checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(check => [check, { state: 'passed' as const,
       source: 'native_scenario' as const, evidenceId: `synthetic:${check}`, evidenceSha256: 'b'.repeat(64) }])) } }
   const instances = new HarnessInstanceRegistry(localHarnessDrivers)
   instances.reload([{ instanceId: override.instanceId, instanceRevision: override.instanceRevision, driverId: 'claude', enabled: true, configuration: harness }])
@@ -76,7 +81,27 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     active_request_id: 'request-1', native_session_id: null as string | null, provider_version: null as string | null, cancel_requested: false, deleted_at: null, record: { status: 'open' }, payload: { ownerPrincipalId: 'sender', nativeSubmission: undefined as { kind: 'message'; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } | undefined },
     pending_interaction: null as unknown, response_delivery: 'offered' }
   let receipts: unknown[] = []
+  const callbacks = new Map<string, Record<string, unknown>>()
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes('claude_callback_receipts')) {
+      const key = JSON.stringify(values.slice(0, 2))
+      if (sql.includes('insert into')) {
+        callbacks.set(key, JSON.parse(String(values[3])) as Record<string, unknown>)
+        return { rows: [{ callback_key: values[1] }], rowCount: 1 }
+      }
+      if (sql.includes('callback_key=$2')) return { rows: callbacks.has(key) ? [{ record: callbacks.get(key) }] : [] }
+      const rows = [...callbacks.values()].filter(record => {
+        const identity = record.identity as Record<string, unknown>
+        return identity.nativeSessionId === values[1] && (sql.includes('toolUseId')
+          ? identity.nativeMessageId === values[2] && identity.generation === values[3] && identity.toolUseId === values[4]
+          : record.acknowledged === true && record.retired !== true)
+      })
+      return { rows: rows.map(record => ({ record: structuredClone(record) })) }
+    }
+    if (sql.includes("payload#>>'{nativeSubmission,clientCorrelationId}'")) {
+      const submitted = row.payload.nativeSubmission?.clientCorrelationId === values[1]
+      return { rows: submitted ? [{ submitted: true }] : [], rowCount: submitted ? 1 : 0 }
+    }
     if (sql.includes('set pending_interaction=')) {
       row.pending_interaction = values[2] ? JSON.parse(String(values[2])) : null
       return { rows: [], rowCount: 1 }
@@ -84,7 +109,8 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     if (sql.includes('m.id as message_id')) return { rows: [{ ...row, sender_id: 'sender',
       message_id: 'user-message', native_submission: row.payload.nativeSubmission }] }
     if (sql.includes('select kind,id,owner_principal_id,operator_id')) return { rows: [{ ...row, id: surface, agent_id: 'agent' }] }
-    if (sql.includes('select principal_id,result from management_command_receipts')) return { rows: receipts }
+    if (sql.includes('select principal_id,result from management_command_receipts')
+      || sql.includes('select result from management_command_receipts')) return { rows: receipts }
     const rows = sql.includes('e.record as execution') ? [{ run, version, execution, configuration: agent, attempt: 1, stopped: false,
       execution_closed: false, native_reference: null, finalized: false, generation: null, native_owner: null, budget_active: true }]
       : sql.includes("record->>'authorizationPrincipalId'") ? [{ principal_id: 'sender' }]
@@ -93,13 +119,13 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     if (!rows) throw new Error('Unexpected SQL in fixture: ' + sql.slice(0, 80))
     return { rows }
   })
-  const pool = { query } as unknown as pg.Pool
+  const pool = runtime?.database ?? { query } as unknown as pg.Pool
   const owner = { runId: 'run', client: pool, assertOwned: () => {}, readOneShotFence: async () => ({ ownerId: 'recorded-owner', fence: 'recorded-fence' }) } as unknown as RunOwnership
-  const domain: ClaudeDomainBinding = kind === 'workflow' ? { kind, runId: 'run', executionId: 'execution', attempt: 1, getOwner: () => owner }
+  const domain: ClaudeDomainBinding = runtime?.binding ?? (kind === 'workflow' ? { kind, runId: 'run', executionId: 'execution', attempt: 1, getOwner: () => owner }
     : kind === 'operator' ? { kind, conversationId: surface, repository: new PostgresOperatorConversationRepository(pool) }
-      : { kind: 'agent', conversationId: surface, workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) }
-  const start: NativeSessionStart = kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
-    : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } }
+      : { kind: 'agent', conversationId: surface, workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) })
+  const start: NativeSessionStart = runtime?.start ?? (kind === 'operator' ? { kind: 'operator', correlationId: `${surface}:request-1`, configuration: operator, workingDirectory: '/recorded/work' }
+    : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } })
   const queries: { frames: ClaudeBoundedQueue<unknown>; messages: AsyncIterator<ClaudeSdkUserMessage> }[] = []
   const initialFrames = new ClaudeBoundedQueue<unknown>(64)
   const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
@@ -111,16 +137,16 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     ready.resolve(messages)
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close: () => frames.close(), interrupt: async () => undefined,
       initializationResult: async () => ({}), setMcpServers,
-      mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql.url }, tools: [] }] }
+      mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql!.url }, tools: [] }] }
   })
   const sdk: ClaudeSdkClient = { sdkVersion: pin.sdkVersion, query: sdkQuery, getSessionInfo: async sessionId => ({ sessionId }),
     getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'recorded-fork' }) }
-  const loadClient = vi.fn(async () => sdk)
+  const loadClient = vi.fn(async () => runtime?.sdk ?? sdk)
   const factories = sharedFactories ?? new NativeHarnessFactories({ codexBinary: '/forbidden-codex', openCodeBinary: '/forbidden-opencode', instances, installations,
     installationDiscovery: async () => launcher })
   const result = productionClaudeManager({ pool, factories, registry: { pinOverride: () => binding } as unknown as ProductionHarnessRegistry,
     profiles, selector: { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target }, binding: domain,
-    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: '/recorded/work', ownerAgentId: surface,
+    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory, ownerAgentId: surface,
     recovery: { root: '/forbidden-native-recovery', owner: surface }, appMcpAccess: kind === 'agent' ? 'none' : 'scoped', mode: 'replay',
     inspectionStart: async () => start, loadClient,
     ...(fileService ? { files: { service: () => fileService, sdk: async () => ({ createSdkMcpServer, tool }) } } : {}) })

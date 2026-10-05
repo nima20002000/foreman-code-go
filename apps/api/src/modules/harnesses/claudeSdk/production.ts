@@ -4,6 +4,7 @@ import type { AgentFileToolService } from '../../files/tools/service.js'
 import { productionClaudeFileAdmission } from './fileProduction.js'
 import type pg from 'pg'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../appMcpLauncher.js'
 import { DomainError } from '../../errors.js'
@@ -12,7 +13,7 @@ import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { NativeSessionStart } from '../port.js'
 import type { ProductionHarnessRegistry } from '../productionRegistry.js'
 import type { AcceptedClaudeProfileAdmission, AcceptedProfileSelector } from '../instanceSettings/acceptedProfile.js'
-import type { ClaudeSdkClient } from './port.js'
+import { ClaudeInputNotDeliveredError, type ClaudeSdkClient } from './port.js'
 import { compileClaudeConfiguration } from './configuration.js'
 import { createPostgresClaudeInteractionBridge, type ClaudeDomainBinding } from './domainAuthority.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
@@ -103,11 +104,11 @@ export function productionClaudeManager(input: {
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const readHistory = manager.history.bind(manager)
       manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
-        responseDeliveries: domain.bridge.deliveryEvidence(session) })
+        responseDeliveries: await domain.bridge.deliveryEvidence(session) })
       const reconcile = manager.reconcile.bind(manager)
       manager.reconcile = async (session, correlationId, effectSignal) => {
         const history = await reconcile(session, correlationId, effectSignal)
-        return { ...history, responseDeliveries: domain.bridge.deliveryEvidence(session) }
+        return { ...history, responseDeliveries: await domain.bridge.deliveryEvidence(session) }
       }
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message, effectSignal) {
@@ -130,11 +131,16 @@ export function productionClaudeManager(input: {
       }
       const turn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, effectSignal) {
-        callbackAuthority = await domain.callbackAdmission()
-        effectSignal?.throwIfAborted()
-        if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
-          'The message requires its admitted native session context.', 409)
-        const attached = await attach(session, sessionStart, effectSignal)
+        let attached: NativeSessionReference
+        try {
+          callbackAuthority = await domain.callbackAdmission()
+          effectSignal?.throwIfAborted()
+          if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
+            'The message requires its admitted native session context.', 409)
+          attached = await attach(session, sessionStart, effectSignal)
+        } catch (error) {
+          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.')
+        }
         const acceptedMessage = { ...message, callbackAuthority }
         yield* turn(attached, acceptedMessage, effectSignal)
       }
@@ -169,6 +175,8 @@ export function productionClaudeManager(input: {
       interactionPort: domain.interactionPort, liveCallbacks: domain.bridge,
       cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
       pendingInteractions: session => domain.bridge.pendingInteractions(session),
+      responseDeliveries: session => domain.bridge.deliveryEvidence(session),
+      messageSubmitted: correlationId => domain.authority.messageSubmitted(correlationId),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
         attemptId: callbackAuthority.attemptId, generation: input.recovery.launchId ?? callbackAuthority.attemptId }),
       // Filled by the common factory's construction callback below, before any SDK query.

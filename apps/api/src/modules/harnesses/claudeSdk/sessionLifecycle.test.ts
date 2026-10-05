@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { getSessionMessages, type SessionStore } from '@anthropic-ai/claude-agent-sdk'
+import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import type { NativeSessionStart } from '../port.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity } from './interactions.js'
 import { claudeNativeEvent } from './nativeEvents.js'
@@ -9,6 +10,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
+import { memoryClaudeCallbackJournal } from '../../../../test/support/claudeCallbackJournal.js'
 import {
   claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput,
 } from './sessionManager.js'
@@ -35,7 +37,7 @@ async function drain(events: AsyncIterable<NativeHarnessEvent>) {
   return result
 }
 
-function fixture(sdkOptions: Record<string, unknown> = {}) {
+function fixture(sdkOptions: Record<string, unknown> = {}, nativeSession = saved) {
   let frames = new ClaudeBoundedQueue<unknown>(32)
   let queryCount = 0
   const receipts = new Map<string, string>()
@@ -43,9 +45,10 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     expect(identity.ownerPrincipalId).toBe('sender')
     expect(identity.attemptId).toBe(identity.clientCorrelationId)
     expect(identity.nativeMessageId).toBe(receipts.get(identity.clientCorrelationId!))
-    expect(identity.nativeSessionId).toBe(saved.nativeSessionId)
+    expect(identity.nativeSessionId).toBe(nativeSession.nativeSessionId)
   })
   const bridge = new ClaudeInteractionBridge(configuration, {
+    callbackJournal: memoryClaudeCallbackJournal(),
     validate,
     request: async () => ({ outcome: 'allow_once' }),
     validateResponse: async identity => validate(identity),
@@ -60,7 +63,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     const output = frames
     messages = input.prompt[Symbol.asyncIterator]()
     ready()
-    void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
+    void frames.offer({ type: 'system', subtype: 'init', session_id: nativeSession.nativeSessionId,
       claude_code_version: qualification.cliVersion, cwd: scope.cwd })
     return {
       [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
@@ -68,9 +71,10 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
       close: () => { close(); output.close() },
     }
   })
+  const transcript: unknown[] = []
   const client: ClaudeSdkClient = {
     sdkVersion: qualification.sdkVersion, query, getSessionInfo: async sessionId => ({ sessionId }),
-    getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'unused' }),
+    getSessionMessages: async (_sessionId, page) => transcript.slice(page.offset, (page.offset ?? 0) + (page.limit ?? 256)), forkSession: async () => ({ sessionId: 'unused' }),
   }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
   const offers = vi.fn()
@@ -102,21 +106,96 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   })
   const nextMessage = async () => {
     await opened
-    return (await messages.next()).value!
+    const message = (await messages.next()).value!
+    transcript.push({ ...message, session_id: nativeSession.nativeSessionId })
+    return message
   }
-  const assistant = (id: string, content: unknown[], promptUuid?: string) => frames.offer({
-    type: 'assistant', session_id: saved.nativeSessionId, uuid: `frame-${id}`, parent_tool_use_id: null,
+  const assistant = (id: string, content: unknown[], promptUuid?: string) => {
+    const frame = {
+    type: 'assistant', session_id: nativeSession.nativeSessionId, uuid: `frame-${id}`, parent_tool_use_id: null,
     message: { id, content }, ...(promptUuid ? { user_message_uuid: promptUuid } : {}),
-  })
+    }
+    if (!promptUuid || promptUuid === (transcript.findLast(entry => (entry as { type: string }).type === 'user') as { uuid: string })?.uuid) transcript.push(frame)
+    return frames.offer(frame)
+  }
   const result = (promptUuid: string, extra: Record<string, unknown> = {}) => frames.offer({
-    type: 'result', session_id: saved.nativeSessionId, uuid: `result-${promptUuid}`,
+    type: 'result', session_id: nativeSession.nativeSessionId, uuid: `result-${promptUuid}`,
     user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done', ...extra,
   })
   return { get frames() { return frames }, client, manager, callbacks, bridge, validate, close, query, offers, input,
-    nextMessage, assistant, result }
+    nextMessage, assistant, result, transcript }
 }
 
 describe('Claude response ownership through SDK callbacks', () => {
+  it('retires settled turn resources across rollover and rejects an evicted input using persisted history', async () => {
+    const f = fixture()
+    try {
+      let session = await f.manager.attachSession(saved, start)
+      for (let index = 0; index < 300; index++) {
+        session = await f.manager.attachSession(session, start)
+        const correlationId = `settled-${index}`
+        const output = drain(f.manager.startTurn(session, f.input(correlationId)))
+        const message = await f.nextMessage()
+        await f.assistant(`answer-${index}`, [{ type: 'text', text: 'settled answer' }], message.uuid)
+        await f.result(message.uuid)
+        await output
+        await f.manager.retireTurn!(session, correlationId)
+        const history = await f.manager.reconcile(session, correlationId)
+        expect(history.terminalResult).toBeUndefined()
+        expect(history.nativeSubmission?.nativeMessageId).toBe(message.uuid)
+      }
+      expect(f.query).toHaveBeenCalledTimes(2)
+      const replay = drain(f.manager.startTurn(session, f.input('settled-0')))
+      await expect(replay).rejects.toThrow('already submitted')
+      expect(f.offers).toHaveBeenCalledTimes(300)
+      const resumedHistory = await f.manager.reconcile(session, 'settled-0')
+      expect(resumedHistory.nativeSubmission?.nativeMessageId).toBe(claudePromptUuid('settled-0'))
+      expect(resumedHistory.terminalResult).toBeUndefined()
+    } finally { await f.manager.dispose?.() }
+  }, 30_000)
+
+  it('keeps tool callbacks and replies owned through a parent-linked compaction summary', async () => {
+    const nativeSession = { ...saved, nativeSessionId: '0d60d9a0-e091-4bdb-b63f-8ed8f761720c' }
+    const f = fixture({}, nativeSession)
+    const sessionStore: SessionStore = {
+      append: async () => {},
+      load: async () => f.transcript.map((raw, index) => {
+        const row = raw as Record<string, unknown>
+        return { ...row, type: String(row.type), uuid: String(row.uuid), sessionId: row.session_id,
+          parentUuid: row.parentUuid ?? (index ? (f.transcript[index - 1] as { uuid: string }).uuid : null) }
+      }),
+    }
+    f.client.getSessionMessages = (id, page) => getSessionMessages(id, { ...page, sessionStore })
+    try {
+      const session = await f.manager.attachSession(nativeSession, start)
+      const output = drain(f.manager.startTurn(session, f.input('compacted')))
+      const message = await f.nextMessage()
+      await f.assistant('before-compaction', [{ type: 'text', text: 'Before compaction' }], message.uuid)
+      f.transcript.push({ type: 'user', uuid: 'compact-summary', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'frame-before-compaction', isCompactSummary: true,
+        message: { role: 'user', content: 'Summary of earlier context' } })
+      f.transcript.push({ type: 'assistant', uuid: 'frame-after-compaction', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'compact-summary', message: { id: 'after-compaction' } })
+      const permission = f.callbacks.canUseTool!('Read', { file_path: '/work/file' }, {
+        signal: new AbortController().signal, toolUseID: 'compacted-tool', requestId: 'compacted-control',
+      })
+      await f.frames.offer({ type: 'assistant', uuid: 'frame-after-compaction', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, message: { id: 'after-compaction', content: [
+          { type: 'tool_use', id: 'compacted-tool', name: 'Read', input: { file_path: '/work/file' } },
+        ] } })
+      expect(await permission).toMatchObject({ behavior: 'allow' })
+      f.transcript.push({ type: 'assistant', uuid: 'frame-final-compacted', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'frame-after-compaction', message: { id: 'final-compacted' } })
+      await f.frames.offer({ type: 'assistant', uuid: 'frame-final-compacted', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, message: { id: 'final-compacted', content: [{ type: 'text', text: 'After compaction' }] } })
+      await f.result(message.uuid)
+      expect((await output).find(event => event.payload.text === 'After compaction')?.payload.clientCorrelationId)
+        .toBe('compacted')
+      expect(f.validate.mock.calls.some(([identity]) => identity.toolUseId === 'compacted-tool'
+        && identity.nativeMessageId === message.uuid)).toBe(true)
+    } finally { await f.manager.dispose?.() }
+  })
+
   it('owns distinct tool-round messages while preserving delayed older and foreign event identities', async () => {
     const f = fixture()
     try {
@@ -142,6 +221,11 @@ describe('Claude response ownership through SDK callbacks', () => {
       void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'late-older',
         message: { id: 'older-reply', content: [{ type: 'text', text: 'late older' }] } })
       void f.assistant('new-older-id', [{ type: 'text', text: 'late echoed older' }], oldMessage.uuid)
+      // This unseen delayed frame has no native ancestry and must never inherit the new request.
+      void f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'unknown-delayed',
+        message: { id: 'unknown-delayed', content: [{ type: 'tool_use', id: 'delayed-tool', name: 'Read', input: {} }] } })
+      void f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'unrelated-wake',
+        subtype: 'success', is_error: false, result: 'wake' })
       const second = permission('tool-2')
       void f.assistant('A2', [{ type: 'tool_use', id: 'tool-2', name: 'Read', input: { file_path: '/work/file' } }])
       const hook = f.callbacks.hooks!.PreToolUse![0]!.hooks[0]!
@@ -161,6 +245,7 @@ describe('Claude response ownership through SDK callbacks', () => {
         .toEqual(['tool-1', 'tool-1', 'tool-2'])
       expect(events.some(event => ['late older', 'late echoed older'].includes(String(event.payload.text)))).toBe(false)
       expect(events.find(event => event.payload.text === 'final answer')?.payload.clientCorrelationId).toBe('request')
+      expect(f.manager.nativeCallbackContext(session.nativeSessionId, 'delayed-tool')).toBeUndefined()
       expect(f.validate.mock.calls.filter(([identity]) => identity.toolUseId === 'tool-2')).not.toHaveLength(0)
       expect((await f.manager.reconcile(session, 'older')).events.some(event => event.payload.text === 'late older')).toBe(true)
 
@@ -185,6 +270,7 @@ describe('Claude response ownership through SDK callbacks', () => {
       })
       void stream('start-1', { type: 'message_start', message: { id: 'stream-1' } })
       void stream('text-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'first' } }, message.uuid)
+      void f.assistant('stream-2', [{ type: 'tool_use', id: 'stream-tool', name: 'Read', input: {} }])
       void stream('start-2', { type: 'message_start', message: { id: 'stream-2' } })
       void stream('tool-start', { type: 'content_block_start', index: 0,
         content_block: { type: 'tool_use', id: 'stream-tool', name: 'Read' } })

@@ -111,6 +111,13 @@ interface Runtime {
   /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
   observationOnly?: boolean
 }
+interface HistoryContext {
+  harness: NativeHarnessSessionManager['harness']
+  session?: NativeSessionReference | undefined
+  configuration?: OperatorConfigurationVersion | undefined
+  environment?: ChildProcessEnvironment | undefined
+  reconcile?(): Promise<void>
+}
 function failure(error: unknown): ExecutionResult {
   const provider = error && typeof error === 'object' && 'result' in error
     ? (error as { result?: ExecutionResult }).result?.error : undefined
@@ -312,15 +319,19 @@ export class OperatorChatService {
     return this.repository.activity.page(id, input)
   }
 
-  private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {
+  private historyContext(id: string, requestId: string, runtime: Runtime): HistoryContext {
+    return { harness: runtime.manager.harness, session: runtime.session, configuration: runtime.configuration,
+      environment: runtime.environment, reconcile: () => this.control(id, () => this.observe(id, requestId, runtime)) }
+  }
+  private async recordActivity(id: string, requestId: string, runtime: HistoryContext, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {
     const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
-    const known = knownNativeActivity(event, runtime.manager.harness)
+    const known = knownNativeActivity(event, runtime.harness)
     if (known) {
       const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native, redact)
       if (settled) { this.events.publish(id, 'activity', settled); return }
       if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
     }
-    const change = operatorActivity(event, runtime.manager.harness, requestId)
+    const change = operatorActivity(event, runtime.harness, requestId)
     if (!change) return
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
@@ -328,23 +339,26 @@ export class OperatorChatService {
     const safe = redact.value(change)
     if (!runtime.session || !nativeTurnId && !nativeSubmission) {
       this.events.publish(id, 'state', { requestId, snapshotRequired: true })
-      void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+      void runtime.reconcile?.().catch(() => undefined)
       return
     }
     const accepted = await this.repository.activity.append(id, requestId, safe, {
       ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation, nativeSubmission),
       onReconciliationRequired: () => {
         this.events.publish(id, 'state', { requestId, snapshotRequired: true })
-        void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+        void runtime.reconcile?.().catch(() => undefined)
       },
     })
     if (accepted) this.events.publish(id, 'activity', accepted)
   }
-  private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, precedingActivityId?: string | null) {
-    const message = completedNativeAssistantMessage(event, runtime.manager.harness)
+  private async recordAssistantMessage(id: string, requestId: string, runtime: HistoryContext, event: NativeHarnessEvent, precedingActivityId?: string | null) {
+    const message = completedNativeAssistantMessage(event, runtime.harness)
     if (!message) return true
     if (await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
-      message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined,
+      message.parentMessageId || message.truncation ? {
+        ...(message.parentMessageId ? { parentMessageId: message.parentMessageId } : {}),
+        ...(message.truncation ? { truncation: message.truncation } : {}), complete: message.complete === true,
+      } : undefined,
       precedingActivityId)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
       return true
@@ -525,6 +539,8 @@ export class OperatorChatService {
           submission: observation.submission,
           ...(observation.nativeMessageId ? { nativeMessageId: observation.nativeMessageId } : {}),
           retryable: false, requiresRuntimeClosure: true,
+          ...(observation.history ? { history: nativePersistenceRedactor(
+            Object.values(runtime.environment?.variables ?? {})).value(observation.history) } : {}),
         })) throw new Error('Native terminal ownership was lost.')
       }
       if (!runtime.session) {
@@ -670,9 +686,10 @@ export class OperatorChatService {
         submitted = true
         for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
           textStream.before(event)
-          await this.recordActivity(id, input.requestId, runtime, event, submittedTurnId, false, nativeSubmission)
+          const context = this.historyContext(id, input.requestId, runtime)
+          await this.recordActivity(id, input.requestId, context, event, submittedTurnId, false, nativeSubmission)
           const text = await committed.record(event, submittedTurnId, nativeSubmission)
-          if (text.allowed && (text.handled || await this.recordAssistantMessage(id, input.requestId, runtime, event))) textStream.push(event)
+          if (text.allowed && (text.handled || await this.recordAssistantMessage(id, input.requestId, context, event))) textStream.push(event)
           else textStream.rejected(event)
           if (text.final) this.events.publish(id, 'message', { requestId: input.requestId, snapshotRequired: true,
             scopeRevision: committed.revision() })
@@ -712,7 +729,7 @@ export class OperatorChatService {
   private async complete(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false) {
     if (!await this.repository.journalTerminal(id, requestId, result, {
       ...(nativeMessageId ? { nativeMessageId } : {}), retryable,
-      requiresRuntimeClosure: this.runtimes.has(id),
+      requiresRuntimeClosure: this.runtimes.get(id)?.manager.requiresRuntimeClosure?.() ?? this.runtimes.has(id),
     })) return
     await this.settleTerminal(id, requestId)
   }
@@ -720,6 +737,18 @@ export class OperatorChatService {
     const terminal = await this.repository.terminal(id, requestId)
     if (!terminal) return
     const { result, nativeMessageId, retryable } = terminal.observation
+    if (terminal.history && !terminal.historyPersisted) {
+      const row = await this.repository.active(id)
+      if (!row || row.active_request_id !== requestId) return
+      const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+      if (!configuration || !row.native_session_id || !row.provider_version) {
+        throw new Error('The saved native history has no pinned conversation context.')
+      }
+      const context: HistoryContext = { harness: row.harness, configuration,
+        session: { harness: row.harness, nativeSessionId: row.native_session_id, providerVersion: row.provider_version } }
+      await this.persistObservedHistory(id, requestId, context, terminal.history, terminal.history.nativeSubmission)
+      if (!await this.repository.terminalHistoryPersisted(id, requestId)) throw new Error('Native history ownership was lost.')
+    }
     if (terminal.closureState !== 'closed') {
       const runtime = this.runtimes.get(id)
       const recovered = terminal.observation.requiresRuntimeClosure && !runtime
@@ -788,8 +817,7 @@ export class OperatorChatService {
   private async journalResidentTerminal(id: string, runtime: Runtime): Promise<void> {
     if (!runtime.session) return
     const row = await this.repository.active(id)
-    if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId
-      || await this.repository.terminal(id, row.active_request_id)) return
+    if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId) return
     const correlationId = nativeCorrelation(id, row.active_request_id)
     const history = await runtime.manager.reconcile(runtime.session, correlationId, AbortSignal.timeout(5_000))
     const submission = history.nativeSubmission
@@ -802,11 +830,45 @@ export class OperatorChatService {
     await this.repository.journalTerminal(id, row.active_request_id, history.terminalResult, {
       ...(history.nativeMessageId ? { nativeMessageId: history.nativeMessageId } : {}),
       ...(messageMatches ? { submission: submission! } : {}), retryable: false, requiresRuntimeClosure: true,
+      history: nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(history),
     })
+    await this.persistObservedHistory(id, row.active_request_id, this.historyContext(id, row.active_request_id, runtime),
+      history, messageMatches ? submission : undefined)
   }
   private async release(id: string) {
     await this.stopRuntime(id, this.runtimes.get(id))
     this.runtimes.delete(id); this.managers.release?.(id)
+  }
+  private async persistObservedHistory(id: string, requestId: string, runtime: HistoryContext, history: NativeHistory,
+    receipt?: NativeMessageSubmission) {
+    let precedingActivityId: string | null = null
+    const showThinking = runtime.configuration?.harness.harness === 'opencode'
+      ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
+    for (const event of currentOperatorHistory(history, runtime.harness)) {
+      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId ?? null, true, receipt)
+      const change = operatorActivity(event, runtime.harness, requestId)
+      if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
+      await this.recordAssistantMessage(id, requestId, runtime, event,
+        runtime.harness === 'opencode' ? precedingActivityId : undefined)
+    }
+    const currentOwner = await this.repository.active(id)
+    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== runtime.session!.nativeSessionId) return undefined
+    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
+    await this.repository.pending(id, requestId, pending)
+    if ((!this.responding.has(id) || this.closing) && receipt !== undefined) {
+      const state = await this.repository.get(id)
+      if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+        runtime.session!, receipt!, state)
+    }
+    if ((!this.responding.has(id) || this.closing) && history.responseDeliveries?.length) {
+      const state = await this.repository.get(id)
+      for (const proof of history.responseDeliveries) {
+        const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)
+        if (state && identity) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+          runtime.session!, identity, history.responseDeliveries, state)
+      }
+    }
+    return pending
   }
   private async observe(id: string, requestId: string, runtime: Runtime, signal = this.lifetime.signal): Promise<void> {
     if (!runtime.session) return
@@ -843,36 +905,12 @@ export class OperatorChatService {
       await this.repository.journalTerminal(id, requestId, history.terminalResult!, {
         ...(history.nativeMessageId ? { nativeMessageId: history.nativeMessageId } : {}),
         retryable: false, requiresRuntimeClosure: true,
+        history: nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(history),
       })
     }
-    let precedingActivityId: string | null = null
-    const showThinking = runtime.configuration?.harness.harness === 'opencode'
-      ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
-      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId ?? null, true, messageIdentity ? receipt : undefined)
-      const change = operatorActivity(event, runtime.manager.harness, requestId)
-      if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
-      await this.recordAssistantMessage(id, requestId, runtime, event,
-        runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
-    }
-    const currentOwner = await this.repository.active(id)
-    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
-    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
-    await this.repository.pending(id, requestId, pending)
-    if (!this.responding.has(id) && messageIdentity) {
-      const state = await this.repository.get(id)
-      if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
-        runtime.session, receipt!, state)
-    }
-    if (!this.responding.has(id) && history.responseDeliveries?.length) {
-      const state = await this.repository.get(id)
-      for (const proof of history.responseDeliveries) {
-        const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)
-        if (state && identity) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
-          runtime.session, identity, history.responseDeliveries, state)
-      }
-    }
-    if (history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
+    const pending = await this.persistObservedHistory(id, requestId, this.historyContext(id, requestId, runtime),
+      history, messageIdentity ? receipt : undefined)
+    if (!this.responding.has(id) && history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
       && history.terminalTurn.providerId === receipt!.nativeMessageId)) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {
@@ -1068,7 +1106,9 @@ export class OperatorChatService {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
           if (this.tasks.has(row.id)) return
           if (await this.repository.terminal(row.id, requestId)) {
-            await this.settleTerminal(row.id, requestId)
+            const resident = this.runtimes.get(row.id)
+            if (resident?.session) await this.observe(row.id, requestId, resident)
+            else await this.settleTerminal(row.id, requestId)
             return
           }
           const nonSubmission = nativeNonSubmission(row.record, requestId)

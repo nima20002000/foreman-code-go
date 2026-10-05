@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
-import { operatorActivity } from '../src/modules/conversations/operatorActivity.js'
+import { operatorActivity, currentOperatorHistory } from '../src/modules/conversations/operatorActivity.js'
 import { nativeActivityFence } from '../src/modules/conversations/nativeActivityFence.js'
 import { normalizeNativeTextOperations } from '../src/modules/conversations/nativeTextStream.js'
 
@@ -46,4 +46,13 @@ it('shared text normalization retains actual SDK block/message identity and excl
   expect(operation?.source).toEqual({ eventId: 'actual-output-event' })
   expect(operation?.final).toBe(true)
   expect(normalizeNativeTextOperations({ ...text, payload: { ...text.payload, parentToolUseId: 'actual-tool' } }, input)).toEqual([])
+})
+
+it('reads only the submitted Claude message history after observer detachment', () => {
+  const owned = event('claude.text', { itemId: 'answer', text: 'owned' })
+  const other = event('claude.text', { itemId: 'other', clientCorrelationId: 'another-request' })
+  const child = event('claude.text', { itemId: 'child', parentToolUseId: 'tool' })
+  expect(currentOperatorHistory({ correlationId: receipt.clientCorrelationId, nativeSubmission: receipt,
+    events: [owned, other, child], pendingInteractions: [] }, 'claude')).toEqual([owned])
+  expect(currentOperatorHistory({ events: [owned], pendingInteractions: [] }, 'claude')).toEqual([])
 })

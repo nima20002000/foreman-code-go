@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { NativeSessionStart } from '../port.js'
+import type { NativeSessionStart, NativeTerminalObservation } from '../port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
@@ -51,6 +51,31 @@ function deferred<T>() {
 async function drain<T>(input: AsyncIterable<T>) { const values: T[] = []; for await (const value of input) values.push(value); return values }
 
 describe('Claude native session manager admission', () => {
+  it('freezes the accepted terminal message identity while persistence is retried after delayed replies', async () => {
+    const f = fixture()
+    try {
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, start)
+      const saved = vi.fn(async (_observation: NativeTerminalObservation) => { throw new Error('Terminal save interrupted') })
+      const output = drain(f.manager.startTurn(session, { prompt: 'first', clientCorrelationId: 'frozen-result',
+        onTerminal: saved }))
+      const failure = expect(output).rejects.toThrow('Terminal save interrupted')
+      const message = await f.nextMessage()
+      await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'accepted-answer',
+        user_message_uuid: message.uuid, message: { id: 'accepted-message' } })
+      await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'accepted-result',
+        user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'accepted output' })
+      await failure
+      await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'delayed-answer',
+        user_message_uuid: message.uuid, message: { id: 'delayed-message' } })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const recovered = await f.manager.reconcile(session, 'frozen-result')
+      expect(recovered.nativeMessageId).toBe('accepted-message')
+      expect(recovered.terminalResult).toEqual(saved.mock.calls[0]![0].result)
+      expect(saved).toHaveBeenCalledTimes(1)
+    } finally { await f.manager.dispose?.() }
+  })
+
   it('keeps factory allocation I/O-free and blocks unqualified capabilities before native effects', async () => {
     const runner = { open: vi.fn(), history: vi.fn(), fork: vi.fn(), dispose: vi.fn(async () => undefined) }
     const manager = createClaudeNativeSessionManager({ runner, scope, sdkOptions: {}, qualification: { ...qualification, basicTurns: false } })
@@ -536,7 +561,7 @@ describe('Claude native session manager admission', () => {
     const waiting = deferred<Awaited<ReturnType<typeof f.statuses>>>()
     const update = deferred<Awaited<ReturnType<typeof f.setServers>>>()
     const query = f.client.query
-    f.client.query = (input) => ({ ...query(input), joinClosed: () => joined.promise })
+    f.client.query = async (input) => ({ ...await query(input), joinClosed: () => joined.promise })
     await f.manager.prepareInspection(start)
     let session: import('@foreman-code/contracts').NativeSessionReference | undefined
     if (inputKind === 'later') {

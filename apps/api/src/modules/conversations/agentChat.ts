@@ -1101,7 +1101,10 @@ export class AgentChatService {
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
     if (!message) return true
     if (await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
-      message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined)) {
+      message.parentMessageId || message.truncation ? {
+        ...(message.parentMessageId ? { parentMessageId: message.parentMessageId } : {}),
+        ...(message.truncation ? { truncation: message.truncation } : {}), complete: message.complete === true,
+      } : undefined)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
       return true
     }
@@ -1171,7 +1174,9 @@ export class AgentChatService {
 
   private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, rejectedSessionCreation = false): Promise<void> {
     if (await this.repository.finish(id, requestId, result, nativeMessageId, rejectedSessionCreation)) {
-      const observer = this.runtimes.get(id)?.observer
+      const runtime = this.runtimes.get(id)
+      if (runtime?.session) await runtime.manager.retireTurn?.(runtime.session, agentChatCorrelation(id, requestId))
+      const observer = runtime?.observer
       if (observer?.requestId === requestId) observer.controller.abort(new Error('Agent chat turn settled.'))
       this.events.publish(id, 'message', { requestId })
       this.scheduleReconcile(id)

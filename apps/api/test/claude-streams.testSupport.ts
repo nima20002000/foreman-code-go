@@ -1,5 +1,5 @@
-import { OperatorConfigurationVersionSchema, type NativeHarnessEvent } from '@graphql/contracts'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { OperatorConfigurationVersionSchema, type NativeHarnessEvent } from '@foreman-code/contracts'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity } from '../src/modules/harnesses/claudeSdk/interactions.js'
 import { createClaudeEventNormalizer } from '../src/modules/harnesses/claudeSdk/normalization.js'
@@ -9,6 +9,7 @@ import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner
 import { createClaudeSdkCallbacks } from '../src/modules/harnesses/claudeSdk/sdkCallbacks.js'
 import { createClaudeNativeSessionManager, type ClaudeMessageSubmission } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
+import { memoryClaudeCallbackJournal } from './support/claudeCallbackJournal.js'
 
 const scope = { deviceId: 'device', profilePath: '/profile', configRevision: 'revision', cwd: '/work' }
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription',
@@ -28,6 +29,7 @@ export function createStreamFixture(options: { receiptCapacity?: number; outputC
   let resumeFailures = options.resumeFailures ?? 0
   let submitted: ClaudeMessageSubmission | undefined
   const bridge: ClaudeInteractionBridge = new ClaudeInteractionBridge(configuration, {
+    callbackJournal: memoryClaudeCallbackJournal(),
     async validate(identity) {
       if (options.validate) return options.validate(identity)
       if (!submitted || identity.nativeMessageId !== submitted.nativeMessageId

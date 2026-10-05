@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, type NativeHarnessEvent, type NativeSessionReference } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { AgentConfigurationVersionSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresAgentChatRepository, agentChatCorrelation, agentChatKey } from '../src/modules/conversations/agentChatRepository.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -65,9 +65,10 @@ it('persists one message admission across later tool rounds and validates each c
       return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
         initializationResult: async () => ({}), interrupt: async () => undefined, close: () => frames.close() }
     })
+    const transcript: unknown[] = []
     const sdk: ClaudeSdkClient = {
       sdkVersion: '0.3.284', query, getSessionInfo: async sessionId => ({ sessionId }),
-      getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'unused' }),
+      getSessionMessages: async (_sessionId, page) => transcript.slice(page.offset, (page.offset ?? 0) + (page.limit ?? 256)), forkSession: async () => ({ sessionId: 'unused' }),
     }
     const domain = createPostgresClaudeInteractionBridge({ database: db.pool, configuration: harness,
       binding: { kind: 'agent', conversationId: conversation.id, workspaceId: context.workspaceId, repository },
@@ -106,12 +107,18 @@ it('persists one message admission across later tool rounds and validates each c
           expect(await repository.acceptedMessage(conversation.id, requestId, receipt)).toBe(true)
         } }
       const output = drain(manager!.startTurn(session, input))
-      return { output, message: (await messages.next()).value! }
+      const message = (await messages.next()).value!
+      transcript.push({ ...message, session_id: session.nativeSessionId })
+      return { output, message }
     }
-    const assistant = (id: string, content: unknown[], promptUuid?: string) => frames.offer({
+    const assistant = (id: string, content: unknown[], promptUuid?: string) => {
+      const frame = {
       type: 'assistant', session_id: session.nativeSessionId, parent_tool_use_id: null, uuid: randomUUID(),
       message: { id, content }, ...(promptUuid ? { user_message_uuid: promptUuid } : {}),
-    })
+      }
+      if (id !== 'older' || promptUuid) transcript.push(frame)
+      return frames.offer(frame)
+    }
     const result = (promptUuid: string) => frames.offer({ type: 'result', session_id: session.nativeSessionId,
       uuid: `result-${promptUuid}`, user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done' })
 
@@ -156,14 +163,22 @@ it('persists one message admission across later tool rounds and validates each c
         JSON.stringify({ status: 'pending', acceptedControl: control })])
       await manager.respond(session, request, option)
       expect(await decision).toMatchObject({ behavior: 'allow' })
+      if (index === 0) {
+      void frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'unseen-old',
+        message: { id: 'unseen-old', content: [{ type: 'text', text: 'unowned delayed text' },
+          { type: 'tool_use', id: 'unowned-tool', name: 'Read', input: {} }] } })
+      }
       void frames.offer({ type: 'user', session_id: session.nativeSessionId, uuid: `tool-result-${index}`,
         message: { content: [{ type: 'tool_result', tool_use_id: toolUseID, content: 'file' }] } })
+      if (index === 0) void frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'wake',
+        subtype: 'success', is_error: false, result: 'unrelated wake' })
       if (index === 0) void assistant('older', [{ type: 'text', text: 'late older response' }])
     }
     void assistant('A3', [{ type: 'text', text: 'final response' }])
     void result(current.message.uuid)
     const output = await current.output
-    expect(output.some(event => event.payload.text === 'late older response')).toBe(false)
+    expect(output.some(event => ['late older response', 'unowned delayed text'].includes(String(event.payload.text)))).toBe(false)
+    expect(manager.nativeCallbackContext(session.nativeSessionId, 'unowned-tool')).toBeUndefined()
     expect(output.find(event => event.payload.text === 'final response')?.payload.clientCorrelationId)
       .toBe(agentChatCorrelation(conversation.id, requestId))
     expect((await repository.turn(conversation.id, requestId))?.nativeSubmission?.nativeMessageId).toBe(current.message.uuid)
