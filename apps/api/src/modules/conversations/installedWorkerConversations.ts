@@ -15,9 +15,19 @@ import { NativeProcessRegistry, type NativeLaunchObservation } from '../harnesse
 import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
+import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../harnesses/opencodeServer.js'
+import { openCodeMcpInspectorAdapter } from '../harnesses/opencodeMcpInspectorAdapter.js'
+import { HarnessQualificationRegistry } from '../harnesses/qualification/registry.js'
+import { runWithReadOnlyQualification } from '../harnesses/qualification/gate.js'
+import { opencodeQualificationSuite } from '../harnesses/qualification/suites/opencode.js'
+import { qualificationRevisionWithIdentity } from '../harnesses/qualification/identity.js'
+import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
+import type { NativeHarnessSessionManager } from '../harnesses/port.js'
+import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { createInstalledCodexDependencies } from '../harnesses/installedCodexDependencies.js'
 import { DomainError } from '../errors.js'
-import { createInstalledConversationCodexReader } from './installedCodexProfile.js'
+import { createInstalledConversationNativeReader } from './installedNativeProfile.js'
 import { installedConversationDirectory } from './installedConversationDirectory.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
@@ -53,17 +63,21 @@ export async function createInstalledWorkerConversations(input: {
   const callbacks = workerConversationCallbacks({ currentBinding: input.current, capture: input.capture })
   const allocate = async (binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read'): Promise<WorkerConversationAllocation> => {
-    if (binding.harness !== 'codex') unavailable('This installed selection requires the Codex driver.')
+    const harness = binding.harness
+    if (harness !== 'codex' && harness !== 'opencode') unavailable('The installed native selection does not support this driver.')
+    if (harness === 'opencode' && !selected.opencode) unavailable('The installed OpenCode selection is missing.')
+    const inspect = harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode
+    const suiteRevision = harness === 'codex' ? input.codexSuiteRevision : qualificationRevisionWithIdentity(opencodeQualificationSuite.revision)
     const directory = await installedConversationDirectory({ binding, configuration, approvedRoots: input.approvedRoots })
-    const reader = createInstalledConversationCodexReader({ binding, configuration, connection,
-      current: input.current, signal: () => input.signal, suiteRevision: input.codexSuiteRevision,
-      inspect: signal => inspectInstalledCodex({ binding: input.current(), configuration: input.configuration,
+    const reader = createInstalledConversationNativeReader({ binding, configuration, connection,
+      current: input.current, signal: () => input.signal, suiteRevision,
+      inspect: signal => inspect({ binding: input.current(), configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal }),
       readFacts: signal => callbacks.profile(source(), signal),
     })
     const original = await reader.capture()
     const binary = original.inspection.installation.launcher.resolvedLauncher
-    if (!binary) unavailable('The selected Codex launcher is unavailable.')
+    if (!binary) unavailable('The selected native launcher is unavailable.')
     let scopeOwner = `conversation:${binding.owner.conversationId}`
     let appMcpAccess = binding.appMcpAccess
     if (purpose === 'compaction-read') {
@@ -71,13 +85,16 @@ export async function createInstalledWorkerConversations(input: {
       appMcpAccess = 'none'
     }
     const scope = input.registry.scope(scopeOwner)
-    const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: input.codexSuiteRevision })
     const before = async (signal?: AbortSignal) => {
       await directory.assertCurrent(signal)
       await reader.capture()
       signal?.throwIfAborted()
     }
-    const manager = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
+    let manager: NativeHarnessSessionManager
+    let inspector: NativeMcpInspector
+    if (harness === 'codex') {
+      const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: suiteRevision })
+      const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
       undefined, { ...dependencies,
         qualify: async (executable, version, cwd, environment, authenticated, signal) => {
           await before(signal)
@@ -93,6 +110,23 @@ export async function createInstalledWorkerConversations(input: {
           return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, scope)
         },
       })
+      manager = native
+      inspector = codexMcpInspectorAdapter(native)
+    } else {
+      if (configuration.harness.harness !== 'opencode') unavailable('The selected OpenCode configuration changed.')
+      const ownerId = binding.owner.kind === 'operator' ? binding.owner.operatorId : binding.owner.agentId
+      const registry = new HarnessQualificationRegistry(reader.repository, { opencode: suiteRevision })
+      const server = new ManagedOpenCodeServer({ binary, workingDirectory: binding.workingDirectory,
+        ownerAgentId: ownerId, processRecovery: scope, appMcpAccess,
+        ...(appMcpAccess === 'scoped' ? { credentialEnvironmentVariable: APP_MCP_TOKEN } : {}),
+        ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
+        assertInstallation: before })
+      const ensure = server.ensure.bind(server)
+      server.ensure = signal => runWithReadOnlyQualification(registry, () => ensure(signal))
+      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess })
+      manager = native
+      inspector = openCodeMcpInspectorAdapter(native)
+    }
     let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
     let launch: NativeLaunchObservation | undefined
     const nativeOwner = async (session: NativeSessionReference) => {
@@ -128,9 +162,9 @@ export async function createInstalledWorkerConversations(input: {
         workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
-    return { manager, inspector: codexMcpInspectorAdapter(manager), nativeOwner, start,
+    return { manager, inspector, nativeOwner, start,
       async close() {
-        await manager.dispose()
+        await manager.dispose?.()
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         await mcp?.close()
       } }

@@ -6,7 +6,7 @@ import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-au
 import type { HarnessQualificationRepository } from './qualification/repository.js'
 import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { DomainError } from '../errors.js'
-import type { InstalledCodexInspection } from './installedCodexInspection.js'
+import type { InstalledHarnessInspection } from './installedCodexInspection.js'
 
 const unavailable = (): never => { throw new DomainError('HARNESS_UNQUALIFIED', 'Current authenticated Main proof and exact installed Codex identity are required.', 409) }
 const same = (left: unknown, right: unknown) => commandInputHash(left) === commandInputHash(right)
@@ -17,7 +17,7 @@ export function createInstalledCodexQualificationReader(input: {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
-  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledCodexInspection>
+  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection>
   readFacts(): Promise<unknown>
   suiteRevision: string
   signal: AbortSignal

@@ -6,7 +6,7 @@ import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
 import type { HostHarnessOverrideAuthority } from './service.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
-import type { NativeQualificationRetention } from '../installedCodexQualificationRetention.js'
+import type { NativeQualificationRetention } from '../installedNativeQualificationRetention.js'
 import type { HostHarnessProfileEvidenceRepository } from './profileRepository.js'
 
 export interface HostHarnessProfileQualifier {

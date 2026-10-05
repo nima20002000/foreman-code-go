@@ -9,8 +9,9 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
-import { createInstalledCodexNativeQualifier, CODEX_COMPLETED_QUALIFICATION_CHECKS } from '../src/modules/harnesses/installedCodexNativeQualification.js'
-import { createInstalledCodexQualificationRetention } from '../src/modules/harnesses/installedCodexQualificationRetention.js'
+import { createInstalledNativeQualifier, CODEX_COMPLETED_QUALIFICATION_CHECKS, completedNativeQualificationChecks } from '../src/modules/harnesses/installedNativeQualification.js'
+import { inspectInstalledOpenCode } from '../src/modules/harnesses/installedOpenCodeInspection.js'
+import { createInstalledNativeQualificationRetention } from '../src/modules/harnesses/installedNativeQualificationRetention.js'
 import { requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { nativeQualification } from '../src/modules/harnesses/nativeQualification.js'
@@ -23,46 +24,67 @@ import type { QualificationSuite } from '../src/modules/harnesses/qualification/
 
 /** Genuine gate/ownership/profile/transaction code with model-free native port
  * fixtures. No binary is executed and no PostgreSQL connection is opened. */
-async function fixture() {
+async function fixture(harness: 'codex' | 'opencode' = 'codex') {
+  const version = harness === 'codex' ? '0.132.0' : '1.18.33'
   const directory = await mkdtemp(join(tmpdir(), 'remote-qualification-'))
   const binary = join(directory, 'codex'), path = join(directory, 'selection.json')
   await writeFile(binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('fixture-native-image')]), { mode: 0o700 })
   await writeFile(path, JSON.stringify({ schemaVersion: 1, codexBinary: binary, expectedVersion: '0.132.0',
-    appMcpLauncher: '/installed/app-mcp-launcher', payloadPaths: [] }), { mode: 0o600 })
+    appMcpLauncher: '/installed/app-mcp-launcher', payloadPaths: [],
+    ...(harness === 'opencode' ? { opencode: { binary, expectedVersion: version, payloadPaths: [] } } : {}) }), { mode: 0o600 })
   const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
     connectionEpoch: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
   let current = binding
-  const inspect = async (_binding: typeof binding, signal: AbortSignal) => inspectInstalledCodex({ binding: _binding,
+  const inspect = async (_binding: typeof binding, signal: AbortSignal) => (harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode)({ binding: _binding,
     configuration: { path, ownerUid: process.getuid!() }, environment: { PATH: '/usr/bin' }, cwd: directory, signal })
   const installation = (await inspect(binding, new AbortController().signal)).currentTarget!
-  const configuration = DEFAULT_HARNESS_DEFAULTS.codex
+  const configuration = DEFAULT_HARNESS_DEFAULTS[harness]
   const value: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: 'original-profile-revision', target: installation.target,
-    presetId: 'local-default:codex', enabled: true, driverId: 'codex', configuration,
+    presetId: `local-default:${harness}`, enabled: true, driverId: harness, configuration,
     configurationFingerprint: commandInputHash(withAdvancedDefaults(configuration)), qualification: 'unqualified' }
   const checkId = randomUUID(), registry = {
     reserveLaunch: vi.fn((owner: string) => ({ root: directory, owner, launchId: randomUUID() })),
     abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true),
   }
-  const probe = { inspect: vi.fn(async () => ({ executable: binary, identity: 'fixture-stat-generation', version: '0.132.0' })),
+  const probe = { inspect: vi.fn(async () => ({ executable: binary, identity: 'fixture-stat-generation', version })),
     probe: vi.fn(async () => 'a'.repeat(64)), assertUnchanged: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
   const run = vi.fn<QualificationSuite['run']>(async input => {
-    await requireHarnessQualification('codex', input.version, input.binary)
-    return { checks: CODEX_COMPLETED_QUALIFICATION_CHECKS.filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
+    await requireHarnessQualification(harness, input.version, input.binary)
+    return { checks: completedNativeQualificationChecks(harness).filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
       .map(id => ({ id, passed: true, detail: null })), evidence: { fixtureOnly: true } }
   })
   const checkConfiguration = vi.fn(async () => {
-    await requireHarnessQualification('codex', '0.132.0', binary)
-    return nativeQualification(value.configuration, 'codex-cli 0.132.0')
+    await requireHarnessQualification(harness, version, binary)
+    return nativeQualification(value.configuration, harness === 'codex' ? `codex-cli ${version}` : version)
   })
-  const qualifier = createInstalledCodexNativeQualifier({ binding, trustedCurrentBinding: () => current, inspect, registry,
+  const qualifier = createInstalledNativeQualifier({ harness, binding, trustedCurrentBinding: () => current, inspect, registry,
     workingRoot: directory, environment: { PATH: '/usr/bin' }, checkConfiguration,
-    suite: { harness: 'codex', revision: 'codex-live-4', run }, probe: () => probe })
+    suite: { harness, revision: `${harness}-live-4`, run }, probe: () => probe })
   return { directory, binary, binding, value, checkId, qualifier, registry, probe, run, checkConfiguration, installation,
     setBinding: (next: typeof binding) => { current = next } }
 }
 async function release(f: Awaited<ReturnType<typeof fixture>>) { await f.qualifier.close(); await rm(f.directory, { recursive: true, force: true }) }
 
 describe('explicit actual-suite worker qualification adapter', () => {
+  it('keeps OpenCode candidate admission and retained proof on its selected installed bytes and host', async () => {
+    const f = await fixture('opencode')
+    try {
+      const proof = await f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })
+      expect(proof).toMatchObject({ driverId: 'opencode', suiteRevision: 'opencode-profile-check-v1',
+        completedNativeQualification: { record: { harness: 'opencode', version: '1.18.33', status: 'qualified' } } })
+      const save = vi.fn(async () => {})
+      const retention = createInstalledNativeQualificationRetention({ repository: { save }, suiteRevision: 'codex-live-4+identity-v1',
+        opencodeSuiteRevision: 'opencode-live-4+identity-v1', currentBinding: () => f.binding,
+        currentInstallation: () => f.installation.installation, refreshInstallation: async () => {} })
+      const fence = await retention.retain({} as pg.PoolClient, f.value, proof, f.checkId, new AbortController().signal)
+      await fence()
+      expect(save).toHaveBeenCalledOnce()
+      await expect(retention.retain({} as pg.PoolClient, f.value, { ...proof,
+        completedNativeQualification: { ...proof.completedNativeQualification!, record: {
+          ...proof.completedNativeQualification!.record, harness: 'codex' } } }, f.checkId, new AbortController().signal))
+        .rejects.toMatchObject({ code: 'HARNESS_PROFILE_EVIDENCE_MISMATCH' })
+    } finally { await release(f) }
+  })
   it('opens candidate scope only for the actual owned suite and closes it before returning a completed receipt', async () => {
     const f = await fixture()
     try {
@@ -133,10 +155,10 @@ describe('explicit actual-suite worker qualification adapter', () => {
       let arrivals = 0, releaseBoth!: () => void
       const both = new Promise<void>(resolve => { releaseBoth = resolve })
       f.run.mockImplementation(async input => {
-        await requireHarnessQualification('codex', input.version, input.binary)
+        await requireHarnessQualification(harness, input.version, input.binary)
         if (++arrivals === 2) releaseBoth()
         await both
-        return { checks: CODEX_COMPLETED_QUALIFICATION_CHECKS.filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
+        return { checks: completedNativeQualificationChecks(harness).filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
           .map(id => ({ id, passed: true, detail: null })), evidence: {} }
       })
       const results = await Promise.all([f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal }),
@@ -169,7 +191,7 @@ async function mainFixture() {
   const client = { query } as unknown as pg.PoolClient, poolQuery = vi.fn()
   const repository = new HarnessQualificationRepository({ query: poolQuery } as unknown as pg.Pool)
   const refreshInstallation = vi.fn(async () => {})
-  const retention = createInstalledCodexQualificationRetention({ repository, currentBinding: () => binding,
+  const retention = createInstalledNativeQualificationRetention({ repository, currentBinding: () => binding,
     currentInstallation: () => f.installation.installation, suiteRevision: 'codex-live-4+identity-v1', refreshInstallation })
   const transactions: string[] = []
   const settings = { latest: async () => selected, lockRevision: async () => undefined,

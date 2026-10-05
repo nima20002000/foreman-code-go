@@ -7,7 +7,7 @@ import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-au
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { loadOrCreateWorkerIdentity, persistWorkerPairing } from '@foreman-code/contracts/device-identity-node'
 import { createInstalledCodexQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
-import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
+import type { InstalledHarnessInspection } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 
@@ -91,7 +91,7 @@ function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding =
     executionPlacement: { version: 1, acceptedBindingHash: hash, runId: 'run', nodeId: 'node', executionId: 'execution', attemptId: 'attempt', operationId: 'operation',
       materialization, workingTree: { materializationId: placement.source.materializationId, materializationDigest: hash, canonicalProjectRoot: '/project',
         canonicalCwd: '/project', directoryIdentityHash: hash, filesystem, accessMode: 'read-only', privateGit: null }, bindingHash: hash } })
-  const inspection: InstalledCodexInspection = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
+  const inspection: InstalledHarnessInspection = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
     currentTarget: { binding, target, installation: { ...facts.harness.installation, observedVersion: null, qualified: false }, binarySha256: sha, expectedVersion: '0.132.0' } }
   let live: typeof binding | null = binding
   const inspect = vi.fn(async () => structuredClone(inspection)), readFacts = vi.fn(async () => structuredClone(facts))

@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationProfileFactsSchema } from '@foreman-code/contracts/remote-execution-rpc'
-import { createInstalledConversationCodexReader } from './installedCodexProfile.js'
+import { createInstalledConversationNativeReader } from './installedNativeProfile.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
-import type { InstalledCodexInspection } from '../harnesses/installedCodexInspection.js'
+import type { InstalledHarnessInspection } from '../harnesses/installedCodexInspection.js'
 import { QUALIFICATION_TARGET_PROFILE } from '../harnesses/qualification/profiles.js'
 
 /** Protocol fixtures test admission checks; they do not qualify any native installation. */
@@ -35,9 +35,9 @@ function fixture() {
       failureReason: null, startedAt: '2026-10-05T00:00:00.000Z', checkedAt: '2026-10-05T00:00:00.000Z' } })
   let connection = f.connection
   let installed = structuredClone(installation)
-  const reader = createInstalledConversationCodexReader({ ...f, current: () => connection,
+  const reader = createInstalledConversationNativeReader({ ...f, current: () => connection,
     suiteRevision: 'suite-fixture', signal: () => AbortSignal.timeout(1000), readFacts: async () => facts,
-    inspect: async (): Promise<InstalledCodexInspection> => ({ inventory: { instances: [], installations: [installed] },
+    inspect: async (): Promise<InstalledHarnessInspection> => ({ inventory: { instances: [], installations: [installed] },
       currentTarget: { binding: connection, target, installation: installed, binarySha256: 'a'.repeat(64), expectedVersion: '0.154.0' } }) })
   return { ...f, facts, reader, replace: () => { installed = { ...installed, installationFingerprint: 'replacement' } },
     revokeInstallation: () => { connection = { ...connection, workerInstallationId: randomUUID() } } }

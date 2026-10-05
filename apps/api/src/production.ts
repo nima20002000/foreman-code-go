@@ -40,7 +40,7 @@ import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
-import { retainInstalledCodexInventory } from './modules/harnesses/installedCodexInspection.js'
+import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
@@ -202,7 +202,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
-import { createInstalledCodexQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
+import { createInstalledNativeQualificationRetention } from './modules/harnesses/installedNativeQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
@@ -375,8 +375,8 @@ export function buildProductionApp(
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
-        if (selectedSuites) await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
@@ -591,8 +591,8 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution), selectedSuites ? createInstalledCodexQualificationRetention({
-      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
+      } }, workerExecution), selectedSuites ? createInstalledNativeQualificationRetention({
+      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision,
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
@@ -602,8 +602,8 @@ export function buildProductionApp(
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(30000)])
         const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
         bounded.throwIfAborted()
-        await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {

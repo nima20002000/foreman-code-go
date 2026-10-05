@@ -33,6 +33,7 @@ import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
 import { createInstalledWorkerConversations } from '../conversations/installedWorkerConversations.js'
@@ -166,8 +167,11 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
       const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+      const openCode = await inspectInstalledOpenCode({ binding: context.binding, configuration: input.configuration,
+        environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
-      return { payload: inspected.inventory }
+      return { payload: { ...inspected.inventory,
+        installations: [...inspected.inventory.installations, ...openCode.inventory.installations] } }
     },
   })
   let jobs: RemoteJobExecutionHost | undefined, jobOpening: Promise<RemoteJobExecutionHost> | undefined
