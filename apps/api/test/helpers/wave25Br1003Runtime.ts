@@ -45,7 +45,7 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
   options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
-    approvalNodeIds?: string[]; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
+    approvalNodeIds?: string[]; insertRun?: boolean; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
   const db = await agent3Database()
@@ -78,7 +78,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       ] })
     f.run = WorkflowRunV3Schema.parse({ ...f.run, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
       authorizationPrincipalId: accepted.principal.id })
-    await insertProviderRun(db.pool, f)
+    if (options.insertRun !== false) await insertProviderRun(db.pool, f)
     const user = await access.issue({ name: 'Checkpoint test approver', audience: 'user', expiresAt: new Date(Date.now() + 600000),
       grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id] } }] })
     const provider = new CheckpointTestProvider(new Set(options.approvalNodeIds ?? f.version.definition.nodes.filter((node) => node.id !== f.version.entryNodeId).map((node) => node.id)),
