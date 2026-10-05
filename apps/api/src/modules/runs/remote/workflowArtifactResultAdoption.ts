@@ -9,7 +9,7 @@ import { DomainError } from '../../errors.js'
 import { assertOriginalWorkflowTerminal } from '../../interactions/workflowTerminalSource.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import type { NativeArtifactOutputs, WorkflowNativeArtifactOutput } from './nativeArtifactOutputs.js'
+import type { WorkflowNativeArtifactOutput } from './nativeArtifactOutputs.js'
 
 export interface VerifiedWorkflowArtifactSource {
   version: WorkflowVersionV3
@@ -38,7 +38,10 @@ const conflict = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_
  * result/successor acceptance on the complete durable adoption, not this array. */
 export class WorkflowArtifactResultAdoption {
   constructor(private readonly source: WorkflowArtifactResultSourcePort,
-    private readonly outputs: Pick<NativeArtifactOutputs, 'acceptOutput'>) {}
+    private readonly outputs: {
+      acceptOutput(accepted: AcceptedWorkflowArtifactPublication, outputKey: string,
+        commandId: string): Promise<WorkflowNativeArtifactOutput>
+    }) {}
 
   async adoptOriginalOutputs(raw: AcceptedWorkflowArtifactPublication): Promise<WorkflowArtifactAdoptionOutcome> {
     const accepted = structuredClone(raw)

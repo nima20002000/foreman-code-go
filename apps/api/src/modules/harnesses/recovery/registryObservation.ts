@@ -13,7 +13,7 @@ export interface NativeLaunchObservation {
   readonly boundary?: Readonly<NativeCgroupBoundary>
   readonly lifecycle: 'active' | 'ended' | 'closure-unconfirmed' | 'closed'
   readonly closureEvidence?: 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty'
-    | 'native_exit_removed_cgroup' | 'cgroup_v2_removed'
+    | 'native_exit_removed_cgroup' | 'cgroup_v2_removed' | undefined
 }
 export interface NativeRegistrySnapshot { readonly revision: string; readonly launches: readonly NativeLaunchObservation[] }
 export interface NativeRegistryChange extends NativeRegistrySnapshot { readonly gap: boolean }

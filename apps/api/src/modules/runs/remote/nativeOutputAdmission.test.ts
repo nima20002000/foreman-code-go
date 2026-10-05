@@ -36,7 +36,7 @@ it('admits an immediate original output once Main publishes its genuine scope wi
   const pin = { session, nativeTurnId: 'original-turn', connectionId: 'connection', runtimeGeneration: 1,
     assertCurrent() {} }
   await bridge.activate(pin, signal)
-  const command = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' as const }
+  const command = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const }
   const creating = bridge.dispatch(command, { ...pin, callId: 'original-call' }, signal)
   try {
     await pending

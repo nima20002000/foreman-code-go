@@ -29,7 +29,7 @@ function registry(budget = new NativeOutputMemoryBudget()) {
 }
 async function create(host: ReturnType<typeof registry>) {
   const result = await host.dispatch({ operation: 'create', commandId: randomUUID(),
-    filename: 'report.txt', mediaType: 'text/plain' })
+    filename: 'report.md', mediaType: 'text/markdown' })
   if (result.operation !== 'create') throw new Error('create result')
   return result.artifactId
 }
@@ -48,7 +48,7 @@ it('seals path-free original chunks, denies later writes and gives publishers im
   await expect(f.dispatch({ ...append, commandId: randomUUID(), offset: bytes.length })).rejects.toMatchObject({
     code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
   await expect(f.dispatch({ operation: 'publish', publication: { commandId: randomUUID(), artifactId,
-    filename: 'report.txt', mediaType: 'text/plain' } })).rejects.toThrow('publisher boundary')
+    filename: 'report.md', mediaType: 'text/markdown' } })).rejects.toThrow('publisher boundary')
   expect(f.publications[0]).toEqual({ input: expect.objectContaining({ scope: f.scope }), bytes })
   await f.host.close()
 })
@@ -80,7 +80,7 @@ it('retains mutation replies across a lost post-effect authorization check and r
     assertCurrent: () => { if (phase === 'withdrawn') throw new Error('authorization withdrew after effect') },
     authorize: async () => {}, publish: async () => { throw new Error('not publishing') } })
   const callback = { assertCurrent() {} }
-  const create = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' as const }
+  const create = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const }
   await expect(native.dispatch(create, callback)).rejects.toThrow('after effect')
   await expect(native.dispatch(create, callback)).rejects.toThrow('after effect')
   phase = 'ready'
@@ -111,7 +111,7 @@ it('binds buffer callbacks to the admitted OpenCode turn and withdraws them at c
   const pin = { session, nativeTurnId: 'original-turn', connectionId: 'connection', runtimeGeneration: 1,
     assertCurrent() {} }
   await bridge.activate(pin, new AbortController().signal)
-  const command = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' as const }
+  const command = { operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const }
   await expect(bridge.dispatch(command, { ...pin, callId: 'call', nativeTurnId: 'other-turn' },
     new AbortController().signal)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
   expect(await bridge.dispatch(command, { ...pin, callId: 'call' }, new AbortController().signal)).toMatchObject({ operation: 'create' })

@@ -139,6 +139,6 @@ export class MainArtifactPublications {
         ...(caller.context.turnId ? { turnId: caller.context.turnId } : {}) },
       publication: { ownerPrincipalId: caller.principal.id, requestId, binding: caller.binding },
       pins: { ...link.ref, sha256: mainPublication.sha256, byteSize: mainPublication.byteSize },
-      value: stored.value, mainPublication }
+      value: AgentFilePublishResultSchema.shape.value.parse(stored.value), mainPublication }
   }
 }

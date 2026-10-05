@@ -12,7 +12,8 @@ import { bootIdentity, identityAlive, processIdentity, sessionAlive, type LinuxP
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved, killCgroup, retireCgroup,
   type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
-import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
+import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange,
+  type NativeLaunchObservation } from './registryObservation.js'
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
 import { NativeProcessObservationSchema } from '@graphql/contracts/remote-execution-entry-closure'

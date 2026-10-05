@@ -204,8 +204,9 @@ describe('installed OpenCode execution qualification reader', () => {
     const replacement = { ...f.binding, connectionGeneration: f.binding.connectionGeneration + 1,
       connectionEpoch: randomUUID() }
     f.setLive(replacement)
-    f.inspection.currentTarget!.binding = replacement
-    f.inspection.currentTarget!.installation.connectionGeneration = harnessConnectionGeneration(replacement)
+    f.inspection.currentTarget = { ...f.inspection.currentTarget!, binding: replacement,
+      installation: { ...f.inspection.currentTarget!.installation,
+        connectionGeneration: harnessConnectionGeneration(replacement) } }
     f.facts.harness.installation.connectionGeneration = harnessConnectionGeneration(replacement)
     expect((await f.reader.capture()).binding).toEqual(replacement)
     expect(assertResident).toHaveBeenCalledTimes(2)

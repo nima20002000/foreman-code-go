@@ -99,7 +99,7 @@ it('publishes sealed Main bytes and recovers canonical original output after pro
 it('denies revoked original mutations without allocating canonical files', async () => {
   const f = await fixture()
   f.revoke()
-  await expect(f.dispatch({ operation: 'create', commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' }))
+  await expect(f.dispatch({ operation: 'create', commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' }))
     .rejects.toMatchObject({ code: 'DENIED' })
   expect(f.f.repository.allocations.size).toBe(0)
   await f.close()

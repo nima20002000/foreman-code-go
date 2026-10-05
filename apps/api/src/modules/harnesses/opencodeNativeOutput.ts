@@ -49,7 +49,7 @@ export async function openOpenCodeNativeOutputTurn(input: {
         server.registerTool(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation], { inputSchema: schema,
           description: `${operation} the original turn's output. Outputs contain no filesystem paths.`,
           annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        }, async raw => {
+        }, async (raw: unknown) => {
           try {
             await awaitNativeOutputContext(async bounded => {
               bounded.throwIfAborted()

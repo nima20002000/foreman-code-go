@@ -742,8 +742,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             connection: originalCapture?.connection ?? connectionIdentity(resident.capture.binding), native: resident.native.native,
             session: resident.session, launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(resident.native.launch),
             runtimeLeaf: resident.runtimeLeaf!, approvedRoots: ApprovedRootAllowlistSchema.parse(resident.runtimeRoots),
-            source: { record: resident.capture.facts.executionPlacement.materialization,
-              workingTree: resident.capture.facts.executionPlacement.workingTree } })
+            source: RemoteWorkflowPhysicalReadoutSchema.shape.source.parse({
+              record: resident.capture.facts.executionPlacement.materialization,
+              workingTree: resident.capture.facts.executionPlacement.workingTree }) })
           return resident.native.native
         },
         settle:async(intent,history,owner)=>{

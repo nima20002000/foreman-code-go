@@ -85,7 +85,7 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
         `select expected_reference,closed_at is not null as closed from execution_native_closures
           where execution_id=$1 and generation=$2 for share`, [execution.id, first.closureGeneration])).rows[0]
       if (!closure || !same(closure.expected_reference, first.session)) return conflict()
-      turnId = first.lane?.providerId
+      turnId = first.lane?.providerId ?? undefined
     }
     if (!turnId || rows.some(({ record }) => record.lane?.providerId !== turnId)) return conflict()
     let accepted: Awaited<ReturnType<typeof authority.resolveWorkflowContext>> | undefined

@@ -27,7 +27,8 @@ import { TemporaryFileService } from '../../files/service.js'
 import { createBufferedNativeOutputs, NativeOutputMemoryBudget } from './bufferedNativeOutput.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import type { AgentFilePublishResult } from '@graphql/contracts/files'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { AgentFilePublishResultSchema, MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { targetOf } from '../../files/tools/context.js'
 import * as installedInspection from '../../harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
@@ -676,7 +677,8 @@ async function restartedInstalledFixture(captureOptions: { accepted?: boolean; a
     recovery.remember({ version: 1, intent: f.intent, connection: originalConnection, native, session,
       launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(launch), runtimeLeaf,
       approvedRoots: f.approvedRoots,
-      source: { record: f.nativePlacement.materialization, workingTree: f.nativePlacement.workingTree } })
+      source: RemoteWorkflowPhysicalReadoutSchema.shape.source.parse({
+        record: f.nativePlacement.materialization, workingTree: f.nativePlacement.workingTree }) })
   }
   const file = join(f.root, 'workflow.json')
   await writeFile(file, JSON.stringify({ schemaVersion: 1, codexBinary: '/unit/codex', appMcpLauncher: '/unit/launcher.mjs',
@@ -1093,14 +1095,15 @@ describe('installed workflow construction concurrency', () => {
           publish: async (publication, source, callback, signal) => {
             const snapshot = await source.sealed(publication, callback, signal)
             const bytes = await snapshot.read(0, snapshot.byteSize, signal)
-            const target = { conversationId: file.scope.chat.conversationId }
+            const target = targetOf(file.context)
             await files.allocateAgentResult(file.principal, target, { requestId: publication.commandId,
               filename: publication.filename, mediaType: publication.mediaType, sha256: snapshot.sha256,
               byteSize: snapshot.byteSize }, 'agent_output', publication.commandId)
             await files.upload(file.principal, target, publication.commandId, Readable.from([bytes]))
-            published = await files.finalize(file.principal, target, publication.commandId)
-            context.observeArtifactPublication({ transferId: randomUUID(), publication }, published)
-            return published
+            const result = AgentFilePublishResultSchema.parse(await files.finalize(file.principal, target, publication.commandId))
+            published = result
+            context.observeArtifactPublication({ transferId: randomUUID(), publication }, result)
+            return result
           },
         }).opencode
       } })
@@ -1156,7 +1159,7 @@ describe('installed workflow construction concurrency', () => {
       await call('start-turn', { prompt: 'Create the report.', correlationId: 'execution:execution' })
       expect(await Promise.race([submitted.promise.then(() => 'submitted'), uncertain.promise.then(() => 'uncertain')]))
         .toBe('submitted')
-      const command = { operation: 'create', commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' }
+      const command = { operation: 'create', commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' }
       expect((await tool('files.native_output_create', command, 'Bearer foreign')).status).toBe(401)
       const created = await tool('files.native_output_create', command)
       expect(created.result?.isError).not.toBe(true)
@@ -1167,11 +1170,11 @@ describe('installed workflow construction concurrency', () => {
       await tool('files.native_output_seal', { operation: 'seal', commandId: randomUUID(), artifactId })
       const commandId = randomUUID()
       expect((await tool('files.native_output_publish', { operation: 'publish', publication: {
-        commandId, artifactId, filename: 'report.txt', mediaType: 'text/plain' } })).result?.isError).not.toBe(true)
+        commandId, artifactId, filename: 'report.md', mediaType: 'text/markdown' } })).result?.isError).not.toBe(true)
       if (!published) throw new Error('Original publication missing')
       const restored = new TemporaryFileService(file.repository, new FileByteStorage(canonical, MAX_FILE_BYTES),
         { resolve: async () => file.scope }, undefined, file.clock)
-      const readback = await restored.download(file.principal, { conversationId: file.scope.chat.conversationId }, {
+      const readback = await restored.download(file.principal, targetOf(file.context), {
         fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId })
       const parts: Buffer[] = []
       for await (const part of readback.stream) parts.push(Buffer.from(part as Uint8Array))
@@ -1260,7 +1263,7 @@ describe('installed workflow construction concurrency', () => {
         expect(create).toHaveBeenCalledOnce()
         expect(dispose).toHaveBeenCalled()
         expect(closeOwner).toHaveBeenCalledWith(`execution:${f.intent.executionId}`, expect.any(AbortSignal))
-        const owner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true }
+        const owner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const }
         expect(await f.host.preparationClosed(owner)).toBe(true)
         expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
         expect((await f.handler({ method: 'status', intent: f.intent, placement: f.placement }, context)).payload)
@@ -1715,7 +1718,8 @@ describe('original physical source selectors and Main SQL consumer',()=>{
     const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
     const history = { ...f.source.history, terminalResult: result, terminalTurn: {
       correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } }
-    const closed = { ...f.captured.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+    const closed = RemoteWorkflowPhysicalReadoutSchema.shape.observation.parse({ ...f.captured.launch,
+      lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' })
     await f.journal.terminal(f.intent.operationId, { kind: 'completed', result,
       resultDigest: commandInputHash(result).slice('sha256:'.length),
       closureEvidenceDigest: commandInputHash({ intent: f.intent, native: f.readout.receipt.native,
@@ -1828,8 +1832,8 @@ describe('original physical source selectors and Main SQL consumer',()=>{
         const terminal = await f.journal.status(f.intent.operationId)
         if (terminal.status !== 'known') throw new Error('Expected terminal original owner')
         f.readout.receipt = terminal.receipt
-        f.readout.observation = { ...f.captured.launch, lifecycle: 'closed',
-          closureEvidence: state === 'different closure' ? 'cgroup_v2_empty' : 'linux_boot_changed' }
+        f.readout.observation = RemoteWorkflowPhysicalReadoutSchema.shape.observation.parse({ ...f.captured.launch,
+          lifecycle: 'closed', closureEvidence: state === 'different closure' ? 'cgroup_v2_empty' : 'linux_boot_changed' })
         f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
       }
       f.context.binding = { ...f.context.binding, bootId: randomUUID(), connectionGeneration: 10,
