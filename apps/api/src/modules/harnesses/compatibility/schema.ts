@@ -133,6 +133,10 @@ export function checkOpenCodeSchema(document: ObjectValue): void {
       ['/session/{sessionID}/message', 'get'], ['/session/{sessionID}/prompt_async', 'post'],
       ['/session/{sessionID}/abort', 'post'], ['/permission/{requestID}/reply', 'post'],
       ['/mcp', 'get'],
+      ['/session/status', 'get'], ['/session/{sessionID}/message/{messageID}', 'get'],
+      ['/permission', 'get'], ['/question', 'get'], ['/question/{requestID}/reject', 'post'],
+      ['/session/{sessionID}/fork', 'post'], ['/session/{sessionID}/children', 'get'],
+      ['/mcp/{name}/connect', 'post'], ['/mcp/{name}/disconnect', 'post'],
     ] as const) {
       const item = operation(document, path, method)
       if (typeof item.operationId !== 'string' || !item.responses) throw invalid()
