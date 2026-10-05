@@ -290,7 +290,8 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
             await unlink(at(versions, 'native'))
           } catch (restoreError) {
             if (code(restoreError) !== 'EEXIST') {
-              throw new AggregateError([error, restoreError], 'Working-copy versions are retained for recovery.')
+              throw new AggregateError([error, restoreError], 'Working-copy versions are retained for recovery.',
+                { cause: restoreError })
             }
           }
           if (code(error) === 'EEXIST') {
