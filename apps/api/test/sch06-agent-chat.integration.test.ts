@@ -141,7 +141,7 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       const a = (await executions(f, f.f.run.id)).find((entry) => entry.workflowNodeId === y.id)!
       expect(a.nativeSessionId).toBeTruthy()
       const location = await f.locations.set(f.writer.principal, 'http', { workspaceId, commandId: randomUUID(),
-        expectedLocationRevision: 1, runnerId: 'local', rootPath: f.db.directory })
+        expectedLocationRevision: 1, runnerId: f.locations.runnerId, rootPath: f.db.directory })
       const revision = Number((await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [workflowId])).rows[0]!.revision)
       const started = RunStartV3ResultSchema.parse(body(await f.client.callTool({ name: 'run_start', arguments: {
         workspaceId, workflowId, workflowVersionId: f.f.version.id, executionSemanticsVersion: 3,
