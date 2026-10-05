@@ -58,6 +58,24 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 
+function nativeFailureDetails(error: unknown, depth = 0): Record<string, unknown> {
+  if (!(error instanceof Error)) return { name: typeof error }
+  const code = 'code' in error && typeof error.code === 'string'
+    && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : null
+  const details: Record<string, unknown> = {
+    name: error.name,
+    code,
+    message: nativePersistenceRedactor([]).text(error.message).slice(0, 2_000),
+  }
+  if (depth < 3) {
+    if (error instanceof AggregateError) {
+      details.errors = error.errors.slice(0, 8).map(item => nativeFailureDetails(item, depth + 1))
+    }
+    if (error.cause !== undefined) details.cause = nativeFailureDetails(error.cause, depth + 1)
+  }
+  return details
+}
+
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
@@ -423,8 +441,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           if (errors.length < 16) errors.push({ executionId: input.execution.id,
             occurredAt: new Date().toISOString(),
             failures,
-            ...(error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
-              message: nativePersistenceRedactor([]).text(error.message) } : { name: typeof error }) })
+            ...nativeFailureDetails(error) })
           throw error
         }
       }
@@ -448,9 +465,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     evidence.startTaskState = 'pending'
     if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
       evidence.startTaskState = 'rejected'
-      evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
-        message: nativePersistenceRedactor([]).text(error.message) }
-        : { name: typeof error }
+      evidence.startError = nativeFailureDetails(error)
     })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
       if (kind === 'waiting') await startTask
@@ -596,7 +611,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     console.error('ENG03_NATIVE_FAILURE', JSON.stringify({ scenario,
       startError: evidence.startError, observationErrors: evidence.nativeObservationErrors,
       mcpInspectionErrors: evidence.mcpInspectionErrors }))
-    evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
+    evidence.error = nativeFailureDetails(error)
     evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState
     if (runId && pool) {
