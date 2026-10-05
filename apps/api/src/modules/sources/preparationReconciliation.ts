@@ -20,7 +20,7 @@ import { PostgresSourceReservations, type SourceReservation } from './reservatio
 import type { SourceExecutionHostPort } from './service.js'
 import { assertWorkflowPreparationClosed, loadWorkflowPreparation } from './workflowPreparationCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
-import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
+import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 
 export async function loadSourcePreparation(sql: GraphSqlClient, workspaceId: string, operationId: string) {
   const row = (await sql.query<{ execution_id: string; attempt_id: string; principal_id: string; start_command_id: string; definition: unknown; created_at: Date; workflow_run_id: string | null;

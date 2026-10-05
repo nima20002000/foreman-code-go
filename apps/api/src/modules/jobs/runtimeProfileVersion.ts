@@ -1,4 +1,4 @@
-import { JobRuntimeMeasurementSchema, JobRuntimeProfileSchema, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { JobRuntimeMeasurementSchema, JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { DomainError } from '../errors.js'
 import type { JobSql } from './repository.js'
 

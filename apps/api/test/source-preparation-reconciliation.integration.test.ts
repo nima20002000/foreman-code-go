@@ -32,14 +32,14 @@ import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
-import { JobDefinitionSchema, JobExecutionSchema } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, JobExecutionSchema } from '@foreman-code/contracts/jobs'
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
-import { RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
 import { releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
-import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 
 /** Actual SQL/HTTP/MCP, protected local filesystem and worker source service.
  * The paired W07 carrier is an in-memory boundary; no laptop/container proof. */

@@ -8,7 +8,7 @@ import { jobComputerHasCapacity } from '../src/modules/jobs/computerSelection.js
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { RemoteJobExecutionHost } from '../src/modules/runs/remote/jobExecutionHost.js'
-import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
+import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { retainedJobFixture } from './helpers/retainedJobFixture.js'
 

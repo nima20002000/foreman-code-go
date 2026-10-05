@@ -1,4 +1,4 @@
-import { JobQueueTicketSchema } from '@graphql/contracts/job-admission'
+import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 

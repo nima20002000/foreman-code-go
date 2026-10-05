@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { jobsClient } from './client'
 import { jobAccessLost, jobReadRetry, loadedChunks } from './model'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 
 export const jobKeys = {
   definitions: (workspaceId: string) => ['jobs', workspaceId, 'definitions'] as const,

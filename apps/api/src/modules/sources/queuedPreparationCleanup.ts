@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import type { JobQueueTicket } from '@graphql/contracts/job-admission'
-import { SourceOperationOwnerSchema, type SourceOperationOwner } from '@graphql/contracts/source-operations'
-import { SourcePreparationClosureSchema } from '@graphql/contracts/source-admission'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
+import { SourceOperationOwnerSchema, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
+import { SourcePreparationClosureSchema } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
 import type { SourceExecutionHostPort } from './service.js'
 import { loadSourcePreparation, requireSourcePreparationHost, resolvePreparationReconciliationOwner,

@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { JobRuntimeProfileSchema, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { componentLogger } from '../../infrastructure/logger.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { JOB_RUNTIME_WORKSPACE_LAYOUT, JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema,
-  JobRuntimeProfileSchema, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+  JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { jobDigest } from '../../src/modules/jobs/service.js'
 
 /** Retained qualification metadata for carrier-boundary tests; no physical runtime qualification claim. */

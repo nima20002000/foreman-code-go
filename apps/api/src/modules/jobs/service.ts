@@ -22,8 +22,8 @@ import type { JobQueueConfiguration } from './ports.js'
 import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
   JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
-  type JobQueueTicket } from '@graphql/contracts/job-admission'
-import { JobResourceRequestSchema } from '@graphql/contracts/job-verification-policy'
+  type JobQueueTicket } from '@foreman-code/contracts/job-admission'
+import { JobResourceRequestSchema } from '@foreman-code/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import type { JobCancellationRecoveryApply } from '@foreman-code/contracts/job-cancellation-recovery'

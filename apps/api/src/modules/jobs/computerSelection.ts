@@ -13,7 +13,7 @@ import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
-import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@graphql/contracts/job-admission'
+import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
 export interface JobComputerCandidate {

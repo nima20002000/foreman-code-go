@@ -8,9 +8,9 @@ import { buildComputerTarget } from '../../src/modules/settings/buildComputers.j
 import { jobSpec } from './jobFixture.js'
 import type pg from 'pg'
 import { vi } from 'vitest'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { JobSql } from '../../src/modules/jobs/repository.js'
-import type { ResolvedJobDefinitionSpec } from '@graphql/contracts/jobs'
+import type { ResolvedJobDefinitionSpec } from '@foreman-code/contracts/jobs'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { BuildComputerSettings } from '../../src/modules/settings/buildComputers.js'
 import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecution.js'
@@ -118,7 +118,7 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
       expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
   }
   const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,
-    _workspaceId: string, spec: import('@graphql/contracts/jobs').JobDefinitionSpec) => ({ candidates: computers.map(computer => ({
+    _workspaceId: string, spec: import('@foreman-code/contracts/jobs').JobDefinitionSpec) => ({ candidates: computers.map(computer => ({
       ...computer.candidate, spec: { ...computer.candidate.spec, argv: spec.argv },
     })).filter(candidate => isAutoJobSpec(spec) || canonical(candidate.spec.target) === canonical(spec.target)),
     diagnosticCodes: [] })) }
@@ -191,7 +191,7 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
     await reservations.reclaimed(pool, reservation, async () => true)
     await releaseClosedJobComputers(pool)
   }
-  async function save(spec: import('@graphql/contracts/jobs').JobDefinitionSpec = computers[0]!.auto) {
+  async function save(spec: import('@foreman-code/contracts/jobs').JobDefinitionSpec = computers[0]!.auto) {
     return jobs.saveDefinition(principal, 'http', workspaceId, { commandId: randomUUID(),
       expectedRevision: null, name: 'Queued build', spec })
   }
