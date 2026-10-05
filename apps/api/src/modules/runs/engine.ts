@@ -378,7 +378,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id) || this.cleanupTasks.has(candidate.id)) { after = candidate.id; continue }
           if (this.activeTasks.size >= this.maximumActiveRuns) { this.reconcileCursor = after; return }
           after = candidate.id
-          void this.start(candidate.id).catch(onError)
+          void this.start(candidate.id).catch(error => {
+            // A retained reviewer can own the Run between engine passes; retry on the next sweep.
+            if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
+            onError(error)
+          })
         }
         if (page.length < 100) {
           if (wrapped) break
