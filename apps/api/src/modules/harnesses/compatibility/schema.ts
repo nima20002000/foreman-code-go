@@ -70,12 +70,33 @@ export function checkCodexSchema(document: ObjectValue): void {
     const protocol = protocolFromBundle(document)
     const definitions = object(document.definitions)
     const v2 = definitions.v2 ? object(definitions.v2) : definitions
-    for (const name of ['ThreadStartResponse', 'ThreadResumeResponse']) {
+    for (const name of ['ThreadStartResponse', 'ThreadResumeResponse', 'ThreadForkResponse']) {
       const response = properties(document, v2[name] ?? definitions[name])
-      fields(response, ['thread', 'model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer'])
+      fields(response, ['thread', 'model', 'modelProvider', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'reasoningEffort', 'serviceTier'])
+    }
+    const responseContracts: Record<string, Record<string, string>> = {
+      InitializeResponse: { userAgent: 'string' },
+      ThreadReadResponse: { thread: 'object' },
+      ThreadTurnsListResponse: { data: 'array', nextCursor: 'string' },
+      ThreadItemsListResponse: { data: 'array', nextCursor: 'string' },
+      ModelListResponse: { data: 'array', nextCursor: 'string' },
+      ListMcpServerStatusResponse: { data: 'array', nextCursor: 'string' },
+      ConfigReadResponse: { config: 'object' },
+      ConfigWriteResponse: { status: 'string', version: 'string' },
+      TurnStartResponse: { turn: 'object' },
+      TurnSteerResponse: { turnId: 'string' },
+      CancelLoginAccountResponse: { status: 'string' },
+    }
+    for (const [name, contract] of Object.entries(responseContracts)) {
+      const response = properties(document, v2[name] ?? definitions[name])
+      for (const [field, type] of Object.entries(contract)) {
+        try {
+          fields(response, [field])
+          supportsType(document, response[field], type)
+        } catch { throw invalid(`${name}.${field} (${type})`) }
+      }
     }
     fields(properties(document, v2.Thread ?? definitions.Thread), ['id', 'turns'])
-    fields(properties(document, v2.TurnStartResponse ?? definitions.TurnStartResponse), ['turn'])
     const start = properties(document, v2.ThreadStartParams ?? definitions.ThreadStartParams)
     fields(start, ['model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config', 'ephemeral', 'serviceTier'])
     supportsType(document, start.model, 'string')

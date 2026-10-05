@@ -34,6 +34,12 @@ describe('model-free command and schema diagnostics', () => {
     broken.definitions.v2.ThreadStartParams.properties.approvalsReviewer.enum = ['user']
     expect(() => checkCodexSchema(broken)).toThrow('enum values user, auto_review')
   })
+  it('rejects a missing Codex history field before reporting compatibility', () => {
+    const broken = codexSchema()
+    const response = broken.definitions.v2.ThreadReadResponse
+    Reflect.deleteProperty(response.properties, 'thread')
+    expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
+  })
   it('requires OpenCode permission replies, settings and control methods', () => {
     expect(() => checkOpenCodeSchema(openCodeSchema())).not.toThrow()
     const broken = openCodeSchema()

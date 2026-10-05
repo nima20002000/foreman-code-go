@@ -15,14 +15,23 @@ export function codexSchema() {
     approvalsReviewer: { type: 'string', enum: ['user', 'auto_review'] },
   } }
   const threadResponse = { type: 'object', properties: {
-    thread: { $ref: '#/definitions/v2/Thread' }, model: { type: 'string' }, cwd: { type: 'string' },
+    thread: { $ref: '#/definitions/v2/Thread' }, model: { type: 'string' }, modelProvider: { type: 'string' },
+    reasoningEffort: { type: ['string', 'null'] }, serviceTier: { type: ['string', 'null'] }, cwd: { type: 'string' },
     sandbox: { type: 'object' }, approvalPolicy: { type: 'string' }, approvalsReviewer: { type: 'string' },
   } }
   return { $schema: 'http://json-schema.org/draft-07/schema#', definitions: {
     ClientRequest: { oneOf: methods.map(branch) }, ServerRequest: { oneOf: serverMethods.map(branch) },
     ServerNotification: { oneOf: ['turn/started', 'turn/completed', 'item/started', 'item/completed', 'serverRequest/resolved'].map(branch) },
     v2: { ...Object.fromEntries(responses.map((name) => [name, { type: 'object' }])), ThreadStartParams: start,
-      ThreadStartResponse: threadResponse, ThreadResumeResponse: threadResponse,
+      ThreadStartResponse: threadResponse, ThreadResumeResponse: threadResponse, ThreadForkResponse: threadResponse,
+      ThreadReadResponse: { type: 'object', properties: { thread: { $ref: '#/definitions/v2/Thread' } } },
+      ...Object.fromEntries(['ThreadTurnsListResponse', 'ThreadItemsListResponse', 'ModelListResponse', 'ListMcpServerStatusResponse'].map(name =>
+        [name, { type: 'object', properties: { data: { type: 'array', items: { type: 'object' } }, nextCursor: { type: ['string', 'null'] } } }])),
+      InitializeResponse: { type: 'object', properties: { userAgent: { type: 'string' } } },
+      ConfigReadResponse: { type: 'object', properties: { config: { type: 'object' } } },
+      ConfigWriteResponse: { type: 'object', properties: { status: { type: 'string' }, version: { type: 'string' } } },
+      TurnSteerResponse: { type: 'object', properties: { turnId: { type: 'string' } } },
+      CancelLoginAccountResponse: { type: 'object', properties: { status: { type: 'string' } } },
       Thread: { type: 'object', properties: { id: { type: 'string' }, turns: { type: 'array', items: { type: 'object' } } } },
       TurnStartResponse: { type: 'object', properties: { turn: { type: 'object' } } },
     },

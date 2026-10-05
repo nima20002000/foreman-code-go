@@ -44,6 +44,14 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
       && errorCode(error) === 'CODEX_CONTRACT_UNSUPPORTED')
   })
 
+  it('names a missing history response field on the installed version', async () => {
+    const schema = codexSchema()
+    Reflect.deleteProperty(schema.definitions.v2.ThreadReadResponse.properties, 'thread')
+    await configure(schema)
+    await assert.rejects(qualify(), error => error instanceof Error
+      && error.message.includes(newer) && error.message.includes('ThreadReadResponse.thread'))
+  })
+
   it('reverifies a changed binary even when its reported version is unchanged', async () => {
     await configure()
     const original = await qualify()
