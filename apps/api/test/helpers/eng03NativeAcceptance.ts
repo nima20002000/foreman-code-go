@@ -61,6 +61,8 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { runCommand as runNativeCommand } from '../../src/modules/harnesses/process.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
@@ -87,6 +89,7 @@ export interface Eng03NativeControl extends Eng03NativeRuntime {
   nodeIds: readonly string[]
   projectDirectory: string
   runtimeDirectory: string
+  artifactPath: string
   startTask: Promise<void>
   publicationChanged(): Promise<void>
   stop(): Promise<boolean>
@@ -147,9 +150,17 @@ function resultText(execution: HarnessExecution | undefined): string {
     && typeof output.text === 'string' ? output.text : ''
 }
 
-async function version(binary: string): Promise<string> {
-  const { stdout } = await runCommand(binary, ['--version'], { timeout: 10_000 })
-  return stdout.trim()
+async function version(binary: string, directory: string, registry: NativeProcessRegistry): Promise<string> {
+  const scope = registry.reserveLaunch(`acceptance-version:${randomUUID()}`)
+  try {
+    const result = await runNativeCommand(binary, ['--version'], directory, AbortSignal.timeout(10_000),
+      process.env, { recovery: scope })
+    if (result.exitCode !== 0) throw new Error('Native acceptance version probe failed')
+    return result.stdout.trim()
+  } finally {
+    await registry.abandonReservedLaunch(scope)
+    if (!await registry.closeOwner(scope.owner)) throw new Error('Native version probe closure remains unconfirmed')
+  }
 }
 
 /** Opt-in live-provider qualification through current V3 admission and native proof composition. */
@@ -173,8 +184,15 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const root = await mkdtemp(join(tmpdir(), `eng03-a-${scenario.toLowerCase()}-`))
   const projectDirectory = join(root, 'project')
   const runtimeDirectory = join(root, 'runtime')
+  const registryDirectory = join(runtimeDirectory, 'native-process-registry')
   const artifactPath = join(process.env.ENG03_A_EVIDENCE_DIR!, `${scenario}-${suffix}.json`)
-  await Promise.all([mkdir(projectDirectory), mkdir(runtimeDirectory), mkdir(join(artifactPath, '..'), { recursive: true })])
+  await Promise.all([mkdir(projectDirectory), mkdir(registryDirectory, { recursive: true, mode: 0o700 }),
+    mkdir(join(artifactPath, '..'), { recursive: true })])
+  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation,
+    { kind: 'native-acceptance', root, schema, databaseUrl: baseUrl, registryDirectory, artifactPath })
+  const registry = new NativeProcessRegistry(registryDirectory)
+  const cleanupErrors: unknown[] = []
   const admin = new pg.Pool({ connectionString: baseUrl, max: 1 })
   let pool: pg.Pool | undefined
   let checkpoints: ReturnType<typeof createCheckpointStore> | undefined
@@ -187,7 +205,6 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let stopRun: (() => Promise<boolean>) | undefined
   let scenarioFailure: unknown
   let scenarioResult: NativeScenarioResult | undefined
-  const cleanupErrors: unknown[] = []
   const runtimeTimeline: RuntimeTimingRecord[] = []
   const nativeSecrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
     .map(([, value]) => value).filter((value): value is string => Boolean(value))
@@ -197,15 +214,16 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     else droppedTimingRecords++
   }
   const evidence: Record<string, unknown> = { scenario, timing, runtimeTimeline, mode: 'current V3 native internal acceptance', artifactPath,
-    sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
-    binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
-      ...(first === 'opencode' || second === 'opencode'
-        ? { opencode: { path: openCodeBinary, version: await version(openCodeBinary) } } : {}) },
+    resources: { invocation, cleanupId, root, schema, registryDirectory },
     models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)
   try {
+    evidence.sourceSha = (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim()
+    evidence.binaries = { codex: { path: codexBinary, version: await version(codexBinary, projectDirectory, registry) },
+      ...(first === 'opencode' || second === 'opencode'
+        ? { opencode: { path: openCodeBinary, version: await version(openCodeBinary, projectDirectory, registry) } } : {}) }
     await createFixtureSchema(admin, schema)
     const url = new URL(baseUrl)
     url.searchParams.set('options', `-c search_path=${schema}`)
@@ -370,7 +388,6 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         }
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
-      const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
       const factories = new NativeHarnessFactories({
         codexBinary, openCodeBinary, appMcpEndpoint: endpoint,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
@@ -550,7 +567,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, ...activeRuntime, startTask, publicationChanged: publicationChanges.next, stop: () => engine!.cancel(run.id, authorizeStop), restartWaitingRuntime, restartRecoverableRuntime })
+          runtimeDirectory, artifactPath, ...activeRuntime, startTask, publicationChanged: publicationChanges.next, stop: () => engine!.cancel(run.id, authorizeStop),
+          restartWaitingRuntime, restartRecoverableRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
@@ -683,40 +701,54 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
          order by execution_id,sequence`, [runId]).catch(() => undefined)
       evidence.failureNativeEvents = events?.rows
     }
-    await stopRun?.().catch(() => undefined)
+    try { await stopRun?.() }
+    catch (cleanupError) { cleanupErrors.push(cleanupError) }
   } finally {
     activeRuntime?.factories.stopAuxiliaries()
-    const phases = [
-      [() => engine?.shutdown()],
-      [() => activeRuntime?.managers.dispose(), () => activeRuntime?.factories.disposeAuxiliaries()],
-      [() => mcpRoutes?.close(), () => mcpApp?.close()],
-      [() => restoreNativeMcp?.()],
-      [() => runId ? checkpoints?.saver.deleteThread(runId) : undefined],
-      [() => checkpoints?.close(), () => pool?.end()],
-      [() => dropFixtureSchema(admin, schema)],
-      [() => admin.end()],
-    ]
-    for (const phase of phases) {
-      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))
-      for (const result of results) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+    const close = async (action: () => Promise<unknown>) => {
+      try { await action() }
+      catch (error) { cleanupErrors.push(error) }
     }
-    if (cleanupErrors.length) {
-      evidence.cleanupError = describeNativeFailure(new AggregateError(cleanupErrors,
-        'Native acceptance cleanup failed.'), nativeSecrets)
+    await close(async () => engine?.shutdown())
+    await close(async () => activeRuntime?.managers.dispose())
+    await close(async () => activeRuntime?.factories.disposeAuxiliaries())
+    await close(async () => {
+      const owners = new Set(registry.snapshot().launches.map(launch => launch.owner))
+      for (const owner of owners) {
+        await close(async () => {
+          if (!await registry.closeOwner(owner)) throw new Error(`Native acceptance closure is unconfirmed for ${owner}`)
+        })
+      }
+    })
+    await close(async () => mcpRoutes?.close())
+    await close(async () => mcpApp?.close())
+    if (!cleanupErrors.length) await close(async () => restoreNativeMcp?.())
+    const keepRuntime = Boolean(process.env.ENG03_A_KEEP_RUNTIME)
+    if (!cleanupErrors.length && !keepRuntime && runId) {
+      await close(async () => checkpoints?.saver.deleteThread(runId))
     }
+    await close(async () => checkpoints?.close())
+    await close(async () => pool?.end())
+    if (!cleanupErrors.length && !keepRuntime) await close(() => dropFixtureSchema(admin, schema))
+    await close(() => admin.end())
     timing.totalMs = Math.round(performance.now() - scenarioBegan)
     runtimeTimingChannel.unsubscribe(captureTiming)
     evidence.droppedTimingRecords = droppedTimingRecords
     evidence.finishedAt = new Date().toISOString()
-    if (evidence.error || evidence.startError || evidence.cleanupError) {
+    evidence.resourcesRetained = keepRuntime || cleanupErrors.length > 0
+    evidence.cleanupErrors = cleanupErrors.map(error => error instanceof Error ? error.message : String(error))
+    if (evidence.error || evidence.startError || cleanupErrors.length) {
       console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
     }
-    const finalized = await Promise.allSettled([
-      writeFile(artifactPath, JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2)),
-      removeFixtureDirectory(root),
-    ])
-    for (const result of finalized) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+    await writeFile(artifactPath, JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2))
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
+    if (cleanupErrors.length) {
+      throw new AggregateError(cleanupErrors, `Native acceptance cleanup remains unconfirmed; resources retained at ${root}`)
+    }
+    if (!keepRuntime) {
+      await removeFixtureDirectory(root)
+      completeTestResourceCleanup(invocation, cleanupId)
+    }
   }
   if (cleanupErrors.length) {
     const failures = [...cleanupErrors]
