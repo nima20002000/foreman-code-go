@@ -104,6 +104,41 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
     await expect(f.repository.bind({ ...f.record, commandId: 'changed-command' }, f.authorize)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_OUTPUT_CONFLICT' })
     expect(await f.repository.read(f.record.producer, f.record.outputKey)).toEqual(f.record)
   })
+  it('cancels a blocked binding, releases its file lock and reconstructs the same output', async () => {
+    const f = await outputFixture()
+    const barrier = await pool.connect()
+    const controller = new AbortController()
+    const stopped = new Error('Owned artifact adoption stopped')
+    let binding: Promise<unknown> | undefined
+    try {
+      await barrier.query('begin')
+      await barrier.query('lock table management_command_receipts in share mode')
+      let resolvePid!: (pid: number) => void
+      const pid = new Promise<number>(resolve => { resolvePid = resolve })
+      binding = f.repository.bind(f.record, async query => {
+        await f.authorize(query)
+        resolvePid((await query.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid)
+      }, controller.signal)
+      const rejected = expect(binding).rejects.toBe(stopped)
+      const backend = await pid
+      await expect.poll(async () => (await pool.query<{ waiting: boolean }>(
+        "select wait_event_type='Lock' as waiting from pg_stat_activity where pid=$1", [backend])).rows[0]?.waiting)
+        .toBe(true)
+      controller.abort(stopped)
+      await rejected
+      await barrier.query("set local lock_timeout='1s'")
+      await barrier.query('select file_id from files where file_id=$1 for update', [f.record.pins.fileId])
+      await barrier.query('rollback')
+      expect(await f.repository.read(f.record.producer, f.record.outputKey)).toBeUndefined()
+      const recovered = new PostgresNativeArtifactOutputRepository(pool, f.mainId)
+      expect(await recovered.bind(f.record, f.authorize)).toEqual(f.record)
+      expect(await recovered.read(f.record.producer, f.record.outputKey)).toEqual(f.record)
+    } finally {
+      controller.abort(stopped)
+      if (binding) await Promise.allSettled([binding])
+      try { await barrier.query('rollback') } finally { barrier.release() }
+    }
+  })
   it('rejects revoked SQL authority on retries and rolls back a newly inserted mapping at the commit fence', async () => {
     const f = await outputFixture()
     let calls = 0

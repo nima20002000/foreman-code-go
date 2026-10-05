@@ -409,7 +409,8 @@ export function buildProductionApp(
     await artifactResultSource?.retainOriginalLocked(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
-    async reconcileWorkflowArtifacts(owner, run, execution) {
+    async reconcileWorkflowArtifacts(owner, run, execution, signal) {
+      signal.throwIfAborted()
       const snapshot = await runs.getRepeatSnapshot(run.id, owner)
       const node = snapshot.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
       if (!node || node.kind === 'job' || !node.artifactOutputs) return
@@ -417,7 +418,7 @@ export function buildProductionApp(
         if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
           'Local workflow artifact storage is unavailable.', 503)
         await localNativeOutputMcp?.cleanupClosed()
-        await localWorkflowArtifacts.recover(owner, execution)
+        await localWorkflowArtifacts.recover(owner, execution, signal)
         return
       }
       if (!artifactComposition || !workflowArtifacts) {

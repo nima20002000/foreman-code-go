@@ -3,7 +3,8 @@ import { resolve } from 'node:path'
 import type pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
-import { ExecutableWorkflowV3Schema, type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
+import { CurrentRunVersionSnapshotSchema, ExecutableWorkflowV3Schema,
+  type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
@@ -388,10 +389,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       this.restartIntent = Promise.resolve().then(async () => {
         const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
           if (this.activeOwners.get(runId) === owner) {
-            const { version } = await this.runs.getRepeatSnapshot(runId, owner)
+            const run = await this.runs.get(runId)
+            const version = run && await this.workflows.getVersion(run.workflowVersionId)
+            const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
             // Freeze handoff tasks before classifying their queued reservations.
             // These tasks do not abort Jobs, which require the cleanup fence first.
-            if (version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
+            if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
             await this.requestRestartCleanup(owner)
           }
         })))

@@ -1558,11 +1558,11 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed session identity.', 409)
-      for (;;) {
-        signal.throwIfAborted()
-        input.owner.assertOwned()
-        await this.budgets.assertActive(execution.id)
-        const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
+      const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
+        for (;;) {
+          lane.guard.signal.throwIfAborted()
+          input.owner.assertOwned()
+          await this.budgets.assertActive(execution.id)
           const observed = await timeRuntimeOperation('harness', 'native.reconcile',
             () => nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal))
           const messageReceipt = observed.nativeSubmission
@@ -1588,7 +1588,7 @@ export class ApprovalExecutionCoordinator {
           const captured = this.captureNative(input.owner, execution,
             { type: 'history', history: safeValue(observed) }, 'recovery', lane)
           const waiting = await observePending(observed, observed.events.at(-1), lease)
-          if (waiting) return { history: observed, exactTerminal, waiting }
+          if (waiting) return { waiting }
           if (exactTerminal) {
             const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed',
               result: safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
@@ -1606,28 +1606,22 @@ export class ApprovalExecutionCoordinator {
                 this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'recovery', lane))
             }
           }
-          return { history: observed, exactTerminal, waiting: undefined }
-        })
-        const { waiting } = observed
-        if (waiting) return waiting
-        if (observed.exactTerminal) {
-          execution = (await repeat.readExecution(execution.id)).execution
-          assertSameRepeatExecution(ensured.execution, execution)
-          if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
-            'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)
-          ownedSession.execution = execution
-          await timeRuntimeOperation('engine', 'execution.settle',
-            () => this.finishRepeatExecution(execution, repeat, input.owner, signal))
-          return { state: 'completed', execution, result: execution.result }
+          if (exactTerminal) return { waiting: undefined }
+          // Retain the writer while the resumed actor performs its original MCP calls.
+          await timeRuntimeOperation('engine', 'execution.backoff',
+            () => delay(100, undefined, { signal: lane.guard.signal }), { intervalMs: 100 })
         }
-        // Approval delivery is not turn completion. Keep observing the same
-        // native turn; neither startTurn nor native responses are replayed here.
-        // Absence of a pending request is not a native acknowledgement. Keep
-        // the durable wait until the exact source/continuation writer proves a
-        // resumed turn or its terminal; never manufacture a running update.
-        await timeRuntimeOperation('engine', 'execution.backoff',
-          () => delay(100, undefined, { signal }), { intervalMs: 100 })
-      }
+      })
+      const { waiting } = observed
+      if (waiting) return waiting
+      execution = (await repeat.readExecution(execution.id)).execution
+      assertSameRepeatExecution(ensured.execution, execution)
+      if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
+        'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)
+      ownedSession.execution = execution
+      await timeRuntimeOperation('engine', 'execution.settle',
+        () => this.finishRepeatExecution(execution, repeat, input.owner, signal))
+      return { state: 'completed', execution, result: execution.result }
     } catch (rawError) {
       // A credential may have been issued just before an abort rejected setup.
       const credential = manager && this.managerCredentials.get(manager)

@@ -72,7 +72,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true,
       artifactPolicy: 'allow', repeatOutputCommands: true },
     { name: 'local OpenCode artifact with original native approvals', form: 'single', providers: ['opencode'],
-      review: false, approval: true, capLoop: false, attemptFourth: false, artifacts: true, artifactPolicy: 'ask' },
+      review: false, approval: true, capLoop: false, attemptFourth: false, artifacts: true, artifactPolicy: 'ask', restartOnApproval: true },
     { name: 'local OpenCode artifact with native automatic approvals', form: 'single', providers: ['opencode'],
       review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true,
       artifactPolicy: 'ask', nativeAuto: true, restartOnArtifacts: true },
@@ -558,6 +558,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               await production.shutdown()
               production = buildProductionApp(config, database, checkpoints, false)
               observeEngine(production)
+              if (artifacts) production.registerFileStorage()
               app = production.app
               await production.initialize()
               await app.listen({ host: config.host, port: config.port })

@@ -20,6 +20,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Keep resumed native observation on one writer lease until another approval or terminal result, so original MCP artifact calls remain authorized.
+- Cancel pending artifact adoption before restart locks the Run, then recover the same published output after recomposition.
 - Pass pinned file references through strict download validation during artifact adoption while retaining hash, size, scope and byte verification.
 - Adopt local workflow outputs after native settlement and resume unfinished adoption from the saved terminal execution after restart.
 - Use the same pinned artifact declarations during preflight and execution, and lock Run parents before artifact execution rows to prevent publication deadlocks.

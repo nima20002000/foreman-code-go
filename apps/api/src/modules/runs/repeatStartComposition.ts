@@ -163,7 +163,8 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
   const scope = { runId: snapshot.run.id, workspaceId: snapshot.run.workspaceId, workflowId: snapshot.run.workflowId,
     workflowVersionId: snapshot.version.id, executionSemanticsVersion: 3 as const }
   const driver = repeatExecutionDriver({ scope, version: snapshot.version, owner: input.owner, store, observeExact,
-    reconcileArtifacts: execution => input.factory.reconcileWorkflowArtifacts(input.owner, snapshot.run, execution) })
+    reconcileArtifacts: (execution, signal) =>
+      input.factory.reconcileWorkflowArtifacts(input.owner, snapshot.run, execution, signal) })
   // Capture the lifecycle object, rather than reading mutable context properties
   // from future callbacks. Each writer still owns its concrete SQL/native proof.
   const lifecycle = input.lifecycle

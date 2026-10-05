@@ -33,7 +33,8 @@ export interface RepeatCanonicalPublication {
   assertLaunchReceiptLocked(claim: RepeatLaunchClaim, digest: string): Promise<void>
 }
 export interface RepeatRepositoryServices {
-  reconcileWorkflowArtifacts?(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution): Promise<void>
+  reconcileWorkflowArtifacts?(owner: RunOwnership, run: AcceptedWorkflowRunV3,
+    execution: HarnessExecution, signal: AbortSignal): Promise<void>
   preparePlacementExecution?(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution): Promise<
     { workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
   admitPlacementExecutionLocked?(sql: GraphTransactionSql, owner: RunOwnership, run: AcceptedWorkflowRunV3,
@@ -97,9 +98,10 @@ export class RepeatRepositoryFactory {
     owner.assertOwned()
     return this.services.preparePlacementExecution?.(owner, run, execution) ?? Promise.resolve(undefined)
   }
-  reconcileWorkflowArtifacts(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution): Promise<void> {
+  reconcileWorkflowArtifacts(owner: RunOwnership, run: AcceptedWorkflowRunV3,
+    execution: HarnessExecution, signal: AbortSignal): Promise<void> {
     owner.assertOwned()
-    return this.services.reconcileWorkflowArtifacts?.(owner, run, execution) ?? Promise.resolve()
+    return this.services.reconcileWorkflowArtifacts?.(owner, run, execution, signal) ?? Promise.resolve()
   }
 
   /** Same actual Run owner and locked hooks for the concrete Job store. */

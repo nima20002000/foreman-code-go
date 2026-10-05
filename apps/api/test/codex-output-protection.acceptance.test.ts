@@ -33,7 +33,7 @@ describe.skipIf(!enabled)('original native output store protection', () => {
       await registry.abandonReservedLaunch(admission)
       expect(await registry.closeOwner(admission.owner)).toBe(true)
       await qualifyCodexOutputProtection({ qualification: {
-        configuration: { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna', reasoningEffort: 'medium',
+        configuration: { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium',
           sandbox: 'workspace-write', serviceTier: 'standard' },
         binary: qualified.binary, binaryIdentity: qualified.identity, providerVersion: qualified.providerVersion,
         schemaIdentity: qualified.schemaManifestSha256,

@@ -5,6 +5,8 @@ import { z } from 'zod'
 import { ArtifactAttemptSchema, ArtifactEdgeBindingSchema, type ArtifactAttempt } from '@foreman-code/contracts/artifact-edges'
 import { VerifiedTransferReceiptSchema } from '@foreman-code/contracts/byte-transfer'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { cancelBackendQuery } from '../../../infrastructure/pool.js'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import type { FileQuery } from '../../files/repository.js'
 import { fileScopeIdentity } from '../../files/requests.js'
@@ -69,23 +71,50 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
   private readonly mainId: string
   constructor(private readonly pool: pg.Pool, mainId: string) { this.mainId = z.uuid().parse(mainId) }
   private target(producer: ArtifactAttempt, outputKey: string): string { return outputTarget(this.mainId, producer, outputKey) }
-  async bind(raw: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput> {
-    return this.bindOutput(NativeArtifactOutputSchema.parse(raw), authorize)
+  async bind(raw: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>,
+    signal?: AbortSignal): Promise<NativeArtifactOutput> {
+    return this.bindOutput(NativeArtifactOutputSchema.parse(raw), authorize, signal)
   }
-  async bindLocal(raw: LocalNativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<LocalNativeArtifactOutput> {
-    return this.bindOutput(LocalNativeArtifactOutputSchema.parse(raw), authorize)
+  async bindLocal(raw: LocalNativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>,
+    signal?: AbortSignal): Promise<LocalNativeArtifactOutput> {
+    return this.bindOutput(LocalNativeArtifactOutputSchema.parse(raw), authorize, signal)
   }
   private async bindOutput<T extends WorkflowNativeArtifactOutput>(record: T,
-    authorize: (query: FileQuery) => Promise<void>): Promise<T> {
+    authorize: (query: FileQuery) => Promise<void>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted()
     validateOutput(this.mainId, record)
     const target = this.target(record.producer, record.outputKey), serialized = canonicalGraphJson(record)
     const commandId = createHash('sha256').update(target).digest('hex'), inputHash = createHash('sha256').update(serialized).digest('hex')
     const client = await this.pool.connect()
+    let released = false
+    let processId: number | undefined
+    let cancellation: Promise<void> | undefined
+    const abort = () => {
+      if (released) return
+      if (processId === undefined) {
+        released = true
+        client.release(true)
+        return
+      }
+      cancellation ??= cancelBackendQuery(this.pool.options, processId).catch((error: unknown) => {
+        componentLogger('db').error({ err: error }, 'Artifact binding cancellation failed; discarding its connection')
+        released = true
+        client.release(true)
+      })
+    }
+    signal?.addEventListener('abort', abort, { once: true })
     try {
+      if (signal?.aborted) {
+        abort()
+        signal.throwIfAborted()
+      }
+      processId = (await client.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      signal?.throwIfAborted()
       await client.query('begin')
       await client.query("set local lock_timeout='5s'; set local statement_timeout='10s'")
       await authorize(client)
       await assertNativeArtifactOutputLive(client, this.mainId, record)
+      signal?.throwIfAborted()
       const inserted = await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
         values ($1,$2,$3,$4,$5,$6::jsonb) on conflict do nothing`, [record.publication.ownerPrincipalId, operation, commandId, target, inputHash, serialized])
       const stored = await client.query<{ principal_id: string; input_hash: string; result: unknown }>(`select principal_id,input_hash,result from management_command_receipts
@@ -102,8 +131,21 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
         JSON.stringify({ commandId: record.commandId })])
       await client.query('commit')
       return structuredClone(record)
-    } catch (error) { await client.query('rollback').catch(() => {}); throw error }
-    finally { client.release() }
+    } catch (error) {
+      signal?.throwIfAborted()
+      try { await client.query('rollback') }
+      catch (rollbackError) {
+        signal?.throwIfAborted()
+        throw new AggregateError([error, rollbackError], 'Artifact binding and rollback both failed.', {
+          cause: rollbackError,
+        })
+      }
+      throw error
+    } finally {
+      signal?.removeEventListener('abort', abort)
+      if (cancellation) await cancellation
+      if (!released) client.release(signal?.aborted === true)
+    }
   }
   read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined> {
     return readNativeArtifactOutput(this.pool, this.mainId, producer, outputKey)

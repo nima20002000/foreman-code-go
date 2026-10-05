@@ -42,7 +42,7 @@ export function repeatExecutionDriver(input: {
    * Completed input is per-execution cleanup/reconciliation ONLY. It must never
    * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
-  reconcileArtifacts?(execution: HarnessExecution): Promise<void>
+  reconcileArtifacts?(execution: HarnessExecution, signal: AbortSignal): Promise<void>
 }): RepeatExecutionDriver {
   const inFlight = new Map<string, Promise<void>>()
   return {
@@ -68,7 +68,7 @@ export function repeatExecutionDriver(input: {
           await input.store.settleNativeExecution(terminal.id)
           input.owner.assertOwned()
           signal.throwIfAborted()
-          await input.reconcileArtifacts?.(terminal)
+          await input.reconcileArtifacts?.(terminal, signal)
           input.owner.assertOwned()
           signal.throwIfAborted()
         }

@@ -16,7 +16,7 @@ function setup(completed = true) {
     settleNativeExecution: vi.fn(async (id: string): Promise<void> => { void id }),
   }
   const observeExact = vi.fn(async (value: HarnessExecution, signal: AbortSignal): Promise<void> => { void value; void signal })
-  const reconcileArtifacts = vi.fn<(execution: HarnessExecution) => Promise<void>>(async () => {})
+  const reconcileArtifacts = vi.fn<(execution: HarnessExecution, signal: AbortSignal) => Promise<void>>(async () => {})
   const createDriver = () => repeatExecutionDriver({ scope: f.scope, version: f.version, owner, store,
     observeExact, reconcileArtifacts })
   const driver = createDriver()
@@ -65,7 +65,7 @@ describe('ENG04 exact native occurrence driver', () => {
     expect(f.observeExact).toHaveBeenCalledOnce()
     expect(f.store.settleNativeExecution).toHaveBeenCalledTimes(2)
     expect(f.reconcileArtifacts).toHaveBeenCalledTimes(2)
-    expect(f.reconcileArtifacts).toHaveBeenLastCalledWith(f.get())
+    expect(f.reconcileArtifacts).toHaveBeenLastCalledWith(f.get(), signal)
   })
   it('does not call native cleanup for a contradictory closure/session identity', async () => {
     const f = setup()

@@ -164,7 +164,8 @@ export class LocalWorkflowArtifacts {
     return output
   }
 
-  async recover(owner: RunOwnership, execution: HarnessExecution): Promise<void> {
+  async recover(owner: RunOwnership, execution: HarnessExecution, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded') return
     const original = await owner.oneShotConnection().transaction(async sql => {
       const snapshot = await readAcceptedRepeatRunLocked(sql, owner.runId)
@@ -175,6 +176,7 @@ export class LocalWorkflowArtifacts {
       return { ...source, mappings: mappings(snapshot.version, execution) }
     })
     for (const mapping of original.mappings) {
+      signal.throwIfAborted()
       const output = await this.publication(this.pool, execution.id, mapping.outputKey, mapping.commandId)
       if (output.nativeIdentity.turnId !== original.proof.lane?.providerId) return conflict()
       const { caller } = await this.authority.context(execution.id)
@@ -182,10 +184,12 @@ export class LocalWorkflowArtifacts {
         fileId: output.pins.fileId, revisionId: output.pins.revisionId,
       })
       opened.stream.destroy()
+      signal.throwIfAborted()
       await this.outputs.bindLocal(output, async sql => {
+        signal.throwIfAborted()
         const current = await this.publication(sql, execution.id, mapping.outputKey, mapping.commandId)
         if (!same(current, output)) return conflict()
-      })
+      }, signal)
     }
   }
 

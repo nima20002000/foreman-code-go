@@ -29,7 +29,8 @@ export const WorkflowNativeArtifactOutputSchema = z.union([NativeArtifactOutputS
 export type WorkflowNativeArtifactOutput = z.infer<typeof WorkflowNativeArtifactOutputSchema>
 export interface NativeArtifactOutputRepository {
   /** Atomic first binding; a conflicting command, native identity or pin must fail. */
-  bind(record: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput>
+  bind(record: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>,
+    signal?: AbortSignal): Promise<NativeArtifactOutput>
   read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined>
 }
 export type AcceptedNativeArtifactEdge = Omit<ArtifactEdgeBinding, 'version' | 'publication' | 'pins' | 'scope'>
