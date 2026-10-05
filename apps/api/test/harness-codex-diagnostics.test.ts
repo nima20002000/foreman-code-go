@@ -1,8 +1,9 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import { expect, it, vi } from 'vitest'
 import type { CodexSessionDependencies, CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { } from '../src/modules/harnesses/codexProtocol.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 import { ReplayGate } from './support/harnessReplay.js'
 
@@ -30,7 +31,7 @@ function fixture() {
   let blockDiagnostic: ((signal: AbortSignal) => Promise<void>) | undefined
   const dependencies: CodexSessionDependencies = { mode: 'native', environment: (scope) => ({ ...ambient, ...scope?.variables }),
     qualify: async (binary) => ({ binary, identity: 'recorded-identity', protocol: fixtureProtocol,
-      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema', stableSchemaGitBlob: 'recorded-stable',
+      providerVersion: RECORDED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema', stableSchemaGitBlob: 'recorded-stable',
       referenceSchemaManifestSha256: 'recorded-reference' }),
     assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'), transport: () => transport,

@@ -63,8 +63,8 @@ if (args[0] !== 'app-server') process.exit(2)
 if (args[1] === 'generate-json-schema') {
   const directory = args[args.indexOf('--out') + 1]
   fs.mkdirSync(directory, { recursive: true })
-  // Deliberately NOT the qualified manifest; qualification tests must fail closed.
-  save(path.relative(root, path.join(directory, 'codex_app_server_protocol.schemas.json')), { definitions: {} })
+  // Schema fixtures exercise the real contract checker without a provider turn.
+  save(path.relative(root, path.join(directory, 'codex_app_server_protocol.schemas.json')), read('schema.json', { definitions: {} }))
   process.exit(0)
 }
 const agent = process.env.TEST_AGENT_ID || 'agent-a'

@@ -72,7 +72,7 @@ try {
   const reported = (versionResult.stdout || versionResult.stderr).trim()
   const version = values.harness === 'codex' ? reported.replace(/^codex-cli\s+/, '') : reported
   if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error('Harness did not report a release version.')
-  const result = await runAsQualificationCandidate(values.harness, before, () => suite.run({ binary, version, binarySha256: before,
+  const result = await runAsQualificationCandidate(values.harness, before, binary, () => suite.run({ binary, version, binarySha256: before,
     profile: QUALIFICATION_TARGET_PROFILE[values.harness], model: values.model ?? null,
     workDirectory, signal: controller.signal, ownCleanup }))
   const unchanged = before === await sha256()

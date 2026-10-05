@@ -111,15 +111,15 @@ describe('Harness Settings compatibility feedback', () => {
     fireEvent.click(within(card).getByText('Check details and repair'))
     expect(within(card).getByRole('link', { name: 'Official Codex 0.154.0 release' })).toHaveAttribute('href', 'https://github.com/openai/codex/releases/tag/rust-v0.154.0')
   })
-  it('keeps an unknown passing release visibly unqualified, including cache problems', async () => {
+  it('shows compatible versions without a release-number gate, including cache problems', async () => {
     const value = both()
     value.harnesses[0] = { ...report('codex', 'probe-passed'), cacheWarning: 'The result could not be saved to the cache.' }
     mount(value, 'codex')
     const card = await screen.findByRole('region', { name: 'Codex installation' })
-    expect(await within(card).findByText('Check passed; execution blocked')).toBeInTheDocument()
-    expect(within(card).getByText(/not qualified for execution/)).toBeInTheDocument()
+    expect(await within(card).findByText('Contract check passed')).toBeInTheDocument()
+    expect(within(card).getByText(/satisfies the checked protocol contracts/)).toBeInTheDocument()
     fireEvent.click(within(card).getByText('Check details and repair'))
-    expect(within(card).getByText(/remains blocked by the exact-version execution gate/)).toBeInTheDocument()
+    expect(within(card).getByText(/Compatible versions can run after authentication/)).toBeInTheDocument()
     expect(within(card).getByText(/could not be saved/)).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'OpenCode installation' })).not.toBeInTheDocument()
   })

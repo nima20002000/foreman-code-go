@@ -93,7 +93,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
     harnesses: {
       workspaceRoot: parsed.HARNESS_WORKSPACE_ROOT,
       timeoutMs: parsed.HARNESS_TIMEOUT_MS,
-      ...harnessBinaries({ CODEX_BINARY: parsed.CODEX_BINARY, OPENCODE_BINARY: parsed.OPENCODE_BINARY }),
+      ...harnessBinaries(environment),
     },
   }
 }

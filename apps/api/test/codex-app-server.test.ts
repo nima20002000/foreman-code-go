@@ -407,6 +407,18 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     }, 15_000)
   }
 
+  it('resumes saved sessions on a newer compatible binary without rewriting their provenance', async () => {
+    const session = await manager.createSession(source)
+    await manager.dispose()
+    await json('version.json', 'codex-cli 0.160.0')
+    const replacement = makeManager()
+    assert.deepEqual(await replacement.attachSession(session, source), session)
+    assert.equal((await replacement.capabilities()).providerVersion, 'codex-cli 0.160.0')
+    const fork = await replacement.forkSession(session, source)
+    assert.equal(fork.providerVersion, 'codex-cli 0.160.0')
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
+  })
+
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
     const session = await manager.createSession(source)
     await assertCode(manager.attachSession(session, input(f.directory, 'agent-b')), 'CODEX_SESSION_OWNER_MISMATCH')

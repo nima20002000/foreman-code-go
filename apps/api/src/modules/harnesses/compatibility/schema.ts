@@ -2,8 +2,8 @@ import { protocolFromBundle } from '../codexProtocol.js'
 import { CompatibilityCheckError } from './errors.js'
 
 type ObjectValue = Record<string, unknown>
-const invalid = () => new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
-  'The installed CLI does not advertise the protocol and settings this integration needs. Restore the qualified release or request a new qualification.')
+const invalid = (contract = 'protocol and settings') => new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
+  `The installed CLI does not advertise the required ${contract} contract.`)
 function object(value: unknown): ObjectValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid()
   return value as ObjectValue
@@ -18,7 +18,7 @@ function resolve(document: ObjectValue, value: unknown, depth = 0): ObjectValue 
   for (const token of schema.$ref.slice(2).split('/')) {
     const name = token.replace(/~1/g, '/').replace(/~0/g, '~')
     const parent = object(current)
-    if (!Object.hasOwn(parent, name)) throw invalid()
+    if (!Object.hasOwn(parent, name)) throw invalid(`schema reference ${name}`)
     current = parent[name]
   }
   return resolve(document, current, depth + 1)
@@ -27,7 +27,7 @@ function properties(document: ObjectValue, value: unknown): ObjectValue {
   return object(resolve(document, value).properties)
 }
 function fields(value: ObjectValue, names: readonly string[]): void {
-  for (const name of names) if (!Object.hasOwn(value, name) || !value[name] || typeof value[name] !== 'object') throw invalid()
+  for (const name of names) if (!Object.hasOwn(value, name) || !value[name] || typeof value[name] !== 'object') throw invalid(`field ${name}`)
 }
 function supportsEnum(document: ObjectValue, value: unknown, expected: readonly string[], depth = 0): void {
   if (depth > 40) throw invalid()
@@ -37,7 +37,7 @@ function supportsEnum(document: ObjectValue, value: unknown, expected: readonly 
   for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []), ...(Array.isArray(schema.oneOf) ? schema.oneOf : [])]) {
     try { supportsEnum(document, choice, expected, depth + 1); return } catch { /* Try another declared branch. */ }
   }
-  throw invalid()
+  throw invalid(`enum values ${expected.join(', ')}`)
 }
 function supportsType(document: ObjectValue, value: unknown, expected: string, depth = 0): void {
   if (depth > 40) throw invalid()
@@ -46,7 +46,7 @@ function supportsType(document: ObjectValue, value: unknown, expected: string, d
   for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []), ...(Array.isArray(schema.oneOf) ? schema.oneOf : [])]) {
     try { supportsType(document, choice, expected, depth + 1); return } catch { /* Another declared branch. */ }
   }
-  throw invalid()
+  throw invalid(`type ${expected}`)
 }
 /** Bound schema shape before handing it to the existing generated-schema compiler. */
 export function parseExport(text: string): ObjectValue {
@@ -70,6 +70,12 @@ export function checkCodexSchema(document: ObjectValue): void {
     const protocol = protocolFromBundle(document)
     const definitions = object(document.definitions)
     const v2 = definitions.v2 ? object(definitions.v2) : definitions
+    for (const name of ['ThreadStartResponse', 'ThreadResumeResponse']) {
+      const response = properties(document, v2[name] ?? definitions[name])
+      fields(response, ['thread', 'model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer'])
+    }
+    fields(properties(document, v2.Thread ?? definitions.Thread), ['id', 'turns'])
+    fields(properties(document, v2.TurnStartResponse ?? definitions.TurnStartResponse), ['turn'])
     const start = properties(document, v2.ThreadStartParams ?? definitions.ThreadStartParams)
     fields(start, ['model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config', 'ephemeral', 'serviceTier'])
     supportsType(document, start.model, 'string')
@@ -85,11 +91,13 @@ export function checkCodexSchema(document: ObjectValue): void {
       serviceTier: null, config: { model_reasoning_effort: 'low', web_search: 'disabled' },
     } })
     protocol.request({ id: 2, method: 'config/read', params: { includeLayers: false } })
-  } catch { throw invalid() }
+  } catch (error) { throw invalid(error instanceof Error ? error.message : 'protocol and settings') }
 }
 
 function operation(document: ObjectValue, path: string, method: string): ObjectValue {
-  return object(object(object(document.paths)[path])[method])
+  const route = object(document.paths)[path]
+  if (!route || typeof route !== 'object' || !(method in route)) throw invalid(`${method.toUpperCase()} ${path}`)
+  return object((route as ObjectValue)[method])
 }
 function jsonSchema(document: ObjectValue, value: unknown): ObjectValue {
   const content = object(resolve(document, value).content)
@@ -132,5 +140,5 @@ export function checkOpenCodeSchema(document: ObjectValue): void {
     const reply = properties(document, jsonSchema(document, permission.requestBody))
     fields(reply, ['reply'])
     supportsEnum(document, reply.reply, ['once', 'always', 'reject'])
-  } catch { throw invalid() }
+  } catch (error) { throw invalid(error instanceof Error ? error.message : 'protocol and settings') }
 }

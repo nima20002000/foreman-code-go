@@ -1,6 +1,7 @@
+import { RECORDED_CODEX_VERSION } from '../fixtures/codex-version.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { CodexSessionDependencies, CodexTransport } from '../../src/modules/harnesses/codexAppServer.js'
-import { QUALIFIED_CODEX_VERSION } from '../../src/modules/harnesses/codexProtocol.js'
+import { } from '../../src/modules/harnesses/codexProtocol.js'
 import { CodexRpcError, type JsonObject, type RpcRequest } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import type { ProductionHarnessInfrastructure } from '../../src/modules/harnesses/productionInfrastructure.js'
@@ -201,7 +202,7 @@ export class ActivityProductionReplay {
     const qualify: Extract<CodexSessionDependencies, { mode: 'replay' }>['qualify'] = async (binary) => {
       if (binary !== '/recorded-no-native-codex') throw new Error('Unrecorded replay qualification binary.')
       return { binary,
-        identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: QUALIFIED_CODEX_VERSION,
+        identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: RECORDED_CODEX_VERSION,
         schemaManifestSha256: 'synthetic-recorded-schema', stableSchemaGitBlob: 'synthetic-stable', referenceSchemaManifestSha256: 'synthetic-reference' }
     }
     const environment: Extract<CodexSessionDependencies, { mode: 'replay' }>['environment'] = (input, stripped = []) => {

@@ -8,7 +8,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 const scope = { deviceId: 'device-a', profilePath: '/profile-a', configRevision: 'revision-a', cwd: '/work' }
 const qualification = { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true }
 const start = { kind: 'operator', correlationId: 'operator:one', configuration: {}, workingDirectory: '/work' } as NativeSessionStart
-function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs'>> = {}) {
+function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs'>> = {}, nativeVersion = '2.1.284') {
   const frames = new ClaudeBoundedQueue<unknown>(32)
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
@@ -38,7 +38,7 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
   return { frames, close, interrupt, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
     await started
     const value = (await messages.next()).value
-    if (value) frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
+    if (value) frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: nativeVersion, cwd: '/work' })
     return value!
   } }
 }
@@ -85,6 +85,19 @@ describe('Claude native session manager admission', () => {
     await second
     expect((await f.manager.reconcile(session, 'request-2')).terminalResult?.output).toBe('again')
     await f.manager.close(session); await f.manager.close(session); await f.manager.dispose?.()
+  })
+  it('accepts newer native init behavior and keeps the observed version as provenance', async () => {
+    const f = fixture(undefined, {}, '2.2.0')
+    let session: import('@foreman-code/contracts').NativeSessionReference | undefined
+    const output = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'newer-native',
+      onSessionObserved: async value => { session = value } }))
+    const message = await f.nextMessage()
+    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
+    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid,
+      subtype: 'success', is_error: false, result: 'compatible' })
+    await output
+    expect(session?.providerVersion).toBe('2.2.0')
+    await f.manager.dispose?.()
   })
   it('interrupts only the exact active message and settles its aborted result as canceled', async () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
@@ -269,11 +282,11 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
     const changed = fixture()
     changed.client.query = () => {
-      changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/work' })
+      changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/foreign' })
       return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(), interrupt: async () => undefined }
     }
     const changedResult = drain(changed.manager.startInitialTurn(start, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
-    await expect(changedResult).rejects.toThrow('qualified CLI version')
+    await expect(changedResult).rejects.toThrow('Claude Code 2.1.286 does not satisfy the init version/cwd contract')
     await changed.manager.dispose?.()
   })
 

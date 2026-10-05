@@ -1,7 +1,8 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager, type CodexDiagnosticPin, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { } from '../src/modules/harnesses/codexProtocol.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 
 function gate() {
@@ -29,7 +30,7 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
       .filter(([name]) => name !== 'GRAPHQL_MCP_TOKEN' && name !== 'FOREMAN_CODE_MCP_TOKEN'
         && !excluded.includes(name))), ...scope?.variables }),
     qualify: async (binary) => ({ binary, identity: 'recorded-identity', protocol: fixtureProtocol,
-      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
+      providerVersion: RECORDED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
     assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
     runCommand: async (_binary, args) => args[1] === 'get' && args[2] !== 'graphql'

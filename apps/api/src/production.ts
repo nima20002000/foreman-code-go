@@ -151,7 +151,6 @@ import { HarnessCompatibilityService } from './modules/harnesses/compatibility/s
 import { HarnessQualificationRepository } from './modules/harnesses/qualification/repository.js'
 import { HarnessQualificationRegistry } from './modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
-import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
 import { withNativeQualificationOwnership } from './modules/harnesses/qualification/nativeOwnership.js'
 import { withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
@@ -487,14 +486,15 @@ export function buildProductionApp(
   // Live qualification is an explicit authenticated operation; optional
   // compatibility diagnostics never start model turns during startup.
   const harnessCompatibility = infrastructure?.auxiliary
-    ? new HarnessCompatibilityService(infrastructure.auxiliary.compatibility)
-    : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache() })
+    ? new HarnessCompatibilityService({ ...infrastructure.auxiliary.compatibility, commands })
+    : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache(), commands })
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
     openCodeFileStorageRoot: fileStorageRoot,
+    refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
     selectConfiguration: (configuration) => harnessRegistry.pinAccepted({
@@ -1034,6 +1034,7 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
+    harnessCompatibility,
     ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
     workerExecution,
@@ -1125,7 +1126,6 @@ export function buildProductionApp(
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
-      { name: 'harness qualification gate', run: async () => { if (qualificationRegistry) clearQualificationGate() } },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
@@ -1358,7 +1358,6 @@ export function buildProductionApp(
       // The bounded compatibility diagnostic creates no native session or model turn.
       if (qualificationRegistry && harnessQualifications) {
         await qualificationRegistry.load()
-        installQualificationGate(qualificationRegistry, harnessQualifications)
       }
       harnessCompatibility.start()
       assertOpen()

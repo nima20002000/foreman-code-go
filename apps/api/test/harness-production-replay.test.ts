@@ -1,3 +1,4 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import { expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
@@ -5,7 +6,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
 import type { ProductionHarnessInfrastructure } from '../src/modules/harnesses/productionInfrastructure.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { } from '../src/modules/harnesses/codexProtocol.js'
 import { buildProductionApp } from '../src/production.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 import { StrictProtocolReplay } from './support/harnessReplay.js'
@@ -39,7 +40,7 @@ it('replays native creation through production construction and the real manager
     mode: 'replay', environment: () => ({}),
     withDiagnostics: async () => { throw new Error('Unexpected diagnostic replay operation.') },
     qualify: async (binary) => ({ binary, identity: 'recorded-launcher', protocol: fixtureProtocol,
-      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
+      providerVersion: RECORDED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
     assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
     runCommand: async (_binary, args) => await replay.call('command', args) as Awaited<ReturnType<NonNullable<CodexSessionDependencies['runCommand']>>>,

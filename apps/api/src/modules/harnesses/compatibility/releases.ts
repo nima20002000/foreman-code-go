@@ -6,7 +6,7 @@ import { HarnessReleaseProvenanceSchema, type CompatibilityHarness, type Harness
  * Official release/tag records inspected 2026-09-19 and 2026-09-23. No startup network lookup.
  * Adding a release here must follow the native qualification/review process.
  */
-export const COMPATIBILITY_CHECKER_REVISION = 'protocol-settings-v1'
+export const COMPATIBILITY_CHECKER_REVISION = 'runtime-contracts-v2'
 export const QUALIFIED_RELEASES: Record<CompatibilityHarness, HarnessReleaseProvenance> = {
   codex: HarnessReleaseProvenanceSchema.parse({
     version: '0.154.0', repository: 'openai/codex', tag: 'rust-v0.154.0',

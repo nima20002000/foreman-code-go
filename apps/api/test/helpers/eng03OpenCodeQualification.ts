@@ -16,7 +16,6 @@ import { HarnessQualificationService } from '../../src/modules/harnesses/qualifi
 import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualificationOwnership,
   NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
 import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
-import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
@@ -42,7 +41,6 @@ export async function qualifyEng03OpenCode() {
   let factories: NativeHarnessFactories | undefined
   let service: HarnessQualificationService | undefined
   const close = async () => {
-    clearQualificationGate()
     factories?.stopAuxiliaries()
     const errors: unknown[] = []
     const phases = [
@@ -174,7 +172,7 @@ export async function qualifyEng03OpenCode() {
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)
-    installQualificationGate(registry, service)
+    await registry.load()
     return close
   } catch (error) {
     console.error(`OpenCode qualification failure ${JSON.stringify(describeNativeFailure(error, secrets))}`)

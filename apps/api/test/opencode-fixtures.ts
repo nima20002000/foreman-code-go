@@ -1,3 +1,4 @@
+import { openCodeSchema } from './fixtures/harness-schemas.js'
 import assert from 'node:assert/strict'
 
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
@@ -70,7 +71,7 @@ export class FixtureServer implements OpenCodeServerController {
   mcp: JsonObject = {}
   providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] }
   agents: unknown = [{ name: 'build' }, { name: 'plan' }]
-  paths: JsonObject = requiredPaths
+  paths: JsonObject = { ...requiredPaths, ...openCodeSchema().paths }
   permissions: JsonObject[] = []
   questions: JsonObject[] = []
   disposals = 0
@@ -177,7 +178,7 @@ export class FixtureServer implements OpenCodeServerController {
     const replacement = await this.beforeRequest?.(path, init)
     if (replacement) return replacement
     if (route === '/global/health') return json({ healthy: true, version: '1.18.31' })
-    if (route === '/doc') return json({ paths: this.paths })
+    if (route === '/doc') return json({ openapi: '3.1.0', paths: this.paths })
     if (route === '/provider') return json(this.providers)
     if (route === '/agent') return json(this.agents)
     if (route === '/config') return json(this.config)

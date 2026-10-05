@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
+import { HarnessCompatibilityListSchema } from '@foreman-code/contracts'
+import { FileCompatibilityCache } from '../src/modules/harnesses/compatibility/cache.js'
+import { HarnessCompatibilityService } from '../src/modules/harnesses/compatibility/service.js'
 import { HarnessQualificationListSchema } from '@foreman-code/contracts/harness-qualification'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -17,7 +20,7 @@ import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
-import { clearQualificationGate, installQualificationGate, requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
+import { runWithReadOnlyQualification, requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from '../src/modules/harnesses/qualification/types.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
@@ -39,6 +42,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
   await chmod(binary, 0o700)
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined
+  let compatibility: HarnessCompatibilityService | undefined
   try {
     await applyApplicationMigrations(pool)
     const access = new PostgresAccessService(pool)
@@ -52,9 +56,16 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     const staticCheck = vi.fn(async () => 'a'.repeat(64))
     const service = new HarnessQualificationService(repository, registry, { codex: suite, opencode: { ...suite, harness: 'opencode' } },
       { codex: binary, opencode: binary }, commands, settings, staticCheck)
-    installQualificationGate(registry, service)
-    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_QUALIFYING', retryable: true } } })
-    const services = { commands, harnessQualifications: service } as unknown as OperatorServices
+    const compatibilityOptions = { commands, cache: new FileCompatibilityCache(join(home, 'compatibility-cache')),
+      probe: { inspect: async (harness: 'codex' | 'opencode') => ({ executable: binary,
+        identity: `${harness}-fixture-payload`, version: harness === 'codex' ? '0.160.0' : '2.0.0' }),
+      probe: async () => 'a'.repeat(64), assertUnchanged: async () => undefined } }
+    const initialCompatibility = new HarnessCompatibilityService(compatibilityOptions)
+    await initialCompatibility.checkAll()
+    await initialCompatibility.close()
+    compatibility = new HarnessCompatibilityService(compatibilityOptions)
+    await compatibility.checkAll()
+    const services = { commands, harnessQualifications: service, harnessCompatibility: compatibility } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const writer = await access.issue({ name: 'Qualification writer', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const reader = await access.issue({ name: 'Qualification reader', audience: 'operator', grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
@@ -68,6 +79,18 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     const readClient = await connect(reader.token)
     expect((await readClient.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_qualification_run')
     await expect(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+    const compatible = HarnessCompatibilityListSchema.parse((await readClient.callTool({
+      name: 'harness_compatibility_list', arguments: {},
+    })).structuredContent)
+    expect(compatible.harnesses[0]).toMatchObject({ installedVersion: '0.160.0', status: 'probe-passed', source: 'cache' })
+    expect(compatible.canRetry).toBe(false)
+    await expect(readClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+    const other = await access.issue({ name: 'No harness grants', audience: 'operator',
+      grants: [{ actions: ['runs:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
+    const deniedClient = await connect(other.token)
+    await expect(deniedClient.callTool({ name: 'harness_compatibility_list', arguments: {} })).rejects.toThrow('not found')
+    expect((await writeClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } })).isError).not.toBe(true)
+    await compatibility.checkAll()
     const started = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })
     expect(started.isError).not.toBe(true)
     await viWaitFor(async () => expect((await repository.list())[0]?.status).toBe('qualified'))
@@ -83,12 +106,11 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     const denied = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/qualification', headers: { authorization: `Bearer ${reader.token}` } })
     expect(denied.statusCode).toBe(403)
     await writeFile(binary, '#!/bin/sh\n# another binary, same version\necho "codex-cli 0.158.0"\n')
-    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({
-      result: { error: { code: 'HARNESS_QUALIFYING', retryable: true } },
-    })
+    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
+    expect((await service.verify('codex')).status).toBe('qualified')
     await viWaitFor(async () => expect((await repository.list()).filter((item) => item.suiteRevision === 'fake-v1' && item.status === 'qualified')).toHaveLength(2))
-    expect(suite.run).toHaveBeenCalledTimes(3)
-    expect(staticCheck).toHaveBeenCalledTimes(3)
+    expect(suite.run).toHaveBeenCalledTimes(2)
+    expect(staticCheck).toHaveBeenCalledTimes(2)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     const failedSuite: QualificationSuite = { harness: 'codex', revision: 'fake-v2', run: async () => ({
       checks: [{ id: 'protocol', passed: false, detail: 'fixture mismatch' }], evidence: { fixture: true },
@@ -98,8 +120,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
       { codex: binary, opencode: binary }, commands, settings, staticCheck)
     await failedService.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed'))
-    installQualificationGate(failedRegistry, failedService)
-    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({
+    await expect(runWithReadOnlyQualification(failedRegistry, () => requireHarnessQualification('codex', 'codex-cli 0.158.0', binary))).rejects.toMatchObject({
       result: { error: { code: 'HARNESS_UNQUALIFIED' } },
     })
     const skippedSuite: QualificationSuite = { ...suite, revision: 'fake-v3', run: vi.fn(async () => ({ checks: [], evidence: {} })) }
@@ -113,9 +134,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     }))
     expect(skippedSuite.run).not.toHaveBeenCalled()
   } finally {
-    clearQualificationGate()
     await Promise.allSettled(clients.map((client) => client.close()))
     await app?.close()
+    await compatibility?.close()
     await pool.end()
     await rm(home, { recursive: true, force: true })
     await admin.query(`drop schema if exists "${schema}" cascade`)

@@ -1,15 +1,15 @@
 import { createRequire } from 'node:module'
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import type { ChildProcess } from 'node:child_process'
 import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from '../recovery/processRegistry.js'
+import { HarnessExecutionError } from '../errors.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { Options, SDKUserMessage, McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeSdkClient } from './port.js'
 
-export const CLAUDE_SDK_CANDIDATE_VERSION = '0.3.284'
-export const CLAUDE_CLI_CANDIDATE_VERSION = '2.1.284'
 
 /** Native history helpers read the SDK process profile, not query's child env. */
 function assertHelperProfile(profilePath: string): void {
@@ -17,12 +17,22 @@ function assertHelperProfile(profilePath: string): void {
   if (resolve(profilePath) !== resolve(processProfile)) throw new Error('Claude native history helper cannot safely select a different process-local profile')
 }
 
+export function assertClaudeSdkContract(sdk: unknown, version: string): void {
+  const exports = sdk && typeof sdk === 'object' ? sdk as Record<string, unknown> : {}
+  for (const method of ['query', 'getSessionInfo', 'getSessionMessages', 'forkSession', 'listSubagents', 'getSubagentMessages']) {
+    if (typeof exports[method] !== 'function') throw new HarnessExecutionError('CLAUDE_CONTRACT_UNSUPPORTED',
+      `Claude Code SDK ${version} does not satisfy the required ${method} method contract.`)
+  }
+}
+
 /** Loading occurs only at admitted startup, never at synchronous factory allocation. */
 export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string): Promise<ClaudeSdkClient> {
   const require = createRequire(import.meta.url)
-  const manifest = JSON.parse(await readFile(join(dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), 'package.json'), 'utf8')) as { version?: unknown }
-  if (manifest.version !== CLAUDE_SDK_CANDIDATE_VERSION) throw new Error('Installed Claude SDK differs from the exact qualification candidate')
-  const sdk = await import('@anthropic-ai/claude-agent-sdk')
+  const entrypoint = await realpath(require.resolve('@anthropic-ai/claude-agent-sdk'))
+  const manifest = JSON.parse(await readFile(join(dirname(entrypoint), 'package.json'), 'utf8')) as { version?: unknown }
+  if (typeof manifest.version !== 'string' || !manifest.version) throw new Error('Claude SDK manifest version is missing')
+  const sdk = await import(pathToFileURL(entrypoint).href) as typeof import('@anthropic-ai/claude-agent-sdk')
+  assertClaudeSdkContract(sdk, manifest.version)
   return {
     sdkVersion: manifest.version,
     query: ({ prompt, options }) => {

@@ -51,7 +51,8 @@ import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 import { OpenCodeFileCleanupError } from './opencodeFiles/types.js'
-import { harnessProfile } from './qualification/profiles.js'
+import { checkOpenCodeSchema } from './compatibility/schema.js'
+import { harnessProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
@@ -601,8 +602,6 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       && this.generation === generation && this.readyGeneration === generation
       && this.options.server.residentGeneration === generation
       && this.options.server.ownerAgentId === this.options.ownerAgentId
-      && this.options.server.expectedVersion === session.providerVersion
-      && harnessProfile('opencode', session.providerVersion) !== null
       && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint
     if (!current()) return unavailable('unqualified', true)
     if (state.responsesInFlight.has(query.nativeRequestId)) return unavailable('response_in_flight')
@@ -1439,20 +1438,23 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     await this.options.chatFiles?.recover?.(signal, retainedTurnIds)
     await this.options.server.ensure(signal)
-    if (harnessProfile('opencode', this.options.server.expectedVersion) === null) throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode native mode requires a qualified version.')
     if (this.readyGeneration === this.generation) return
     const generation = this.generation
     const health = object(await this.json('/global/health', undefined, signal))
     const document = object(await this.json('/doc', undefined, signal))
     if (health.healthy !== true || typeof health.version !== 'string'
-      || harnessProfile('opencode', health.version) === null || health.version !== this.options.server.expectedVersion) {
-      throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'Live OpenCode health/version did not match the qualified server.')
+      || health.version !== this.options.server.expectedVersion) {
+      throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', `OpenCode ${this.options.server.expectedVersion || 'unknown version'} did not satisfy the /global/health healthy/version contract.`)
+    }
+    try { checkOpenCodeSchema(document) } catch (error) {
+      throw new HarnessExecutionError('OPENCODE_CONTRACT_UNSUPPORTED',
+        `OpenCode ${health.version} does not satisfy ${error instanceof Error ? error.message : 'server API schema'}.`)
     }
     const paths = object(document.paths)
     for (const path of ['/session', '/session/status', '/session/{sessionID}', '/session/{sessionID}/message',
       '/session/{sessionID}/message/{messageID}', '/session/{sessionID}/prompt_async', '/session/{sessionID}/abort',
       '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']) {
-      if (!(path in paths)) throw new HarnessExecutionError('OPENCODE_SERVER_SCHEMA_UNQUALIFIED', `The live OpenCode schema is missing ${path}.`)
+      if (!(path in paths)) throw new HarnessExecutionError('OPENCODE_SERVER_SCHEMA_UNQUALIFIED', `OpenCode ${health.version} does not satisfy the server API contract: missing ${path}.`)
     }
     for (const state of this.sessions.values()) {
       if (state.turn?.files && state.turn.generation !== generation) {
@@ -1468,6 +1470,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       restored.add(state.directory)
     }
     if (generation !== this.generation) throw new OpenCodeNativeDeliveryError('OPENCODE_SERVER_GENERATION_CHANGED', 'OpenCode changed again while restoring native settings.', 'definite')
+    rememberQualifiedProfile('opencode', health.version, QUALIFICATION_TARGET_PROFILE.opencode)
     this.healthVersion = health.version
     this.readyGeneration = generation
   }
@@ -1570,8 +1573,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return structuredClone(parsed.data)
   }
   private validateReference(session: NativeSessionReference): void {
-    if (session.harness !== 'opencode' || harnessProfile('opencode', session.providerVersion) === null
-      || session.providerVersion !== this.providerVersion) throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted native session is not qualified for this manager.')
+    if (session.harness !== 'opencode') throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted native session is not qualified for this manager.')
   }
   private requireSession(session: NativeSessionReference): SessionState {
     this.validateReference(session)

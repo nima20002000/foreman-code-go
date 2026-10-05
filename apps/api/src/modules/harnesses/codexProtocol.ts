@@ -8,9 +8,12 @@ import { z } from 'zod'
 
 import { HarnessExecutionError } from './errors.js'
 import { requireHarnessQualification } from './qualification/gate.js'
-import { harnessProfile, normalizeHarnessVersion } from './qualification/profiles.js'
+import { rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
+import { CompatibilityCheckError } from './compatibility/errors.js'
+import { checkCodexSchema } from './compatibility/schema.js'
+import { passiveDriverPayloads } from './payloadDiscovery.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { CodexMethodMap } from './codexMethodTypes.js'
 
@@ -27,23 +30,6 @@ export async function codexRequest<M extends CodexClientMethod>(
   return result as CodexMethodMap[M]['result']
 }
 
-export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
-/** Historical review reference only; never presented as an installation measurement. */
-export const QUALIFIED_CODEX_SCHEMA_SHA256 = 'b785f87f96c4747e9db6c0492cea2de68e99b48f3462908174a1e8122a620054'
-/** Exact upstream rust-v0.154.0 stable bundle, not a locally invented schema. */
-export const QUALIFIED_STABLE_SCHEMA_GIT_BLOB = '7de4646ea2657038e164609d9473c76c1be7c843'
-/** Each admitted release has an independently measured upstream stable schema. */
-const qualifiedSchemas: Record<string, { stableGitBlob: string; referenceManifestSha256: string }> = {
-  [QUALIFIED_CODEX_VERSION]: {
-    stableGitBlob: QUALIFIED_STABLE_SCHEMA_GIT_BLOB,
-    referenceManifestSha256: QUALIFIED_CODEX_SCHEMA_SHA256,
-  },
-  'codex-cli 0.156.1': {
-    stableGitBlob: '772a8a0a9633722c7dee40388e3d5d4e81b97078',
-    referenceManifestSha256: 'ba31111b6547fcb05e28987ed7310991e017321eda0f7604333b2f9784130ae0',
-  },
-}
-export function isQualifiedCodexVersion(value: string): boolean { return harnessProfile('codex', value) !== null }
 const BUNDLE = 'codex_app_server_protocol.schemas.json'
 
 export function canonical(value: unknown): string {
@@ -81,9 +67,14 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
 }
 
 async function identity(binary: string): Promise<string> {
-  const value = await stat(binary)
-  if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex must be a regular executable file.')
-  return canonical([await realpath(binary), value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs])
+  const payload = await passiveDriverPayloads('codex', binary)
+  const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
+  const entries = await Promise.all(paths.map(async path => {
+    const value = await stat(path)
+    if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex payload must be a regular file.')
+    return [path, value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs]
+  }))
+  return canonical(entries)
 }
 
 export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {
@@ -112,7 +103,7 @@ const serverResponseTypes: Record<string, string> = {
 }
 
 /** Validation consumes the installation's generated schemas, not loose object casts. */
-export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
+export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknown version'): CodexProtocol {
   const definitions = object(bundle.definitions, 'CODEX_SCHEMA_INVALID')
   const schemaDialect = 'http://json-schema.org/draft-07/schema#' as const
   if (bundle.$schema !== undefined && bundle.$schema !== schemaDialect) {
@@ -140,7 +131,9 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
   const compiled = new Map<string, z.ZodType>()
   const definition = (name: string): JsonObject => {
     const v2 = isObject(definitions.v2) ? definitions.v2 : {}
-    return object(v2[name] ?? definitions[name], 'CODEX_SCHEMA_MISSING')
+    const value = v2[name] ?? definitions[name]
+    if (!isObject(value)) throw new HarnessExecutionError('CODEX_SCHEMA_MISSING', `Missing schema ${name}.`)
+    return value
   }
   const compile = (key: string, schema: JsonObject): z.ZodType => {
     const existing = compiled.get(key)
@@ -155,7 +148,7 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
   }
   const check = (key: string, schema: JsonObject, value: unknown): void => {
     if (!compile(key, schema).safeParse(value).success) {
-      throw new HarnessExecutionError('CODEX_PROTOCOL_INVALID', `Codex payload does not match the qualified ${key} schema.`)
+      throw new HarnessExecutionError('CODEX_PROTOCOL_INVALID', `Codex ${providerVersion} does not satisfy the ${key} schema contract.`)
     }
   }
   const branch = (name: string, method: string): JsonObject => {
@@ -167,7 +160,8 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
       const methodSchema = choice.properties.method
       return methodSchema.const === method || (Array.isArray(methodSchema.enum) && methodSchema.enum.includes(method))
     })
-    return object(match, 'CODEX_METHOD_UNQUALIFIED')
+    if (!isObject(match)) throw new HarnessExecutionError('CODEX_METHOD_UNQUALIFIED', `Missing ${name} method ${method}.`)
+    return match
   }
   // Check required schemas eagerly, before a provider process can execute a turn.
   for (const [method, type] of Object.entries(responseTypes)) {
@@ -191,6 +185,7 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
     compile(`ServerNotification:${method}`, branch('ServerNotification', method))
   }
   return {
+    providerVersion,
     request: (message: RpcRequest) => check(`ClientRequest:${message.method}`, branch('ClientRequest', message.method), message),
     serverRequest: (message: RpcRequest) => check(`ServerRequest:${message.method}`, branch('ServerRequest', message.method), message),
     notification: (message: JsonObject) => {
@@ -236,64 +231,59 @@ async function manifest(directory: string): Promise<string> {
   return createHash('sha256').update(entries.sort().join('\n') + '\n').digest('hex')
 }
 
-function gitBlob(bytes: Buffer): string {
-  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
-}
+const verifiedProtocols = new Map<string, QualifiedCodex>()
 
-/** No lifetime auth/version cache: each newly launched process is requalified. */
+/** Authentication and installation identity are checked even when the protocol is cached. */
 export async function qualifyCodex(
-  binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, _expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
   const resolved = await executable(binary, cwd, environment)
   const fingerprint = await identity(resolved)
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
   const version = await command(['--version'])
-  const actual = (version.stdout || version.stderr).trim()
-  const schema = qualifiedSchemas[actual]
-  if (version.exitCode === 0) await requireHarnessQualification('codex', actual, resolved)
-  if (version.exitCode !== 0 || (expectedVersion !== undefined
-    && normalizeHarnessVersion('codex', actual) !== normalizeHarnessVersion('codex', expectedVersion))) {
-    throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'The installed Codex version has no qualified protocol profile.')
+  const output = (version.stdout || version.stderr).trim()
+  const actual = /^codex-cli \d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(output) ? output : 'unknown version'
+  const incompatible = (contract: string) => new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED',
+    `Codex ${actual || 'unknown version'} does not satisfy ${contract}.`)
+  if (version.exitCode !== 0 || actual === 'unknown version') {
+    throw incompatible('--version response')
   }
   if (requireAuthentication) {
     const auth = await command(['login', 'status'])
     if (auth.exitCode !== 0 || !`${auth.stdout}\n${auth.stderr}`.includes('Logged in using ChatGPT')) {
-      throw new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED', 'Managed ChatGPT authentication is required for execution, not for device-code login.')
+      throw new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED',
+        `Codex ${actual} requires managed ChatGPT authentication for execution.`)
     }
   }
-  const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-schema-'))
-  try {
-    const stable = join(directory, 'stable')
-    const experimental = join(directory, 'experimental')
-    const stableResult = await command(['app-server', 'generate-json-schema', '--out', stable])
-    if (stableResult.exitCode !== 0) throw new Error('Codex schema generation failed.')
-    const stableBytes = await readFile(join(stable, BUNDLE))
-    // Codex precomputed exports can differ only in harmless JSON formatting.
-    const sorted = JSON.parse(canonical(JSON.parse(stableBytes.toString('utf8')))) as unknown
-    const formatted = JSON.stringify(sorted, null, 2)
-    const candidates = [stableBytes, Buffer.from(formatted), Buffer.from(formatted + '\n')]
-    if (schema && !candidates.some((bytes) => gitBlob(bytes) === schema.stableGitBlob)) {
-      throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', `The installed stable protocol does not match upstream ${actual}.`)
+  const key = canonical([resolved, actual, fingerprint])
+  let result = verifiedProtocols.get(key)
+  if (!result) {
+    const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-schema-'))
+    try {
+      const generated = await command(['app-server', 'generate-json-schema', '--experimental', '--out', directory])
+      if (generated.exitCode !== 0) throw incompatible('app-server generate-json-schema --experimental')
+      const bundle = object(JSON.parse(await readFile(join(directory, BUNDLE), 'utf8')), 'CODEX_SCHEMA_INVALID')
+      checkCodexSchema(bundle)
+      result = {
+        binary: resolved, identity: fingerprint, protocol: protocolFromBundle(bundle, actual), providerVersion: actual,
+        schemaManifestSha256: await manifest(directory), stableSchemaGitBlob: '', referenceSchemaManifestSha256: '',
+      }
+      await assertCodexUnchanged(result)
+      if (verifiedProtocols.size >= 64) verifiedProtocols.delete(verifiedProtocols.keys().next().value!)
+      verifiedProtocols.set(key, result)
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_EXECUTABLE_CHANGED') throw error
+      const contract = error instanceof HarnessExecutionError || error instanceof CompatibilityCheckError
+        ? error.message : 'generated app-server protocol schema'
+      throw incompatible(contract)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
     }
-    const generated = await command(['app-server', 'generate-json-schema', '--experimental', '--out', experimental])
-    if (generated.exitCode !== 0) throw new Error('Codex experimental schema generation failed.')
-    const measuredManifest = await manifest(experimental)
-    const bundle = object(JSON.parse(await readFile(join(experimental, BUNDLE), 'utf8')), 'CODEX_SCHEMA_INVALID')
-    const protocol = protocolFromBundle(bundle)
-    const result: QualifiedCodex = {
-      binary: resolved, identity: fingerprint, protocol, providerVersion: actual,
-      schemaManifestSha256: measuredManifest,
-      stableSchemaGitBlob: schema?.stableGitBlob ?? '',
-      referenceSchemaManifestSha256: schema?.referenceManifestSha256 ?? '',
-    }
-    await assertCodexUnchanged(result)
-    await requireHarnessQualification('codex', actual, resolved)
-    return result
-  } catch (error) {
-    if (error instanceof HarnessExecutionError) throw error
-    throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', 'Installed generated schemas could not be qualified; execution remains disabled.')
-  } finally {
-    await rm(directory, { recursive: true, force: true })
   }
+  await assertCodexUnchanged(result)
+  await requireHarnessQualification('codex', actual, resolved)
+  rememberQualifiedProfile('codex', actual, QUALIFICATION_TARGET_PROFILE.codex)
+  return result
 }

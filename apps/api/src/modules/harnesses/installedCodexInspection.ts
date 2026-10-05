@@ -86,12 +86,13 @@ export async function inspectInstalledCodex(input: {
 /** Main-side read port over the existing persisted exact-binary qualification.
  * The authenticated execution authority owns calling this after its live tuple
  * checks. Worker file inventory and known baselines do not create a proof. */
-export async function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'find'>,
+export async function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'list'>,
   current: CurrentInstalledCodexTarget, suiteRevision: string): Promise<HarnessQualification | null> {
-  const record = await repository.find('codex', current.expectedVersion, current.binarySha256, suiteRevision)
+  const record = (await repository.list()).find(row => row.harness === 'codex'
+    && row.binarySha256 === current.binarySha256 && row.suiteRevision === suiteRevision && row.status === 'qualified')
   if (!record) return null
   const proof = HarnessQualificationSchema.parse(record)
-  if (proof.harness !== 'codex' || proof.version !== current.expectedVersion || proof.binarySha256 !== current.binarySha256
+  if (proof.harness !== 'codex' || proof.binarySha256 !== current.binarySha256
     || proof.suiteRevision !== suiteRevision || proof.status !== 'qualified' || proof.profile !== QUALIFICATION_TARGET_PROFILE.codex
     || !proof.checkedAt || !proof.checks.length || proof.checks.some(check => !check.passed)) return null
   return proof

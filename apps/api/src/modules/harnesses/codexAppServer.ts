@@ -33,8 +33,8 @@ import { runCommand } from './process.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
-  assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
-  QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
+  assertCodexUnchanged, canonical, codexRequest, qualifyCodex,
+  type QualifiedCodex,
 } from './codexProtocol.js'
 import { resolveCodexInteractionResponse, translateCodexInteraction } from './codexInteractions.js'
 import { CodexChildControls } from './codexChildControls.js'
@@ -45,7 +45,6 @@ import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
-import { harnessProfile } from './qualification/profiles.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
 /** Structural client boundary shared by native production and recorded replay. */
@@ -98,7 +97,6 @@ export interface CodexOriginalSessionLifetime {
   assertCurrent(): void
 }
 
-export { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256 }
 const MAX_EVENTS = 1_024
 const MAX_EVENT_BYTES = 8 * 1024 * 1024
 const MAX_STAGED = 256
@@ -241,7 +239,7 @@ export interface CodexQualificationEvidence {
   schemaManifestSha256: string
   referenceSchemaManifestSha256: string
   stableSchemaGitBlob: string
-  schemaVerification: 'upstream-stable-pin-and-generated-experimental-validation'
+  schemaVerification: 'installed-contract-validation'
   authentication: 'chatgpt'
   productionSupported: false
   productionRestriction: string
@@ -501,7 +499,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return {
       providerVersion: result.providerVersion, schemaManifestSha256: result.schemaManifestSha256,
       referenceSchemaManifestSha256: result.referenceSchemaManifestSha256, stableSchemaGitBlob: result.stableSchemaGitBlob,
-      schemaVerification: 'upstream-stable-pin-and-generated-experimental-validation',
+      schemaVerification: 'installed-contract-validation',
       authentication: 'chatgpt', productionSupported: false,
       productionRestriction: 'Codex app-server remains experimental upstream. It is the only application execution transport; native qualification failure refuses execution.',
     }
@@ -770,9 +768,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         return structuredClone(loaded.session)
       }
       const prepared = await this.prepareInput(input, signal)
-      if (prepared.qualified.providerVersion !== session.providerVersion) {
-        throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The saved session belongs to another Codex release.')
-      }
       if (advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral') {
         throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Ephemeral sessions cannot be resumed after their process exits.')
       }
@@ -1076,8 +1071,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal?.throwIfAborted()
     const unavailable = (reason: NativeResponseAvailability['reason']) => unavailableNativeResponse(session, query, reason)
     if (this.shutdownController.signal.aborted) return unavailable('session_closed')
-    if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
-      || this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion) return unavailable('unqualified')
+    if (session.harness !== 'codex') return unavailable('unqualified')
     const child = this.childRuntimes.get(session.nativeSessionId)
     try { child?.assertCurrent() } catch { return unavailable('session_closed') }
     const runtime = this.runtimes.get(session.nativeSessionId) ?? child?.runtime
@@ -1102,8 +1096,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (waiting.conflictingIdentity) return { ...unavailable('identity_mismatch'), state: 'recovery_required' }
     const standalone = isSessionNativeInteraction(waiting.pending)
     if (!standalone && (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult)) return unavailable('identity_mismatch')
-    if ((!standalone && runtime.phase !== 'active') || runtime.starting || !runtime.qualified.schemaManifestSha256
-      || runtime.qualified.providerVersion !== session.providerVersion) return unavailable('unqualified')
+    if ((!standalone && runtime.phase !== 'active') || runtime.starting
+      || !runtime.qualified.schemaManifestSha256) return unavailable('unqualified')
     if (!this.transports.has(runtime.transport) || runtime.transport.isConnected?.() !== true) return unavailable('callback_lost')
     const current = { ...unavailable('callback_lost'), ...(turnId ? { nativeTurnId: turnId } : {}),
       generation: `${runtime.connectionId}:${runtime.generation}`, qualified: true }
@@ -1632,8 +1626,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private assertSessionVersion(session: NativeSessionReference): void {
-    if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
-      || (this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion)) {
+    if (session.harness !== 'codex') {
       throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The session does not match this qualified Codex provider.')
     }
   }
@@ -1997,9 +1990,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const prepared = supplied ?? await this.prepareInput(runtime.input, signal)
     this.assertBinding(runtime, prepared.input)
-    if (prepared.qualified.providerVersion !== runtime.session.providerVersion) {
-      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The saved session belongs to another Codex release.')
-    }
     const generation = runtime.generation + 1
     // Withdraw the old turn's file authority before replacing its process.
     runtime.starting?.preparationController.abort()

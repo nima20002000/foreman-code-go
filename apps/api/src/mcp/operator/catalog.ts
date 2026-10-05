@@ -95,6 +95,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'harness_list', action: 'harnesses:read' },
   { name: 'harness_get', action: 'harnesses:read' },
   { name: 'harness_defaults_update', action: 'harnesses:update' },
+  { name: 'harness_compatibility_list', action: 'harnesses:read' },
+  { name: 'harness_compatibility_retry', action: 'harnesses:update' },
   { name: 'harness_qualifications_list', action: 'harnesses:read' },
   { name: 'harness_qualification_run', action: 'harnesses:update' },
   { name: 'agent_defaults_get', action: 'settings:read' },

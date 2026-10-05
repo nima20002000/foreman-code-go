@@ -166,9 +166,9 @@ async function main() {
   }
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {
-    stage = 'OpenCode prerequisite (qualified 1.18.31 binary)'
+    stage = 'OpenCode prerequisite (installed native binary)'
     const version = await command(safeEnv.OPENCODE_BINARY ?? 'opencode', ['--version'], { capture: true })
-    if (version !== '1.18.31') throw new Error('OpenCode version does not match the pinned source.')
+    if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error('OpenCode returned no recognized version.')
   }
   stage = 'port reservation check'
   await freePort(opts.apiPort); await freePort(opts.webPort)

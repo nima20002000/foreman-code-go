@@ -14,6 +14,7 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies, type Codex
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { runCommand } from './process.js'
+import { binaryCacheIdentity } from './binaryIdentity.js'
 import { inheritedAgentEnvironment } from './secrets.js'
 import type { CodexNativeOutputs } from './codexNativeOutput.js'
 import type { CodexChatFiles } from './codexFiles/runtime.js'
@@ -81,6 +82,7 @@ export class NativeHarnessFactories {
     openCodeBinary: string
     openCodeFileStorageRoot?: string
     workspaceRoot?: string
+    refreshInstallations?: (signal?: AbortSignal) => Promise<void>
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -102,6 +104,14 @@ export class NativeHarnessFactories {
       || !infrastructure.openCodeServer || !infrastructure.openCodeClient)) {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay requires every provider infrastructure port.', 500)
     }
+  }
+
+  async cacheIdentity(harness: 'codex' | 'opencode', directory: string, configuration?: HarnessConfiguration) {
+    await this.config.refreshInstallations?.()
+    const selection = configuration ? this.config.selectConfiguration?.(configuration) : this.config.selectDefault?.(harness)
+    const binary = selection?.installation.launcher.resolvedLauncher
+      ?? (harness === 'codex' ? this.config.codexBinary : this.config.openCodeBinary)
+    return binaryCacheIdentity(harness, binary, directory)
   }
 
   allocateAdmitted(harness: 'codex' | 'opencode', prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
@@ -315,6 +325,7 @@ export class NativeHarnessFactories {
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    await this.config.refreshInstallations?.(signal)
     if (configuration.harness === 'claude') throw new DomainError('CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE',
       'The Claude preset is saved, but native profile qualification is not available in this runtime. Execution still requires verified authentication, sandbox isolation and lifecycle evidence for the exact host profile.', 409)
     const selection = this.config.selectConfiguration?.(configuration)

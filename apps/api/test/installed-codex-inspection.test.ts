@@ -45,9 +45,9 @@ describe('passive installed worker Codex evidence producer', () => {
         authenticated: null, compatible: null, qualified: false })
       expect(result.inventory.hostMetadata).toMatchObject({ hostRef: { kind: 'device', mainId: f.input.binding.mainId, deviceId: f.input.binding.deviceId }, applicationInstallationId: f.input.binding.workerInstallationId })
       expect(target.target.installationFingerprint).toBe(result.inventory.installations[0]?.installationFingerprint)
-      const find = vi.fn(async () => null)
-      expect(await readInstalledCodexQualification({ find }, target, 'actual-suite-v1')).toBeNull()
-      expect(find).toHaveBeenCalledWith('codex', '0.132.0', target.binarySha256, 'actual-suite-v1')
+      const list = vi.fn(async () => [])
+      expect(await readInstalledCodexQualification({ list }, target, 'actual-suite-v1')).toBeNull()
+      expect(list).toHaveBeenCalledOnce()
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
   it('detects actual changed executable and payload bytes in the target fingerprint', async () => {
@@ -109,12 +109,12 @@ describe('passive installed worker Codex evidence producer', () => {
     const f = await fixture()
     try {
       const target = (await inspectInstalledCodex(f.input)).currentTarget!
-      const original = proof(target)
-      expect(await readInstalledCodexQualification({ find: async () => original }, target, 'actual-suite-v1')).toEqual(original)
-      for (const changed of [ { status: 'unqualified' as const }, { status: 'baseline' as const }, { version: '0.154.0' },
+      const original = { ...proof(target), version: '0.160.0' }
+      expect(await readInstalledCodexQualification({ list: async () => [original] }, target, 'actual-suite-v1')).toEqual(original)
+      for (const changed of [ { status: 'unqualified' as const }, { status: 'baseline' as const },
         { binarySha256: 'a'.repeat(64) }, { suiteRevision: 'stale-suite' }, { checkedAt: null }, { checks: [] },
         { profile: 'codex-0.154' as const }, { checks: [{ id: 'native-protocol-and-live-turn', passed: false, detail: null }] } ]) {
-        expect(await readInstalledCodexQualification({ find: async () => ({ ...original, ...changed }) }, target, 'actual-suite-v1')).toBeNull()
+        expect(await readInstalledCodexQualification({ list: async () => [{ ...original, ...changed }] }, target, 'actual-suite-v1')).toBeNull()
       }
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })

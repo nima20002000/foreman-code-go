@@ -147,7 +147,7 @@ export function createClaudeNativeSessionManager(options: {
   }
   function runtimeFor(session: NativeSessionReference): Runtime {
     const runtime = resident.get(session.nativeSessionId)
-    if (!runtime || session.harness !== harness || session.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_SESSION_UNAVAILABLE', 'The exact owned Claude session is not resident.')
+    if (!runtime || session.harness !== harness || session.providerVersion !== runtime.session?.providerVersion) throw new HarnessExecutionError('CLAUDE_SESSION_UNAVAILABLE', 'The exact owned Claude session is not resident.')
     return runtime
   }
   function record(runtime: Runtime, type: string, payload: Record<string, unknown>, turn?: Turn): NativeHarnessEvent {
@@ -391,12 +391,12 @@ export function createClaudeNativeSessionManager(options: {
       for await (const output of runtime.sdk.output) {
         const frame = output.raw && typeof output.raw === 'object' ? output.raw as Record<string, unknown> : {}
         if (frame.type === 'system' && frame.subtype === 'init') {
-          if (frame.claude_code_version !== options.qualification.cliVersion || frame.cwd !== options.scope.cwd) {
-            throw new HarnessExecutionError('CLAUDE_NATIVE_INSTALLATION_CHANGED', 'Native initialization differs from the qualified CLI version or pinned working directory.')
+          if (typeof frame.claude_code_version !== 'string' || !frame.claude_code_version || frame.cwd !== options.scope.cwd) {
+            throw new HarnessExecutionError('CLAUDE_CONTRACT_UNSUPPORTED', `Claude Code ${String(frame.claude_code_version ?? options.qualification.cliVersion)} does not satisfy the init version/cwd contract.`)
           }
         }
         if (!runtime.session && frame.type === 'system' && frame.subtype === 'init' && typeof frame.session_id === 'string' && frame.session_id.length > 0) {
-          runtime.session = { harness, providerVersion: options.qualification.cliVersion, nativeSessionId: frame.session_id }
+          runtime.session = { harness, providerVersion: String(frame.claude_code_version), nativeSessionId: frame.session_id }
           if (resident.has(frame.session_id)) throw new Error('Claude native session is already leased to another runtime')
           resident.set(frame.session_id, runtime)
           await runtime.onSessionObserved?.(runtime.session)
@@ -576,7 +576,7 @@ export function createClaudeNativeSessionManager(options: {
       signal?.throwIfAborted()
       const runtime = resident.get(session.nativeSessionId)
       if (!runtime || runtime.closed || disposed) return unavailableNativeResponse(session, query, 'session_closed')
-      if (session.harness !== harness || session.providerVersion !== options.qualification.cliVersion || query.expectedNativeTurnId !== undefined) {
+      if (session.harness !== harness || query.expectedNativeTurnId !== undefined) {
         return unavailableNativeResponse(session, query, 'identity_mismatch')
       }
       if (!options.qualification.interactions) return unavailableNativeResponse(session, query, 'unqualified')
@@ -683,7 +683,7 @@ export function createClaudeNativeSessionManager(options: {
     },
     async attachSession(session, start, signal) {
       signal?.throwIfAborted()
-      if (session.harness !== harness || session.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_SESSION_MISMATCH', 'Persisted Claude installation identity differs.')
+      if (session.harness !== harness) throw new HarnessExecutionError('CLAUDE_SESSION_MISMATCH', 'Persisted Claude installation identity differs.')
       const existing = resident.get(session.nativeSessionId)
       return existing?.session ?? open(start, session, signal)
     },
@@ -712,7 +712,7 @@ export function createClaudeNativeSessionManager(options: {
       qualified('fork')
       signal?.throwIfAborted()
       const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
-      if (cwd !== options.scope.cwd || source.harness !== harness || source.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_FORK_SCOPE_MISMATCH', 'Claude fork scope differs from the pinned source.')
+      if (cwd !== options.scope.cwd || source.harness !== harness) throw new HarnessExecutionError('CLAUDE_FORK_SCOPE_MISMATCH', 'Claude fork scope differs from the pinned source.')
       const key = start.kind === 'operator' ? start.correlationId : start.request.executionId
       const identity = JSON.stringify({ source, start })
       const previous = forks.get(key)

@@ -199,7 +199,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
         }
         if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
           throw new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
-            'The installed export does not satisfy the protocol/settings checks. Restore the qualified release or request a new qualification.')
+            `${harness} ${installation.version} does not satisfy ${'contract' in result && typeof result.contract === 'string' ? result.contract : 'protocol/settings schema'}.`)
         }
         if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true
           || !('schemaSha256' in result) || typeof result.schemaSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.schemaSha256)) {

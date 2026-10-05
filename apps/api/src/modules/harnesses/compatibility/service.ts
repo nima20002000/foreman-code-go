@@ -3,15 +3,19 @@ import { setTimeout as delay } from 'node:timers/promises'
 import {
   HarnessCompatibilitySchema, type CompatibilityHarness, type HarnessCompatibility,
 } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { isAuthorized, requireAuthorization } from '../../access/policy.js'
+import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { FileCompatibilityCache, type CompatibilityCache, type CompatibilityCacheEntry } from './cache.js'
 import { CompatibilityCheckError, compatibilityReason } from './errors.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'
-import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES, RELEASE_MANIFEST_SHA256, knownRelease } from './releases.js'
+import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES, knownRelease } from './releases.js'
 
 const HARNESSES = ['codex', 'opencode'] as const
 const CACHE_WARNING = 'This result is available now, but the compatibility cache could not be read or saved. A later startup may repeat the check.'
 export interface CompatibilityOptions {
   probe: CompatibilityProbe
+  commands?: Pick<PostgresCommandCoordinator, 'recordAudit'>
   cache: CompatibilityCache
   now?: () => number
   checkerRevision?: string
@@ -21,7 +25,7 @@ export interface CompatibilityOptions {
 export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
   return createHash('sha256').update(JSON.stringify([
     harness, installation.identity, installation.version, process.platform, process.arch,
-    process.version, revision, RELEASE_MANIFEST_SHA256,
+    process.version, revision,
   ])).digest('hex')
 }
 async function cacheOperation<T>(work: Promise<T>): Promise<T> {
@@ -66,6 +70,16 @@ export class HarnessCompatibilityService {
   get(harness: CompatibilityHarness): HarnessCompatibility {
     // Contract parsing also prevents callers from mutating the in-memory report.
     return HarnessCompatibilitySchema.parse(this.reports[harness])
+  }
+  read(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'harnesses:read')
+    return { harnesses: this.list(), canRetry: isAuthorized(principal, 'harnesses:update') }
+  }
+  async requestRetry(principal: ManagementPrincipal, source: 'http' | 'mcp', harness: CompatibilityHarness) {
+    requireAuthorization(principal, 'harnesses:update')
+    const result = this.retry(harness)
+    await this.options.commands?.recordAudit(principal.id, source, 'harness.compatibility.retry', harness, 'succeeded')
+    return result
   }
   start(): void {
     for (const harness of HARNESSES) this.begin(harness, false)
@@ -134,15 +148,7 @@ export class HarnessCompatibilityService {
         knownRelease: release, matchesQualifiedVersion: release !== null,
       }
       this.reports[harness] = { ...base, status: 'checking' }
-      if (release) {
-        await this.options.probe.assertUnchanged(installation, signal)
-        signal.throwIfAborted()
-        this.reports[harness] = {
-          ...base, status: 'known-compatible', source: 'release-record', checkedAt: new Date(this.now()).toISOString(),
-        }
-        return
-      }
-      this.options.onUnknownInstalled?.(harness)
+      if (!release) this.options.onUnknownInstalled?.(harness)
       const key = compatibilityCacheKey(harness, installation, this.revision)
       let cached: CompatibilityCacheEntry | null = null
       if (!force) {

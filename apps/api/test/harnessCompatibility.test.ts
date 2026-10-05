@@ -5,7 +5,6 @@ import type { CompatibilityCache, CompatibilityCacheEntry } from '../src/modules
 import type { CompatibilityProbe, HarnessInstallation } from '../src/modules/harnesses/compatibility/probe.js'
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES } from '../src/modules/harnesses/compatibility/releases.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
 
 const now = Date.parse('2026-09-19T12:00:00.000Z')
 const sha = 'a'.repeat(64)
@@ -37,20 +36,19 @@ afterEach(async () => { await Promise.allSettled(services.splice(0).map((service
 
 describe('harness compatibility diagnostics (not execution qualification)', () => {
   it('records official provenance for the bundled native qualification versions', async () => {
-    expect(`codex-cli ${QUALIFIED_RELEASES.codex.version}`).toBe(QUALIFIED_CODEX_VERSION)
     const options = fixture(QUALIFIED_RELEASES.codex.version)
     const result = await create(options).checkAll()
-    expect(result.map((row) => row.status)).toEqual(['known-compatible', 'known-compatible'])
+    expect(result.map((row) => row.status)).toEqual(['probe-passed', 'probe-passed'])
     expect(result[0]?.knownRelease?.releaseUrl).toBe('https://github.com/openai/codex/releases/tag/rust-v0.154.0')
-    expect(options.probe.probe).not.toHaveBeenCalled()
+    expect(options.probe.probe).toHaveBeenCalledTimes(2)
     expect(options.probe.inspect).toHaveBeenCalledTimes(2)
   })
   it('recognizes the separately qualified Codex 0.156.1 release', async () => {
     const options = fixture('0.156.1')
     const result = await create(options).checkAll()
-    expect(result[0]).toMatchObject({ status: 'known-compatible', matchesQualifiedVersion: true,
+    expect(result[0]).toMatchObject({ status: 'probe-passed', matchesQualifiedVersion: true,
       qualifiedRelease: { version: '0.156.1' }, knownRelease: { tag: 'rust-v0.156.1' } })
-    expect(options.probe.probe).not.toHaveBeenCalled()
+    expect(options.probe.probe).toHaveBeenCalledTimes(2)
   })
   it('caches an unknown version without qualifying it or changing the release manifest', async () => {
     const options = fixture()
@@ -58,8 +56,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     expect(first[0]).toMatchObject({ status: 'probe-passed', installedVersion: '99.0.0', matchesQualifiedVersion: false, knownRelease: null, schemaSha256: sha })
     const second = await create(options).checkAll()
     expect(second[0]).toMatchObject({ status: 'probe-passed', source: 'cache', checkedAt: first[0]?.checkedAt, matchesQualifiedVersion: false })
-    expect(options.probe.probe).toHaveBeenCalledTimes(1)
-    expect(QUALIFIED_RELEASES.codex.version).toBe('0.154.0')
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1)
   })
   it('persists a safe failure reason briefly and reruns it on an explicit retry', async () => {
     const options = fixture()
@@ -72,7 +69,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     expect(service.retry('codex').status).toBe('checking')
     await service.checkAll()
     expect(service.get('codex').status).toBe('probe-passed')
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
   })
   it('invalidates reuse on executable replacement and checker revision changes', async () => {
     const options = fixture()
@@ -83,7 +80,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     }))
     await create(options).checkAll()
     await create({ ...options, checkerRevision: 'next-review' }).checkAll()
-    expect(options.probe.probe).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(3)
     const installed = { executable: '/fake/codex', identity: 'one', version: '99.0.0' }
     expect(compatibilityCacheKey('codex', installed, COMPATIBILITY_CHECKER_REVISION))
       .not.toBe(compatibilityCacheKey('codex', { ...installed, version: '99.0.1' }, COMPATIBILITY_CHECKER_REVISION))
@@ -91,13 +88,13 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
   it('coalesces startup and concurrent retries and exposes checking immediately', async () => {
     const options = fixture()
     let finish: (value: string) => void = () => undefined
-    vi.mocked(options.probe.probe).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.mocked(options.probe.probe).mockImplementation((harness) => harness === 'codex' ? new Promise((resolve) => { finish = resolve }) : Promise.resolve(sha))
     const service = create(options)
     const first = service.retry('codex')
     expect(first.status).toBe('checking')
     expect(service.retry('codex').checkId).toBe(first.checkId)
     const completed = service.checkAll()
-    await vi.waitFor(() => expect(options.probe.probe).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1))
     finish(sha)
     await completed
     expect(service.get('codex').checkId).toBe(first.checkId)
@@ -124,7 +121,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     }))
     const result = await create({ ...options, timeoutMs: 20 }).checkAll()
     expect(result[0]).toMatchObject({ status: 'probe-passed', reason: null, schemaSha256: sha })
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
     expect(vi.mocked(options.probe.probe).mock.calls[1]?.[2]).not.toBe(vi.mocked(options.probe.probe).mock.calls[0]?.[2])
     expect(options.cache.entries.get('codex')?.status).toBe('probe-passed')
   })
@@ -136,21 +133,21 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     }))
     const result = await create({ ...options, timeoutMs: 20 }).checkAll()
     expect(result[0]).toMatchObject({ status: 'unavailable', reason: { code: 'CHECK_TIMEOUT' } })
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
     expect(options.cache.entries.size).toBe(0)
   })
   it('refreshes after qualification even when the initial diagnostic is still active', async () => {
     const options = fixture()
     let finish: (value: string) => void = () => undefined
     vi.mocked(options.probe.probe).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
-      .mockResolvedValueOnce('b'.repeat(64))
+      .mockResolvedValueOnce(sha).mockResolvedValueOnce('b'.repeat(64))
     const service = create(options)
     service.start()
-    await vi.waitFor(() => expect(options.probe.probe).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1))
     service.refreshAfterQualification('codex')
     finish(sha)
     await vi.waitFor(() => expect(service.get('codex')).toMatchObject({ status: 'probe-passed', schemaSha256: 'b'.repeat(64) }))
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
   })
   it('does not reuse a successful probe if the executable changes during it', async () => {
     const options = fixture()
@@ -180,6 +177,6 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     const stopped = service.retry('codex')
     expect(stopped.reason?.code).toBe('CLI_CLEANUP_FAILED')
     expect(stopped.status).toBe('probe-failed')
-    expect(options.probe.probe).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1)
   })
 })

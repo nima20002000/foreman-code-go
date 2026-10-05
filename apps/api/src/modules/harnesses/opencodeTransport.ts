@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path'
 import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { parseInstalledVersion } from './compatibility/probe.js'
 import { requireHarnessQualification } from './qualification/gate.js'
 import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
@@ -371,7 +372,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       abort.signal.throwIfAborted()
       await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
-      const installed = (version.stdout || version.stderr).trim()
+      const installed = version.exitCode === 0 ? parseInstalledVersion('opencode', version.stdout, version.stderr) : 'unknown version'
       if (version.exitCode === 0) {
         await requireHarnessQualification('opencode', installed, this.options.binary)
         this.expectedVersion = installed
@@ -437,7 +438,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       try {
         const health = object(await response.json())
         if (!response.ok || health.healthy !== true || health.version !== this.expectedVersion) {
-          throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', 'The authenticated OpenCode health/version check failed.')
+          throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', `OpenCode ${this.expectedVersion} did not satisfy the authenticated /global/health healthy/version contract.`)
         }
       } finally { await response.body?.cancel().catch(() => undefined) }
       if (this.disabledAppMcpServerName !== undefined) {
@@ -482,7 +483,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const failed = (error: Error) => finish(error)
       // Do not echo native stderr, which can contain expanded configuration secrets.
-      const closed = () => finish(new HarnessExecutionError('OPENCODE_SERVER_START_FAILED', 'OpenCode exited before becoming ready.'))
+      const closed = () => finish(new HarnessExecutionError('OPENCODE_SERVER_START_FAILED', `OpenCode ${this.expectedVersion || 'unknown version'} did not satisfy the serve startup contract.`))
       const abort = () => finish(signal.reason)
       child.stdout.on('data', data)
       child.once('error', failed)
