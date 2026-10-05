@@ -24,7 +24,8 @@ export function claudeContextSnapshot(frame: Record<string, unknown>, sessionId:
   if (!usage || typeof usage.input_tokens !== 'number') return null
   const cacheRead = typeof usage.cache_read_input_tokens === 'number' ? usage.cache_read_input_tokens : 0
   const cacheCreated = typeof usage.cache_creation_input_tokens === 'number' ? usage.cache_creation_input_tokens : 0
+  const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
   return { nativeSessionId: sessionId, model, sequence, observedAt: new Date().toISOString(), source: 'claude',
-    generation: 'native', accuracy: 'estimated', usedTokens: usage.input_tokens + cacheRead + cacheCreated,
+    generation: 'native', accuracy: 'estimated', usedTokens: usage.input_tokens + cacheRead + cacheCreated + output,
     capacityTokens: null, lifetimeTokens: null, cost: null, stale: false }
 }

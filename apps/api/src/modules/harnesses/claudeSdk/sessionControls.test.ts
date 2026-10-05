@@ -11,7 +11,7 @@ it('compiles Off locally without disabling manual compaction and removes overrid
 })
 it('counts distinct input/cache fields once and leaves unknown capacity unknown', () => {
   const context = claudeContextSnapshot({ type: 'assistant', session_id: 'session', message: { usage: {
-    input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30,
+    input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, output_tokens: 500,
   } } }, 'session', 'model', 3)
-  expect(context).toMatchObject({ usedTokens: 60, capacityTokens: null, lifetimeTokens: null })
+  expect(context).toMatchObject({ usedTokens: 560, capacityTokens: null, lifetimeTokens: null })
 })

@@ -14,7 +14,7 @@ export function openCodeCompactionResult(state: CompactionState, messages: reado
   if (manual.length !== 1) return state
   const answer = later.find(message => message.info.role === 'assistant' && message.info.summary === true
     && message.info.parentID === manual[0]!.info.id && message.info.sessionID === state.nativeSessionId)
-  if (!answer || !answer.info.finish) return state
+  if (!answer || (!answer.info.error && !answer.info.finish)) return state
   return { ...state, status: answer.info.error ? 'failed' : 'completed',
     message: answer.info.error ? 'OpenCode compaction failed.' : 'Context compacted.', observedAt: new Date().toISOString() }
 }
