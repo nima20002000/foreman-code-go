@@ -2,7 +2,6 @@ import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contrac
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
-import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
