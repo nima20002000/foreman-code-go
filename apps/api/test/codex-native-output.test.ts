@@ -58,6 +58,18 @@ async function request(f: Awaited<ReturnType<typeof fixture>>, sessionId: string
 }
 
 describe('separate Codex native output group alongside scoped App MCP', () => {
+  it('discovers only the configured recorded MCP entry without creating a native thread', async () => {
+    const f = await fixture()
+    try {
+      const inspected = await f.manager.inspectMcpConfiguration('/recorded-workspace')
+      assert.equal(inspected.serverName, 'graphql')
+      assert.equal(inspected.configured.enabled, true)
+      assert.equal(inspected.configured.required, true)
+      assert.equal(f.replay.calls.length, 0)
+      assert.deepEqual(f.observed, [])
+    } finally { await f.manager.dispose() }
+  })
+
   it('requires genuine qualification before a native thread start or tool declaration', async () => {
     const f = await fixture({ qualified: false })
     try {

@@ -187,8 +187,12 @@ export class ActivityProductionReplay {
 
   infrastructure(): ProductionHarnessInfrastructure {
     const command: Extract<CodexSessionDependencies, { mode: 'replay' }>['runCommand'] = async (_binary, args) => {
-      if (args[0] === 'mcp' && args[1] === 'get') return outcome(JSON.stringify({ name: 'graphql', enabled: true, required: true,
-        transport: { type: 'stdio', command: process.execPath, args: [appLauncherPath()], env_vars: ['GRAPHQL_MCP_TOKEN'] } }))
+      if (args[0] === 'mcp' && args[1] === 'get') {
+        if (args[2] !== 'graphql') return { ...outcome('', 1),
+          stderr: `Error: No MCP server named '${args[2]}' found.` }
+        return outcome(JSON.stringify({ name: 'graphql', enabled: true, required: true,
+          transport: { type: 'stdio', command: process.execPath, args: [appLauncherPath()], env_vars: ['GRAPHQL_MCP_TOKEN'] } }))
+      }
       if (args[0] === 'mcp' && args[1] === 'list') return outcome('[{"name":"graphql"}]')
       if (args[0] === 'debug' && args[1] === 'models') return outcome(JSON.stringify({ models: [{ slug: 'test-model', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] }))
       throw new Error(`Unexpected replay CLI operation: ${args.join(' ')}`)
