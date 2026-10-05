@@ -7,6 +7,7 @@ import Fastify from 'fastify'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
 import { AgentFileListResultSchema, AgentFileReadResultSchema,
   type PermanentFileScope, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { ApiConfig } from '../src/config.js'
@@ -130,8 +131,8 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     await add({ kind: 'workflow_reference', workspaceId: seeded.scope.workspaceId, workflowId: otherWorkflow }, '# Foreign workflow secret\n'),
   ]
   const server = new FixtureServer()
-  server.config = { mcp: { graphql: { enabled: false } } }
-  server.mcp = { graphql: { status: 'disabled' } }
+  server.config = { mcp: { [APP_MCP_SERVER_NAME]: { enabled: false } } }
+  server.mcp = { [APP_MCP_SERVER_NAME]: { status: 'disabled' } }
   server.beforeRequest = (path, init) => {
     if (new URL(path, 'http://fixture.invalid').pathname === '/mcp' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { name: string }

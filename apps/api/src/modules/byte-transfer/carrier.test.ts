@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url'
 import { ResumableByteTransferService } from './service.js'
 import { EventEmitter } from 'node:events'
 import { isDeepStrictEqual } from 'node:util'
@@ -103,7 +102,7 @@ it('rejects an old captured sender context before dispatching through a replacem
 })
 
 it('shares the supplied original canonical journal with fallback and preserves its accepted/current fences', async () => {
-  const root = await mkdtemp(join(fileURLToPath(new URL('../../../../../../../../', import.meta.url)), '.graphql-shared-carrier-')); roots.push(root)
+  const root = await mkdtemp('/tmp/graphql-shared-carrier-'); roots.push(root)
   const original = binding(), bytes = Buffer.from('data'), intent = intentFor(original, bytes)
   let bound = original, denied = false
   const accepted = { intent: async () => intent, authorize: async () => { if (denied) throw new Error('Denied original grant') } }

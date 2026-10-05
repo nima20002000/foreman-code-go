@@ -1,6 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -21,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 async function fixture() {
-  const root = await mkdtemp(join(fileURLToPath(new URL('../../../../../../../../', import.meta.url)), '.graphql-rsync-composition-'))
+  const root = await mkdtemp('/tmp/graphql-rsync-composition-')
   roots.push(root)
   const stagingRoot = join(root, 'rsync'); await mkdir(stagingRoot, { mode: 0o700 })
   const binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),

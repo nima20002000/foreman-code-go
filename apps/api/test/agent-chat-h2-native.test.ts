@@ -232,7 +232,7 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
           assert.deepEqual(object(wire!.effective().mcp).docs, inherited.mcp.docs)
           assert.deepEqual(wire!.effective().plugin, inherited.plugin)
           assert.equal(object(object(wire!.effective().mcp).graphql).enabled, false)
-          assert.deepEqual(wire!.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
+          assert.deepEqual(wire!.status(), { 'foreman-code': { status: 'disabled' }, graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
             'graphql-app': { status: 'disabled' }, 'graphql-operator': { status: 'disabled' } })
           if (operation !== 'attach') assert.deepEqual(wire!.sessions.get('run-source'), wire!.source, 'Fork/create must leave the Run source untouched.')
           assert.ok(calls.findIndex((call) => call.method === 'GET /mcp') < calls.findIndex((call) => call.method.includes('/session')))
@@ -364,7 +364,7 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
     await manager.restartForCredential({ agentId: ownerAgentId, variables: {} })
     assert.equal(server.generation, generation + 1)
     assert.equal(vi.mocked(spawnNativeProcess).mock.calls.length, 2)
-    assert.deepEqual(wire.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
+    assert.deepEqual(wire.status(), { 'foreman-code': { status: 'disabled' }, graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
       'graphql-app': { status: 'disabled' }, 'graphql-operator': { status: 'disabled' } })
     assert.deepEqual(start, before)
     assert.equal(calls.filter((call) => call.method === 'POST /session').length, 1)
@@ -381,11 +381,14 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
   it('OpenCode: chat overlay is narrow, idempotent, and live status cannot contradict disabled config', () => {
     const before = JSON.stringify(inherited), overlay = buildOpenCodeChatConfigContent(before, 'graphql')
     assert.equal(overlay, buildOpenCodeChatConfigContent(overlay, 'graphql'))
-    assert.deepEqual(JSON.parse(overlay), { ...inherited, mcp: { ...inherited.mcp, graphql: { ...inherited.mcp.graphql, enabled: false },
+    assert.deepEqual(JSON.parse(overlay), { ...inherited, mcp: { ...inherited.mcp, 'foreman-code': { enabled: false }, graphql: { ...inherited.mcp.graphql, enabled: false },
       'graphql-app': { enabled: false }, 'graphql-operator': { enabled: false } } })
     assert.equal(JSON.stringify(inherited), before)
     assert.throws(() => assertOpenCodeChatMcpDisabled({}, {}, 'graphql'), errorCode('OPENCODE_APP_MCP_UNAVAILABLE'))
     assertOpenCodeChatMcpDisabled(JSON.parse(overlay), { graphql: { status: 'disabled' } }, 'graphql')
+    assert.throws(() => assertOpenCodeChatMcpDisabled(JSON.parse(overlay), {
+      graphql: { status: 'disabled' }, 'foreman-code': { status: 'connected' },
+    }, 'graphql'), errorCode('OPENCODE_APP_MCP_UNAVAILABLE'))
     for (const status of ['connected', 'failed', 'needs_auth', undefined]) {
       assert.throws(() => assertOpenCodeChatMcpDisabled(JSON.parse(overlay), { graphql: { status } }, 'graphql'), errorCode('OPENCODE_APP_MCP_UNAVAILABLE'))
     }

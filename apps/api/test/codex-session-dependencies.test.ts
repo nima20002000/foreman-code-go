@@ -77,12 +77,24 @@ describe('Codex production/replay dependency boundary', () => {
 describe('Codex original placed inspection directory',()=>{
   it.each([undefined,'/actual-admitted-source/src'])('qualifies and inspects MCP in the same actual directory with option %s',async workingDirectory=>{
     const f=replay(),qualified:string[]=[],commands:string[]=[]
-    const qualify=f.dependencies.qualify,runCommand=f.dependencies.runCommand
+    const qualify=f.dependencies.qualify
     f.dependencies.qualify=async(...args)=>{qualified.push(args[2]);return qualify(...args)}
-    f.dependencies.runCommand=async(...args)=>{commands.push(args[2]);return runCommand(...args)}
+    f.dependencies.runCommand=async(...args)=>{
+      commands.push(args[2])
+      if (args[1][1] === 'list') {
+        assert.deepEqual(args[1], ['mcp', 'list', '--json'])
+        return { stdout: JSON.stringify([{ name: 'graphql' }]), stderr: '', exitCode: 0 }
+      }
+      assert.deepEqual(args[1], ['mcp', 'get', 'graphql', '--json'])
+      return { stdout: JSON.stringify({ enabled: false, transport: { type: 'stdio' } }), stderr: '', exitCode: 0 }
+    }
     const manager=new CodexAppServerSessionManager('/nonexistent-recorded-codex',undefined,undefined,undefined,undefined,undefined,f.dependencies,
       workingDirectory?{workingDirectory}:{})
-    await manager.capabilities();await manager.inspectMcp();await manager.qualificationEvidence()
+    await manager.capabilities()
+    const inspected = await manager.inspectMcp()
+    assert.equal(inspected.serverName, 'graphql')
+    assert.equal(inspected.state, 'disabled')
+    await manager.qualificationEvidence()
     assert.deepEqual(qualified,[workingDirectory??process.cwd(),workingDirectory??process.cwd(),workingDirectory??process.cwd()])
     assert.deepEqual(commands,[workingDirectory??process.cwd(),workingDirectory??process.cwd()])
     assert(!f.calls.includes('start'))

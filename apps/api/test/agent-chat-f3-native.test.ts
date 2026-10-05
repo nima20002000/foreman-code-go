@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
-import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
@@ -31,7 +31,7 @@ function codexInput(): WorkflowNativeSessionStart {
 }
 function scopedCodexEntry(enabled = true) {
   const entry = appLauncherConnection()
-  return { name: 'graphql', enabled, transport: { type: 'stdio', command: entry.executable, args: entry.arguments, env_vars: entry.environmentVariables } }
+  return { name: APP_MCP_SERVER_NAME, enabled, transport: { type: 'stdio', command: entry.executable, args: entry.arguments, env_vars: entry.environmentVariables } }
 }
 function code(expected: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === expected
@@ -45,7 +45,7 @@ function codex(chat = true) {
 }
 function openCode() {
   const server = new FixtureServer()
-  server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
+  server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
   const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
   cleanups.push(() => manager.dispose())
   return { manager, server }
@@ -56,7 +56,8 @@ const openCodeSource: NativeSessionReference = { harness: 'opencode', providerVe
 describe('F3 safe native boundaries (mock command output and HTTP only)', () => {
   for (const operation of ['create', 'attach', 'fork'] as const) {
     it(`A-R01: Codex ${operation} refuses injected scoped credentials before opening a transport`, async () => {
-      vi.mocked(runCommand).mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(scopedCodexEntry()), stderr: '' })
+      vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
+        stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
       const { manager, transport } = codex(), input = codexInput()
       input.environment = { agentId: input.request.configuration.agentId, variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } }
       const snapshot = structuredClone(input)
@@ -72,7 +73,7 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     })
     it(`A-R01: OpenCode ${operation} refuses an enabled App entry without session mutation`, async () => {
       const { manager, server } = openCode()
-      server.config = { mcp: { graphql: { type: 'local', enabled: true, command: ['fixture-launcher'] } } }
+      server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: true, command: ['fixture-launcher'] } } }
       const input: WorkflowNativeSessionStart = { request: request() }
       const result = operation === 'create' ? manager.createSession(input)
         : operation === 'attach' ? manager.attachSession(openCodeSource, input) : manager.forkSession(openCodeSource, input)
@@ -90,7 +91,8 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     assert.equal(prepared.environment.GRAPHQL_MCP_TOKEN, undefined)
     assert.deepEqual(prepared.harnessConfiguration, input.request.configuration.harness)
     const ordinary = codex(false).manager
-    vi.mocked(runCommand).mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(scopedCodexEntry()), stderr: '' })
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
+      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
     await assert.rejects(ordinary['prepareInput'](input), code('CODEX_SCOPED_ENVIRONMENT_REQUIRED'))
     await assert.rejects(manager['prepareInput']({ ...input, environment: { agentId: input.request.configuration.agentId,
       variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } } }), code('CODEX_APP_MCP_UNAVAILABLE'))
@@ -98,7 +100,7 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
   })
   it('A-R01: OpenCode disabled App entry remains disabled and refuses injected credentials', async () => {
     const { manager, server } = openCode()
-    server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
+    server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
     const input: WorkflowNativeSessionStart = { request: request() }
     const session = await manager.createSession(input)
     assert.equal(session.harness, 'opencode')

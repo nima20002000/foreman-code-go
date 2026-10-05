@@ -8,6 +8,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { it, vi } from 'vitest'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -35,7 +36,7 @@ it('F-10 exposes credential-free approval through authenticated MCP, denies a re
   let service: AgentChatService | undefined
   let app: ReturnType<typeof buildApp> | undefined
   const provider = new FixtureServer()
-  provider.config = { mcp: { graphql: { enabled: false } } }
+  provider.config = { mcp: { [APP_MCP_SERVER_NAME]: { enabled: false } } }
   try {
     await applyApplicationMigrations(pool)
     const fixture = makeCurrentWorkflowFixture(`opencode-${randomUUID()}`, 'single')

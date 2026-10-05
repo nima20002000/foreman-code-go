@@ -1,6 +1,7 @@
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
+import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -1412,7 +1413,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return this.dependencies.withDiagnostics({
       binary: runtime.qualified.binary, ...(this.expectedVersion ? { expectedVersion: this.expectedVersion } : {}), cwd: runtime.workingDirectory,
       configurationIdentity: runtime.configurationIdentity, signal,
-      scopedCredentialVariables: [...new Set([APP_MCP_TOKEN, ...Object.keys(source.environment?.variables ?? {}),
+      scopedCredentialVariables: [...new Set([...APP_MCP_TOKEN_NAMES, ...Object.keys(source.environment?.variables ?? {}),
         ...(runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : []),
         ...(runtime.strippedCredentialVariable ? [runtime.strippedCredentialVariable] : [])])],
     }, async (io) => {

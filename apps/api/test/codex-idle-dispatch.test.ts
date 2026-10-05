@@ -14,7 +14,8 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
   const source = input('/recorded-workspace')
   if (appMcpAccess === 'none') delete source.environment
   else source.environment = { ...source.environment!, variables: { ...source.environment!.variables, CUSTOM_APP_BEARER: 'writer-fixture' } }
-  const ambient = { CUSTOM_APP_BEARER: 'ambient-fixture', GRAPHQL_MCP_TOKEN: 'ambient-standard', HOST_ONLY: 'host-config' }
+  const ambient = { CUSTOM_APP_BEARER: 'ambient-fixture', GRAPHQL_MCP_TOKEN: 'ambient-standard',
+    FOREMAN_CODE_MCP_TOKEN: 'ambient-current', HOST_ONLY: 'host-config' }
   const requests: string[] = []
   const pins: CodexDiagnosticPin[] = []
   const diagnosticEnvironments: NodeJS.ProcessEnv[] = []
@@ -25,7 +26,8 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
   const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
     mode: 'replay',
     environment: (scope, excluded = []) => ({ ...Object.fromEntries(Object.entries(ambient)
-      .filter(([name]) => name !== 'GRAPHQL_MCP_TOKEN' && !excluded.includes(name))), ...scope?.variables }),
+      .filter(([name]) => name !== 'GRAPHQL_MCP_TOKEN' && name !== 'FOREMAN_CODE_MCP_TOKEN'
+        && !excluded.includes(name))), ...scope?.variables }),
     qualify: async (binary) => ({ binary, identity: 'recorded-identity', protocol: fixtureProtocol,
       providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
@@ -84,9 +86,11 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
       const session = await f.manager.createSession(f.source)
       await f.manager.reloadNativeMcp(session)
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('GRAPHQL_MCP_TOKEN'))
+      assert.ok(f.pins[0]!.scopedCredentialVariables.includes('FOREMAN_CODE_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('CUSTOM_APP_BEARER'))
       assert.ok(f.diagnosticEnvironments.length > 0)
-      assert.ok(f.diagnosticEnvironments.every((environment) => environment.CUSTOM_APP_BEARER === undefined && environment.GRAPHQL_MCP_TOKEN === undefined))
+      assert.ok(f.diagnosticEnvironments.every((environment) => environment.CUSTOM_APP_BEARER === undefined
+        && environment.GRAPHQL_MCP_TOKEN === undefined && environment.FOREMAN_CODE_MCP_TOKEN === undefined))
       assert.equal(f.ambient.CUSTOM_APP_BEARER, 'ambient-fixture')
       assert.equal(f.source.environment, undefined)
       assert.equal(f.closes(), 0)

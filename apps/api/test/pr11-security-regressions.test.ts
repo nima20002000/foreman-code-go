@@ -1,4 +1,4 @@
-import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_TOKEN, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -197,7 +197,7 @@ describe.skipIf(process.platform === 'win32')('PR #11 provider-native resolved c
     await fixture({ mcp: { 'graphql': entry } }, async (binary, workingDirectory) => {
       const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
       assert.equal(proof?.automaticEndpoint, true)
-      assert.equal(proof?.credentialEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
+      assert.equal(proof?.credentialEnvironmentVariable, APP_MCP_TOKEN)
       assert.equal(proof?.transport, 'stdio')
     })
     await fixture({ mcp: { 'graphql': { ...entry, environment: { GRAPHQL_MCP_TOKEN: 'static' } } } }, async (binary, workingDirectory) => {

@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm, appendFile, writeFile, readFile, symlink, mkdir, rename, link } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BYTE_TRANSFER_POLICY, type TransferContext, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferService } from './service.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-const fixtureRoot = fileURLToPath(new URL('../../../../../../../../', import.meta.url))
+const fixtureRoot = '/tmp'
 const roots: string[] = [], services: ResumableByteTransferService[] = []
 afterEach(async () => { for (const service of services.splice(0)) await service.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture(bytes = Buffer.from('abcdefgh')) {

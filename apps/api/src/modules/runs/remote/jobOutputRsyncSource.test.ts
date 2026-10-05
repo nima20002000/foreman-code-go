@@ -34,7 +34,7 @@ describe('closed Job rsync immutable source correlation',()=>{
     const signal = AbortSignal.timeout(5000)
     await f.source.register(f.execution, f.input, f.intent, f.bytes, signal)
     const reader = await f.source.resolveSource(f.intent, signal)
-    expect(await reader.read(f.intent, 0, f.bytes.length, signal)).toEqual(f.bytes)
+    expect(Buffer.from(await reader.read(f.intent, 0, f.bytes.length, signal)).equals(f.bytes)).toBe(true)
     await expect(reader.read(f.intent, 0, f.bytes.length + 1, signal)).rejects.toMatchObject({ code: 'JOB_OUTPUT_TRANSFER_CONFLICT' })
     await expect(reader.read({ ...f.intent, attemptId: randomUUID() }, 0, 1, signal))
       .rejects.toMatchObject({ code: 'JOB_OUTPUT_TRANSFER_CONFLICT' })

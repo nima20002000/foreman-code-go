@@ -29,6 +29,7 @@ describe('managed launcher installation identity', () => {
     'installs a configured %s launcher and rejects the default installation', async name => {
       const original = appLauncherPath()
       const { directory, source } = await fixture()
+      vi.stubEnv(name === 'GRAPHQL_APP_MCP_DIRECTORY' ? 'FOREMAN_CODE_APP_MCP_DIRECTORY' : 'GRAPHQL_APP_MCP_DIRECTORY', undefined)
       vi.stubEnv(name, directory)
       const installed = appLauncherPath()
       await installManagedLauncher(source, installed)
@@ -40,6 +41,7 @@ describe('managed launcher installation identity', () => {
 
   it.each(['GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
     'rejects a relative %s launcher directory', name => {
+      vi.stubEnv(name === 'GRAPHQL_APP_MCP_DIRECTORY' ? 'FOREMAN_CODE_APP_MCP_DIRECTORY' : 'GRAPHQL_APP_MCP_DIRECTORY', undefined)
       for (const directory of ['', 'relative/mcp']) {
         vi.stubEnv(name, directory)
         expect(() => appLauncherPath()).toThrow('absolute directory')

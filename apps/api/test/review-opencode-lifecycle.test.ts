@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { it, vi } from 'vitest'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
 import { ManagedOpenCodeServer, childEnvironmentFingerprint } from '../src/modules/harnesses/opencodeTransport.js'
 import { FixtureServer, json, permission, request } from './opencode-fixtures.js'
 
@@ -22,7 +23,7 @@ class ResidentFixture extends FixtureServer {
 it('F-10 qualifies credential-free chat create and attach without mutating availability inspection', async () => {
   for (const mode of ['create', 'attach'] as const) {
     const fixture = new ResidentFixture()
-    fixture.config = { mcp: { graphql: { enabled: false } } }
+    fixture.config = { mcp: { [APP_MCP_SERVER_NAME]: { enabled: false } } }
     const server = new ManagedOpenCodeServer({ binary: '/unused-fixture-binary', workingDirectory: '/workspace/project',
       ownerAgentId: 'agent-1', appMcpAccess: 'none' })
     server.expectedVersion = fixture.expectedVersion
@@ -49,7 +50,7 @@ it('F-10 qualifies credential-free chat create and attach without mutating avail
       assert.equal(result.state, 'available')
       assert.equal(result.qualified, true)
       assert.equal(server.credentialEnvironmentFingerprint, childEnvironmentFingerprint({ agentId: 'agent-1', variables: {} }))
-      assert.equal(server.disabledAppMcpServerName, 'graphql')
+      assert.equal(server.disabledAppMcpServerName, APP_MCP_SERVER_NAME)
       assert.equal(ensure.mock.calls.length, 0)
       assert.equal(transport.mock.calls.length, 0)
       assert.equal(restart.mock.calls.length, 0)

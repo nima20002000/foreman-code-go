@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { CurrentWorkflowSaveInputSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
 describe('ENG-S3-ONLY B wiring (source assertions, not native/PG qualification)', () => {
@@ -43,13 +44,32 @@ describe('ENG-S3-ONLY B wiring (source assertions, not native/PG qualification)'
     expect(source('../src/routes/product.ts')).not.toContain('createForWorkflow')
     expect(source('../src/modules/workflows/postgres.ts')).not.toContain('CompatibleWorkflowVersionSchema')
   })
-  it('keeps omission in the typed publication contract and rejects old execution tags', () => {
-    const sql = source('../src/infrastructure/currentWorkflowWriterMigration.ts')
-    expect(sql).toContain("if graph ? 'repeat' then perform eng04_validate_repeat_plan(graph); end if")
-    expect(sql).toContain('check (execution_semantics_version=3)')
-    expect(sql).not.toContain("set_config(")
-    expect(sql).not.toContain('disable trigger')
-    expect(sql).not.toContain('blocks: []')
-    expect(source('../src/modules/workflows/currentAuthoring.ts')).toContain("operation: 'workflow.save.v3'")
+  it('keeps repeat absent for ordinary saves and rejects empty repeat plans and retired execution tags', () => {
+    for (const form of ['single', 'repeat'] as const) {
+      const fixture = makeCurrentWorkflowFixture('publication-contract', form)
+      const input = {
+        workspaceId: fixture.scope.workspaceId,
+        workflowId: fixture.scope.workflowId,
+        commandId: 'publication-command',
+        executionSemanticsVersion: 3,
+        expectedRevision: 1,
+        expectedWorkflowVersionId: null,
+        expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+        expectedLocationRevision: 1,
+        graph: fixture.version.definition,
+      }
+      const parsed = CurrentWorkflowSaveInputSchema.parse(input)
+      expect(parsed.graph).toEqual(fixture.version.definition)
+      expect(Object.hasOwn(parsed.graph, 'repeat')).toBe(form === 'repeat')
+      expect(CurrentWorkflowSaveInputSchema.safeParse({
+        ...input, graph: { ...input.graph, repeat: { blocks: [] } },
+      }).success).toBe(false)
+      for (const executionSemanticsVersion of [1, 2, 4]) {
+        expect(CurrentWorkflowSaveInputSchema.safeParse({ ...input, executionSemanticsVersion }).success).toBe(false)
+        expect(CurrentWorkflowSaveInputSchema.safeParse({
+          ...input, graph: { ...input.graph, executionSemanticsVersion },
+        }).success).toBe(false)
+      }
+    }
   })
 })

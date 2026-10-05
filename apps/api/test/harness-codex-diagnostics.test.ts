@@ -25,7 +25,7 @@ function fixture() {
         approvalPolicy: params!.approvalPolicy, approvalsReviewer: params!.approvalsReviewer,
         sandbox: { type: 'readOnly', networkAccess: false } }
     } }
-  const commands: { environment: NodeJS.ProcessEnv; recovery: NativeProcessRecovery }[] = []
+  const commands: { args: readonly string[]; environment: NodeJS.ProcessEnv; recovery: NativeProcessRecovery }[] = []
   let blockDiagnostic: ((signal: AbortSignal) => Promise<void>) | undefined
   const dependencies: CodexSessionDependencies = { mode: 'native', environment: (scope) => ({ ...ambient, ...scope?.variables }),
     qualify: async (binary) => ({ binary, identity: 'recorded-identity', protocol: fixtureProtocol,
@@ -36,8 +36,11 @@ function fixture() {
     runCommand: async (_binary, args, _cwd, signal, environment, options) => {
       if (options?.recovery) {
         if (environment && ('beforeSpawn' in environment || 'expectedAgentId' in environment)) throw new Error('Unexpected credential scope adapter.')
-        commands.push({ environment: { ...environment as NodeJS.ProcessEnv }, recovery: options.recovery })
+        commands.push({ args: [...args], environment: { ...environment as NodeJS.ProcessEnv }, recovery: options.recovery })
         await blockDiagnostic?.(signal!)
+      }
+      if (args[0] === 'mcp' && args[1] === 'list') {
+        return { stdout: JSON.stringify([{ name: 'graphql' }]), stderr: '', exitCode: 0, exitSignal: null }
       }
       if (args[0] !== 'mcp' || args[1] !== 'get') throw new Error(`Unexpected command ${args.join(' ')}`)
       return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
@@ -69,9 +72,13 @@ it('same-process ephemeral reload uses separately admitted diagnostics with no s
     expect(f.admit).toHaveBeenCalledTimes(1)
     const scope = f.admit.mock.calls[0]![0]
     expect(scope.owner).not.toBe(f.writer.owner)
-    expect(f.commands).toHaveLength(1)
-    expect(f.commands[0]!.recovery).toBe(scope)
-    expect(f.commands[0]!.environment).toEqual({ HOST_ONLY: 'host-config' })
+    expect(f.commands.map(command => command.args)).toEqual([
+      ['mcp', 'list', '--json'], ['mcp', 'get', 'graphql', '--json'],
+    ])
+    for (const command of f.commands) {
+      expect(command.recovery).toBe(scope)
+      expect(command.environment).toEqual({ HOST_ONLY: 'host-config' })
+    }
     expect(f.source.environment!.variables.CUSTOM_APPLICATION_BEARER).toBe('writer-only')
     expect(f.ambient.CUSTOM_APPLICATION_BEARER).toBe('ambient-bearer')
     expect(f.abandon).toHaveBeenCalledExactlyOnceWith(scope)

@@ -59,7 +59,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Add Foreman Code MCP' }))
     await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
-    expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
+    expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, mcpServers: { 'foreman-code': { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
     expect((await getManagedHarnessCatalog()).find(entry => entry.harness === 'claude')?.defaults).toEqual(state.submitted()?.defaults.claude)
   })
   it('requires an explicit new tool choice and pins app-routed approval for it', async () => {

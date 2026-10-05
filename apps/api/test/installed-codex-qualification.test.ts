@@ -117,11 +117,11 @@ describe('actual Main and installed Codex qualification read capability', () => 
       mount.bootId = original.bootId
       const worker = await startConfiguredWorker({ stateDirectory })
       try {
-        expect(mount.revision).toBeTruthy()
+        expect(mount.revision).toBe('codex-live-5+identity-v1')
         const f = fixture(mount.revision, original)
-        f.facts.harness.qualification.suiteRevision = 'codex-live-4+identity-v1'
+        f.facts.harness.qualification.suiteRevision = 'codex-live-5+identity-v1'
         expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)
-        expect(await f.reader.repository.find('codex', '0.132.0', 'a'.repeat(64), 'codex-live-4+identity-v1')).toEqual(f.facts.harness.qualification)
+        expect(await f.reader.repository.find('codex', '0.132.0', 'a'.repeat(64), 'codex-live-5+identity-v1')).toEqual(f.facts.harness.qualification)
         const gate = new HarnessQualificationRegistry(f.reader.repository, { codex: mount.revision })
         expect(await gate.trustedExact('codex', '0.132.0', 'a'.repeat(64))).toBe(true)
         f.facts.harness.qualification.suiteRevision = 'codex-live-4'

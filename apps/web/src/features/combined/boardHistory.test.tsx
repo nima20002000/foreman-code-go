@@ -5,11 +5,12 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { DEFAULT_FILE_RETENTION_SECONDS, FileWithRevisionSchema, temporaryFileExpiresAt,
+import { DEFAULT_FILE_RETENTION_SECONDS, FilePageSchema, FileWithRevisionSchema, temporaryFileExpiresAt,
   type FileWithRevision } from '@foreman-code/contracts/files'
 import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { bindMockInstallation } from '../../shared/mocks/handlers'
@@ -99,6 +100,16 @@ beforeEach(() => {
   installFlowLayout(320, 480); installChatSource()
   server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
     HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })), selectedChatUnavailable,
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/activities', ({ params }) => {
+      const runId = String(params.runId)
+      const snapshot = reply(runId, scope).snapshot
+      if (snapshot.kind !== 'available') throw new Error('Expected a saved Run snapshot')
+      return HttpResponse.json(RunActivitiesPageSchema.parse({
+        scope: { ...scope, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 },
+        mode: 'initial', highWater: '0', retainedFrom: '1', nextCursor: `cursor-${runId}`,
+        olderCursor: null, hasMore: false, items: [],
+      }))
+    }),
     http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
       evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
       executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
@@ -187,6 +198,13 @@ describe('FIL-17 + SCH selected Board', () => {
       http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('codex'))),
       http.get('/api/operator/conversations/summaries', () => HttpResponse.json({ conversations: [...states.values()].map(summarizeOperatorConversation) })),
       http.get('/api/operator/conversations/:id', ({ params }) => HttpResponse.json(states.get(String(params.id)))),
+      http.get('/api/operator/conversations/:id/files', ({ params }) => {
+        const state = states.get(String(params.id))
+        if (!state) throw new Error('Unknown Operator conversation')
+        return HttpResponse.json(FilePageSchema.parse({
+          items: state.messages.flatMap(message => message.attachments ?? []), pageInfo: { nextCursor: null },
+        }))
+      }),
       http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
         revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
         locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),

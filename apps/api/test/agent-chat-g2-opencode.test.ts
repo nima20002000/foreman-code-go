@@ -3,6 +3,7 @@ import { MessageSchema } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 import { agentChatCorrelation } from '../src/modules/conversations/agentChatRepository.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
 import { eventually, fixture } from './helpers/agentChatF1.js'
 import { FixtureServer, request } from './opencode-fixtures.js'
@@ -56,7 +57,7 @@ function messageSink(f: ReturnType<typeof fixture>) {
 describe('G2 A2-PF-03: actual OpenCode adapter, synthetic HTTP/SSE only', () => {
   it('releases a heartbeat-producing watcher after terminal history and starts B once on the same session', async () => {
     const f = fixture(), server = new FixtureServer()
-    server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
+    server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
     const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: f.store.row.agent_id, appMcpAccess: 'none' })
     let heartbeat: ReturnType<typeof setInterval> | undefined
     try {
