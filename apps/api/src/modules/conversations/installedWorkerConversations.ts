@@ -36,7 +36,7 @@ import type { WorkerConversationChannel } from './workerBridge.js'
 import { allocateInstalledWorkerClaude } from './installedWorkerClaude.js'
 import { WorkerConversationFiles } from './workerFiles.js'
 import { localCodexChatHost } from '../harnesses/codexFiles/localHost.js'
-import { assertOperatorCodexHost } from '../harnesses/operatorFiles/codex.js'
+import { assertCodexChatHost } from '../harnesses/codexFiles/localHost.js'
 import { join } from 'node:path'
 
 function unavailable(message: string): never {
@@ -110,7 +110,7 @@ export async function createInstalledWorkerConversations(input: {
         if (configuration.harness.harness !== 'codex' || configuration.harness.sandbox === 'danger-full-access') {
           unavailable('This Codex configuration cannot safely receive attachment paths.')
         }
-        await assertOperatorCodexHost(fileStorageRoot, binding.workingDirectory,
+        await assertCodexChatHost(fileStorageRoot, binding.workingDirectory,
           configuration.harness.advanced?.additionalWritableDirectories ?? [],
           configuration.harness.sandbox === 'workspace-write')
       }

@@ -10,7 +10,8 @@ import {
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 
-import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
+import type { IssuedWorkerCredential, WorkerCredentialService } from '../access/workerCredentials.js'
+import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS } from '../access/credentialLifetime.js'
 import { DomainError } from '../errors.js'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 

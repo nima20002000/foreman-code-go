@@ -3,9 +3,9 @@ import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import Fastify from 'fastify'
 import type { File, FileRevision } from '@foreman-code/contracts/files'
-import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/mcp.js'
+import type { FileMcpService } from '../../../files/tools/mcpServer.js'
+import { createQualificationFileServer } from '../fileServer.js'
 import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
 import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
@@ -33,7 +33,9 @@ export const opencodeQualificationSuite: QualificationSuite = {
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
-    const app = Fastify({ logger: false })
+    const app = createQualificationFileServer(() => fileService, (request, statusCode) => {
+      fileRequests.push({ ...request, body: redact(request.body), statusCode })
+    })
     const releaseServer = input.ownCleanup?.(() => server.dispose())
     const releaseApp = input.ownCleanup?.(() => app.close())
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
@@ -58,17 +60,6 @@ export const opencodeQualificationSuite: QualificationSuite = {
       turnId: 'qualification', allowMutation: true, allowedTools: ['files.read', 'files.publish_result'] }
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
     const redact = <T>(value: T): T => server.redactWithAdditionalSecrets(value, [token])
-    const observedRequests = new Map<string, typeof fileRequests[number]>()
-    app.addHook('preHandler', async (request) => {
-      const observed = { method: request.method, body: redact(request.body) }
-      fileRequests.push(observed)
-      observedRequests.set(request.id, observed)
-    })
-    app.addHook('onResponse', async (request, reply) => {
-      const observed = observedRequests.get(request.id)
-      if (observed) observed.statusCode = reply.statusCode
-      observedRequests.delete(request.id)
-    })
     const sourceId = randomUUID(), sourceRevisionId = randomUUID(), outputId = randomUUID(), outputRevisionId = randomUUID()
     const now = new Date().toISOString(), expiresAt = new Date(Date.parse(now) + 3_600_000).toISOString()
     const sourceBytes = Buffer.from(`# Qualification\n\n${marker}\n`)
@@ -120,7 +111,6 @@ export const opencodeQualificationSuite: QualificationSuite = {
         }
       },
     } as unknown as FileMcpService
-    registerFileToolsMcp(app, fileService)
     const request = async (path: string, body?: unknown): Promise<unknown> => {
       const url = `${path}${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(input.workDirectory)}`
       const response = await server.request(url, { method: body === undefined ? 'GET' : 'POST',
@@ -203,7 +193,7 @@ export const opencodeQualificationSuite: QualificationSuite = {
       }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
-        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        const address = await app.listen()
         mcpName = `graphql_files_qualification_${randomUUID().replaceAll('-', '').slice(0, 12)}`
         await request('/mcp', { name: mcpName, config: { type: 'remote', url: `${address}/mcp/files`, enabled: true,
           oauth: false, headers: { Authorization: `Bearer ${token}` } } })

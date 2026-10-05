@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path'
+import { DomainError } from '../../errors.js'
+import { pathsOverlap } from '../../workspaces/filesystem.js'
 import { collectCodexFileBytes } from './bytes.js'
 import type { CodexFileHostLease, RegisteredCodexCopy } from './port.js'
 
@@ -43,4 +45,15 @@ export async function localCodexChatHost(fileStorageRoot: string): Promise<Codex
     async sealCompleted() { throw new Error('CODEX_MUTABLE_HOST_PATH_DENIED') },
     async close() { if (!closed) { closed = true; await rm(root, { recursive: true, force: true }) } },
   }
+}
+
+export async function assertCodexChatHost(fileStorageRoot: string, workingDirectory: string,
+  additionalWritableDirectories: readonly string[], allowMutation: boolean): Promise<void> {
+  const hostDirectory = codexChatHostDirectory(fileStorageRoot)
+  await mkdir(hostDirectory, { recursive: true, mode: 0o700 })
+  const canonicalHost = await realpath(hostDirectory)
+  const roots = await Promise.all([workingDirectory, ...additionalWritableDirectories].map((path) => realpath(path)))
+  if (canonicalHost !== resolve(hostDirectory) || roots.some((root) => pathsOverlap(root, canonicalHost))
+    || allowMutation && ['/tmp', '/var/tmp'].some((root) => pathsOverlap(root, canonicalHost))) throw new DomainError(
+    'CODEX_FILE_HOST_UNAVAILABLE', 'The file host overlaps a Codex writable root.', 409)
 }

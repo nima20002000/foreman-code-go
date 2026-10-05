@@ -7,7 +7,7 @@ import { openRootDirectory } from '../sources/rootAttestation.js'
 import { anchored, identity, openPrivateRoot, openChildDirectory } from '../sources/privateFilesystem.js'
 import { DomainError } from '../errors.js'
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
-import { requiredLocationAccess } from '../workspaces/location.js'
+import { requiredLocationAccess } from '../workspaces/locationAccess.js'
 
 async function inspectApprovedDirectory(approved: ApprovedRootAllowlist, path: string,
   accessMode: 'read-only' | 'read-write') {

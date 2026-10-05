@@ -1,3 +1,5 @@
+import { requiredLocationAccess } from './locationAccess.js'
+export { requiredLocationAccess } from './locationAccess.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
@@ -7,7 +9,6 @@ import { isAbsolute, resolve } from 'node:path'
 import {
   ExecutionLocationSchema,
   RunExecutionLocationSchema,
-  type AgentConfigurationVersion,
   type RunExecutionLocation,
 } from '@foreman-code/contracts'
 import {
@@ -48,11 +49,6 @@ function locationError(error: unknown, rootPath: string): DomainError {
   if (code === 'ENOTDIR') return new DomainError('WORKSPACE_LOCATION_NOT_DIRECTORY', `Path '${rootPath}' is not a directory on the selected runner.`, 422)
   if (code === 'EACCES' || code === 'EPERM') return new DomainError('WORKSPACE_LOCATION_INACCESSIBLE', `Directory '${rootPath}' is not accessible to the local runner.`, 422)
   return new DomainError('WORKSPACE_LOCATION_UNAVAILABLE', `Directory '${rootPath}' could not be validated on the local runner.`, 422)
-}
-
-export function requiredLocationAccess(configurations: readonly AgentConfigurationVersion[]): WorkspaceLocationAccessMode {
-  return configurations.some((configuration) => configuration.harness.harness === 'opencode'
-    || configuration.harness.sandbox !== 'read-only') ? 'read-write' : 'read-only'
 }
 
 export class WorkspaceLocationService {
