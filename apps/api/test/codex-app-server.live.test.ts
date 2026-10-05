@@ -4,30 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type PendingNativeInteraction } from '@foreman-code/contracts'
+import type { PendingNativeInteraction } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
+import { createCodexLiveApplication } from './helpers/codexLiveApp.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
 const binary = process.env.CODEX_BINARY ?? 'codex'
 function outputText(output: unknown): string { return isObject(output) && typeof output.text === 'string' ? output.text : '' }
-function request(directory: string): HarnessExecutionRequest {
-  return {
-    executionId: 'nim2598-live-execution', runId: 'nim2598-live-run', workspaceId: 'nim2598-live-workspace',
-    workflowNodeId: 'nim2598-live-node', workingDirectory: directory, runtimeDirectory: directory, input: {},
-    configuration: {
-      id: 'nim2598-live-configuration', workspaceId: 'nim2598-live-workspace', agentId: 'nim2598-live-agent', version: 1,
-      prompt: { system: 'Follow explicit shell instructions by using the native shell tool; never simulate tool results.' },
-      assignedSkills: [], harness: {
-        harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
-        advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
-      },
-      contentHash: 'sha256:nim2598-live', createdAt: new Date().toISOString(),
-    },
-  }
-}
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
 describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualified Codex app-server acceptance', () => {
@@ -35,10 +23,9 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
     const directory = process.cwd()
     const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))
     const marker = join(scratch, 'approved-command.txt')
-    const manager = new CodexAppServerSessionManager(binary)
-    const restored = new CodexAppServerSessionManager(binary)
-    const input = { request: request(directory) }
     const signal = AbortSignal.timeout(230_000)
+    const application = await createCodexLiveApplication(binary, directory, signal)
+    const { manager, restored, input } = application
     try {
       const evidence = await manager.qualificationEvidence(signal)
       assert.match(evidence.schemaManifestSha256, /^[a-f0-9]{64}$/)
@@ -71,7 +58,11 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       for await (const event of manager.startTurn(session, { prompt: 'Reply exactly HAP02_CONTINUED. Do not use tools.', clientCorrelationId: 'continue' }, signal)) void event
       assert(outputText((await manager.history(session)).terminalResult?.output).includes('HAP02_CONTINUED'))
       assert((await manager.inspectConfiguration(session, false, signal)).config)
-      assert(Array.isArray((await manager.inspectNativeMcp(session, signal)).data))
+      const nativeMcp = await manager.inspectNativeMcp(session, signal)
+      assert(Array.isArray(nativeMcp.data))
+      const appMcp = nativeMcp.data.find(entry => isObject(entry) && entry.name === APP_MCP_SERVER_NAME)
+      assert(isObject(appMcp) && isObject(appMcp.tools) && 'operator_handoff_history_get' in appMcp.tools,
+        'The native App MCP server must expose the actual conversation-scoped handoff tool.')
 
       // Cancel while startup may still be in progress; the manager must target the new ID.
       const interrupt = (async () => {
@@ -98,7 +89,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
 
       // Continued/reattached turns above cover the sole execution transport.
     } finally {
-      try { await Promise.all([manager.shutdown(), restored.shutdown()]) }
+      try { await application.close() }
       finally { await rm(scratch, { recursive: true, force: true }) }
     }
   }, 240_000)
