@@ -17,6 +17,7 @@ import { JobRuntimeFingerprintRecordSchema, InstalledJobRuntimeDescriptorRecordS
   from '@foreman-code/contracts/job-verification-runtime'
 import { inspectInstalledVerificationCandidate, inspectInstalledVerificationRuntime,
   InstalledVerificationRuntimeConfigurationSchema, InstalledVerificationRuntimeCaptureInputSchema,
+  MAX_VERIFICATION_CONFIGURATION_BYTES,
   captureInstalledVerificationRuntimeConfiguration, type InstalledVerificationRuntimeConfiguration }
   from './installedVerificationRuntime.js'
 import { qualifyVerificationRuntime } from './verificationQualification.js'
@@ -109,13 +110,13 @@ export async function readInstalledRuntimeConfiguration(location: InstalledRunti
   return readProtectedRuntimeConfiguration(location, InstalledJobRuntimeConfigurationSchema)
 }
 export async function readProtectedRuntimeConfiguration<T>(
-  location: InstalledRuntimeConfigurationLocation | null, schema: z.ZodType<T>,
+  location: InstalledRuntimeConfigurationLocation | null, schema: z.ZodType<T>, maximumBytes = 65536,
 ): Promise<T> {
-  try { return schema.parse(JSON.parse((await readProtectedRuntimeFile(location)).toString('utf8'))) }
+  try { return schema.parse(JSON.parse((await readProtectedRuntimeFile(location, maximumBytes)).toString('utf8'))) }
   catch (error) { if (error instanceof DomainError) throw error; return unavailable('configuration_unavailable') }
 }
 export async function readProtectedRuntimeFile(
-  location: InstalledRuntimeConfigurationLocation | null, maximumBytes = 2 * 1024 * 1024 + 65536,
+  location: InstalledRuntimeConfigurationLocation | null, maximumBytes = 65536,
 ): Promise<Buffer> {
   if (!location) unavailable('missing_configuration')
   if (!Number.isSafeInteger(location.ownerUid) || location.ownerUid < 0 || !location.path.startsWith('/')) unavailable('invalid_configuration_location')
@@ -249,7 +250,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     let snapshot
     if (profile.schemaVersion === 2) {
       const configuration = await readProtectedRuntimeConfiguration(dependencies.configuration,
-        InstalledVerificationRuntimeConfigurationSchema)
+        InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
       await installedIdentity(sql, { target: configuration.descriptor.target })
       const connection = profile.root.selection.hostRef.kind === 'main' ? null
         : await dependencies.currentConnection?.(sql, profile) ?? null

@@ -6,7 +6,7 @@ import type { JobSystemInput } from '../files/jobInputs/delivery.js'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
-import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRuntime.js'
 import { requireJobGitMounts, verifyJobGitMounts } from './privateGitMounts.js'
 import { verificationRepositoryContext } from './executorOutputs.js'
 
@@ -25,7 +25,7 @@ export function createVerificationSystemInput(input: {
       throw new Error('Original verification measurement required for input preparation.')
     }
     const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-      InstalledVerificationRuntimeConfigurationSchema)
+      InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
     const bytes = await readProtectedRuntimeFile({ path: configuration.seedReceiptPath,
       ownerUid: input.configuration!.ownerUid }, 16 * 1024 * 1024)
     const seedDigest = createHash('sha256').update(bytes).digest('hex')

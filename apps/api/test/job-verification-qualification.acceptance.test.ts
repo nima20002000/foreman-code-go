@@ -13,7 +13,7 @@ import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { createJobRuntimeProfileService } from '../src/modules/jobs/runtimeProfileFactory.js'
 import { createInstalledJobRuntimeHost, readProtectedRuntimeConfiguration } from '../src/modules/jobs/installedRuntimeHost.js'
-import { InstalledVerificationRuntimeConfigurationSchema } from '../src/modules/jobs/installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from '../src/modules/jobs/installedVerificationRuntime.js'
 import { reserveInstalledJobQualification } from '../src/modules/jobs/installedRuntimeQualification.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
@@ -32,7 +32,7 @@ describe('installed ordinary verification qualification through authenticated MC
     }
     const ownerUid = process.getuid!()
     const installed = await readProtectedRuntimeConfiguration({ path: configurationPath, ownerUid },
-      InstalledVerificationRuntimeConfigurationSchema)
+      InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
     const spec = await readProtectedRuntimeConfiguration({ path: profilePath, ownerUid }, JobVerificationProfileInputSchema)
     expect(spec.suites).toEqual(['install', 'typecheck', 'lint', 'unit', 'build'])
     expect(installed.descriptor.target.hostRef.kind).toBe('main')

@@ -64,6 +64,12 @@ describe('protected installed runtime reader, no DB or native runtime execution'
       await writeFile(join(directory, path), bytes, { mode: 0o600 })
       entries.push({ path, kind: 'file' as const, executable: false, byteSize: bytes.length, sha256: sourceSha256(bytes) })
     }
+    for (let index = 0; index < 512; index++) {
+      const path = `zz-${String(index).padStart(3, '0')}-${'x'.repeat(140)}.ts`
+      const bytes = Buffer.from('approved module')
+      await writeFile(join(directory, path), bytes, { mode: 0o600 })
+      entries.push({ path, kind: 'file' as const, executable: false, byteSize: bytes.length, sha256: sourceSha256(bytes) })
+    }
     const manifest = createSourceManifest({ version: 1, approvedSourceId: id, snapshotId: id,
       capturePolicy: 'git-tree-v1', executablePolicy: 'strip', deletions: [], entries,
       git: { commit: '2'.repeat(40), tree: '3'.repeat(40), objectFormat: 'sha1' } })
@@ -92,7 +98,7 @@ describe('protected installed runtime reader, no DB or native runtime execution'
       capturedAt: '2026-01-01T00:00:00Z', provenanceDigest: digest,
       review: { reviewedByPrincipalId: 'installer', reviewedAt: '2026-01-01T00:00:00Z', decisionDigest: digest },
       maxBytes: 3, maxInodes: 3, packages: [],
-      dependencyInputs: entries.map(({ path, sha256 }) => ({ path, sha256 })),
+      dependencyInputs: entries.slice(0, 3).map(({ path, sha256 }) => ({ path, sha256 })),
       files: ['corepack-cache/pinned', 'pnpm-store/pinned', 'registry-cache/pinned']
         .map(path => ({ path, bytes: 1, sha256: digest })) }), { mode: 0o600 })
     const omitted = new Set(['schemaVersion', 'profileId', 'profileRevision', 'specDigest', 'hostRef',
@@ -110,6 +116,7 @@ describe('protected installed runtime reader, no DB or native runtime execution'
     expect(configuration.machine.tools[0]?.binarySha256).toBe(f.configuration.pins.runtimeBinarySha256)
     expect(configuration.machine.bootId).toBe(f.configuration.pins.bootId)
     expect('measurement' in configuration).toBe(false)
+    expect(Buffer.byteLength(JSON.stringify(configuration))).toBeGreaterThan(65536)
     await writeFile(f.location.path, JSON.stringify(configuration), { mode: 0o600 })
     const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
     expect(await host.currentMetadata(f.sql, profile)).toBeNull()
