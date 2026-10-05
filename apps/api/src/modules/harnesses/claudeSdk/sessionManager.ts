@@ -226,10 +226,20 @@ export function createClaudeNativeSessionManager(options: {
       try { if (closing) await closing } finally { runtime.controlPending = false }
     }
   }
+  function canonicalStart(start: NativeSessionStart): NativeSessionStart {
+    if (!start.environment) return start
+    const variables = { ...start.environment.variables }
+    const token = readProductEnvironment(variables, 'MCP_TOKEN')
+    for (const name of APP_MCP_TOKEN_NAMES) delete variables[name]
+    if (token !== undefined) variables.FOREMAN_CODE_MCP_TOKEN = token
+    return { ...start, environment: { ...start.environment, variables } }
+  }
   function authorizationScope(start: NativeSessionStart): string {
-    return createHash('sha256').update(JSON.stringify(['claude-mcp-authorization-v1', options.scope, start])).digest('hex')
+    const identity = ['claude-mcp-authorization-v1', options.scope, canonicalStart(start)]
+    return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
   }
   function sessionContext(start: NativeSessionStart) {
+    start = canonicalStart(start)
     return start.kind === 'operator'
       ? { kind: start.kind, configuration: start.configuration,
         cwd: start.workingDirectory, environment: start.environment }
@@ -322,7 +332,7 @@ export function createClaudeNativeSessionManager(options: {
     const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Inspection differs from the pinned working directory.')
     const nativeOptions = queryOptions(start)
-    const identity = JSON.stringify(start)
+    const identity = JSON.stringify(canonicalStart(start))
     if (prepared) {
       if (prepared.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'The owned SDK query already has another immutable inspection context.')
       return prepared.opening
@@ -360,7 +370,7 @@ export function createClaudeNativeSessionManager(options: {
     const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Claude working directory differs from the pinned scope.')
     const nativeOptions = queryOptions(start)
-    const identity = JSON.stringify(start)
+    const identity = JSON.stringify(canonicalStart(start))
     const inspected = prepared
     if (inspected && inspected.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
     const previous = inspected ? await inspected.opening : undefined
@@ -765,7 +775,8 @@ export function createClaudeNativeSessionManager(options: {
         throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
       const snapshot = await deliverCredentials(runtime, start, servers, signal)
-      inspected.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
+      // Record the inspected context after the SDK confirms its credential update.
+      inspected.identity = JSON.stringify(canonicalStart(start))
       runtime.context = structuredClone(start)
       return snapshot
     },
@@ -797,7 +808,7 @@ export function createClaudeNativeSessionManager(options: {
       if (disposed) throw new HarnessExecutionError('CLAUDE_MANAGER_DISPOSED', 'Claude manager is disposed.')
       if (start.correlationId && start.correlationId !== input.clientCorrelationId) throw new HarnessExecutionError('CLAUDE_INITIAL_CORRELATION_MISMATCH', 'Initial native input differs from the admitted session correlation.')
       if (input.onSubmitted && !input.onMessageSubmitted) throw new HarnessExecutionError('CLAUDE_MESSAGE_RECEIPT_REQUIRED', 'Initial Claude input requires a truthful native message receipt, not a native-turn alias.')
-      const identity = JSON.stringify({ start, prompt: input.prompt, correlationId: input.clientCorrelationId })
+      const identity = JSON.stringify({ start: canonicalStart(start), prompt: input.prompt, correlationId: input.clientCorrelationId })
       const previous = initialTurns.get(input.clientCorrelationId)
       if (previous) {
         if (previous.identity !== identity) throw new HarnessExecutionError('CLAUDE_CREATION_IDENTITY_CONFLICT', 'The initial input belongs to another accepted scope.')
