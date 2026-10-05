@@ -16,6 +16,10 @@ const source = await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: fi
 assert.equal(matrix.sourceCommit, source.stdout.trim(), 'The source commit does not match this checkout.')
 const pkg = JSON.parse(await readFile(new URL('../../apps/api/package.json', import.meta.url), 'utf8'))
 assert.equal(matrix.rows.length, 12, 'Provide Operator and node chats for each harness on main and a paired worker.')
+for (const row of matrix.rows) {
+  if (row.harness === 'claude') assert.ok(['haiku', 'claude-haiku-4-5-20251001'].includes(row.model),
+    'Claude acceptance chats must explicitly use the qualified Haiku model.')
+}
 assert.ok(matrix.restart?.command && Array.isArray(matrix.restart.args), 'Provide the orchestrator’s application restart command.')
 assert.match(matrix.sourceCommit, /^[a-f0-9]{40}$/)
 const base = new URL(matrix.baseUrl)
