@@ -2,7 +2,8 @@ import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
   CurrentEditDraftSchema, CurrentEditIntentSchema, CurrentEditReadResultSchema, CurrentEditStageInputSchema,
-  CurrentEditSaveInputSchema, CurrentWorkflowSavedSchema, sameWorkflowValue,
+  CurrentEditSaveInputSchema, CurrentWorkflowSavedSchema, WorkflowVersionV3Schema,
+  sameExecutableWorkflow, sameWorkflowValue,
   type CurrentEditIntent, type CurrentEditStageInput, type CurrentEditDraft,
   type CurrentEditSaveInput, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
@@ -13,10 +14,27 @@ import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
 import { authorizeStagedAgents } from './currentStagedAgents.js'
 import { readCurrentEditLocationPins } from './currentLocationPins.js'
 import { DurableEditIntentService, type EditIntentSource } from './durableEditIntent.js'
+import { IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion,
+  type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
+
+async function requiresRunSettlement(client: pg.PoolClient, draft: CurrentEditDraft): Promise<boolean> {
+  if (draft.presentationOnly) return false
+  if (draft.expectedNodePresentation || draft.stagedAgents?.length || !draft.baseWorkflowVersionId) return true
+  const row = (await client.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS}
+    from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3`,
+  [draft.baseWorkflowVersionId, draft.workspaceId, draft.workflowId])).rows[0]
+  if (!row) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', 'The staged workflow version is unavailable.', 409)
+  const base = WorkflowVersionV3Schema.parse(readImmutableWorkflowVersion(row, {
+    id: draft.baseWorkflowVersionId, workspaceId: draft.workspaceId, workflowId: draft.workflowId,
+  }))
+  return !sameExecutableWorkflow(base.definition, draft.graph)
+    || !sameWorkflowValue(base.agentConfigurationVersionIds, draft.agentConfigurationVersionIds)
+}
 
 export interface CurrentEditWriter {
   assertStopReady(): void
-  validate(client: pg.PoolClient, principal: ManagementPrincipal, input: CurrentEditSaveInput):
+  validate(client: pg.PoolClient, principal: ManagementPrincipal, input: CurrentEditSaveInput,
+    options?: { intentId: string }):
     Promise<{ version: WorkflowVersionV3; presentationOnly: boolean }>
   publish(principal: ManagementPrincipal, source: EditIntentSource, input: CurrentEditSaveInput, intentId: string): Promise<unknown>
 }
@@ -30,7 +48,7 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
     authorize: (principal, scope, write) => requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', scope),
     authorizeContent: (principal, intent) => authorizeStagedAgents(principal, intent.saveInput),
     stagedAgentIds: (draft) => (draft.stagedAgents ?? []).map((item) => item.agent.id),
-    requiresRunSettlement: (draft) => !draft.presentationOnly,
+    requiresRunSettlement,
     prepare: async (client, principal, input, saveCommandId) => {
       const { action, draftId, commandId, ...definition } = input
       void action; void commandId
@@ -72,22 +90,24 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
         agentPins }
     },
     assertDraft: async (client, principal, intent) => {
+      const settlementRequired = await requiresRunSettlement(client, intent.stagedDraft)
       const pins = await readCurrentEditLocationPins(client, principal, { ...intent,
-        presentationOnly: !!intent.stagedDraft.presentationOnly,
+        presentationOnly: !settlementRequired,
         stagedAgentIds: (intent.stagedDraft.stagedAgents ?? []).map((item) => item.agent.id) })
       if (pins.locationRevision !== intent.stagedDraft.locationRevision || pins.locationDigest !== intent.stagedDraft.locationDigest
-        || !sameWorkflowValue(pins.runLocationPins, intent.stagedDraft.runLocationPins)) {
+        || settlementRequired && !sameWorkflowValue(pins.runLocationPins, intent.stagedDraft.runLocationPins)) {
         throw new DomainError('CURRENT_EDIT_LOCATION_CONFLICT', 'The workspace/Run location pins or exact affected set changed. The private payload is retained.', 409)
       }
     },
-    authorizePublication: async (client, principal, draft: CurrentEditDraft) => {
+    authorizePublication: async (client, principal, intent) => {
+      const draft = intent.stagedDraft
       // Fresh complete validation and authority BEFORE each Stop and final Save.
       await writer.validate(client, principal, { workspaceId: draft.workspaceId, workflowId: draft.workflowId,
         executionSemanticsVersion: 3, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
         expectedAgentConfigurationVersionIds: draft.agentConfigurationVersionIds, expectedLocationRevision: draft.locationRevision,
         expectedNodePresentation: draft.expectedNodePresentation,
         graph: draft.graph, commandId: draft.saveCommandId ?? 'validate-current-draft', stagedAgents: draft.stagedAgents,
-        resultantAgentConfigurationVersionIds: draft.resultantAgentConfigurationVersionIds })
+        resultantAgentConfigurationVersionIds: draft.resultantAgentConfigurationVersionIds }, { intentId: intent.id })
     },
     assertStopReady: () => writer.assertStopReady(),
     saveInputHash: (input) => commandInputHash(input), resultScope: (result) => result,

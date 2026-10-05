@@ -61,9 +61,9 @@ export class CurrentWorkflowAuthoring {
   private runtime: Pick<RunManagementService, 'availability' | 'assertCurrentStopReady'> | undefined
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
     this.editIntents = createCurrentEditIntentService(pool, commands, {
-      validate: async (client, principal, input) => {
+      validate: async (client, principal, input, options) => {
         authorize(principal, input, true)
-        const prepared = await this.prepare(client, principal, input, false)
+        const prepared = await this.prepare(client, principal, input, false, options?.intentId)
         return { version: prepared.version, presentationOnly: prepared.presentationOnly }
       },
       publish: (principal, source, input, intentId) => this.write(principal, source, input, intentId),
@@ -257,7 +257,10 @@ export class CurrentWorkflowAuthoring {
     const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
     const names = workflowNodeNames(current)
-    const expectedNames = 'expectedNodePresentation' in input ? input.expectedNodePresentation : undefined
+    const suppliedNames = 'expectedNodePresentation' in input ? input.expectedNodePresentation : undefined
+    // Persisted commands predate presentation pins; their immutable base supplies
+    // the baseline without changing the reserved save input or its hash.
+    const expectedNames = suppliedNames ?? (intentId && base ? workflowNodeNames(base.definition) : undefined)
     if (expectedNames && !sameWorkflowValue(names, expectedNames)) {
       return fail('PRESENTATION_REVISION_CONFLICT', 'The saved node names changed. Reload before saving these edits.')
     }

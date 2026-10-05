@@ -44,11 +44,11 @@ export interface EditIntentBoundary<S extends EditStageScope, I extends DurableE
   prepare(client: pg.PoolClient, principal: ManagementPrincipal, input: S, saveCommandId: string):
     Promise<Pick<I, 'savedWorkflowRevision' | 'stagedDraft' | 'agentPins' | 'saveInput'>>
   stagedAgentIds(draft: I['stagedDraft']): string[]
-  requiresRunSettlement(draft: I['stagedDraft']): boolean
+  requiresRunSettlement(client: pg.PoolClient, draft: I['stagedDraft']): boolean | Promise<boolean>
   authorize(principal: ManagementPrincipal, input: Scope, write: boolean): void
   authorizeContent(principal: ManagementPrincipal, intent: I): void
   assertDraft(client: pg.PoolClient, principal: ManagementPrincipal, intent: I): Promise<void>
-  authorizePublication(client: pg.PoolClient, principal: ManagementPrincipal, draft: I['stagedDraft']): Promise<void>
+  authorizePublication(client: pg.PoolClient, principal: ManagementPrincipal, intent: I): Promise<void>
   assertStopReady?(pin: GraphEditIntent['affected'][number]): void
   saveInputHash(input: I['saveInput'], intentId: string): string
   resultScope(result: NonNullable<I['result']>): Scope
@@ -68,8 +68,8 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly drafts: EditIntentBoundary<S, I>) {}
 
-  private affectedRuns(client: pg.PoolClient, intent: Pick<I, 'workspaceId' | 'workflowId' | 'stagedDraft'>) {
-    if (!this.drafts.requiresRunSettlement(intent.stagedDraft)) return Promise.resolve([])
+  private async affectedRuns(client: pg.PoolClient, intent: Pick<I, 'workspaceId' | 'workflowId' | 'stagedDraft'>) {
+    if (!await this.drafts.requiresRunSettlement(client, intent.stagedDraft)) return []
     return readAffectedGraphRuns(client, { workspaceId: intent.workspaceId, workflowId: intent.workflowId,
       stagedAgentIds: this.drafts.stagedAgentIds(intent.stagedDraft) })
   }
@@ -146,7 +146,9 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
     const current = await this.affectedRuns(client, intent)
     this.authorizeCurrent(live, current)
     const canStop = current.filter((item) => !item.settled).every((item) => isAuthorized(live, 'runs:stop', item.pin))
-    return this.drafts.readResultSchema.parse({ intent, current, canStop, affectedSetChanged: !sameAffectedSet(intent, current) })
+    const settlementRequired = await this.drafts.requiresRunSettlement(client, intent.stagedDraft)
+    return this.drafts.readResultSchema.parse({ intent, current, canStop,
+      affectedSetChanged: settlementRequired && !sameAffectedSet(intent, current) })
   }
 
   async read(principal: ManagementPrincipal, raw: GraphEditReadInput): Promise<EditIntentReadResult<I>> {
@@ -250,10 +252,11 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
         throw new DomainError('AGENT_REVISION_CONFLICT', 'An exact Agent configuration or metadata pin changed. The private staged payload is retained.', 409)
       }
     }
-    await this.drafts.authorizePublication(client, live, intent.stagedDraft)
+    await this.drafts.authorizePublication(client, live, intent)
     const current = await this.affectedRuns(client, intent)
     this.authorizeCurrent(live, current)
-    if (!sameAffectedSet(intent, current)) throw new DomainError('AFFECTED_RUN_SET_CHANGED',
+    const settlementRequired = await this.drafts.requiresRunSettlement(client, intent.stagedDraft)
+    if (settlementRequired && !sameAffectedSet(intent, current)) throw new DomainError('AFFECTED_RUN_SET_CHANGED',
       'The affected Run/version set changed after planning. No newly discovered Run will be stopped by this intent.', 409)
     return current
   }
@@ -306,6 +309,15 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
     }
   }
 
+  private async stopSubmissionPending(client: pg.PoolClient, intent: I): Promise<boolean> {
+    for (const entry of intent.stops) {
+      if (await this.stopReceipt(client, intent, entry)) continue
+      if (await this.stopWasAttempted(client, intent, entry)) return true
+      if (intent.state !== 'staged' && !await this.stopTrackingEnabled(client, intent)) return true
+    }
+    return false
+  }
+
   async advance(principal: ManagementPrincipal, source: Source, raw: GraphEditAdvanceInput,
     stop: RunManagementService['stop']): Promise<EditIntentReadResult<I>> {
     const input = GraphEditAdvanceInputSchema.parse(raw)
@@ -338,21 +350,31 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
             const decision = await this.transaction(principal, async (client, live) => {
               const current = await this.fresh(client, live, intent)
               for (const item of current.filter((item) => !item.settled)) requireAuthorization(live, 'runs:stop', item.pin)
-              const run = current.find((item) => item.pin.runId === entry.input.runId)
-              if (!run) throw new DomainError('GRAPH_EDIT_INTENT_INVALID', 'The planned Stop is outside the exact affected Run set.', 409)
               const receipt = await this.stopReceipt(client, intent, entry)
               if (receipt) return { principal: live, submit: false, receipt }
               const attempted = await this.stopWasAttempted(client, intent, entry)
-              if (run.settled && !attempted) {
-                if (!await this.stopTrackingEnabled(client, intent)) {
+              const tracked = await this.stopTrackingEnabled(client, intent)
+              const settlementRequired = await this.drafts.requiresRunSettlement(client, intent.stagedDraft)
+              // Reclassified presentation edits retain prior Stop obligations,
+              // while an untouched plan does not submit an unnecessary Stop.
+              if (!settlementRequired && !attempted && tracked) {
+                return { principal: live, submit: false, receipt: undefined }
+              }
+              const run = current.find((item) => item.pin.runId === entry.input.runId)
+              const pin = run?.pin ?? intent.affected.find((item) => item.runId === entry.input.runId)
+              if (!pin || settlementRequired && !run) {
+                throw new DomainError('GRAPH_EDIT_INTENT_INVALID', 'The planned Stop is outside the affected Run set.', 409)
+              }
+              if (run?.settled && !attempted) {
+                if (!tracked) {
                   throw new Error('An untracked Stop may have been submitted before upgrade; its missing receipt remains uncertain.')
                 }
                 return { principal: live, submit: false, receipt: undefined }
               }
               // A settled Run with a possible prior submission still needs the
               // SAME Stop command. Recheck its Stop grant even after settlement.
-              requireAuthorization(live, 'runs:stop', run.pin)
-              this.drafts.assertStopReady?.(run.pin)
+              requireAuthorization(live, 'runs:stop', pin)
+              this.drafts.assertStopReady?.(pin)
               if (!attempted) {
                 // COMMIT this write-ahead submission fact BEFORE calling Stop.
                 // It proves possible submission, not acceptance or native exit.
@@ -394,7 +416,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
           const latest = await this.load(client, live.id, input, true)
           this.authorizeContent(live, latest, true)
           if (isFinished(latest)) return
-          const uncertain = !(error instanceof DomainError)
+          const uncertain = !(error instanceof DomainError) || await this.stopSubmissionPending(client, latest)
           await this.write(client, { ...latest, state: uncertain ? 'uncertain' : 'blocked',
             error: { code: error instanceof DomainError ? error.code : 'COMMAND_UNCERTAIN',
               message: error instanceof DomainError ? error.message : 'The reply is uncertain. Reconcile this exact intent; its payload and command identities are retained.', uncertain } })

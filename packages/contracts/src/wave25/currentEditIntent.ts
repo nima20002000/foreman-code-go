@@ -99,11 +99,12 @@ export const CurrentEditIntentSchema = z.object({
   if (new Set(commands).size !== commands.length) fail('CURRENT_EDIT_COMMAND_ID_CONFLICT')
   if ((value.state === 'saved') !== !!value.result || value.state === 'saved' && !value.saveAttempted) fail('CURRENT_EDIT_RESULT_STATE_CONFLICT')
   const result = value.result
-  const savedPinsValid = draft.presentationOnly
+  const presentationSaved = draft.presentationOnly || !!result?.presentation
+  const savedPinsValid = presentationSaved
     ? result?.revision === value.expectedRevision && result.currentVersionId === value.expectedWorkflowVersionId
       && !!result.presentation && sameAuthoredWorkflow(result.presentation, draft.graph)
     : result?.revision === value.expectedRevision + 1 && result.currentVersionId !== value.expectedWorkflowVersionId
-  const executedGraph = draft.presentationOnly && result
+  const executedGraph = presentationSaved && result
     ? { ...draft.graph, name: result.version.definition.name, description: result.version.definition.description }
     : draft.graph
   if (result && (result.workspaceId !== value.workspaceId || result.workflowId !== value.workflowId
