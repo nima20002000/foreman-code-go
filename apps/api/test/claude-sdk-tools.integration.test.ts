@@ -68,7 +68,7 @@ it.each(['management', 'denied-management', 'files'] as const)(
           byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
         await files.upload(owner.principal, target, uploadId, Readable.from([bytes]))
         const ready = await files.finalize(owner.principal, target, uploadId)
-        arguments_ = { fileId: ready.file.fileId, revisionId: ready.revision.revisionId }
+        arguments_ = { fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId }
       }
       const transport = claudeSdkToolTransport(directory, () => [{ name: scenario === 'files' ? 'files.read' : 'workspace_create',
         arguments: arguments_, server: scenario === 'files' ? 'graphql-files' : 'graphql', source: scenario === 'files' ? 'sdk' : 'dynamic' }])

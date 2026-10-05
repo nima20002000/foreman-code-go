@@ -46,7 +46,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
       const lines = createInterface({ input: stdin })
       const pending = new Map<string, { resolve(value: Wire): void; reject(error: Error): void }>()
       let hooks: NonNullable<Wire['hooks']> = {}
-      let servers = Object.fromEntries(Object.entries(input.options.mcpServers as Record<string, Record<string, unknown>> ?? {})
+      let servers: NonNullable<Wire['servers']> = Object.fromEntries(Object.entries(input.options.mcpServers as Record<string, Record<string, unknown>> ?? {})
         .map(([name, config]) => [name, config.type === 'sdk' ? { type: 'sdk', name }
           : config as NonNullable<Wire['servers']>[string]]))
       const send = (value: unknown) => stdout.write(JSON.stringify(value) + '\n')
