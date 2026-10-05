@@ -164,17 +164,11 @@ export async function remoteReviewProduction() {
       })
     }
     closes.push(() => stopMain())
-    const startMain = async () => {
-      let ready = false
-      mainFailure = ''
-      const started = spawn(process.execPath, [
-        fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
-        cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env },
-      })
-      main = started
+    // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
+    const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn' }
+    const collectFailures = (child: ChildProcess) => {
       let pendingLog = ''
-      started.stdout!.on('data', chunk => {
+      child.stdout!.on('data', chunk => {
         pendingLog = `${pendingLog}${String(chunk)}`.slice(-65536)
         const lines = pendingLog.split('\n')
         pendingLog = lines.pop()!
@@ -182,13 +176,24 @@ export async function remoteReviewProduction() {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
-          const event = parsed as { level?: number; code?: unknown; runId?: unknown; err?: { code?: unknown } }
+          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown } }
           const code = event.err?.code ?? event.code
-          if (!event.level || event.level < 40 || typeof code !== 'string' || !/^[A-Z][A-Z0-9_]{1,127}$/.test(code)) continue
+          if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
           failures.push({ code, runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
           if (failures.length > 32) failures.shift()
         }
       })
+    }
+    const startMain = async () => {
+      let ready = false
+      mainFailure = ''
+      const started = spawn(process.execPath, [
+        fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
+        cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
+      })
+      main = started
+      collectFailures(started)
       started.stderr!.on('data', chunk => { mainFailure = `${mainFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'kind' in message && message.kind === 'ready'
@@ -298,9 +303,10 @@ export async function remoteReviewProduction() {
       workerFailure = ''
       const started = spawn(process.execPath, [workerEntrypoint, stateDirectory, workerRelease], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
-        stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
       })
       worker = started
+      collectFailures(started)
       started.stderr!.on('data', chunk => { workerFailure = `${workerFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'view' in message) {
