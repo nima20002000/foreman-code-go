@@ -942,9 +942,10 @@ export class OperatorChatService {
           if (!configuration) throw new Error('Pinned Operator configuration was not found.')
           const cleanup = revoked || row.cancel_requested
           // Existing-turn observation is not new-work qualification. Native attach still verifies its protocol.
+          const attachSignal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+          const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, attachSignal)
+            : await this.observationRuntime(row.id, row, configuration, attachSignal)
           const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
-          const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, signal)
-            : await this.observationRuntime(row.id, row, configuration, signal)
           if (cleanup) await this.interrupt(row.id, row, runtime)
           await this.observe(row.id, requestId, runtime, signal)
         } catch (error) {
