@@ -87,6 +87,7 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
     try {
       const session = await f.manager.createSession(f.source)
       await f.manager.reloadNativeMcp(session)
+      assert.ok(f.pins[0]!.scopedCredentialVariables.includes('FOREMAN_CODE_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('GRAPHQL_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('FOREMAN_CODE_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('CUSTOM_APP_BEARER'))
