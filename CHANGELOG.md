@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2026-10-05
+
+### Added
+
+- A local production install/update command that deploys the compiled API and web shell, runs migrations, and enables user services.
+- A persistent production PostgreSQL volume, separate database credentials and storage directories, and a loopback dashboard at port 3041.
+- Desktop and session-start launchers that open the dashboard in Chrome, with application and web icons.
+- Installed-service checks for native execution, Operator MCP grants, cancellation, database recovery and service crash recovery.
+
+### Changed
+
+- Preserve validated operator configuration across updates and serialize installation, migration and release activation.
+- Run the root native acceptance command with an owned disposable database and retained test evidence.
+
+### Fixed
+
+- Serve saved dashboard routes from the production build while preserving API and MCP error responses.
+- Restart the API after database ownership loss or an initially failed database activation.
+- Confirm and persist native cleanup after systemd removes a killed cgroup.
+- Preserve quoted and escaped configuration values and verify installation identity before declaring readiness.
+
+### Security
+
+- Enable qualified native execution only for explicitly selected loopback local production installations, retaining grants, scope checks, sandboxing and execution admission.
+- Keep production credentials private and production storage separate from disposable test databases.
+
 ## [0.0.3] - 2026-10-04
 
 ### Fixed
