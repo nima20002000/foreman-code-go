@@ -15,7 +15,10 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { appLauncherPath, installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { appLauncherPath, appMcpServerName, installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
+import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 
@@ -64,16 +67,23 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
       await installAppLauncher()
+      const binaries = harnessBinaries(process.env)
+      const codexConnections = await new CodexMcpConnections(binaries.codexBinary, projectPath)
+        .read(AbortSignal.timeout(30_000))
+      const codexServerName = appMcpServerName(codexConnections.effective)
       await mkdir(join(projectPath, '.codex'))
       await writeFile(join(projectPath, '.codex', 'config.toml'), [
-        '[mcp_servers.foreman-code]',
+        `[mcp_servers.${codexServerName}]`,
         `command = ${JSON.stringify(process.execPath)}`,
         `args = [${JSON.stringify(appLauncherPath())}]`,
         'env_vars = ["FOREMAN_CODE_MCP_TOKEN"]',
         '',
       ].join('\n'), { mode: 0o600 })
       if (scenario.providers.some((provider) => provider === 'opencode')) {
-        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { 'foreman-code': {
+        const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
+          .read(AbortSignal.timeout(30_000))
+        const openCodeServerName = appMcpServerName(openCodeConnections.effective)
+        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { [openCodeServerName]: {
           type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
           environment: { FOREMAN_CODE_MCP_TOKEN: '{env:FOREMAN_CODE_MCP_TOKEN}' },
         } } }), { mode: 0o600 })
