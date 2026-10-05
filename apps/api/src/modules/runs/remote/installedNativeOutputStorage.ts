@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
 import { randomUUID, createHash } from 'node:crypto'
-import { lstat, open, mkdir, rmdir, rename, readdir, type FileHandle } from 'node:fs/promises'
+import { lstat, open, rename, readdir, type FileHandle } from 'node:fs/promises'
 import { relative, isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
@@ -11,6 +11,7 @@ import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { anchored, identity, openPrivateRoot } from '../../sources/privateFilesystem.js'
 import { DomainError } from '../../errors.js'
+import { acquireNativeOutputBudgetLock } from './nativeOutputBudgetLock.js'
 
 /** Captured by the actual admitted turn, never supplied in a native command. */
 export interface NativeOutputStorageOwner {
@@ -138,14 +139,14 @@ const Installation = DeviceSessionBindingSchema.pick({ mainId: true, deviceId: t
 const BudgetJournal = z.object({ version: z.literal(1), installation: Installation, limits: Limits,
   records: z.array(BudgetRecord).max(BYTE_TRANSFER_POLICY.maxRecords).refine(records => new Set(records.map(record => record.artifactId)).size === records.length) }).strict()
 
-/** Concrete worker-private ledger. The installation supplies explicit caps and
- * an established protected root. No age/TTL reclaim, new turn rebinding or
- * in-memory aggregate counter; crash-left reservations and locks stay charged. */
+/** The installation supplies explicit caps and a protected root. Restart retains
+ * reservations until the original native writers and readers are closed. */
 export async function createNativeOutputBudgetLedger(input: {
   rootDirectory: string
   installation: z.infer<typeof Installation>
   limits: NativeOutputStorageLimits
   initializeNewStore?: true
+  stoppedWorker?: true
 }): Promise<NativeOutputBudgetLedger> {
   const installation = Installation.parse(input.installation), limits = Limits.parse(input.limits)
   if (limits.maxDiskBytes > BYTE_TRANSFER_POLICY.maxStagingBytes || limits.maxSnapshotBytes > BYTE_TRANSFER_POLICY.maxStagingBytes
@@ -153,15 +154,19 @@ export async function createNativeOutputBudgetLedger(input: {
   const initial = await openPrivateRoot(input.rootDirectory)
   let pinned: Awaited<ReturnType<typeof identity>>
   try { pinned = await identity(initial) } finally { await initial.close() }
-  const locked = async <T>(operation: (root: FileHandle, files: Set<FileHandle>) => Promise<T>) => {
-    const root = await openPrivateRoot(input.rootDirectory), files = new Set<FileHandle>()
-    let acquired = false
+  const locked = async <T>(operation: (root: FileHandle, files: Set<FileHandle>) => Promise<T>,
+    signal?: AbortSignal) => {
+    const root = await openPrivateRoot(input.rootDirectory)
+    const files = new Set<FileHandle>()
+    let lock: Awaited<ReturnType<typeof acquireNativeOutputBudgetLock>> | undefined
     try {
       if (!isDeepStrictEqual(await identity(root), pinned)) throw unavailable()
-      await mkdir(anchored(root, '.native-output-budget.lock'), { mode: 0o700 }); acquired = true; await root.sync()
+      lock = await acquireNativeOutputBudgetLock(root, { signal, stoppedWorker: input.stoppedWorker })
+      signal?.throwIfAborted()
+      if (!isDeepStrictEqual(await identity(root), pinned)) throw unavailable()
       return await operation(root, files)
     } finally {
-      try { if (acquired && files.size === 0) { await rmdir(anchored(root, '.native-output-budget.lock')); await root.sync() } }
+      try { await lock?.close() }
       finally { await root.close() }
     }
   }
@@ -194,7 +199,11 @@ export async function createNativeOutputBudgetLedger(input: {
     catch (error) {
       if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') || !input.initializeNewStore) throw error
       const entries = await readdir(anchored(root))
-      if (!isDeepStrictEqual(entries, ['.native-output-budget.lock'])) throw unavailable()
+      const initializationEntry = (name: string) => name === '.native-output-budget.guard'
+        || name === '.native-output-budget-owner.json'
+        || /^\.native-output-budget-(?:owner-)?[a-f0-9-]{36}\.tmp$/.test(name)
+        || /^\.native-output-budget-retired-(?:owner-[a-f0-9-]{36}\.json|lock-[a-f0-9-]{36})$/.test(name)
+      if (!entries.every(initializationEntry)) throw unavailable()
       await save(root, files, { version: 1, installation, limits, records: [] })
     }
   })
@@ -218,11 +227,14 @@ export async function createNativeOutputBudgetLedger(input: {
       signal?.throwIfAborted()
       journal.records.push({ artifactId, owner, requested, released: false }); await save(root, files, journal)
       signal?.throwIfAborted()
-    })
+    }, signal)
     return {
       assertCurrent: async bounded => {
         bounded?.throwIfAborted()
-        await locked(async (root, files) => { exact((await read(root, files)).records.find(record => record.artifactId === artifactId)); bounded?.throwIfAborted() })
+        await locked(async (root, files) => {
+          exact((await read(root, files)).records.find(record => record.artifactId === artifactId))
+          bounded?.throwIfAborted()
+        }, bounded)
       },
       release: async () => {
         await locked(async (root, files) => {

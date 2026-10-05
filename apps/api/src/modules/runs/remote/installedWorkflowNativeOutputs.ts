@@ -1,16 +1,14 @@
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { lstat, mkdir, open } from 'node:fs/promises'
-import { constants } from 'node:fs'
 import { z } from 'zod'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
-import { BYTE_TRANSFER_POLICY, TransferIntentSchema } from '@graphql/contracts/byte-transfer'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
   WorkerNativeOutputDeclarationsAuthorizationSchema } from '@graphql/contracts/worker-mcp-relay'
 import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
 import type { DeviceConnectionSupervisor } from '../../devices/connectionSupervisor.js'
 import { createChannelTransferClient } from '../../byte-transfer/carrier.js'
-import { anchored, identity, openPrivateRoot, openChildDirectory } from '../../sources/privateFilesystem.js'
+import { identity, openPrivateRoot, openChildDirectory } from '../../sources/privateFilesystem.js'
 import type { CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
 import { assertCodexProtectedOutputPlacement } from '../../harnesses/qualification/suites/codexNativeOutputSandbox.js'
 import { createNativeOutputBudgetLedger } from './installedNativeOutputStorage.js'
@@ -18,55 +16,12 @@ import type { InstalledNativeOutputProviders } from './installedNativeOutput.js'
 import type { InstalledWorkflowHostOptions, InstalledWorkflowNativeOutputContext } from './installedWorkflowHost.js'
 import { observedWorkflowArtifactPublication } from './workerMcpEndpoint.js'
 import { DomainError } from '../../errors.js'
+import { nativeOutputBudgetLimits, workerOutputInstallation,
+  openInstalledWorkflowOutputDirectories } from './installedWorkflowOutputStore.js'
+export { ensureInstalledWorkflowOutputStore } from './installedWorkflowOutputStore.js'
 
-const limits = { maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
-  maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
-  maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE',
   'The original installed output store, native owner and Main authorization are required.', 409)
-
-function installation(pairing: WorkerPairingConfiguration) {
-  const { mainId, deviceId, workerInstallationId } = pairing
-  return { mainId, deviceId, workerInstallationId }
-}
-
-async function outputDirectories(stateDirectory: string, options: { initialize?: true } = {}) {
-  const state = await openPrivateRoot(stateDirectory)
-  try {
-    if (options.initialize) await mkdir(anchored(state, 'workflow-native-outputs'), { mode: 0o700 })
-    const root = await openChildDirectory(state, 'workflow-native-outputs')
-    try {
-      const budget = await openChildDirectory(root, 'budget', options.initialize === true)
-      await budget.close()
-      const turns = await openChildDirectory(root, 'turns', options.initialize === true)
-      await turns.close()
-      if (options.initialize) { await root.sync(); await state.sync() }
-      return { rootDirectory: join(stateDirectory, 'workflow-native-outputs'), filesystem: await identity(root) }
-    } finally { await root.close() }
-  } finally { await state.close() }
-}
-
-/** Explicit installer action; startup cannot replace a missing budget journal. */
-export async function initializeInstalledWorkflowOutputStore(stateDirectory: string, pairing: WorkerPairingConfiguration) {
-  const state = await openPrivateRoot(stateDirectory)
-  try {
-    const existing = await lstat(anchored(state, 'workflow-native-outputs')).catch(error => {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined
-      throw error
-    })
-    if (existing) throw new DomainError('WORKER_NATIVE_OUTPUT_STORE_EXISTS',
-      'The installed native output store already exists.', 409)
-    // The marker survives a lost store. An interrupted or established installation cannot be initialized again.
-    const marker = await open(anchored(state, 'workflow-native-outputs-initialized.json'),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-    try { await marker.writeFile(JSON.stringify(installation(pairing))); await marker.sync() }
-    finally { await marker.close() }
-    await state.sync()
-  } finally { await state.close() }
-  const store = await outputDirectories(stateDirectory, { initialize: true })
-  await createNativeOutputBudgetLedger({ rootDirectory: join(store.rootDirectory, 'budget'),
-    installation: installation(pairing), limits, initializeNewStore: true })
-}
 
 function qualificationIdentity(input: CodexNativeOutputQualificationInput) {
   const { configuration, binary, binaryIdentity, providerVersion, schemaIdentity, expectedSandbox } = input
@@ -142,10 +97,10 @@ export function createInstalledWorkflowNativeOutputFactory(input: {
           await request('worker-mcp.authorize-native-output-declarations', {}, signal))
         authorizeLease(declarations)
         if (declarations.agentConfigurationVersionId !== payload.agentConfigurationVersionId) throw unavailable()
-        const store = await outputDirectories(input.stateDirectory)
+        const store = await openInstalledWorkflowOutputDirectories(input.stateDirectory)
         assertCodexProtectedOutputPlacement(store.rootDirectory, qualification.expectedSandbox)
         budget ??= createNativeOutputBudgetLedger({ rootDirectory: join(store.rootDirectory, 'budget'),
-          installation: installation(input.pairing), limits })
+          installation: workerOutputInstallation(input.pairing), limits: nativeOutputBudgetLimits })
         ledger = await budget
         directory = store.rootDirectory
         filesystem = store.filesystem
@@ -170,7 +125,8 @@ export function createInstalledWorkflowNativeOutputFactory(input: {
         const rootDirectory = join(directory, 'turns', commandInputHash([context.intent, pin.session, pin.nativeTurnId])
           .slice('sha256:'.length))
         return { rootDirectory, owner: { intent: context.intent, binding: context.binding, session: pin.session,
-          nativeTurnId: pin.nativeTurnId, runtimeGeneration: pin.runtimeGeneration }, limits, budget: ledger,
+          nativeTurnId: pin.nativeTurnId, runtimeGeneration: pin.runtimeGeneration },
+          limits: nativeOutputBudgetLimits, budget: ledger,
           assertCurrent: signal => context.assertCurrent(pin, signal), protection: {
             assertProtected: async (owner, signal) => {
               if (!isDeepStrictEqual(owner.intent, context.intent) || !isDeepStrictEqual(owner.session, pin.session)

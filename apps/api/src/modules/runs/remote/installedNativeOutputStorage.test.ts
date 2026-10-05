@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile, chmod } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile, chmod, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
@@ -9,6 +9,8 @@ import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, createNativeOutputBudgetLedger,
   type InstalledNativeOutputStorageInput } from './installedNativeOutputStorage.js'
 import { ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
+import { acquireNativeOutputBudgetLock } from './nativeOutputBudgetLock.js'
+import { openPrivateRoot } from '../../sources/privateFilesystem.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -50,6 +52,58 @@ async function startupFixture() {
 }
 
 describe('worker startup output store', () => {
+  it.each(['marker', 'root', 'budget', 'turns', 'budget-write', 'budget-saved', 'completion-write'])(
+    'resumes interrupted initialization after %s without replacing a completed budget', async boundary => {
+      const f = await startupFixture()
+      const installation = { mainId: f.pairing.mainId, deviceId: f.pairing.deviceId,
+        workerInstallationId: f.pairing.workerInstallationId }
+      const marker = join(f.root, 'workflow-native-outputs-initialized.json')
+      await writeFile(marker, JSON.stringify({ version: 1, installation, phase: 'initializing' }), { mode: 0o600 })
+      const directory = join(f.root, 'workflow-native-outputs')
+      const stages = ['marker', 'root', 'budget', 'turns', 'budget-write', 'budget-saved', 'completion-write']
+      const completed = stages.indexOf(boundary)
+      if (completed >= 1) await mkdir(directory, { mode: 0o700 })
+      if (completed >= 2) await mkdir(join(directory, 'budget'), { mode: 0o700 })
+      if (completed >= 3) await mkdir(join(directory, 'turns'), { mode: 0o700 })
+      if (boundary === 'budget-write') {
+        await writeFile(join(directory, 'budget', `.native-output-budget-${randomUUID()}.tmp`),
+          '{"checksum":', { mode: 0o600 })
+      }
+      const original = { owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits }
+      if (completed >= 5) {
+        const ledger = await createNativeOutputBudgetLedger({ rootDirectory: join(directory, 'budget'),
+          installation, limits: f.limits, initializeNewStore: true })
+        await ledger.reserve(original)
+      }
+      if (boundary === 'completion-write') {
+        await writeFile(join(f.root, `.workflow-native-outputs-initialized.json-${randomUUID()}.tmp`),
+          '{"version":1', { mode: 0o600 })
+      }
+      await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+      expect(JSON.parse(await readFile(marker, 'utf8'))).toEqual({ version: 1, installation, phase: 'complete' })
+      const ledger = await f.open()
+      await (await ledger.reserve(original)).assertCurrent()
+      await expect(ledger.reserve({ ...original, artifactId: randomUUID() })).rejects.toThrow()
+    })
+
+  it('recovers the previous marker-before-directories crash only before native ownership was recorded', async () => {
+    const f = await startupFixture()
+    const installation = { mainId: f.pairing.mainId, deviceId: f.pairing.deviceId,
+      workerInstallationId: f.pairing.workerInstallationId }
+    await writeFile(join(f.root, 'workflow-native-outputs-initialized.json'),
+      JSON.stringify(installation), { mode: 0o600 })
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const ledger = await f.open()
+    await ledger.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits })
+    const retained = await startupFixture()
+    await writeFile(join(retained.root, 'workflow-native-outputs-initialized.json'), JSON.stringify({
+      mainId: retained.pairing.mainId, deviceId: retained.pairing.deviceId,
+      workerInstallationId: retained.pairing.workerInstallationId }), { mode: 0o600 })
+    await mkdir(join(retained.root, 'workflow-native-processes'), { mode: 0o700 })
+    await expect(ensureInstalledWorkflowOutputStore(retained.root, retained.pairing)).rejects.toMatchObject({
+      code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+  })
+
   it('creates an upgrade store automatically and preserves outstanding budgets on repeated startup', async () => {
     const f = await startupFixture()
     await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
@@ -171,7 +225,7 @@ describe('durable native output installation budget, no qualification grants', (
     await expect(reservation.assertCurrent()).rejects.toThrow()
     await recovered.reserve({ ...original, artifactId: randomUUID() })
   })
-  it('never initializes over pre-existing residue or steals a crash-left lock', async () => {
+  it('preserves pre-existing residue and requires stopped-worker ownership to upgrade an unowned legacy lock', async () => {
     const f = await fixture(), binding = f.input.owner.binding, rootDirectory = join(f.root, 'budget')
     await mkdir(rootDirectory, { mode: 0o700 })
     const input = { rootDirectory, installation: { mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId },
@@ -183,6 +237,56 @@ describe('durable native output installation budget, no qualification grants', (
     const ledger = await createNativeOutputBudgetLedger({ ...input, initializeNewStore: true })
     await mkdir(join(rootDirectory, '.native-output-budget.lock'), { mode: 0o700 })
     await expect(ledger.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: input.limits,
-      requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } })).rejects.toMatchObject({ code: 'EEXIST' })
+      requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } })).rejects.toMatchObject({
+      code: 'WORKER_NATIVE_OUTPUT_STORAGE_UNAVAILABLE' })
+    const recovered = await createNativeOutputBudgetLedger({ ...input, stoppedWorker: true })
+    await recovered.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: input.limits,
+      requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } })
+    expect((await readdir(rootDirectory)).some(name => name.startsWith('.native-output-budget-retired-lock-'))).toBe(true)
+  })
+
+  it('serializes overlapping producers, readers and releases across ledger instances without losing charges', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const first = await f.open()
+    const second = await f.open()
+    const requested = { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 }
+    const originals = Array.from({ length: 8 }, (_, index) => ({ owner: { ...f.input.owner,
+      nativeTurnId: `producer-${index}` }, artifactId: randomUUID(), limits: f.limits, requested }))
+    const reservations = await Promise.all(originals.map((original, index) =>
+      (index % 2 ? first : second).reserve(original)))
+    await Promise.all(reservations.map(reservation => reservation.assertCurrent()))
+    const journal = JSON.parse(await readFile(join(f.root, 'workflow-native-outputs', 'budget',
+      '.native-output-budget.json'), 'utf8'))
+    expect(journal.payload.records).toHaveLength(8)
+    expect(journal.payload.records.every((record: { released: boolean }) => !record.released)).toBe(true)
+    await Promise.all(reservations.map(reservation => reservation.release()))
+    await Promise.all(reservations.map(reservation => expect(reservation.assertCurrent()).rejects.toThrow()))
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const recovered = await f.open()
+    await recovered.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits })
+  })
+
+  it('cancels queued transactions before charging and permits subsequent producers', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const ledger = await f.open()
+    const root = await openPrivateRoot(join(f.root, 'workflow-native-outputs', 'budget'))
+    const held = await acquireNativeOutputBudgetLock(root)
+    const abort = new AbortController()
+    const original = { owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits }
+    try {
+      const blocked = ledger.reserve(original, abort.signal)
+      const rejected = expect(blocked).rejects.toThrow()
+      abort.abort(new Error('Producer cancelled'))
+      await rejected
+      const journal = JSON.parse(await readFile(join(f.root, 'workflow-native-outputs', 'budget',
+        '.native-output-budget.json'), 'utf8'))
+      expect(journal.payload.records).toEqual([])
+    } finally {
+      await held.close()
+      await root.close()
+    }
+    await (await ledger.reserve(original)).assertCurrent()
   })
 })
