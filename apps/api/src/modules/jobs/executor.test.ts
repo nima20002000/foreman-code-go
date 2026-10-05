@@ -1,3 +1,4 @@
+import { readBoundedJobFile } from './executorOutputs.js'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import { JOB_INPUT_DIRECTORY,type JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
@@ -383,6 +384,23 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
       stop: async () => false, proveStopped: async () => false })
     expect(await executeJob(execution(), p, new AbortController().signal)).toMatchObject({ outcome: null, recoveryRequired: true, processStopped: false })
     expect(p.collectOutputs).not.toHaveBeenCalled()
+  })
+  it('refuses ancestor symlinks and oversized diagnostic files before returning bytes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'job-diagnostic-output-'))
+    const source = join(directory, 'source')
+    const outside = join(directory, 'outside')
+    try {
+      await mkdir(source)
+      await mkdir(outside)
+      await writeFile(join(outside, 'summary.json'), 'private controller state')
+      await symlink(outside, join(source, 'reports'))
+      await expect(readBoundedJobFile(source, 'reports/summary.json', 4096)).rejects.toThrow()
+      await rm(join(source, 'reports'))
+      await mkdir(join(source, 'reports'))
+      await writeFile(join(source, 'reports/summary.json'), 'retained diagnostic')
+      await expect(readBoundedJobFile(source, 'reports/summary.json', 3)).rejects.toThrow('byte budget')
+      expect((await readBoundedJobFile(source, 'reports/summary.json', 4096)).toString()).toBe('retained diagnostic')
+    } finally { await rm(directory, { recursive: true, force: true }) }
   })
   it('rejects output symlinks and enforces declared total bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'job-output-test-'))

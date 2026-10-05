@@ -48,10 +48,10 @@ export function JobVerificationResult({ execution, artifacts, artifactsUnavailab
     return <section aria-label="Verification result"><h2>Verification result</h2><p role="status">{message}</p></section>
   }
   const report = query.data
-  const requiredOutputsVerified = spec.outputs.filter(output => output.required).every(output => {
+  const requiredOutputsVerified = execution.schemaVersion === 2 && execution.acceptedSpec.outputs.filter(output => output.required).every(output => {
     const artifact = artifacts.find(item => item.path === output.path)
     return artifact?.state === 'available' && artifact.mediaType === output.mediaType
-      && (!('maxBytes' in output) || artifact.byteSize <= output.maxBytes)
+      && artifact.byteSize <= output.maxBytes
   })
   const passed = JobVerificationPassSchema.safeParse({ report, expected, process: execution.process,
     publication: execution.publication, requiredOutputsVerified }).success

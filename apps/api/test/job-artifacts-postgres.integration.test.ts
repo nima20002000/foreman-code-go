@@ -38,7 +38,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
   let artifacts:ReturnType<typeof createCanonicalJobArtifactPort>
   let execution: JobExecutionRecord = jobExecution()
   const ownerToken=`fixture-owner-${randomUUID()}`,deniedToken=`fixture-denied-${randomUUID()}`
-  let data = Buffer.from('{"build":"passed"}')
+  let data: Buffer = Buffer.from('{"build":"passed"}')
   const outputPath = 'dist/report.json'
   beforeAll(async()=>{
     const url=new URL(databaseUrl!)
@@ -57,7 +57,8 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       await pool.query("insert into management_principals values($1,$1,'operator',null,$2,$3::jsonb,'2099-01-01',null,null)",[id,digest(token),JSON.stringify([{actions,scope:{workspaceIds:[execution.workspaceId]}}])])
     }
     execution.process={phase:'terminal',outcome:'succeeded',exitCode:0,signal:null,processStopped:true};execution.finishedAt=execution.createdAt
-    execution.acceptedSpec.outputs=[{path:outputPath,required:true,mediaType:'application/json'}]
+    execution = JobExecutionRecordSchema.parse({ ...execution, acceptedSpec: { ...execution.acceptedSpec,
+      outputs: [{path:outputPath,required:true,mediaType:'application/json'}] } })
     if (placementMode === 'verification') {
       const facts = verificationFixture()
       execution = VerificationJobExecutionSchema.parse({ ...execution, schemaVersion: 2,
@@ -76,7 +77,8 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
         expectedPortions: 1, completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'passed',
       })))
     }
-    if (placementMode === 'auto') execution.acceptedSpec.computerSelection = { mode: 'auto', buildPriority: 100, settingsRevision: 1 }
+    if (placementMode === 'auto') execution = JobExecutionRecordSchema.parse({ ...execution, acceptedSpec: { ...execution.acceptedSpec,
+      computerSelection: { mode: 'auto', buildPriority: 100, settingsRevision: 1 } } })
     await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',[execution.id,execution.workspaceId,JSON.stringify(execution),JSON.stringify(execution.acceptedSpec),'owner'])
     const definition={schemaVersion:execution.schemaVersion,id:execution.acceptedSpec.definitionId,workspaceId:execution.workspaceId,name:'Original',revision:execution.acceptedSpec.definitionRevision,versionId:execution.acceptedSpec.definitionVersionId,spec:placementMode === 'auto' ? AutoJobDefinitionSpecSchema.parse({ ...jobSpec(),
       outputs: execution.acceptedSpec.outputs, target: { kind: 'auto' }, policy: jobPolicyRequirements(jobSpec().policy),

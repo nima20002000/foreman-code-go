@@ -58,7 +58,7 @@ function fixture() {
     if (text.includes('job_runtime_profile_versions')) return { rows: [{ record: state.profile ?? profile }] }
     throw new Error('Unexpected source read SQL')
   })
-  const sql = { query, release: vi.fn() }, pool = { connect: async () => sql } as unknown as pg.Pool
+  const sql = { query, release: vi.fn() } as unknown as pg.PoolClient, pool = { connect: async () => sql } as unknown as pg.Pool
   const dispatch = { requireLaunch: vi.fn(), require: vi.fn(), requireControl: vi.fn(), requireEvidence: vi.fn(async () => { if (state.denied) throw new Error('evidence denied') }), observeReceipt: vi.fn() }
   const bridge = new JobApplicationBridge(pool, dispatch, { appendLog: vi.fn() }, { authorizePublication: vi.fn() })
   return { execution, intent, binding, materialization, root, profile, approved, state, query, sql, dispatch, bridge }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
-import { prepareVerificationQualificationSource } from './verificationQualificationSource.js'
+import { prepareVerificationQualificationSource, restoreVerificationQualificationSource } from './verificationQualificationSource.js'
 
 const roots: string[] = []
 const run = promisify(execFile)
@@ -51,6 +51,28 @@ describe('approved verification snapshot and private Git preparation', () => {
     expect((await run('git', ['show', 'HEAD:package.json'], options)).stdout).toBe('{"name":"approved"}\n')
     expect((await run('git', ['ls-tree', 'HEAD:scripts'], options)).stdout).toMatch(/^100755 blob .*\tcheck\n$/)
     expect(await readFile(join(result.sourceRoot, 'scripts/check'), 'utf8')).toBe('#!/bin/sh\nexit 0\n')
+  })
+
+  it('restores approved tracked bytes and modes before another cold-cache suite', async () => {
+    const input = await fixture()
+    const source = await prepareVerificationQualificationSource(input)
+    await writeFile(join(source.sourceRoot, 'package.json'), '{"name":"changed"}')
+    await rm(join(source.sourceRoot, 'scripts/check'))
+    const restored = await restoreVerificationQualificationSource({ ...input, sourceRoot: source.sourceRoot })
+    expect(await readFile(join(source.sourceRoot, 'package.json'), 'utf8')).toBe('{"name":"approved"}\n')
+    expect(await readFile(join(source.sourceRoot, 'scripts/check'), 'utf8')).toBe('#!/bin/sh\nexit 0\n')
+    expect((await run(join(source.sourceRoot, 'scripts/check'))).stdout).toBe('')
+    expect(Number(restored.filesystem.inode)).toBeGreaterThan(0)
+    expect(Date.parse(restored.verifiedAt)).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('rejects a symlink substituted for a tracked qualification file', async () => {
+    const input = await fixture()
+    const source = await prepareVerificationQualificationSource(input)
+    await rm(join(source.sourceRoot, 'package.json'))
+    await symlink(join(input.directory, 'package.json'), join(source.sourceRoot, 'package.json'))
+    await expect(restoreVerificationQualificationSource({ ...input, sourceRoot: source.sourceRoot })).rejects.toThrow()
+    expect(await readFile(join(input.directory, 'package.json'), 'utf8')).toBe('{"name":"approved"}\n')
   })
 
   it.each(['changed', 'extra', 'symlink'] as const)('rejects a %s protected snapshot before treating it as qualification input', async fault => {

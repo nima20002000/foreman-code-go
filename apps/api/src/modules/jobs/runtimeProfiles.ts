@@ -175,6 +175,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           await this.authorize(sql,principal,workspaceId,true)
           const value=await this.approval(sql,workspaceId,approvalId,true),profile=await this.record(sql,workspaceId,value.profileId,true)
           if(profile.schemaVersion!==value.schemaVersion||!['approved','qualifying','failed','recovery-required'].includes(value.status)||!value.approvedByPrincipalId||!value.approvedAt||Date.parse(value.expiresAt)<=Date.now()||profile.revision!==value.profileRevision||profile.specDigest!==value.fingerprint.specDigest)throw new DomainError('JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED','This physical qualification requires current human approval of its exact installed fingerprint.',409)
+          if (profile.schemaVersion === 2) {
+            const live = await readLiveManagementPrincipal(sql, principal.id)
+            requireAuthorization(live, 'jobs:start', { workspaceId })
+            requireAuthorization(live, 'job_artifacts:read', { workspaceId })
+          }
           await this.human.require(sql,await readLiveManagementPrincipal(sql,value.approvedByPrincipalId),value)
           const owner=(await sql.query<{run_command_id:string|null;run_principal_id:string|null;measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select run_command_id,run_principal_id,measurement,run_result from job_runtime_qualification_approvals where id=$1 for update',[approvalId])).rows[0]!
           if(owner.run_command_id&&(owner.run_command_id!==commandId||owner.run_principal_id!==principal.id))throw new DomainError('JOB_RUNTIME_QUALIFICATION_IN_PROGRESS','Reconcile the original approved qualification command.',409)

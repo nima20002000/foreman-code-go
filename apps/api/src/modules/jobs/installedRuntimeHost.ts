@@ -8,7 +8,6 @@ import {
   CurrentJobRuntimeFingerprintSchema,
   JobRuntimeFingerprintSchema,
   InstalledJobRuntimeDescriptorSchema,
-  type CurrentJobRuntimeFingerprint,
   type JobRuntimeProfile,
 } from '@foreman-code/contracts/job-runtime'
 import { JobRuntimeFingerprintRecordSchema, InstalledJobRuntimeDescriptorRecordSchema,
@@ -26,7 +25,7 @@ import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identit
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DomainError } from '../errors.js'
 import { captureJobRuntimeConfiguration, createQualificationNativeOwner, fingerprintQualificationPath, qualificationMountId,
-  type InstalledJobRuntimeDescriptor, type JobQualificationAuthority, type QualificationNativeOwner } from './qualification.js'
+  type JobQualificationAuthority, type QualificationNativeOwner } from './qualification.js'
 import type { OCIContainerOwnership } from './executorContainerOwner.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
@@ -65,6 +64,7 @@ export async function captureInstalledRuntimeConfigurationRecord(
 }
 export interface InstalledRuntimeConfigurationLocation { path: string; ownerUid: number }
 export interface InstalledRuntimeHostDependencies {
+  publishReport?: import('./qualificationReports.js').QualificationReportPublisher
   /** Existing application-installation/device authority, no provider inventory. */
   identity: JobSql
   configuration: InstalledRuntimeConfigurationLocation | null
@@ -74,7 +74,7 @@ export interface InstalledRuntimeHostDependencies {
   reserve(input: Parameters<InstalledJobRuntimeHost['reserveQualification']>[0]): Promise<{
     native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
       | 'completedResult' | 'originalResult' | 'recordResult' | 'recoveryRequired' | 'originalContainer'
-      | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim'>
+      | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim' | 'readClosure'>
     ownership: OCIContainerOwnership
     authority: JobQualificationAuthority
   }>
@@ -312,6 +312,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
         return qualifyVerificationRuntime({ candidate: (await import('@foreman-code/contracts/job-verification-runtime'))
           .JobVerificationQualificationCandidateSchema.parse(input.candidate), admission: input.nativeAdmission,
           configuration: dependencies.configuration, signal: input.signal,
+          publishReport: dependencies.publishReport,
           authority: {
             readApproval: async id => {
               if (id !== input.approval.id) return null

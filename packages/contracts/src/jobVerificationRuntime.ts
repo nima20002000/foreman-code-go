@@ -20,6 +20,9 @@ import {
 } from './jobVerificationPolicy.js'
 import { SourceProjectQuotaSlotSchema } from './sourceMaterialization.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+import { JobArtifactSchema } from './jobs.js'
+import { MAX_FILE_BYTES } from './files.js'
+import { SourceMaterializationRecordSchema } from './sourceAdmission.js'
 export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt } from './jobVerificationSeed.js'
 
 /** W09 authenticates these private repository facts before the worker constructs the read-only context. */
@@ -177,6 +180,8 @@ export const JobVerificationRuntimeMeasurementSchema = z.object({
     maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12),
     evidenceDigest: DeviceDigestSchema,
   }).strict()).min(1).max(9),
+  publications: z.array(z.object({ executionId: IdSchema, artifacts: z.array(JobArtifactSchema).min(1).max(4) })
+    .strict()).max(11).optional(),
 }).strict().superRefine((value, context) => {
   const { identity, fingerprint } = value
   if (identity.profileId !== fingerprint.profileId || identity.profileRevision !== fingerprint.profileRevision
@@ -367,6 +372,33 @@ export const JobRuntimeNativeAdmissionRecordSchema = z.union([
   JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema,
 ])
 export type JobRuntimeNativeAdmissionRecord = z.infer<typeof JobRuntimeNativeAdmissionRecordSchema>
+export const JobQualificationClosureSchema = z.object({
+  scope: z.object({ subject: z.object({ kind: z.literal('qualification'), qualificationId: z.uuid(),
+    profileId: IdSchema, profileRevision: DeviceSafeIntegerSchema.positive(), operationId: z.uuid(),
+    fingerprint: DeviceDigestSchema }).strict(), admission: JobRuntimeNativeAdmissionRecordSchema,
+  bootId: z.uuid() }).strict(),
+  containerId: DeviceDigestSchema,
+  process: z.object({ pid: DeviceSafeIntegerSchema.positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict(),
+  boundary: z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'),
+    device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
+  helpers: z.array(z.object({ kind: z.enum(['conmon', 'launcher']),
+    process: z.object({ pid: DeviceSafeIntegerSchema.positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict(),
+    boundary: z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'),
+      device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict().nullable() }).strict()).max(512),
+  lifecycle: z.literal('closed'),
+}).strict()
+export const JobQualificationReportSchema = z.object({
+  materialization: SourceMaterializationRecordSchema,
+  context: JobVerificationRepositoryContextSchema,
+  closure: JobQualificationClosureSchema,
+  terminal: z.object({ outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out']),
+    exitCode: z.number().int().nullable(), signal: z.string().nullable(), finishedAt: TimestampSchema }).strict(),
+  startedAt: TimestampSchema,
+  path: z.enum(['.logs/verification/summary.json', '.logs/verification/junit.xml',
+    '.logs/verification/vitest.json', '.logs/verification/logs.tar.gz']),
+  sha256: DeviceDigestSchema, byteSize: DeviceSafeIntegerSchema.max(MAX_FILE_BYTES),
+}).strict()
+export type JobQualificationReport = z.infer<typeof JobQualificationReportSchema>
 export const QualifiedVerificationJobRuntimeSchema = z.object({
   ...ProvisionedQualifiedJobRuntimeSchema.shape,
   network: JobNetworkPolicySchema,
@@ -465,6 +497,9 @@ const qualificationRpcResponseSchema = z.union([
   JobVerificationRuntimeQualificationRpcResponseSchema,
 ])
 export const JobRuntimeQualificationRpcRequestRecordSchema = z.union([
+  z.object({ version: z.literal(3), operation: z.literal('publish-report'),
+    admission: JobVerificationRuntimeNativeAdmissionSchema, candidate: JobVerificationQualificationCandidateSchema,
+    report: JobQualificationReportSchema, offset: DeviceSafeIntegerSchema.max(MAX_FILE_BYTES) }).strict(),
   qualificationRpcRequestSchema,
   z.object({ version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     operation: z.enum(['start', 'status']), intent: z.enum(['execute', 'reconcile']).default('execute'), admission: JobRuntimeNativeAdmissionRecordSchema,
@@ -476,6 +511,7 @@ export const JobRuntimeQualificationRpcRequestRecordSchema = z.union([
     }),
 ])
 export const JobRuntimeQualificationRpcResponseRecordSchema = z.union([
+  z.object({ version: z.literal(3), operation: z.literal('publish-report'), receivedBytes: DeviceSafeIntegerSchema.max(MAX_FILE_BYTES), artifact: JobArtifactSchema.nullable() }).strict(),
   qualificationRpcResponseSchema,
   z.object({ version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     operation: z.enum(['start', 'status']), admission: JobRuntimeNativeAdmissionRecordSchema,

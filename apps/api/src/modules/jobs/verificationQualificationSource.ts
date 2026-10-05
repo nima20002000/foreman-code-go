@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { JobVerificationPrivateGitSchema } from '@foreman-code/contracts/job-verification-runtime'
-import { openPrivateRoot, entryParent, anchored } from '../sources/privateFilesystem.js'
+import { openPrivateRoot, entryParent, anchored, identity } from '../sources/privateFilesystem.js'
 import { verifyMaterializedSourceTree } from '../sources/materialization.js'
 import { verifySourceBytes, verifySourceManifest } from '../sources/manifest.js'
 
@@ -111,4 +111,35 @@ export async function prepareVerificationQualificationSource(input: {
     configDigest: digest(config), indexDigest: digest(index),
     repositoryReceiptDigest: digest(Buffer.from(JSON.stringify({ generatedCommit, manifestDigest: manifest.manifestDigest }))) })
   return { sourceRoot, gitDirectory, schedulerDirectory, privateGit }
+}
+
+export async function restoreVerificationQualificationSource(input: {
+  directory: string; sourceRoot: string; manifest: SourceManifest; signal: AbortSignal
+}) {
+  const original = await openPrivateRoot(input.directory)
+  const destination = await openPrivateRoot(input.sourceRoot)
+  try {
+    await verifyMaterializedSourceTree(original, input.manifest, input.signal)
+    for (const entry of input.manifest.entries) {
+      input.signal.throwIfAborted()
+      const source = await entryParent(original, entry.path, false)
+      const target = await entryParent(destination, entry.path, true)
+      try {
+        const sourceFile = await open(anchored(source.parent, source.leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
+        let bytes: Buffer
+        try { bytes = await sourceFile.readFile({ signal: input.signal }) } finally { await sourceFile.close() }
+        verifySourceBytes(entry, bytes)
+        const file = await open(anchored(target.parent, target.leaf),
+          constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600)
+        try {
+          const stat = await file.stat()
+          if (!stat.isFile() || stat.nlink !== 1) throw new Error('Qualification source file is not private and regular.')
+          await file.truncate(0)
+          await file.writeFile(bytes, { signal: input.signal })
+          await file.chmod(entry.executable ? 0o700 : 0o600)
+        } finally { await file.close() }
+      } finally { await source.parent.close(); await target.parent.close() }
+    }
+    return { filesystem: await identity(destination), verifiedAt: new Date().toISOString() }
+  } finally { await original.close(); await destination.close() }
 }

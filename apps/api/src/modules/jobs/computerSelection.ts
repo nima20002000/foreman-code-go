@@ -88,9 +88,9 @@ export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntim
   const allowance = runtime.deviceLimits
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE
   let quotaBytes = runtime.quota.workloadHardLimitBytes
-  if (runtime.schemaVersion === 3) {
+  if (profile.schemaVersion === 2 && profile.measurement) {
     quotaBytes = Math.min(runtime.quota.volumeCapacityBytes - runtime.quota.controlHardLimitBytes,
-      runtime.quotaPool?.slots.reduce((bytes, slot) => bytes + slot.hardLimitBytes, 0) ?? 0)
+      profile.measurement.fingerprint.quotaPool?.slots.reduce((bytes, slot) => bytes + slot.hardLimitBytes, 0) ?? 0)
   }
   return { cpuLimit: allowance.cpuLimit - reserve.cpuLimit,
     memoryBytes: allowance.memoryBytes - reserve.memoryBytes,
@@ -105,11 +105,19 @@ export type JobComputerCapacityDecision = { fits: true } | { fits: false;
 const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
       and e.record #> '{process,processStopped}'='true'::jsonb
       and e.record->>'publication' not in ('pending','collecting')
-      and exists(select 1 from source_execution_materializations m
-        where m.operation_id=e.operation_id and m.execution_id=e.id and m.state='closed')
-      and not exists(select 1 from source_storage_reservations r
-        where r.owner_kind='materialization' and r.owner_id=e.operation_id
-          and r.state in ('preparing','owned','uncertain')))`
+      and (
+        (exists(select 1 from source_execution_materializations m
+          where m.operation_id=e.operation_id and m.execution_id=e.id and m.state='closed')
+        and not exists(select 1 from source_storage_reservations r
+          where r.owner_kind='materialization' and r.owner_id=e.operation_id
+            and r.state in ('preparing','owned','uncertain')))
+        or exists(select 1 from job_runtime_qualification_approvals q
+          where e.record #>> '{owner,grantId}'='qualification:'||q.id
+            and e.accepted_spec #>> '{profile,qualificationId}'=q.record->>'qualificationId'
+            and e.accepted_by=q.run_principal_id
+            and (q.run_result->>'outcome'='qualified'
+              or q.run_result #>> '{closure}'='confirmed'))))`
+
 
 const closedJobComputerSql = `(
       exists(select 1 from job_executions e where e.id=s.execution_id and ${closedJobExecutionSql})

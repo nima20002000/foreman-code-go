@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema,
-  JobVerificationQualificationCandidateSchema, type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
+  JobVerificationQualificationCandidateSchema, JobQualificationClosureSchema, type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import { qualifyVerificationRuntime } from './verificationQualification.js'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
@@ -118,6 +118,7 @@ export interface InstalledJobQualificationReservation {
  * measured result JSON only, never a ChildProcess or a fabricated ready flag. */
 export async function runInstalledJobRuntimeQualification(input: InstalledJobQualificationReservation & {
   configuration: InstalledRuntimeConfigurationLocation | null
+  publishReport?: import('./qualificationReports.js').QualificationReportPublisher
 }): Promise<JobRuntimeQualificationResult> {
   const candidate = JobQualificationCandidateRecordSchema.parse(input.candidate)
   const prior = await input.journal.qualificationStatus(input.admission.operationId)
@@ -141,6 +142,9 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
       candidate: JobVerificationQualificationCandidateSchema.parse(candidate), authority })
     if (await input.journal.qualificationStatus(input.admission.operationId)) {
       await input.journal.qualificationResult(input.admission.operationId, result)
+      if (result.outcome === 'qualified' || result.closure === 'confirmed') {
+        await releaseQualificationQuotaClaims(input.journal, input.admission.operationId)
+      }
     }
     return result
   }
@@ -270,7 +274,17 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       if (!cleanupLaunches.has(id)) throw new Error('Original cleanup reservation required.')
       return spawnReserved(id, binary, argv, options)
     },
-    async recordResult(result: JobRuntimeQualificationResult) { await journal.qualificationResult(operationId, result) },
+    async recordResult(result: JobRuntimeQualificationResult) {
+      await releaseQualificationQuotaClaims(journal, operationId)
+      await journal.qualificationResult(operationId, result)
+    },
+    async readClosure() {
+      const receipt = await journal.qualificationStatus(operationId)
+      if (!receipt || receipt.launches.some(launch => !launch.closed)) {
+        throw new Error('Original qualification commands are still active.')
+      }
+      return JobQualificationClosureSchema.parse(receipt.container?.certificate)
+    },
     async reserveProcess(binary: string, argv: string[]) {
       if (recovering || closed || ![candidate.fingerprint.runtimeExecutable, candidate.findmntBinary,
         ...('quotaPool' in candidate.fingerprint && candidate.fingerprint.quotaPool
@@ -317,7 +331,6 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
         await journal.qualificationProcessClosed(operationId, launch.launchId)
       }
       await journal.qualificationClose(operationId)
-      await releaseQualificationQuotaClaims(journal, operationId)
       closed = true; return true
     },
   }

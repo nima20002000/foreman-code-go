@@ -7,6 +7,9 @@ import { finalizeVerification } from '../../../../../scripts/verification-runner
 import { JobVerificationReportSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import type { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
+import type { z } from 'zod'
+import type { VerificationReportReserve } from './executorOutputs.js'
 import { JobOutputCollectionError, writeVerificationInterruptionReport } from './executorOutputs.js'
 
 /** Uses the installed module's bytes, retained context and original terminal receipt on either host. */
@@ -16,6 +19,21 @@ export function createVerificationPublication(journal: RemoteOperationJournal) {
     if (!terminal.processStopped) throw new JobOutputCollectionError('Physical closure required before finalization.')
     const retained = (await journal.jobNativeOwner(execution.operationId))?.verification
     if (!retained) throw new JobOutputCollectionError('Original report reservation is missing.')
+    return finalizeVerificationPublication(execution, terminal, retained,
+      finishedAt => journal.jobVerificationFinalized(execution.operationId, finishedAt))
+  }
+}
+
+export async function finalizeVerificationPublication(
+  execution: JobExecutionRecord,
+  terminal: RemoteJobTerminalEvidence,
+  retained: { context: z.infer<typeof JobVerificationRepositoryContextSchema>;
+    reserve: VerificationReportReserve; finalizedAt: string | null },
+  markFinalized: (finishedAt: string) => Promise<unknown>,
+): Promise<void> {
+    if (execution.schemaVersion !== 2 || !terminal.processStopped) {
+      throw new JobOutputCollectionError('Closed verification execution required for finalization.')
+    }
     const reservedPath = join(retained.reserve.parent, retained.reserve.name)
     if (retained.finalizedAt) {
       await rm(reservedPath, { force: true })
@@ -60,7 +78,7 @@ export function createVerificationPublication(journal: RemoteOperationJournal) {
           try { await file.sync() } finally { await file.close() }
         }
       }
-      await journal.jobVerificationFinalized(execution.operationId, terminal.finishedAt)
+      await markFinalized(terminal.finishedAt)
       await rm(reservedPath, { force: true })
       return
     }
@@ -132,9 +150,8 @@ export function createVerificationPublication(journal: RemoteOperationJournal) {
         || Date.now() >= Date.parse(execution.acceptedSpec.lifecycle.publicationDeadlineAt)) throw error
       await writeVerificationInterruptionReport({ execution, terminal, reserve })
     }
-    await journal.jobVerificationFinalized(execution.operationId, terminal.finishedAt)
+    await markFinalized(terminal.finishedAt)
     await rm(reservedPath, { force: true })
-  }
 }
 
 async function removeClosedWorkload(path: string, signal: AbortSignal): Promise<void> {

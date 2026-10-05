@@ -1,6 +1,7 @@
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createMainJobExecutionHost } from './mainExecution.js'
+import { createQualificationReportPublisher } from './qualificationReports.js'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
 import { openMainJobJournal } from './mainJobJournal.js'
 import { jobLifecycleSignal } from './lifecycle.js'
@@ -193,7 +194,20 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       configuration: installedConfiguration, registry: input.nativeRegistry, journal: getMainJournal,
       application: () => application, inputs: () => canonicalInputs.local, publication: () => publication,
     }) : undefined)
+  const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
   const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
+    publishReport: async (candidate, report, bytes) => {
+      const journal = await getMainJournal()
+      const assertClosed = async () => {
+        const receipt = await journal.qualificationStatus(candidate.operationId)
+        const certificates = [receipt?.container?.certificate, ...(receipt?.closedContainers ?? [])]
+        if (!receipt || !sameWorkflowValue(receipt.candidate, candidate)
+          || !certificates.some(certificate => sameWorkflowValue(certificate, report.closure))) {
+          throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT', 'Original diagnostic closure is missing.', 409)
+        }
+      }
+      return publishQualificationReport(candidate, report, bytes, assertClosed)
+    },
     configuration: installedConfiguration,
     currentConnection: async (_sql, profile) => profile.root.selection.hostRef.kind === 'device'
       ? input.endpoint().currentBinding(profile.root.selection.hostRef.deviceId) ?? null : null,
@@ -222,6 +236,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     sources: source.sources,
     endpoint: input.endpoint,
     local: localHost,
+    publishReport: publishQualificationReport,
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const host = qualification.host

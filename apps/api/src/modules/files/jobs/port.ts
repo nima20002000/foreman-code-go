@@ -107,6 +107,10 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       values ($1,$2,'job_artifact.read',$3,'succeeded',$4::jsonb)`,[principal.id,source,`job:${executionId}`,JSON.stringify({fileId,revisionId,sha256:artifact.sha256})])
     return {artifact,bytes}
   }
+  private outputLimit(execution: JobExecutionRecord, path: string): number {
+    if (execution.schemaVersion === 1) return execution.acceptedSpec.policy.maxOutputBytes
+    return execution.acceptedSpec.outputs.find(output => output.path === path)?.maxBytes ?? 0
+  }
   private async reserve(input: JobOutputPublicationInput, source: FileMutationSource) {
     input = JobOutputPublicationInputSchema.parse(input)
     const initial = await this.transaction(sql=>this.authority.authorizePublication(sql,input))
@@ -114,7 +118,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     const output = execution.acceptedSpec.outputs.find(value=>value.path===input.path)
     if (!output || output.mediaType !== JobArtifactMediaTypeSchema.parse(input.mediaType)
       || !Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > execution.acceptedSpec.policy.maxOutputBytes
-      || 'maxBytes' in output && input.byteSize > output.maxBytes) {
+      || input.byteSize > this.outputLimit(execution, output.path)) {
       throw new DomainError('JOB_OUTPUT_SPEC_MISMATCH','The output does not match its accepted declaration or byte budget.',422)
     }
     const requestId = `ci:publish:${digest(input.commandId)}`
@@ -134,7 +138,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
         from files f join file_revisions r on r.file_id=f.file_id join file_allocations a on a.file_id=r.file_id and a.revision_id=r.revision_id
         where f.scope_kind='job_execution' and f.workspace_id=$1 and f.job_execution_id=$2 and a.request_id<>$3 and a.state<>'canceled'`,[input.workspaceId,input.executionId,requestId])
       if (Number(reserved.rows[0]?.total ?? '0') + input.byteSize > execution.acceptedSpec.policy.maxOutputBytes
-      || 'maxBytes' in output && input.byteSize > output.maxBytes) throw new DomainError('JOB_OUTPUT_BUDGET_EXCEEDED','All declared outputs exceed the accepted aggregate byte budget.',413)
+      || input.byteSize > this.outputLimit(execution, output.path)) throw new DomainError('JOB_OUTPUT_BUDGET_EXCEEDED','All declared outputs exceed the accepted aggregate byte budget.',413)
       if (current.principal.id !== initial.principal.id || current.execution.acceptedSpec.specDigest !== execution.acceptedSpec.specDigest
         || current.execution.acceptedSpec.outputSpecDigest !== execution.acceptedSpec.outputSpecDigest) throw new DomainError('JOB_PUBLICATION_CONFLICT','Accepted job publication ownership changed.',409)
     }
@@ -175,7 +179,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     const rows = await this.ledger.list(query,execution.workspaceId,execution.id)
     for (const { link, value } of rows) {
       const declaration = execution.acceptedSpec.outputs.find(output => output.path === link.path)
-      if (declaration && 'maxBytes' in declaration && value.revision.byteSize > declaration.maxBytes) {
+      if (declaration && value.revision.byteSize > this.outputLimit(execution, declaration.path)) {
         throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT', 'Artifact exceeds its declared byte limit.', 410)
       }
     }

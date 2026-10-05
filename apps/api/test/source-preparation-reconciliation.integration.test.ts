@@ -43,7 +43,7 @@ import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
-import { JobDefinitionSchema, JobExecutionSchema } from '@foreman-code/contracts/jobs'
+import { JobDefinitionSchema, ResolvedJobDefinitionSpecSchema, JobExecutionSchema } from '@foreman-code/contracts/jobs'
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
@@ -262,7 +262,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     queueServices.push(f.jobs)
     const saved = JobDefinitionSchema.parse((await database.pool.query<{ record: unknown }>(
       'select record from job_definitions where id=$1', [definitionId])).rows[0]!.record)
-    let spec: ResolvedJobDefinitionSpecRecord = { ...jobSpec(), ...saved.spec }
+    let spec: ResolvedJobDefinitionSpecRecord = ResolvedJobDefinitionSpecSchema.parse({ ...jobSpec(), ...saved.spec })
     if (kind === 'verification') {
       const verification = verificationFixture().spec
       spec = { ...verification, source: spec.source, target: spec.target, argv: verification.argv,
@@ -313,10 +313,10 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
           accountingEnabled: true, filesystem }
       } }
       const approvalExpiresAt = new Date(Date.parse(requestedAt) + profile.approvalConfig.approvalLifetimeMs).toISOString()
-      const identity = { ...facts.identity, profileId: profile.id, profileRevision: profile.revision,
+      const profileIdentity = { ...facts.identity, profileId: profile.id, profileRevision: profile.revision,
         rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
         qualificationId, approvalId, fingerprintDigest: jobDigest(fingerprint), approvalExpiresAt }
-      const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...facts, fingerprint, identity,
+      const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...facts, fingerprint, identity: profileIdentity,
         approvedAt: requestedAt, checkedAt: requestedAt,
         suites: facts.suites.map(suite => ({ ...suite, maxConcurrentHeavyJobs: 2 })) })
       const saved = profile
@@ -328,7 +328,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
         [saved.id, saved.revision, JSON.stringify(saved)])
       const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2, id: approvalId, qualificationId,
         workspaceId, profileId: profile.id, profileRevision: profile.revision, fingerprint,
-        fingerprintDigest: identity.fingerprintDigest, requestedByPrincipalId: authority.principal.id,
+        fingerprintDigest: profileIdentity.fingerprintDigest, requestedByPrincipalId: authority.principal.id,
         status: 'complete', approvedByPrincipalId: authority.principal.id, approvedAt: requestedAt,
         requestedAt, expiresAt: approvalExpiresAt })
       await database.pool.query(`insert into job_runtime_qualification_approvals

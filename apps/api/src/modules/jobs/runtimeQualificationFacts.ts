@@ -56,7 +56,7 @@ export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord,
 export function qualificationTimeoutMs(profile: JobRuntimeProfileRecord, approval: JobRuntimeApprovalRecord): number {
   if (profile.schemaVersion === 1) return 240_000
   const policy = profile.spec.policy
-  const timeout = profile.spec.suites.length * (policy.preparationTimeoutMs + policy.serviceStartupTimeoutMs
+  const timeout = (profile.spec.suites.length + 2) * (policy.preparationTimeoutMs + policy.serviceStartupTimeoutMs
     + policy.executionTimeoutMs + policy.cancellationGraceMs + policy.publicationTimeoutMs + policy.cleanupTimeoutMs)
   if (!Number.isSafeInteger(timeout)
     || Date.parse(approval.expiresAt) - Date.now() < timeout

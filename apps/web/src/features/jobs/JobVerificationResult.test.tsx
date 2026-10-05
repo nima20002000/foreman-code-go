@@ -73,7 +73,7 @@ it('does not display a pass while a required companion report is missing', async
 
 it('uses the required summary when an optional summary is declared first', async () => {
   const optional = { path: '.logs/verification/optional.json', kind: 'suite-summary' as const,
-    required: false, mediaType: 'application/json', maxBytes: 4096 }
+    required: false, mediaType: 'application/json' as const, maxBytes: 4096 }
   const outputs = [optional, ...verificationExecution.acceptedSpec.outputs.map(output => ({
     ...output, maxBytes: output.maxBytes - 1024,
   }))]

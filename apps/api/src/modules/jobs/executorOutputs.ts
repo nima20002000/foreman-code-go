@@ -26,7 +26,15 @@ export async function readAvailableVerificationOutputs(root: string, spec: Accep
   return readJobOutputs(root, spec, 'retain-available')
 }
 
-async function readJobOutputs(root: string, spec: AcceptedJobSpec | AcceptedVerificationJobSpec,
+export async function readBoundedJobFile(root: string, path: string, maximumBytes: number): Promise<Buffer> {
+  const files = await readJobOutputs(root, { outputs: [{ path, required: true, maxBytes: maximumBytes }],
+    policy: { maxOutputBytes: maximumBytes } }, 'require-all')
+  return files[0]!.bytes
+}
+
+async function readJobOutputs(root: string, spec: {
+  outputs: readonly { path: string; required: boolean; maxBytes?: number }[];
+  policy: { maxOutputBytes: number } },
   missingReports: 'require-all' | 'retain-available'): Promise<Array<{ path: string; bytes: Buffer }>> {
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(error => { throw new JobOutputCollectionError('Declared Job output root unavailable.', { cause: error }) })
   const outputs: Array<{ path: string; bytes: Buffer }> = []
@@ -47,7 +55,7 @@ async function readJobOutputs(root: string, spec: AcceptedJobSpec | AcceptedVeri
         }
         file = await open(`/proc/self/fd/${parent.fd}/${parts.at(-1)!}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
         const stat = await file.stat()
-        const limit = 'maxBytes' in output ? Math.min(output.maxBytes, spec.policy.maxOutputBytes - total)
+        const limit = output.maxBytes !== undefined ? Math.min(output.maxBytes, spec.policy.maxOutputBytes - total)
           : spec.policy.maxOutputBytes - total
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new JobOutputCollectionError('Output type or byte budget rejected.')
         const bytes = Buffer.alloc(stat.size)

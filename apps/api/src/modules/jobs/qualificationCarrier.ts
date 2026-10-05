@@ -12,12 +12,15 @@ import { assertInstalledJobQualification } from './runtimeQualificationAdmission
 import type { PostgresSourceService } from '../sources/service.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 import { DomainError } from '../errors.js'
+import { createQualificationReportReceiver } from './qualificationReportReceiver.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 
 /** Main retains only a response from the exact authenticated installed worker.
  * Passive/native IO stays outside admission SQL; SQL readback uses this capture. */
 export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: PostgresSourceService;
-  endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost; workerExecution?: WorkerExecutionPolicy }) {
+  endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost;
+  publishReport?: ReturnType<typeof import('./qualificationReports.js').createQualificationReportPublisher>; workerExecution?: WorkerExecutionPolicy }) {
+  const reportReceiver = input.publishReport ? createQualificationReportReceiver(input.publishReport) : null
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const snapshots = new Map<string, {
     response: Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseRecordSchema.parse>, { operation: 'inspect' }>
@@ -147,6 +150,16 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
   }
   const extension: DeviceExtensionRegistration = { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(raw, context) {
     const request = JobRuntimeQualificationRpcRequestRecordSchema.parse(raw)
+    if (request.operation === 'publish-report') {
+      if (!reportReceiver || context.bytes === undefined) throw new Error('Canonical diagnostic publication is unavailable.')
+      await authorize(request.admission, request.candidate, context)
+      if (!sameWorkflowValue(request.report.closure.scope.admission, request.admission)) {
+        throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'Report closure belongs to another admission.', 403)
+      }
+      const published = await reportReceiver(request.candidate, request.report, request.offset, context.bytes,
+        () => authorize(request.admission, request.candidate, context))
+      return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: 3, operation: 'publish-report', ...published }) }
+    }
     if (context.bytes !== undefined || request.operation !== 'authorize') throw new DomainError('JOB_RUNTIME_REQUEST_INVALID', 'Main serves actual diagnostic authority only.', 403)
     await authorize(request.admission, request.candidate, context)
     return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: request.version, operation: 'authorize', admission: request.admission, candidate: request.candidate,

@@ -348,9 +348,17 @@ export class RemoteOperationJournal {
   qualificationContainerIntent(operationId: string, identity: string, fingerprint: string) {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)
-      if (identity !== `graphql-ci-qualification-${receipt.admission.qualificationId}` || fingerprint !== receipt.admission.fingerprintDigest ||
+      if (!(identity === `graphql-ci-qualification-${receipt.admission.qualificationId}`
+        || receipt.candidate.fingerprint.schemaVersion === 3
+          && identity.startsWith(`graphql-ci-qualification-${receipt.admission.qualificationId}-`)) || fingerprint !== receipt.admission.fingerprintDigest ||
         receipt.phase !== 'native_entry_attempted') throw new Error('Original qualification container intent changed')
-      if (receipt.container) { if (receipt.container.identity !== identity || receipt.container.fingerprint !== fingerprint) throw new Error('Original qualification container intent changed'); return receipt }
+      if (receipt.container) {
+        if (receipt.container.identity === identity && receipt.container.fingerprint === fingerprint) return receipt
+        if (receipt.container.certificate?.lifecycle !== 'closed' || receipt.closedContainers.length >= 16) {
+          throw new Error('Original qualification container is still active.')
+        }
+        receipt.closedContainers.push(receipt.container.certificate)
+      }
       receipt.container = { identity, fingerprint, containerId: null, certificate: null }; receipt.sequence++; return receipt
     })
   }

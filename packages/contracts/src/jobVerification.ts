@@ -279,6 +279,12 @@ export function isAutoJobSpecRecord(spec: JobDefinitionSpecRecord): spec is
   return 'kind' in spec.target && spec.target.kind === 'auto'
 }
 
+export function jobPolicyRequirementsRecord(policy: AcceptedVerificationJobSpec['policy']):
+  z.infer<typeof JobVerificationPolicyRequirementsSchema>
+export function jobPolicyRequirementsRecord(policy: z.infer<typeof AcceptedJobSpecSchema>['policy']):
+  z.infer<typeof JobPolicyRequirementsSchema>
+export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['policy']):
+  z.infer<typeof JobVerificationPolicyRequirementsSchema> | z.infer<typeof JobPolicyRequirementsSchema>
 export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['policy']) {
   const { isolationPolicyId, isolationPolicyRevision, ...requirements } = policy
   void isolationPolicyId

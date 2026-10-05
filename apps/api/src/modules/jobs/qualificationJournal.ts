@@ -19,6 +19,7 @@ export const QualificationReceiptSchema = z.object({
   phase: z.enum(['received', 'native_entry_attempted', 'closed', 'uncertain']),
   quotaClaims: z.array(z.object({ path: z.string().startsWith('/'), namespace: z.string().startsWith('/'),
     device: z.number().int().nonnegative(), inode: z.number().int().positive() }).strict()).default([]),
+  closedContainers: z.array(QualificationOCICertificateSchema).max(16).default([]),
   launches: z.array(z.object({ launchId: z.uuid(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().min(0).max(255).nullable(), signal: z.string().nullable() }).strict().nullable(),
     closed: z.boolean() }).strict()).max(512),

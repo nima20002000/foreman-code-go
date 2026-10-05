@@ -44,6 +44,7 @@ export interface QualificationNativeOwner {
   spawnCleanupProcess?(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
   recordQuotaClaim?(claim: { path: string; namespace: string; device: number; inode: number }): Promise<void>
   recordResult?(result: JobRuntimeQualificationResultRecord): Promise<void>
+  readClosure?(): Promise<import('@foreman-code/contracts/job-verification-runtime').JobQualificationReport['closure']>
   /** Existing admission journals the exact native launch before the physical Node spawn. */
   reserveProcess(binary: string, argv: string[]): Promise<string>
   /** HRT's guarded spawn primitive receives original reserved scope BEFORE native entry. */
@@ -55,6 +56,7 @@ export interface QualificationNativeOwner {
   observeContainer(identity: string, containerId: string): Promise<void>
   enterContainer(identity: string, containerId: string): Promise<void>
   /** True only after all registered controller processes AND owned container descendants stopped. */
+  closeContainer?(): Promise<boolean>
   close(): Promise<boolean>
 }
 export interface JobQualificationAuthority {
@@ -67,7 +69,7 @@ export interface JobQualificationAuthority {
 export function createQualificationNativeOwner(candidate: JobQualificationCandidateRecord,
   native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
     | 'completedResult' | 'originalResult' | 'recordResult' | 'recoveryRequired' | 'originalContainer'
-    | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim'>,
+    | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim' | 'readClosure'>,
   ownership: OCIContainerOwnership, authority: JobQualificationAuthority): QualificationNativeOwner {
   let closing = false
   const commands = { run: async (argv: string[], timeoutMs = 30000) => {
@@ -88,26 +90,38 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
   commands, ownership)
   let container = native.originalContainer
     ? createContainer(native.originalContainer.identity, native.originalContainer.fingerprint) : null
+  let containerIdentity = native.originalContainer?.identity
   const composite: QualificationNativeOwner = {
     ...native,
     async registerContainer(identity, fingerprint) {
-      if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`
+      if (container || !(identity === `graphql-ci-qualification-${candidate.qualificationId}`
+        || candidate.fingerprint.schemaVersion === 3 && identity.startsWith(`graphql-ci-qualification-${candidate.qualificationId}-`))
         || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
       await ownership.reserveContainerIntent(identity, fingerprint)
+      containerIdentity = identity
       container = createContainer(identity, fingerprint)
     },
     async observeContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) {
+      if (!container || identity !== containerIdentity) {
         throw new Error('Qualification container has no original reservation.')
       }
       await container.bind(id)
     },
     async enterContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) {
+      if (!container || identity !== containerIdentity) {
         throw new Error('Qualification container has no original reservation.')
       }
       await container.bind(id)
       await container.entered()
+    },
+    async closeContainer() {
+      closing = true
+      try {
+        if (container && !await container.close(1000)) return false
+        container = null
+        containerIdentity = undefined
+        return true
+      } finally { closing = false }
     },
     async close() {
       closing = true

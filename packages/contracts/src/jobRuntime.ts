@@ -202,7 +202,7 @@ export const JobRuntimeQualificationRpcResponseSchema=z.discriminatedUnion('oper
   z.object({version:z.literal(1),operation:z.literal('authorize'),admission:JobRuntimeNativeAdmissionSchema,candidate:JobQualificationCandidateSchema,
     approval:z.object({status:z.literal('approved'),fingerprint:Digest,expiresAt:TimestampSchema}).strict()}).strict(),
 ])
-export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:0})
+export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:1048576})
 export type JobRuntimeQualificationRpcRequest=z.infer<typeof JobRuntimeQualificationRpcRequestSchema>
 export type JobRuntimeQualificationRpcResponse=z.infer<typeof JobRuntimeQualificationRpcResponseSchema>
 

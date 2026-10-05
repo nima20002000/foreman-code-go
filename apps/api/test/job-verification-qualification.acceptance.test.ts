@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -19,7 +21,7 @@ import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/process
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
 import { JobBuildQueueConfigurationSchema, JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
-import { JobAuthoringChoicesRecordSchema, JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
+import { JobDefinitionRecordSchema, JobVerificationReportSchema, JobAuthoringChoicesRecordSchema, JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { openPrivateRoot, identity } from '../src/modules/sources/privateFilesystem.js'
@@ -42,6 +44,11 @@ describe('installed ordinary verification qualification through authenticated MC
       InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
     const spec = await readProtectedRuntimeConfiguration({ path: profilePath, ownerUid }, JobVerificationProfileInputSchema)
     const queue = await readProtectedRuntimeConfiguration({ path: queuePath, ownerUid }, JobBuildQueueConfigurationSchema)
+    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8',
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    }).trim()
+    expect(installed.qualificationSource.manifest.git?.commit).toBe(sourceCommit)
     expect(spec.suites).toEqual(['install', 'typecheck', 'lint', 'unit', 'build'])
     expect(installed.descriptor.target.hostRef.kind).toBe('main')
     const db = await currentDatabase()
@@ -54,7 +61,7 @@ describe('installed ordinary verification qualification through authenticated MC
       const mainId = installed.descriptor.target.mainInstallationId
       const access = new PostgresAccessService(db.pool)
       const owner = await access.issue({ name: 'Physical verification owner', audience: 'operator',
-        grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read', 'jobs:start', 'jobs:read', 'job_artifacts:read'],
+        grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read', 'jobs:start', 'jobs:cancel', 'jobs:read', 'job_artifacts:read'],
           scope: { workspaceIds: [workspaceId] } },
           { actions: ['settings:read', 'settings:update', 'workspace_locations:read'], scope: {} }], expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) })
       const reader = await access.issue({ name: 'Physical verification reader', audience: 'operator',
@@ -166,21 +173,52 @@ describe('installed ordinary verification qualification through authenticated MC
       expect(completed.readiness.ready).toBe(true)
       expect((await db.pool.query('select record from job_runtime_profiles where id=$1', [profile.id])).rows[0].record)
         .toEqual(completed.profile)
+      const publications = completed.measurement!.schemaVersion === 2 ? completed.measurement!.publications! : []
+      expect(publications).toHaveLength(7)
+      for (const publication of publications) {
+        const args = { workspaceId, executionId: publication.executionId }
+        expect((await readonly.callTool({ name: 'job_get', arguments: args })).isError).toBe(true)
+        const observed = await operator.callTool({ name: 'job_get', arguments: args })
+        expect(observed.isError, JSON.stringify(observed.content)).not.toBe(true)
+        const diagnostic = JobExecutionRecordSchema.parse((observed.structuredContent as { execution: unknown }).execution)
+        expect(diagnostic.process.processStopped).toBe(true)
+        expect(diagnostic.publication).toBe('complete')
+        const listed = await operator.callTool({ name: 'job_artifacts_list', arguments: args })
+        expect((listed.structuredContent as { artifacts: unknown }).artifacts).toEqual(publication.artifacts)
+        const summary = publication.artifacts.find(artifact => artifact.path.endsWith('/summary.json'))!
+        const readArgs = { ...args, fileId: summary.fileId, revisionId: summary.revisionId }
+        expect((await readonly.callTool({ name: 'job_artifact_read', arguments: readArgs })).isError).toBe(true)
+        const content = await operator.callTool({ name: 'job_artifact_read', arguments: readArgs })
+        expect(content.isError, JSON.stringify(content.content)).not.toBe(true)
+        const report = JobVerificationReportSchema.parse(JSON.parse(Buffer.from(
+          (content.structuredContent as { content: string }).content, 'base64').toString('utf8')))
+        expect(report.executionId).toBe(diagnostic.id)
+        expect(report.outcome).toBe(diagnostic.process.outcome === 'succeeded' ? 'passed' : diagnostic.process.outcome)
+      }
       const settings = await runtime.buildComputers.update(owner.principal, 'mcp', {
         target: buildComputerTarget({ hostRef: root.selection.hostRef, registration: null, mainInstallationId: mainId }),
         commandId: randomUUID(), expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
       expect(settings.state).toBe('ready')
-      const choices = JobAuthoringChoicesRecordSchema.parse(await runtime.jobs.choices(owner.principal, workspaceId, 'mcp'))
+      const choicesRead = await operator.callTool({ name: 'job_choices_get', arguments: { workspaceId } })
+      expect(choicesRead.isError, JSON.stringify(choicesRead.content)).not.toBe(true)
+      const choices = JobAuthoringChoicesRecordSchema.parse(choicesRead.structuredContent)
       const template = choices.verificationTemplates!.find(item => item.profileId === profile.id && item.suite === 'install')!
       expect(template.ready).toBe(true)
-      const definition = await runtime.jobs.saveDefinition(owner.principal, 'mcp', workspaceId, {
+      const saveDefinition = { workspaceId,
         commandId: randomUUID(), expectedRevision: null, name: 'Main offline install', spec: ResolvedVerificationJobSpecSchema.parse({
           source: choices.sources[0]!, target: choices.targets[0]!.target, argv: template.argv,
           inputs: [], outputs: template.outputs!, policy: jobRuntimeProfilePolicy(completed.profile),
           verification: { suite: template.suite, resources: template.resources,
             parameters: template.parameters, credentialRefs: [] },
         }),
-      })
+      }
+      expect((await readonly.callTool({ name: 'job_definition_save', arguments: saveDefinition })).isError).toBe(true)
+      const savedDefinition = await operator.callTool({ name: 'job_definition_save', arguments: saveDefinition })
+      expect(savedDefinition.isError, JSON.stringify(savedDefinition.content)).not.toBe(true)
+      const definition = JobDefinitionRecordSchema.parse((savedDefinition.structuredContent as { definition: unknown }).definition)
+      const definitionRead = await operator.callTool({ name: 'job_definition_get', arguments: {
+        workspaceId, definitionId: definition.id } })
+      expect((definitionRead.structuredContent as { definition: unknown }).definition).toEqual(definition)
       expect((await readonly.callTool({ name: 'job_start', arguments: {
         workspaceId, commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } })).isError).toBe(true)
       const started = await operator.callTool({ name: 'job_start', arguments: {
@@ -192,21 +230,26 @@ describe('installed ordinary verification qualification through authenticated MC
       if (admission.kind === 'pending-admission') executionId = admission.ticket.executionId
       else if (admission.kind === 'accepted') executionId = admission.executionId
       else executionId = admission.execution.id
-      const deadline = Date.now() + template.policy.preparationTimeoutMs + template.policy.executionTimeoutMs
-        + template.policy.publicationTimeoutMs + template.policy.cleanupTimeoutMs
-      let execution
-      while (Date.now() < deadline) {
-        await runtime.jobs.wakeQueue()
-        const row = (await db.pool.query('select record from job_executions where id=$1', [executionId])).rows[0]
-        if (row) {
-          execution = JobExecutionRecordSchema.parse(row.record)
-          await runtime.dispatch.wake(execution.id)
-          execution = JobExecutionRecordSchema.parse((await db.pool.query('select record from job_executions where id=$1',
-            [execution.id])).rows[0].record)
-          if (execution.process.phase === 'terminal' && !['pending', 'collecting'].includes(execution.publication)) break
+      const waitForExecution = async (id: string, ready: (value: ReturnType<typeof JobExecutionRecordSchema.parse>) => boolean) => {
+        const deadline = Date.now() + template.policy.preparationTimeoutMs + template.policy.executionTimeoutMs
+          + template.policy.publicationTimeoutMs + template.policy.cleanupTimeoutMs
+        while (Date.now() < deadline) {
+          await runtime!.jobs.wakeQueue()
+          const row = (await db.pool.query('select record from job_executions where id=$1', [id])).rows[0]
+          if (row) {
+            await runtime!.dispatch.wake(id)
+            const read = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: id } })
+            expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
+            const value = JobExecutionRecordSchema.parse((read.structuredContent as { execution: unknown }).execution)
+            if (ready(value)) return value
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000))
         }
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        throw new Error('Real verification Job did not reach its expected state within the saved deadline.')
       }
+      const settled = (value: ReturnType<typeof JobExecutionRecordSchema.parse>) =>
+        value.process.phase === 'terminal' && !['pending', 'collecting'].includes(value.publication)
+      const execution = await waitForExecution(executionId, settled)
       expect(execution).toMatchObject({ schemaVersion: 2, process: { phase: 'terminal', outcome: 'succeeded', processStopped: true },
         publication: 'complete', acceptedSpec: { target: { hostRef: { kind: 'main' } } } })
       const executionReadback = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution!.id } })
@@ -214,6 +257,39 @@ describe('installed ordinary verification qualification through authenticated MC
       expect((executionReadback.structuredContent as { execution: unknown }).execution).toEqual(execution)
       expect((await runtime.jobs.listArtifacts(owner.principal, workspaceId, execution!.id, 'mcp')).map(output => output.path).sort())
         .toEqual(template.outputs!.map(output => output.path).sort())
+      const unitTemplate = choices.verificationTemplates!.find(item => item.profileId === profile.id && item.suite === 'unit')!
+      const unitSave = await operator.callTool({ name: 'job_definition_save', arguments: { ...saveDefinition,
+        commandId: randomUUID(), name: 'Cancel running offline unit verification',
+        spec: { ...saveDefinition.spec, argv: unitTemplate.argv, outputs: unitTemplate.outputs,
+          verification: { ...saveDefinition.spec.verification, suite: 'unit', parameters: unitTemplate.parameters } } } })
+      expect(unitSave.isError, JSON.stringify(unitSave.content)).not.toBe(true)
+      const unitDefinition = JobDefinitionRecordSchema.parse((unitSave.structuredContent as { definition: unknown }).definition)
+      const unitStart = await operator.callTool({ name: 'job_start', arguments: { workspaceId,
+        commandId: randomUUID(), definitionId: unitDefinition.id, expectedRevision: unitDefinition.revision } })
+      expect(unitStart.isError, JSON.stringify(unitStart.content)).not.toBe(true)
+      const unitAdmission = JobAdmissionResultSchema.parse((unitStart.structuredContent as { admission: unknown }).admission)
+      let unitExecutionId: string
+      if (unitAdmission.kind === 'pending-admission') unitExecutionId = unitAdmission.ticket.executionId
+      else if (unitAdmission.kind === 'accepted') unitExecutionId = unitAdmission.executionId
+      else unitExecutionId = unitAdmission.execution.id
+      const active = await waitForExecution(unitExecutionId, value => value.process.phase === 'running')
+      const cancel = { workspaceId, executionId: active.id, commandId: randomUUID() }
+      expect((await readonly.callTool({ name: 'job_cancel', arguments: cancel })).isError).toBe(true)
+      const stopped = await operator.callTool({ name: 'job_cancel', arguments: cancel },
+        { timeout: template.policy.cancellationGraceMs + template.policy.publicationTimeoutMs
+          + template.policy.cleanupTimeoutMs + 60000 })
+      expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true)
+      const cancelled = await waitForExecution(active.id, settled)
+      expect(cancelled).toMatchObject({ process: { outcome: 'cancelled', processStopped: true }, publication: 'complete' })
+      const reports = await operator.callTool({ name: 'job_artifacts_list', arguments: { workspaceId, executionId: active.id } })
+      const summary = (reports.structuredContent as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> })
+        .artifacts.find(artifact => artifact.path.endsWith('/summary.json'))!
+      const reportRead = await operator.callTool({ name: 'job_artifact_read', arguments: { workspaceId,
+        executionId: active.id, fileId: summary.fileId, revisionId: summary.revisionId } })
+      expect(reportRead.isError, JSON.stringify(reportRead.content)).not.toBe(true)
+      const cancelledReport = JobVerificationReportSchema.parse(JSON.parse(Buffer.from(
+        (reportRead.structuredContent as { content: string }).content, 'base64').toString('utf8')))
+      expect(cancelledReport).toMatchObject({ outcome: 'cancelled', executionId: active.id, attemptId: active.attemptId })
       expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)
       const replay = await operator.callTool({ name: 'job_runtime_qualification_run', arguments: run })
       expect(replay.isError).not.toBe(true)

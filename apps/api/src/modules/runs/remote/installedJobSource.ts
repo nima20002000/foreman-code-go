@@ -52,7 +52,7 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
         || !same(refreshed.execution.acceptedSpec, accepted.execution.acceptedSpec)) throw new Error('Original Job source authority changed')
       signal.throwIfAborted()
     }
-    if (spec.schemaVersion === 2) {
+    if (accepted.execution.schemaVersion === 2) {
       const qualified = await input.journal.qualifiedJobRuntime(accepted.execution)
       const fingerprint = qualified.candidate.fingerprint
       if (fingerprint.schemaVersion !== 3 || !fingerprint.quotaPool || !receipt.quota) {

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@foreman-code/contracts/job-runtime'
-import { JobRuntimeQualificationRpcRequestRecordSchema, JobRuntimeQualificationRpcResponseRecordSchema,
+import { JobRuntimeQualificationRpcRequestRecordSchema, JobRuntimeQualificationRpcResponseRecordSchema, JobVerificationQualificationCandidateSchema,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
@@ -19,7 +19,7 @@ export function createWorkerQualificationExtension(input: {
   configuration: InstalledRuntimeConfigurationLocation
   pairing: WorkerPairingConfiguration; bootId: string
   currentBinding(): Readonly<DeviceSessionBinding>
-  request(namespace: string, payload: unknown, options?: { signal?: AbortSignal }): Promise<{ payload: unknown; bytes?: Uint8Array }>
+  request(namespace: string, payload: unknown, options?: { signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number }): Promise<{ payload: unknown; bytes?: Uint8Array }>
   journal(): Promise<RemoteOperationJournal>; registry: NativeProcessRegistry
   signal: AbortSignal
 }): DeviceExtensionRegistration & { drain(): Promise<void> } {
@@ -44,7 +44,7 @@ export function createWorkerQualificationExtension(input: {
       if (!isDeepStrictEqual(observed(), host)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The installed diagnostic host changed during capture.', 409)
       return { payload: JobRuntimeQualificationRpcResponseRecordSchema.parse({ version: request.version, operation: 'inspect', ...inspected }) }
     }
-    if (request.operation === 'authorize') throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The genuine persisted diagnostic admission is required.', 403)
+    if (request.operation === 'publish-report' || request.operation === 'authorize') throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The genuine persisted diagnostic admission is required.', 403)
     const journal = await input.journal()
     const prior = await journal.qualificationStatus(request.admission.operationId)
     if (prior && (!isDeepStrictEqual(prior.admission, request.admission)
@@ -73,7 +73,31 @@ export function createWorkerQualificationExtension(input: {
     }
     const fresh = !prior || prior.phase === 'received'
     if (fresh && request.operation !== 'status') await assertAdmission(request.admission)
-    const reservation = { configuration: input.configuration, admission: request.admission,
+    const publishReport: import('./qualificationReports.js').QualificationReportPublisher = async (submitted, report, bytes) => {
+      const receipt = await journal.qualificationStatus(submitted.operationId)
+      const certificates = [receipt?.container?.certificate, ...(receipt?.closedContainers ?? [])]
+      if (!isDeepStrictEqual(submitted, candidate)
+        || !certificates.some(certificate => isDeepStrictEqual(certificate, report.closure))) {
+        throw new Error('Original diagnostic closure is missing.')
+      }
+      for (let offset = 0; offset < bytes.byteLength;) {
+        const chunk = bytes.subarray(offset, Math.min(offset + 1048576, bytes.byteLength))
+        const reply = await input.request(JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace, {
+          version: 3, operation: 'publish-report', admission: request.admission, candidate, report, offset,
+        }, { bytes: chunk, signal, timeoutMs: candidate.fingerprint.schemaVersion === 3
+          ? JobVerificationQualificationCandidateSchema.parse(candidate).profile.spec.policy.publicationTimeoutMs : 30000 })
+        const response = JobRuntimeQualificationRpcResponseRecordSchema.parse(reply.payload)
+        if (response.operation !== 'publish-report' || reply.bytes !== undefined
+          || response.receivedBytes !== offset + chunk.byteLength || !isDeepStrictEqual(observed(), host)) {
+          throw new Error('Canonical diagnostic publication response changed.')
+        }
+        offset = response.receivedBytes
+        if (offset === bytes.byteLength && response.artifact) return response.artifact
+        if (response.artifact) throw new Error('Diagnostic artifact completed before all bytes were transferred.')
+      }
+      throw new Error('Canonical diagnostic publication did not return its retained artifact.')
+    }
+    const reservation = { publishReport, configuration: input.configuration, admission: request.admission,
       candidate, host: { ...host, connection: request.admission.connection }, journal, registry: input.registry,
       signal: AbortSignal.any([input.signal, context.connectionSignal ?? input.signal, AbortSignal.timeout(Math.max(1, Date.parse(request.admission.expiresAt) - Date.now()))]),
       assertAdmission: (admission: JobRuntimeNativeAdmissionRecord) => assertAdmission(admission).then(() => undefined),
