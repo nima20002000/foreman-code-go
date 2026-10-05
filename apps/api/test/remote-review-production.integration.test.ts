@@ -25,9 +25,17 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
     console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
       record->'error' as error,record->>'retryAfter' as retry_after,
       record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
-    console.error('Remote review provider activity', (await fixture.provider.calls()).slice(-30).map(call => ({
+    console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
+      record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
+    console.error('Remote reviewer retention', (await fixture.db.pool.query(`select receipt->'intent'->>'executionId' as execution_id,
+      receipt->>'phase' as phase,receipt->'retainedReviewer'->>'expiresAt' as retained_until,
+      receipt->'terminal'->>'kind' as terminal,clock_timestamp() as observed_at from remote_execution_receipts`)).rows)
+    const activity = (await fixture.provider.calls()).filter(call => call.method === undefined
+      || call.method === 'turn/start' || call.method === 'turn/interrupt').slice(-30)
+    console.error('Remote review provider activity', activity.map(call => ({
       method: call.method, nativeStarted: call.nativeStarted, review: call.review, providerFailure: call.providerFailure,
       reviewDecisionError: call.reviewDecisionError, approvalResponse: call.approvalResponse,
+      reviewDecision: call.reviewDecision,
     })))
     try {
       await fixture.close()
