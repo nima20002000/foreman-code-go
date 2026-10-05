@@ -19,7 +19,8 @@ function fixture() {
     protocolRevision: 'p', suiteRevision: 's', environmentGeneration: 'e', connectionGeneration: 'c', authenticated: true, compatible: true,
     qualified: true, checkedAt: '2026-10-01T00:00:00Z', claudeProof: { pin, checks: {} } }
   const client = {} as pg.PoolClient
-  const settings = { readAuthorized: async <T>(fn: (client: pg.PoolClient) => Promise<T>) => fn(client), latest: vi.fn(async () => value), lockRevision: vi.fn(async () => {}) }
+  const settings = { readAuthorized: async <T>(fn: (client: pg.PoolClient) => Promise<T>) => fn(client),
+    latest: vi.fn(async () => value), savedRevision: vi.fn(async () => value), lockRevision: vi.fn(async () => {}) }
   const proofs = { latest: vi.fn(async () => proof) }
   const registry = { selection: { instanceId: value.instanceId, instanceRevision: '1', driverId: 'claude', hostRef: target.hostRef,
     harnessInstallationId: 'cli', installationFingerprint: 'hash' }, instance: { configuration }, installation: {

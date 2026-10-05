@@ -73,6 +73,18 @@ export async function operatorSelectedProfile(pool: pg.Pool, principalId: string
     })
   return { registry, profiles: admission(registry), launcher,
     selector: { instanceId: value.instanceId, instanceRevision: value.instanceRevision, target },
+    async disable() {
+      const sql = await pool.connect()
+      try {
+        await sql.query('begin')
+        await settings.append(sql, principalId, value.revision, { ...value, revision: value.revision + 1,
+          instanceRevision: 'disabled-profile-2', enabled: false, qualification: 'disabled' })
+        await sql.query('commit')
+      } catch (error) {
+        await sql.query('rollback')
+        throw error
+      } finally { sql.release() }
+    },
     async restart() {
       registry.stop()
       const restarted = await loadRegistry()

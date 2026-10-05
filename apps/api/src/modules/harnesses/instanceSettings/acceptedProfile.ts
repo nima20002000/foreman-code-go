@@ -69,8 +69,10 @@ export class AcceptedHarnessProfileAdmission<Owner> {
     return this.settings.readAuthorized(async client => {
       await this.authority.authorize(owner, selected, client)
       await this.settings.lockRevision(client, selected.instanceId)
-      const value = await this.settings.latest(client, selected.instanceId)
-      if (!value || !value.enabled || value.driverId !== value.configuration.harness
+      const value = options.purpose === 'observation'
+        ? await this.settings.savedRevision(client, selected.instanceId, selected.instanceRevision)
+        : await this.settings.latest(client, selected.instanceId)
+      if (!value || (options.purpose === 'execution' && !value.enabled) || value.driverId !== value.configuration.harness
         || value.instanceRevision !== selected.instanceRevision || !isDeepStrictEqual(value.target, selected.target)) return unavailable()
       const proof = await this.proofs.latest(value.instanceId, value.revision, client)
       if (!proof || !proof.qualified || proof.authenticated !== true || proof.compatible !== true ) return unavailable()
