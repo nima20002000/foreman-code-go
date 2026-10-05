@@ -107,20 +107,33 @@ describe.skipIf(!postgresEnabled)('approval interrupt publication', () => {
     }
   }, 60_000)
 
-  it('keeps Stop and late sibling output fenced after an approval has been bound', async () => {
+  it.each(['pending', 'delivered'] as const)(
+    'keeps the first Stop and late sibling output fenced after a %s approval', async (status) => {
     const { f, operator, run, interaction, release } = await approvalWithActiveSibling()
+    if (status === 'delivered') {
+      const user = await operator.access.issue({ name: 'Native approval User', audience: 'user',
+        expiresAt: new Date(Date.now() + 600_000),
+        grants: [{ actions: ['interactions:respond'], scope: { runIds: [run.id] } }] })
+      const response = await f.service.respond({ kind: 'user', principal: user.principal },
+        br1002Response(interaction))
+      expect(response.interaction.deliveryState).toBe('delivered')
+    }
     const stopped = await graphRpc(operator.app, operator.writer.token, 'tools/call', {
       name: 'run_stop', arguments: { workspaceId: run.workspaceId, runId: run.id, commandId: randomUUID() },
     })
     expect(stopped.result?.isError).not.toBe(true)
     await expect.poll(async () => (await f.runs.get(run.id))?.outcome, { timeout: 10_000 }).toBe('canceled')
     expect((await f.repository.get(interaction.id))?.status).toBe('canceled')
+    const resume = await f.db.pool.query<{ approval_native_ack_id: string | null }>(
+      'select approval_native_ack_id from interaction_graph_resumes where interaction_id=$1', [interaction.id])
+    expect(resume.rows[0]?.approval_native_ack_id).toBeNull()
     const counts = { ...f.provider.counts }
     release.resolve()
     await f.engine.reconcile()
     expect(f.provider.counts).toEqual(counts)
     expect((await f.repository.get(interaction.id))?.graphInterruptId).toBe(interaction.graphInterruptId)
     expect((await f.runs.get(run.id))?.outcome).toBe('canceled')
+    expect(await f.runs.hasPendingCleanup(run.id)).toBe(false)
     await (await graphParity(f.db.pool, { ...f.f.scope, runId: run.id })).compare()
   }, 60_000)
 })

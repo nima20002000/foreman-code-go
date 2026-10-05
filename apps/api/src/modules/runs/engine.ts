@@ -136,6 +136,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         await this.authorize(sql, run)
         signal.throwIfAborted()
       })
+    signal.throwIfAborted()
     const continuation = this.queueResume(owner.runId, requestedIds)
     void continuation.catch((error: unknown) => {
       componentLogger('engine').error({ err: error }, 'approval continuation failed')
@@ -314,7 +315,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const task = (async () => {
       const physical = initial.run.executionState === 'completed' && initial.run.outcome === 'succeeded'
         && !initial.stopRequested ? this.nativeExecutions.finishRun(runId) : this.nativeExecutions.cancelRun(runId)
-      await Promise.allSettled([physical, ...(this.activeTasks.has(runId) ? [this.activeTasks.get(runId)!] : [])])
+      const active = this.activeTasks.get(runId)
+      const resumed = this.resumeTasks.get(runId)
+      await Promise.allSettled([physical, ...(active ? [active] : []), ...(resumed ? [resumed] : [])])
       const owner = await this.runs.acquireOwnership(runId, () => undefined)
       if (!owner) return false
       try {
