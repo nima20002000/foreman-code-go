@@ -561,7 +561,7 @@ describe('Claude native session manager admission', () => {
     const waiting = deferred<Awaited<ReturnType<typeof f.statuses>>>()
     const update = deferred<Awaited<ReturnType<typeof f.setServers>>>()
     const query = f.client.query
-    f.client.query = (input) => ({ ...query(input), joinClosed: () => joined.promise })
+    f.client.query = async (input) => ({ ...await query(input), joinClosed: () => joined.promise })
     await f.manager.prepareInspection(start)
     let session: import('@graphql/contracts').NativeSessionReference | undefined
     if (inputKind === 'later') {

@@ -187,7 +187,7 @@ export function createClaudeSdkRunner(input: {
     const outputQueue = new ClaudeBoundedQueue<ClaudeSdkOutput>(input.outputCapacity ?? 256)
     const receipts = new Map<string, ClaudeNativeObservation[]>()
     const offered = new Set<string>()
-    let client: ClaudeSdkClient
+    let client: ClaudeSdkClient | undefined
     const observeResponse = responseObservations(async frame => {
       const messageId = (frame.message as { id?: unknown } | undefined)?.id
         ?? ((frame.event as { message?: { id?: unknown } } | undefined)?.message?.id)
@@ -198,7 +198,7 @@ export function createClaudeSdkRunner(input: {
       // Tool-result user records continue it; a new prompt creates a new input boundary.
       for (let offset = 0; ; offset += 256) {
         abort.signal.throwIfAborted()
-        const page = await client.getSessionMessages(String(frame.session_id), { dir: options.scope.cwd, offset, limit: 256 })
+        const page = await client!.getSessionMessages(String(frame.session_id), { dir: options.scope.cwd, offset, limit: 256 })
         for (const raw of page) {
           if (!raw || typeof raw !== 'object') continue
           const entry = raw as Record<string, unknown>
@@ -229,6 +229,7 @@ export function createClaudeSdkRunner(input: {
     })
     let nativeSessionId: string | undefined
     let query: ClaudeSdkQuery | undefined
+    let queryOpening: Promise<ClaudeSdkQuery> | undefined
     let pump: Promise<void> | undefined
     let closing: Promise<void> | undefined
     let closeFailure: unknown
@@ -289,6 +290,13 @@ export function createClaudeSdkRunner(input: {
         if (closing) return closing
         closing = (async () => {
           stop()
+          if (!query && queryOpening) {
+            const [opened] = await Promise.allSettled([queryOpening])
+            if (opened?.status === 'fulfilled') {
+              query = opened.value
+              query.close()
+            }
+          }
           await pump
           await query?.joinClosed?.()
           options.signal?.removeEventListener('abort', externalAbort)
@@ -312,13 +320,16 @@ export function createClaudeSdkRunner(input: {
         abort.signal.throwIfAborted()
         if (!info || info.sessionId !== options.resume.nativeSessionId) throw new Error('Exact Claude session history is unavailable')
       }
-      queryDispatched = true
-      query = client.query({ prompt: inputQueue, options: {
+      queryOpening = Promise.resolve(client.query({ prompt: inputQueue, options: {
         ...options.options, cwd: options.scope.cwd, abortController: abort,
         env: { ...(options.options.env as Record<string, string> | undefined),
           ...(process.env.HOME ? { HOME: process.env.HOME } : {}), CLAUDE_CONFIG_DIR: options.scope.profilePath },
         ...(options.resume ? { resume: options.resume.nativeSessionId } : {}),
-      } })
+      } }))
+      query = await queryOpening
+      queryDispatched = true
+      abort.signal.throwIfAborted()
+      if (disposed) throw new Error('Claude runner disposed during query startup')
       // The Query itself owns close(), unlike a wrapping async generator's blocked return().
       const iterator = query[Symbol.asyncIterator]()
       pump = (async () => {
@@ -359,6 +370,7 @@ export function createClaudeSdkRunner(input: {
       })()
       return session
     } catch (error) {
+      queryDispatched ||= client?.requiresRuntimeClosure?.() ?? false
       await session.close()
       throw error
     }

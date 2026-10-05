@@ -21,7 +21,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
 
 export interface ClaudeSdkClient {
   readonly sdkVersion: string
-  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery
+  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery | Promise<ClaudeSdkQuery>
+  requiresRuntimeClosure?(): boolean
   getSessionInfo(sessionId: string, options: { dir: string }): Promise<{ sessionId: string } | undefined>
   getSessionMessages(sessionId: string, options: { dir: string; limit?: number; offset?: number }): Promise<readonly unknown[]>
   listSubagents?(sessionId: string, options: { dir: string }): Promise<string[]>
