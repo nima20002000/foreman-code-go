@@ -130,7 +130,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('public Activities respons
           return page
         }
         const retained = (await pool.query<{ sequence: string }>(
-          'select sequence::text from run_activity where run_id=$1 order by sequence', [run.id])).rows.map(row => row.sequence)
+          'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence', [run.id])).rows.map(row => row.sequence)
         const initial = await readPage()
         expect(initial.items.length).toBeGreaterThan(0)
         expect(initial.items.length).toBeLessThan(args.limit)
@@ -153,7 +153,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('public Activities respons
           cursor = page.nextCursor
         }
         expect(newer).toEqual((await pool.query<{ sequence: string }>(
-          'select sequence::text from run_activity where run_id=$1 and sequence>$2::bigint order by sequence',
+          'select sequence::text from run_activity where run_id=$1 and sequence>$2::bigint order by run_activity.sequence',
           [run.id, initial.highWater])).rows.map(row => row.sequence))
         expect(newer).toHaveLength(200)
         const denied = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
@@ -198,7 +198,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('public Activities respons
           scope: { workspaceIds: [args.workspaceId], workflowIds: [fixture.scope.workflowId], runIds: [args.runId] } }])
         const url = `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}/activities`
         const retained = (await pool.query<{ sequence: string }>(
-          'select sequence::text from run_activity where run_id=$1 order by sequence desc limit 1000',
+          'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence desc limit 1000',
           [args.runId])).rows.reverse().map((row) => row.sequence)
         const sequences: string[] = []
         let cursor: string | null = null

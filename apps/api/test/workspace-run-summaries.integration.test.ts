@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SavedRunPageSchema, SavedWorkflowRunSchema } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
 describe('workspace Run summaries', () => {
@@ -104,9 +105,10 @@ describe('workspace Run summaries', () => {
 
   it('uses the same query count for one and twenty completed Runs', async () => {
     const f = await currentOperatorIntegration({ approvalNodeIds: [] })
+    const readPool = new pg.Pool({ ...f.db.pool.options, max: 1 })
     try {
       await f.services.runs.stopScheduleDispatcher()
-      const repository = new PostgresWorkspaceRepository(f.db.pool, f.workflows, f.runs)
+      const repository = new PostgresWorkspaceRepository(readPool, new PostgresWorkflowRepository(readPool), f.runs)
       const finishedAt = new Date().toISOString()
       const stopCause = { kind: 'review_failure', interactionId: 'review-interaction',
         error: { code: 'REVIEW_FAILED', message: 'Review failed' }, recordedAt: finishedAt } as const
@@ -114,12 +116,15 @@ describe('workspace Run summaries', () => {
         outcome: 'succeeded', result: { outcome: 'succeeded', output: {} }, finishedAt, stopCause })
       await f.db.pool.query("update runs set execution_state='completed',record=$2::jsonb,stop_cause=$3::jsonb where id=$1",
         [completed.id, JSON.stringify(completed), JSON.stringify(stopCause)])
-      const query = vi.spyOn(pg.Client.prototype, 'query')
+      const client = await readPool.connect()
+      const query = vi.spyOn(client, 'query')
+      client.release()
       try {
         const short = await repository.getDetails(completed.workspaceId, f.writer.principal)
         expect(short?.runs).toHaveLength(1)
         const shortQueryCount = query.mock.calls.length
-        query.mockRestore()
+        expect(shortQueryCount).toBeGreaterThan(0)
+        query.mockClear()
         for (let index = 1; index < 20; index++) {
           const historical = { ...completed, id: `completed-${randomUUID()}`,
             createdAt: new Date(Date.parse(completed.createdAt) - index * 1000).toISOString() }
@@ -130,20 +135,16 @@ describe('workspace Run summaries', () => {
             JSON.stringify(historical), historical.createdAt, historical.executionLocation!.runnerId,
             historical.executionLocation!.rootPath, historical.executionLocation!.locationRevision, JSON.stringify(stopCause)])
         }
-        const longQuery = vi.spyOn(pg.Client.prototype, 'query')
-        try {
-          const long = await repository.getDetails(completed.workspaceId, f.writer.principal)
-          expect(long?.runs).toHaveLength(20)
-          expect(long?.runs[0]).toMatchObject({ id: completed.id, executionState: 'completed',
-            outcome: 'succeeded', finishedAt, stopCause, cleanupPending: false })
-          expect(longQuery.mock.calls.length).toBe(shortQueryCount)
-        } finally {
-          longQuery.mockRestore()
-        }
+        const long = await repository.getDetails(completed.workspaceId, f.writer.principal)
+        expect(long?.runs).toHaveLength(20)
+        expect(long?.runs[0]).toMatchObject({ id: completed.id, executionState: 'completed',
+          outcome: 'succeeded', finishedAt, stopCause, cleanupPending: false })
+        expect(query.mock.calls.length).toBe(shortQueryCount)
       } finally {
         query.mockRestore()
       }
     } finally {
+      await readPool.end()
       await f.close()
     }
   }, 60000)

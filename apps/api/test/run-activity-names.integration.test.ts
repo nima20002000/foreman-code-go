@@ -10,6 +10,10 @@ import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPubl
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { RunOwnership } from '../src/modules/runs/ownership.js'
+import { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHost.js'
+import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -76,11 +80,21 @@ it('keeps admission-time Agent names in the Run board and Activities after prese
       const node = agentWorkflowNode(fixture.version.definition.nodes[0])
       const requester = agentWorkflowNode(fixture.version.definition.nodes[1])
       const executionId = 'named-execution'
-      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, run.id, node.id, node.agentId, JSON.stringify({
-        id: executionId, runId: run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1, state: 'running',
-        input: {}, createdAt: run.createdAt, agentConfigurationVersionId: run.agentConfigurationVersionIds[node.agentId],
-      })])
+      const owner = await RunOwnership.acquire(pool, run.id, () => {})
+      if (!owner) throw new Error('Expected to acquire the Run owner')
+      try {
+        const factory = new RepeatRepositoryFactory(locations, directory,
+          createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify).services)
+        const store = factory.forOwner(owner, fixture.version)
+        const activationId = await store.ensureWorkEntry()
+        await store.admitWorkActivation(activationId, () => ({
+          id: executionId, runId: run.id, workflowNodeId: node.id, agentId: node.agentId,
+          agentConfigurationVersionId: run.agentConfigurationVersionIds[node.agentId]!,
+          attempt: 1, state: 'queued', input: {}, createdAt: run.createdAt,
+        }))
+      } finally {
+        await owner.release()
+      }
       await pool.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
         values($1,'backend','node_state_changed',$2,$3,'{"state":"running","actorName":"Forged payload name"}'::jsonb),
           ($1,'backend','work_requester_reactivated',null,$3,$4::jsonb)`,
