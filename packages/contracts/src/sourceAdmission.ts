@@ -70,7 +70,7 @@ export const SourcePreparationClosureSchema = z.object({ version: z.literal(1), 
   materializationId: z.uuid().nullable(), mainId: z.uuid(), deviceId: z.uuid().nullable(), workerInstallationId: z.uuid().nullable(),
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
   filesystem: RootFilesystemIdentitySchema, admissionClosed: z.literal(true), childrenClosed: z.literal(true),
-  claimReleased: z.literal(true), evidencePreserved: z.literal(true), observedAt: z.string().datetime(),
+  claimReleased: z.literal(true), evidencePreserved: z.literal(true), quotaReclaimed: z.literal(true).optional(), observedAt: z.string().datetime(),
 }).strict()
 export type SourcePreparationClosure = z.infer<typeof SourcePreparationClosureSchema>
 export const SourcePreparationSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid(), executionId: IdSchema, attemptId: IdSchema,

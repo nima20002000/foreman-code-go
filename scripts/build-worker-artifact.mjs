@@ -82,6 +82,14 @@ for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'insta
   await writeFile(join(output, 'src', name), snapshotSource(`apps/worker/src/${name}`), { mode: 0o600 });
 }
 await mkdir(join(output, 'artifacts'));
+const quotaQuerySource = 'apps/worker/artifacts/job-quota-query.c';
+const quotaQueryPath = join(output, 'artifacts/job-quota-query.c');
+await writeFile(quotaQueryPath, snapshotSource(quotaQuerySource), { mode: 0o600 });
+execFileSync('cc', ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', quotaQueryPath,
+  '-o', join(output, 'artifacts/job-quota-query')], { stdio: ['ignore', 'pipe', 'pipe'] });
+const quotaBinary = await readFile(join(output, 'artifacts/job-quota-query'));
+if (quotaBinary.readUInt16LE(18) !== 62) throw new Error('Quota observer must match the approved Linux x64 target');
+
 await writeFile(join(output, 'artifacts/graphql.svg'), snapshotSource('apps/web/public/graphql.svg'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/graphql-mcp.mjs'), snapshotSource('scripts/graphql-mcp.mjs'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/graphql-worker.service.in'), snapshotSource('apps/worker/artifacts/graphql-worker.service.in'), { mode: 0o600 });
