@@ -331,7 +331,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
     await configureNativeAcceptanceMcp(livePool, runtimeDirectory,
-      { codex: codexBinary, opencode: openCodeBinary }, endpoint)
+      { codex: codexBinary, opencode: openCodeBinary }, endpoint, harnesses)
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)

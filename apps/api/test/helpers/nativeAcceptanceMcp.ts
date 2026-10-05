@@ -13,7 +13,8 @@ import { ownedTestDatabaseUrl, ownedTestPath } from './testResources.js'
 
 /** Install the normal managed connection in private profiles; native preflight still verifies it. */
 export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: string,
-  binaries: { codex: string; opencode: string }, endpoint: string): Promise<void> {
+  binaries: { codex: string; opencode: string }, endpoint: string,
+  harnesses: readonly ('codex' | 'opencode')[]): Promise<void> {
   ownedTestDatabaseUrl()
   const file = ownedTestPath(join(process.env.CODEX_HOME!, 'config.toml'))
   // Codex requires a user configuration layer before its native settings writer can edit it.
@@ -34,15 +35,14 @@ export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: str
       expiresAt: new Date(Date.now() + 600_000),
       grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
     })
-    for (const harness of ['codex', 'opencode'] as const) {
+    for (const harness of new Set(harnesses)) {
       const before = await service.list(authority.principal, harness)
-      if (before.presets?.graphql !== 'installed') {
-        const plan = await service.applyManaged(authority.principal, {
-          harness, preset: 'graphql', installed: true,
-          commandId: randomUUID(), expectedRevision: before.revision,
-        })
-        assert.equal(plan.status, 'applied', JSON.stringify(plan))
-      }
+      if (before.presets?.graphql === 'installed') continue
+      const plan = await service.applyManaged(authority.principal, {
+        harness, preset: 'graphql', installed: true,
+        commandId: randomUUID(), expectedRevision: before.revision,
+      })
+      assert.equal(plan.status, 'applied', JSON.stringify(plan))
       assert.equal((await service.list(authority.principal, harness)).presets?.graphql, 'installed')
     }
   } finally { await service.shutdown() }

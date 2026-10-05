@@ -9,7 +9,7 @@ import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
@@ -30,7 +30,6 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
-import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { provisionTestResources } from '../../../scripts/test-resources.mjs'
 import { stopGroup } from '../../../scripts/integration-process.mjs'
 
@@ -94,27 +93,28 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   }, 90_000)
   it.each(['unset', 'enabled'])(
     'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
-      const previous = { ...process.env }
-      const input = { ...previous }
+      const input = { ...process.env }
       delete input.GRAPHQL_TEST_ROOT
       delete input.GRAPHQL_TEST_OWNER
       const resources = await provisionTestResources(input)
-      for (const key of Object.keys(process.env)) delete process.env[key]
-      Object.assign(process.env, resources.environment)
-      if (keep === 'enabled') process.env.ENG03_A_KEEP_RUNTIME = '1'
-      else delete process.env.ENG03_A_KEEP_RUNTIME
-      const recoveryState: { context?: Eng03NativeControl; reservation?: NativeProcessRecovery } = {}
+      const environment = { ...resources.environment }
+      if (keep === 'enabled') environment.ENG03_A_KEEP_RUNTIME = '1'
+      else delete environment.ENG03_A_KEEP_RUNTIME
+      const observation = join(environment.GRAPHQL_TEST_ROOT!, 'acceptance-retention.json')
+      const probe = fileURLToPath(new URL('./helpers/nativeAcceptanceRetentionProbe.ts', import.meta.url))
+      const child = spawn(process.execPath, ['--import', require.resolve('tsx'), probe, observation], {
+        env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      child.stdout?.resume()
+      child.stderr?.resume()
       try {
-        await expect(runEng03NativeScenario('E03-P01', 'codex', 'codex', {
-          control: async current => {
-            recoveryState.context = current
-            await current.startTask
-            recoveryState.reservation = current.registry.reserveLaunch('acceptance-cleanup-recovery')
-          },
-        })).rejects.toThrow('cleanup remains unconfirmed')
-        const { context, reservation } = recoveryState
-        if (!context || !reservation) throw new Error('Acceptance helper did not reach the recovery cut')
-        const artifact = JSON.parse(await readFile(context.artifactPath, 'utf8')) as {
+        const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(200_000) })
+        expect(code).toBe(0)
+        const reported = JSON.parse(await readFile(observation, 'utf8')) as {
+          runId: string; artifactPath: string; branchCount: number
+        }
+        expect(reported.branchCount).toBe(2)
+        const artifact = JSON.parse(await readFile(reported.artifactPath, 'utf8')) as {
           resources: { invocation: { directory: string; token: string }; cleanupId: string;
             root: string; schema: string; registryDirectory: string }
           resourcesRetained: boolean
@@ -125,10 +125,9 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL,
           options: `-c search_path=${artifact.resources.schema}`, max: 1 })
         try {
-          expect((await pool.query('select id from runs where id=$1', [context.runId])).rows)
-            .toEqual([{ id: context.runId }])
+          expect((await pool.query('select id from runs where id=$1', [reported.runId])).rows)
+            .toEqual([{ id: reported.runId }])
         } finally { await pool.end() }
-        await context.registry.abandonReservedLaunch(reservation)
         const registryModule = new URL('../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
         const resourcesModule = new URL('../../../scripts/test-resources.mjs', import.meta.url).href
         const recovery = spawn(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', `
@@ -156,8 +155,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         await resources.close()
         expect(existsSync(resources.environment.GRAPHQL_TEST_ROOT!)).toBe(false)
       } finally {
-        for (const key of Object.keys(process.env)) delete process.env[key]
-        Object.assign(process.env, previous)
+        await stopGroup(child.pid)
       }
     }, 240_000)
 
