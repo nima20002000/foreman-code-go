@@ -169,7 +169,7 @@ it.each([
         } else if (scenario === 'files') {
           expect(transport.results[0]!.result).toMatchObject({ structuredContent: {
             contentBase64: Buffer.from('# File read by the official SDK\n').toString('base64'),
-          } })
+          }, content: expect.arrayContaining([{ type: 'text', text: '# File read by the official SDK\n' }]) })
           expect((await pool.query('select count(*)::int as n from file_tool_sessions where revoked_at is null')).rows[0]?.n).toBe(0)
         } else expect((await pool.query("select count(*)::int as n from workspaces where record->>'name'=$1", [arguments_.name])).rows[0]?.n).toBe(0)
         if (scenario !== 'denied-management') {

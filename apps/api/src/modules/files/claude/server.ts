@@ -1,7 +1,7 @@
 import type { createSdkMcpServer, tool, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import {
-  AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileCreateWorkingCopyInputSchema,
+  AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileReadResultSchema, AgentFileCreateWorkingCopyInputSchema,
   AgentFileWriteWorkingCopyInputSchema, AgentFileApplyFormatEditInputSchema, AgentFilePublishInputSchema,
 } from '@foreman-code/contracts/files'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
@@ -11,6 +11,7 @@ import type { ClaudeCallbackIdentity } from '../../harnesses/claudeSdk/interacti
 import type { AgentFileToolService } from '../tools/service.js'
 import { isMutation } from '../tools/context.js'
 import type { FileToolOperation } from '../tools/types.js'
+import { markdownReadText } from '../tools/markdownReadText.js'
 import type { ClaudeMcpToolManifest } from '../../harnesses/claudeSdk/mcpPolicy.js'
 
 export type ClaudeFileSdk = { createSdkMcpServer: typeof createSdkMcpServer; tool: typeof tool }
@@ -51,7 +52,12 @@ export function createClaudeFileMcpServer(input: {
       bridges.add(bridge)
       let result: ReturnType<typeof toolResult>
       try {
-        result = toolResult(await bridge.call(operation, args))
+        const value = await bridge.call(operation, args)
+        result = toolResult(value)
+        if (operation === 'files.read') {
+          const text = markdownReadText(AgentFileReadResultSchema.parse(value))
+          if (text) result.content.push({ type: 'text', text })
+        }
       } finally {
         await bridge.close()
         bridges.delete(bridge)
@@ -70,7 +76,7 @@ export function createClaudeFileMcpServer(input: {
     sdk.tool('files.list', 'List metadata in the admitted conversation scope.',
       { ...AgentFileListInputSchema.shape, limit: AgentFileListInputSchema.shape.limit.unwrap().optional() },
       (args, extra) => invoke('files.list', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
-    sdk.tool('files.read', 'Read bounded bytes of exact file and revision pins.',
+    sdk.tool('files.read', 'Read bounded bytes of exact file and revision pins. Markdown includes UTF-8 text alongside the base64 bytes.',
       { ...AgentFileReadInputSchema.shape, offset: AgentFileReadInputSchema.shape.offset.unwrap().optional(), length: AgentFileReadInputSchema.shape.length.unwrap().optional() },
       (args, extra) => invoke('files.read', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
     ...(input.allowMutation ? [
