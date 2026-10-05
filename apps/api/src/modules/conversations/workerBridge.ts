@@ -9,6 +9,7 @@ import {
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { NativeSessionReference } from '@foreman-code/contracts'
+import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 
@@ -43,11 +44,19 @@ export class MainWorkerConversationBridge {
   private readonly admissions = new Map<string, Admission>()
 
   capture(input: { request: WorkerConversationRpcRequest; channel: WorkerConversationChannel;
-    current(signal?: AbortSignal): Promise<void>; callbacks?: WorkerConversationCallbacks }) {
+    current(signal?: AbortSignal): Promise<void>; callbacks?: WorkerConversationCallbacks;
+    recoveredSubmission?: NativeMessageSubmission }) {
     const admissionId = randomUUID()
     const request = WorkerConversationRpcRequestSchema.parse({ ...structuredClone(input.request), admissionId })
     const admission: Admission = { request, channel: input.channel, current: input.current,
       callbacks: input.callbacks ?? {}, tail: Promise.resolve(), identities: new Map(), closed: false }
+    if (input.recoveredSubmission) {
+      const submission = input.recoveredSubmission
+      if (request.method !== 'conversation.reconcile' || request.binding.harness !== 'claude'
+        || submission.nativeSessionId !== request.session.nativeSessionId
+        || submission.clientCorrelationId !== request.correlationId) denied()
+      admission.identities.set(submission.clientCorrelationId, { nativeSubmission: structuredClone(submission) })
+    }
     this.admissions.set(admissionId, admission)
     const assertCurrent = async (signal?: AbortSignal) => {
       if (admission.closed || this.admissions.get(admissionId) !== admission) denied()
@@ -97,8 +106,10 @@ export class MainWorkerConversationBridge {
     }
     if (callback.method === 'conversation.claude-authority') {
       const request = admission.request
+      const recovery = request.method === 'conversation.reconcile' && request.correlationId
+        && admission.identities.has(request.correlationId)
       if (callback.binding.harness !== 'claude' || !admission.callbacks.claudeAuthority
-        || !['conversation.initial-turn', 'conversation.start-turn'].includes(request.method)) denied()
+        || !recovery && !['conversation.initial-turn', 'conversation.start-turn'].includes(request.method)) denied()
       const authority = callback.request
       if (authority.phase !== 'admission') {
         const identity = authority.identity

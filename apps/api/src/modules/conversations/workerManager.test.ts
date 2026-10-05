@@ -10,7 +10,8 @@ import { WorkerConversationManager } from './workerManager.js'
 import { MainWorkerConversationBridge } from './workerBridge.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
-import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { WorkerConversationRpcRequestSchema, type WorkerConversationRpcRequest,
+  type WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 
 it('carries Plan and context through the issued-request bridge without creating a Run or another session', async () => {
   const f = workerConversationFixture()
@@ -161,4 +162,56 @@ it('retains a pre-message credential admission until the prepared owner is dispo
   expect(requests.map(value => value.method)).toEqual(['conversation.refresh-mcp', 'conversation.release-preparation'])
   await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
   bridge.close()
+})
+
+it('retains recovered callback admission until native settlement and rechecks revoked grants', async () => {
+  const f = workerConversationFixture('agent', 'claude')
+  if (!('agentId' in f.configuration) || f.binding.owner.kind !== 'agent') throw new Error('Agent fixture required')
+  const correlationId = 'already-submitted-message'
+  const submission = { kind: 'message' as const, nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'original-native-message', clientCorrelationId: correlationId }
+  const receipt: WorkerConversationReceipt = { binding: f.binding, connection: f.connection,
+    revision: 1, closed: false, closing: false, session: f.session, nativeOwner: f.nativeOwner,
+    turns: [{ correlationId, inputHash: 'a'.repeat(64), status: 'submitted', nativeTurnId: null,
+      nativeSubmission: submission }], compactions: [], desiredPreferences: null, appliedPreferences: null }
+  const bridge = new MainWorkerConversationBridge()
+  const requests: WorkerConversationRpcRequest[] = []
+  let allowed = true
+  const manager = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration, bridge,
+    current: async () => { if (!allowed) throw new Error('Current grant revoked') },
+    claudeAuthority: async () => ({ authorized: true }),
+    channel: { binding: f.connection, request: async payload => {
+      const request = WorkerConversationRpcRequestSchema.parse(payload)
+      requests.push(request)
+      return { payload: request.method === 'conversation.open' ? { receipt }
+        : { receipt, context: null, history: { events: [], pendingInteractions: [] } } }
+    } } })
+  try {
+    await manager.attachSession(f.session, { kind: 'agent-chat', configuration: f.configuration,
+      conversationId: f.binding.owner.conversationId, workflowId: f.binding.owner.workflowId,
+      workflowNodeId: f.binding.owner.workflowNodeId, workingDirectory: f.binding.workingDirectory,
+      correlationId, instructionsDelivered: true })
+    await manager.reconcile(f.session, correlationId)
+    const recovery = requests.at(-1)!
+    const callback = { method: 'conversation.claude-authority', binding: f.binding,
+      admissionId: recovery.admissionId, request: { phase: 'validate', identity: {
+        ownerPrincipalId: 'original-sender', attemptId: 'original-request',
+        nativeSessionId: f.session.nativeSessionId, nativeMessageId: submission.nativeMessageId,
+        clientCorrelationId: correlationId, generation: 'original-query', toolUseId: 'original-tool',
+      } } }
+    expect(await bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).toEqual({ authorized: true })
+    allowed = false
+    await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000)))
+      .rejects.toThrow('Current grant revoked')
+    allowed = true
+    receipt.turns[0]!.status = 'completed'
+    receipt.turns[0]!.result = { outcome: 'succeeded' }
+    receipt.revision++
+    await manager.reconcile(f.session, correlationId)
+    await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000)))
+      .rejects.toMatchObject({ status: 403 })
+    expect(requests.map(request => request.method)).toEqual([
+      'conversation.open', 'conversation.reconcile', 'conversation.reconcile',
+    ])
+  } finally { await manager.dispose(); bridge.close() }
 })

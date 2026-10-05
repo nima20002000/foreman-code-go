@@ -133,6 +133,7 @@ export async function allocateInstalledWorkerClaude(input: {
     workingDirectory: binding.workingDirectory, cliVersion: original.accepted.currentBinding.pin.cliVersion })
   let launch: NativeLaunchObservation | undefined
   return { manager, start,
+    recoverClaudeAuthority: authority.recover,
     inspector: { async inspect(request) {
       await before(request.signal)
       const result = await inspect.inspect(request)

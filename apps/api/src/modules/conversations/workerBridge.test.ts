@@ -98,6 +98,41 @@ it('never lets a read-only conversation lease supply new Claude message authorit
   lease.close()
 })
 
+it('keeps recovered Claude callbacks on the submitted message and current sender grants', async () => {
+  const f = workerConversationFixture('agent', 'claude')
+  const bridge = new MainWorkerConversationBridge()
+  const correlationId = 'existing-message'
+  const submission = { kind: 'message' as const, nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'submitted-native-message', clientCorrelationId: correlationId }
+  const request: WorkerConversationRpcRequest = { method: 'conversation.reconcile', binding: f.binding,
+    session: f.session, correlationId }
+  const current = vi.fn(async () => {})
+  const authority = vi.fn(async () => ({ authorized: true }))
+  const channel = { binding: f.connection, request: async () => ({ payload: {} }) }
+  const lease = bridge.capture({ request, current, channel, recoveredSubmission: submission,
+    callbacks: { claudeAuthority: authority } })
+  const identity = { ownerPrincipalId: 'original-sender', attemptId: 'original-request',
+    nativeSessionId: f.session.nativeSessionId, nativeMessageId: submission.nativeMessageId,
+    clientCorrelationId: correlationId, generation: 'original-query', toolUseId: 'original-tool' }
+  const invoke = (value: typeof identity) => bridge.handle({ method: 'conversation.claude-authority', binding: f.binding,
+    admissionId: lease.admissionId, request: { phase: 'validate', identity: value } }, f.connection, AbortSignal.timeout(1000))
+  expect(await invoke(identity)).toEqual({ authorized: true })
+  await expect(invoke({ ...identity, nativeMessageId: 'different-message' })).rejects.toMatchObject({ status: 403 })
+  await expect(invoke({ ...identity, generation: 'different-query' })).rejects.toMatchObject({ status: 403 })
+  current.mockRejectedValueOnce(new Error('Sender revoked'))
+  await expect(invoke(identity)).rejects.toThrow('Sender revoked')
+  expect(authority).toHaveBeenCalledOnce()
+  lease.close()
+  await expect(invoke(identity)).rejects.toMatchObject({ status: 403 })
+  expect(() => bridge.capture({ request, current, channel,
+    recoveredSubmission: { ...submission, nativeSessionId: 'another-session' } })).toThrow()
+  const reader = bridge.capture({ request, current, channel, callbacks: { claudeAuthority: authority } })
+  await expect(bridge.handle({ method: 'conversation.claude-authority', binding: f.binding,
+    admissionId: reader.admissionId, request: { phase: 'admission' } }, f.connection, AbortSignal.timeout(1000)))
+    .rejects.toMatchObject({ status: 403 })
+  reader.close()
+})
+
 it('rejects unissued admissions, foreign conversations and other authenticated generations', async () => {
   const f = setup()
   const callback = { method: 'conversation.submitted', admissionId: f.lease.admissionId,

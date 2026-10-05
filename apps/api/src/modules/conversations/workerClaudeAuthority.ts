@@ -1,11 +1,19 @@
 import { WorkerClaudeCallbackIdentitySchema, WorkerClaudeCallbackAuthoritySchema, WorkerClaudeAuthorizationSchema,
   type WorkerClaudeAuthorityRequest, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
+import { isDeepStrictEqual } from 'node:util'
 import type { NativeInitialTurnInput, NativeTurnInput } from '../harnesses/port.js'
 import { ClaudeInteractionBridge } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
 import { DomainError } from '../errors.js'
+
+interface AdmittedMessage {
+  request: WorkerConversationRpcRequest
+  authority: ReturnType<typeof WorkerClaudeCallbackAuthoritySchema.parse>
+  submission?: NativeMessageSubmission
+}
 
 /** The SDK callback stays on its worker; Main alone authorizes its message and persisted response. */
 export function createWorkerClaudeAuthority(input: {
@@ -16,11 +24,11 @@ export function createWorkerClaudeAuthority(input: {
   request(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal): Promise<unknown>
 }) {
-  const sources = new Map<string, WorkerConversationRpcRequest>()
+  const sources = new Map<string, AdmittedMessage>()
   const sourceFor = (identity: ClaudeCallbackIdentity) => {
     const source = identity.clientCorrelationId && sources.get(identity.clientCorrelationId)
     if (!source) throw new DomainError('CLAUDE_CALLBACK_SCOPE_DENIED', 'The native callback has no admitted message.', 409)
-    return source
+    return source.request
   }
   const authorize = async (source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal) => WorkerClaudeAuthorizationSchema.parse(await input.request(source, request, signal))
@@ -56,10 +64,32 @@ export function createWorkerClaudeAuthority(input: {
     }
     const authority = WorkerClaudeCallbackAuthoritySchema.parse(await input.request(source,
       { phase: 'admission' }, input.signal))
-    sources.set(message.clientCorrelationId, source)
-    return { ...message, callbackAuthority: authority }
+    const admitted: AdmittedMessage = { request: source, authority }
+    sources.set(message.clientCorrelationId, admitted)
+    return { ...message, callbackAuthority: authority, onMessageSubmitted: async (submission: NativeMessageSubmission) => {
+      await message.onMessageSubmitted?.(submission)
+      admitted.submission = structuredClone(submission)
+    } }
   }
   return { bridge,
+    async recover(source: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
+      submission: NativeMessageSubmission, signal: AbortSignal) {
+      signal.throwIfAborted()
+      const admitted = sources.get(submission.clientCorrelationId)
+      if (!admitted) return
+      if (source.method !== 'conversation.reconcile' || source.correlationId !== submission.clientCorrelationId
+        || source.session.nativeSessionId !== submission.nativeSessionId
+        || !isDeepStrictEqual(source.binding, admitted.request.binding)
+        || !isDeepStrictEqual(submission, admitted.submission)) {
+        throw new DomainError('CLAUDE_CALLBACK_SCOPE_DENIED', 'Recovery differs from the owned native message.', 409)
+      }
+      const authority = WorkerClaudeCallbackAuthoritySchema.parse(await input.request(source,
+        { phase: 'admission' }, signal))
+      if (!isDeepStrictEqual(authority, admitted.authority)) throw new DomainError('CLAUDE_CALLBACK_SCOPE_DENIED',
+        'The original native sender or request changed during recovery.', 409)
+      signal.throwIfAborted()
+      admitted.request = source
+    },
     bind(manager: ClaudeNativeSessionManager) {
       bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const initial = manager.startInitialTurn.bind(manager)

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import {
   CompactionStateSchema, ContextSnapshotSchema, McpDetectionSchema, NativeHarnessCapabilitiesSchema,
   PendingNativeInteractionSchema, SessionControlCapabilitiesSchema, SessionPreferencesSchema,
@@ -46,6 +47,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private applied: SessionPreferences | null = null
   private readonly leases = new Set<ReturnType<MainWorkerConversationBridge['capture']>>()
   private credentialLease: ReturnType<MainWorkerConversationBridge['capture']> | undefined
+  private readonly recoveredCallbacks = new Map<string, ReturnType<MainWorkerConversationBridge['capture']>>()
   private preparationActive = false
   private readonly lifetime = new AbortController()
 
@@ -54,10 +56,13 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private frame(input: Record<string, unknown>): WorkerConversationRpcRequest {
     return { ...input, binding: this.options.binding } as WorkerConversationRpcRequest
   }
-  private capture(frame: WorkerConversationRpcRequest, callbacks: WorkerConversationCallbacks = {}) {
+  private capture(frame: WorkerConversationRpcRequest, options: {
+    callbacks?: WorkerConversationCallbacks; recoveredSubmission?: NativeMessageSubmission
+  } = {}) {
     const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
       callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}),
-        ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...callbacks },
+        ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...options.callbacks },
+      ...(options.recoveredSubmission ? { recoveredSubmission: options.recoveredSubmission } : {}),
       current: signal => { this.lifetime.signal.throwIfAborted(); return this.options.current(frame, signal) } })
     this.leases.add(lease)
     return lease
@@ -128,14 +133,14 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     source: NativeSessionReference | undefined, signal?: AbortSignal) {
     const frame = this.frame({ method: 'conversation.open', ...this.startFields(start), mode,
       ...(source ? { source } : {}) })
-    const lease = this.capture(frame, { sessionObserved: async session => {
+    const lease = this.capture(frame, { callbacks: { sessionObserved: async session => {
       if (session.harness !== this.harness || mode === 'fork' && session.nativeSessionId === source?.nativeSessionId) {
         conflict('The worker returned a foreign or non-independent session.')
       }
       this.session = structuredClone(session)
       await this.options.observeSession?.(session)
       this.releaseCredential()
-    } })
+    } } })
     try {
       const receipt = this.adopt(await lease.request(signal))
       if (!receipt?.session) conflict('Native creation is unresolved; a replacement session will not be created.')
@@ -222,7 +227,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
 
   private async *stream(frame: WorkerConversationRpcRequest, input: NativeTurnInput,
     initial: NativeInitialTurnInput | undefined, signal?: AbortSignal) {
-    const lease = this.capture(frame, {
+    const lease = this.capture(frame, { callbacks: {
       sessionObserved: async session => {
         if (!initial || session.harness !== this.harness) conflict('Unexpected initial native session observation.')
         await initial.onSessionObserved(session)
@@ -235,7 +240,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         if (identity.nativeSubmission) await input.onMessageSubmitted?.(identity.nativeSubmission)
       },
       settingsApplied: async () => { await input.onSettingsApplied?.() },
-    })
+    } })
     const pollSignal = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])])
     let sequence: number | undefined
     try {
@@ -314,7 +319,24 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }
   }
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal) {
-    return this.readHistory(session, { correlationId }, signal)
+    this.assertSession(session)
+    const submission = this.harness === 'claude'
+      ? this.receipt?.turns.find(turn => turn.correlationId === correlationId)?.nativeSubmission : undefined
+    const frame = this.frame({ method: 'conversation.reconcile', session, correlationId })
+    const lease = this.capture(frame, submission ? { recoveredSubmission: submission } : {})
+    try {
+      const history = this.historyResponse(await lease.request(signal))
+      const previous = this.recoveredCallbacks.get(correlationId)
+      if (previous) this.release(previous)
+      this.recoveredCallbacks.delete(correlationId)
+      const turn = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
+      if (submission && turn?.status !== 'completed') this.recoveredCallbacks.set(correlationId, lease)
+      else this.release(lease)
+      return history
+    } catch (error) {
+      this.release(lease)
+      throw error
+    }
   }
   async historyPage(session: NativeSessionReference, before?: string, signal?: AbortSignal) {
     return this.readHistory(session, before ? { before } : {}, signal)
@@ -425,6 +447,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'Main detached its worker conversation observer.', 503))
     for (const lease of this.leases) this.release(lease)
+    this.recoveredCallbacks.clear()
     this.credentialLease = undefined
   }
 }

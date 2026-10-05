@@ -24,6 +24,8 @@ export interface WorkerConversationAllocation {
   nativeOwner(session: NativeSessionReference): Promise<RemoteNativeIdentity>
   close(): Promise<void>
   deliverClaudeCredential?(token: string, signal: AbortSignal): Promise<void>
+  recoverClaudeAuthority?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
+    submission: NonNullable<WorkerConversationReceipt['turns'][number]['nativeSubmission']>, signal: AbortSignal): Promise<void>
 }
 export interface WorkerConversationHostPorts {
   journal: WorkerConversationJournal
@@ -386,6 +388,11 @@ export class WorkerConversationHost {
       }
       case 'conversation.history':
       case 'conversation.reconcile': {
+        const turn = record.turns.find(turn => turn.correlationId === request.correlationId)
+        if (request.method === 'conversation.reconcile' && turn?.nativeSubmission && turn.status !== 'completed') {
+          await resident.allocation.recoverClaudeAuthority?.(request, turn.nativeSubmission, signal)
+          await this.authorize(request, connection, signal)
+        }
         let history: NativeHistory
         const running = request.correlationId !== undefined
           && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
