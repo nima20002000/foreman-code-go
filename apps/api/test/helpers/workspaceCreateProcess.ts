@@ -83,6 +83,6 @@ process.once('message', async (request: Request) => {
     await client.close()
     await app.close()
     await pool.end()
-    process.disconnect()
+    process.disconnect?.()
   }
 })
