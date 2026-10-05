@@ -3,6 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { ScheduleGetResultSchema, ScheduleOccurrencePageSchema, ScheduleSaveResultSchema } from '@foreman-code/contracts/schedules'
 import { buildApp } from '../src/app.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { ScheduleClearResultSchema } from '../src/modules/schedules/transportSchemas.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -31,7 +32,8 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     clients = []; app = undefined
     f = await sch11Fixture(database)
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access: f.access, services: { workflows: f.workflows, commands: f.commands } as unknown as OperatorServices } })
+      operator: { access: f.access, services: { workflows: f.workflows, commands: f.commands } as unknown as OperatorServices },
+      localHuman: new PostgresLocalHumanAccess(database.pool, f.access) })
     address = await app.listen({ host: '127.0.0.1', port: 0 })
   }, 60_000)
   afterEach(async () => {
@@ -59,6 +61,55 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     expect(ScheduleGetResultSchema.parse(tool.structuredContent)).toEqual(value)
     return value
   }
+
+  it('saves and reads scheduled attempts without login while preserving authenticated MCP readback', async () => {
+    const body = { commandId: randomUUID(), expectedRevision: 0, schedule: futureOnce }
+    const save = await fetch(new URL(root(), address), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    expect(save.status).toBe(200)
+    const saved = ScheduleSaveResultSchema.parse(await save.json())
+    expect(saved.replayed).toBe(false)
+    expect(saved.value.nextOccurrenceAt).toBe('2099-01-01T10:00:00.000Z')
+    const replay = await fetch(new URL(root(), address), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    expect(replay.status).toBe(200)
+    expect(ScheduleSaveResultSchema.parse(await replay.json())).toEqual({ ...saved, replayed: true })
+    const human = await new PostgresLocalHumanAccess(database.pool, f.access).current()
+    const authority = await database.pool.query<{ owner_principal_id: string; actor_principal_id: string }>(
+      'select owner_principal_id,actor_principal_id from workflow_schedule_authorities where workflow_id=$1',
+      [f.scope.workflowId],
+    )
+    expect(authority.rows).toEqual([{ owner_principal_id: human.id, actor_principal_id: human.id }])
+    expect(await f.countRuns()).toBe(0)
+    f.time.now = saved.value.nextOccurrenceAt!
+    await f.dispatcher().dispatch(saved.value)
+    expect(await f.countRuns()).toBe(1)
+    const response = await fetch(new URL(`${root()}/occurrences?limit=1`, address))
+    expect(response.status).toBe(200)
+    const page = ScheduleOccurrencePageSchema.parse(await response.json())
+    expect(page.items).toEqual([expect.objectContaining({ status: 'accepted', scheduleRevision: 1 })])
+    const reader = await connect(f.reader.token)
+    const result = await reader.callTool({
+      name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(ScheduleOccurrencePageSchema.parse(result.structuredContent)).toEqual(page)
+    const unchanged = await fetch(new URL(root(), address), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, commandId: randomUUID(), expectedRevision: 1 }),
+    })
+    expect(unchanged.status).toBe(200)
+    const current = ScheduleSaveResultSchema.parse(await unchanged.json()).value
+    expect(current).toEqual({ ...saved.value, revision: 2, nextOccurrenceAt: null })
+    expect(await readback(reader)).toEqual({ schedule: current })
+    const invalid = await fetch(new URL(root(), address), {
+      headers: { Authorization: 'Bearer invalid-schedule-credential' },
+    })
+    expect(invalid.status).toBe(401)
+    expect(await f.countRuns()).toBe(1)
+  }, 60_000)
 
   it.each(['accepted', 'rejected', 'missed', 'skipped'] as const)(
     'exposes the latest persisted %s attempt equally over authenticated HTTP and MCP, and denies foreign reads',
