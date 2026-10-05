@@ -4,11 +4,16 @@ interface Sql {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>
 }
 export const testAdminUrl: string
+export function testAdminPool(): Promise<Sql & { end(): Promise<void> }>
 export function requireTestServerUrl(value: string): URL
 export function createTestRoot(parent?: string, prefix?: string): TestRoot
 export function assertTestRoot(directory: string, token: string): void
 export function assertTestPath(resource: TestRoot, path: string): string
 export function removeTestRoot(resource: TestRoot): void
+export function registerTestResourceCleanup(resource: TestRoot, details: Record<string, unknown>): string
+export function completeTestResourceCleanup(resource: TestRoot, id: string): void
+export function assertTestResourcesSettled(resource: TestRoot): void
+export function cleanupTestResources(resource: TestDatabase): Promise<void>
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
 export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise<{
   environment: NodeJS.ProcessEnv

@@ -1,8 +1,8 @@
 import { readFile, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
-  testAdminUrl, testEnvironment } from '../../../scripts/test-resources.mjs'
+import { assertTestPath, assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
+  completeTestResourceCleanup, registerTestResourceCleanup, testAdminUrl, testEnvironment } from '../../../scripts/test-resources.mjs'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 
 describe('disposable test resources', () => {
@@ -28,6 +28,21 @@ describe('disposable test resources', () => {
     } finally { removeTestRoot(resource) }
   })
 
+  it('retains recovery files until every registered cleanup is confirmed by its owner', async () => {
+    const resource = createTestRoot()
+    const first = registerTestResourceCleanup(resource, { kind: 'native-qualification' })
+    const second = registerTestResourceCleanup(resource, { kind: 'suite-process-group' })
+    const file = join(resource.directory, 'retained.txt')
+    await writeFile(file, 'native recovery state')
+    expect(() => removeTestRoot(resource)).toThrow('cleanup remains unconfirmed')
+    expect(() => completeTestResourceCleanup({ ...resource, token: 'wrong-owner' }, first)).toThrow('ownership')
+    completeTestResourceCleanup(resource, first)
+    expect(() => removeTestRoot(resource)).toThrow('cleanup remains unconfirmed')
+    expect(await readFile(file, 'utf8')).toBe('native recovery state')
+    completeTestResourceCleanup(resource, second)
+    removeTestRoot(resource)
+  })
+
   it('rejects fixture cleanup outside the owned root and through escaping symlinks', async () => {
     const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
     const file = join(outside.directory, 'retained.txt')
@@ -42,6 +57,18 @@ describe('disposable test resources', () => {
       await removeFixtureDirectory(link)
       removeTestRoot(outside)
     }
+  })
+
+  it('validates execution destinations through missing directories and rejects dangling symlinks', async () => {
+    const resource = createTestRoot()
+    const link = join(resource.directory, 'dangling-location')
+    try {
+      const destination = join(resource.directory, 'projects', 'nested', 'new-folder')
+      expect(assertTestPath(resource, destination)).toBe(destination)
+      await symlink('/missing-outside-test-root', link)
+      expect(() => assertTestPath(resource, link)).toThrow('symlink')
+      expect(() => assertTestPath(resource, join(link, 'new-folder'))).toThrow()
+    } finally { removeTestRoot(resource) }
   })
 
   it('isolates storage and harness homes, discards ambient authentication, and copies only test authentication', async () => {

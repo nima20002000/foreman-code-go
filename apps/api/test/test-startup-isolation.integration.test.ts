@@ -59,11 +59,14 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
   })
   const observation = join(state, 'startup-environment.json')
   const observer = join(state, 'observe.mjs')
-  await writeFile(observer, `import { writeFileSync } from 'node:fs';
-    setInterval(() => writeFileSync(${JSON.stringify(observation)}, JSON.stringify({
-      ambientKey: process.env.OPENAI_API_KEY === 'ambient-provider-sentinel',
-      logFile: process.env.LOG_FILE ?? null
-    })), 20).unref();`)
+  await writeFile(observer, `import { renameSync, writeFileSync } from 'node:fs';
+    setInterval(() => {
+      writeFileSync(${JSON.stringify(observation + '.tmp')}, JSON.stringify({
+        ambientKey: process.env.OPENAI_API_KEY === 'ambient-provider-sentinel',
+        logFile: process.env.LOG_FILE ?? null
+      }));
+      renameSync(${JSON.stringify(observation + '.tmp')}, ${JSON.stringify(observation)});
+    }, 20).unref();`)
   const port = await freePort()
   const child = spawn(process.execPath, ['--import', require.resolve('tsx'),
     '--import', observer, join(root, 'apps/api/src/server.ts')], {
@@ -103,12 +106,23 @@ it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
     child.stdout?.resume()
     child.stderr?.resume()
     const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL, max: 1 })
+    let restarted: ChildProcess | undefined
     try {
       await ready(child, port)
       await expect(assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool)).rejects.toThrow('identity is unavailable')
       expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
       expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
+      await stopGroup(child.pid, { signal: 'SIGTERM' })
+      restarted = spawn(process.execPath, ['--import', require.resolve('tsx'), join(root, 'apps/api/src/server.ts')], {
+        cwd: root, env: { ...resources.environment, HOST: '127.0.0.1', PORT: String(port) },
+        detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      restarted.stdout?.resume()
+      restarted.stderr?.resume()
+      await ready(restarted, port)
+      await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool)
     } finally {
+      await stopGroup(restarted?.pid, { signal: 'SIGTERM' })
       await stopGroup(child.pid, { signal: 'SIGTERM' })
       await pool.end()
       await resources.close()
@@ -124,8 +138,8 @@ it('starts the local smoke API and web app and completes authenticated HTTP/MCP 
     cwd: root, env: process.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
-  child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
-  child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString() })
+  child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString() })
+  child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString() })
   try {
     const [code] = await once(child, 'exit')
     expect(code, output).toBe(0)

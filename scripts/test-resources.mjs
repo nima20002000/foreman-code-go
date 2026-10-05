@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +11,7 @@ const { Pool } = require('pg')
 export const testAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
 const serverMarker = 'graphql-disposable-test-server'
 const rootMarker = '.graphql-test-owner.json'
+const cleanupDirectory = '.graphql-test-cleanup'
 const databaseVariables = ['DATABASE_URL', 'TEST_DATABASE_URL', 'SUBAGENT_CORE_ADMIN_DATABASE_URL',
   'HRT_F03_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL',
   'NIM2691_ADMIN_DATABASE_URL', 'ENG03_A_TEST_DATABASE_URL', 'WAVE25_TEST_DATABASE_URL']
@@ -53,7 +55,32 @@ export function assertTestRoot(directory, token) {
 
 export function removeTestRoot(resource) {
   assertTestRoot(resource.directory, resource.token)
+  assertTestResourcesSettled(resource)
   rmSync(resource.directory, { recursive: true, force: true })
+}
+
+export function registerTestResourceCleanup(resource, details) {
+  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const id = randomUUID()
+  writeFileSync(join(directory, `${id}.json`), JSON.stringify({ ...details, id, token: resource.token }),
+    { mode: 0o600, flag: 'wx' })
+  return id
+}
+
+export function completeTestResourceCleanup(resource, id) {
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Invalid test cleanup identity')
+  const file = assertTestPath(resource, join(resource.directory, cleanupDirectory, `${id}.json`))
+  const record = JSON.parse(readFileSync(file, 'utf8'))
+  if (record.id !== id || record.token !== resource.token) throw new Error('Test cleanup ownership mismatch')
+  rmSync(file)
+}
+
+export function assertTestResourcesSettled(resource) {
+  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+  if (existsSync(directory) && readdirSync(directory).length) {
+    throw new Error(`Test cleanup remains unconfirmed; database and recovery state retained at ${resource.directory}`)
+  }
 }
 
 export function testEnvironment(environment, resource) {
@@ -144,9 +171,19 @@ export async function assertTestDatabase(pool, resource) {
 }
 
 export async function dropTestDatabase(admin, resource) {
+  assertTestResourcesSettled(resource)
   await assertTestDatabase(admin, resource)
   const name = decodeURIComponent(requireTestServerUrl(resource.databaseUrl).pathname.slice(1))
   await admin.query(`drop database ${identifier(name)} with (force)`)
+}
+
+export async function cleanupTestResources(resource) {
+  assertTestResourcesSettled(resource)
+  const admin = await testAdminPool()
+  try {
+    await dropTestDatabase(admin, resource)
+    removeTestRoot(resource)
+  } finally { await admin.end() }
 }
 
 export async function provisionTestResources(environment = process.env) {
@@ -162,10 +199,9 @@ export async function provisionTestResources(environment = process.env) {
   let resource
   try {
     resource = await createTestDatabase(admin, root)
-    return { environment: testEnvironment(environment, resource), close: async () => {
-      try { await dropTestDatabase(admin, resource) } finally { await admin.end() }
-      removeTestRoot(root)
-    } }
+    const isolated = testEnvironment(environment, resource)
+    await admin.end()
+    return { environment: isolated, close: () => cleanupTestResources(resource) }
   } catch (error) {
     if (resource) await dropTestDatabase(admin, resource)
     await admin.end()
@@ -252,12 +288,18 @@ export function assertTestPath(resource, path) {
   const target = resolve(path)
   if (target !== root && !target.startsWith(`${root}/`)) throw new Error('Test path must remain inside its owned root')
   let ancestor = target
-  while (!existsSync(ancestor)) ancestor = dirname(ancestor)
+  let stat
+  for (;;) {
+    try { stat = lstatSync(ancestor); break } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      ancestor = dirname(ancestor)
+    }
+  }
+  if (ancestor === target && stat.isSymbolicLink()) throw new Error('Test path must not be a symlink')
   const canonical = realpathSync(ancestor)
   if (canonical !== root && !canonical.startsWith(`${root}/`)) {
     throw new Error('Test path escapes its owned root')
   }
-  if (existsSync(target) && lstatSync(target).isSymbolicLink()) throw new Error('Test path must not be a symlink')
   return target
 }
 

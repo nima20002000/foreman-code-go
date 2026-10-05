@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { parseArgs } from 'node:util'
-import { createTestRoot, ownedTestDatabaseUrl, removeTestRoot } from './test-resources.mjs'
+import { completeTestResourceCleanup, createTestRoot, ownedTestDatabaseUrl,
+  registerTestResourceCleanup, removeTestRoot } from './test-resources.mjs'
 
 const { values } = parseArgs({ options: { harness: { type: 'string' }, binary: { type: 'string' },
   model: { type: 'string' } } })
@@ -33,6 +34,10 @@ const { QUALIFICATION_TARGET_PROFILE, runAsQualificationCandidate, codexQualific
   discoverLauncher, passiveDriverPayloads } = await tsImport(source('cliEntry.ts'), import.meta.url)
 ownedTestDatabaseUrl()
 const resource = createTestRoot(tmpdir(), `graphql-${values.harness}-qualification-`)
+const invocation = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }
+const cleanupId = registerTestResourceCleanup(invocation, {
+  kind: 'native-qualification', registryDirectory: join(resource.directory, 'native-process-registry'),
+})
 const workRoot = resource.directory
 const workDirectory = join(workRoot, 'project')
 await mkdir(workDirectory)
@@ -92,5 +97,6 @@ try {
   process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop)
   const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
   if (errors.length) throw new AggregateError(errors, 'Qualification cleanup remains uncertain; recovery records were retained.')
+  completeTestResourceCleanup(invocation, cleanupId)
   removeTestRoot(resource)
 }
