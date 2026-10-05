@@ -52,16 +52,27 @@ it.each(['turn', 'initial'] as const)('keeps the %s writer lease until the last 
     sequence, type: 'native.notification', occurredAt: new Date().toISOString(), payload: { text: `frame-${sequence}` },
   }))
   const coordination = nativeLanes()
-  const manager = {
+  const unexpectedOperation = async (): Promise<never> => {
+    throw new Error('Unexpected provider operation')
+  }
+  const manager: NativeHarnessSessionManager = {
     harness: 'codex',
+    capabilities: unexpectedOperation,
+    inspectMcp: unexpectedOperation,
     createSession: async () => reviewSession,
+    attachSession: unexpectedOperation,
     async *startTurn() { yield* frames },
     async *startInitialTurn(_start, input) {
       await input.onSessionObserved(reviewSession)
       yield* frames
     },
+    pending: unexpectedOperation,
+    respond: unexpectedOperation,
+    cancel: unexpectedOperation,
+    history: unexpectedOperation,
     reconcile: async () => ({ events: [], pendingInteractions: [] }),
-  } as NativeHarnessSessionManager
+    close: unexpectedOperation,
+  }
   const writer = new SingleWriterSessionManager(manager, coordination, 'reviewer')
   if (mode === 'turn') await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
   const batches = mode === 'turn'

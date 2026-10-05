@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { NativeHarnessEvent } from '@graphql/contracts'
-import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
+import { NATIVE_PRODUCER_REJECTION_TYPE } from '../run-graph/nativeProducerNormalization.js'
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 
 export const NATIVE_EVENT_BATCH_SIZE = 16
@@ -38,10 +38,11 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
       }
       if (!batch.length) flushAt = Date.now() + flushIntervalMs
       batch.push(next.value)
-      const normalized = normalizeNativeProducerEvent(next.value)
-      const immediate = normalized.rejected
-        || ['transport.disconnected', 'interaction.pending', 'permission.asked'].includes(next.value.type)
-        || selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind !== 'ignored'
+      // Provider frames acquire their execution identity at the persistence boundary.
+      const immediate = [
+        NATIVE_PRODUCER_REJECTION_TYPE, 'transport.disconnected', 'interaction.pending', 'permission.asked',
+      ].includes(next.value.type)
+        || selectNativeGraphEvidence(next.value.type, next.value.payload).kind !== 'ignored'
       if (immediate || batch.length === NATIVE_EVENT_BATCH_SIZE || Date.now() >= flushAt) {
         yield batch
         batch = []
