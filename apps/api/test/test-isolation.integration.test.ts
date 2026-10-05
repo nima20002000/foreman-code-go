@@ -3,10 +3,10 @@ import pg from 'pg'
 import { expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
 import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
-import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
 import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import { AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
 
 it('rejects connections to the app PostgreSQL endpoint before connecting', async () => {
   const client = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' })
@@ -102,6 +102,35 @@ it('checks persisted execution destinations again after reconnecting to the prep
     await assertOwnedExecutionDestinations(restarted, selection)
   } finally {
     await restarted?.end()
+    await fixture.close()
+    removeTestRoot(outside)
+  }
+})
+
+it('checks accepted Run locations and native directories independently of the current workspace location', async () => {
+  const fixture = await agent3Database()
+  const outside = createTestRoot()
+  try {
+    const saved = await seedAgent3(fixture.pool, fixture.directory, makeCurrentWorkflowFixture(randomUUID(), 'single'))
+    const selection = { workspaceId: saved.scope.workspaceId, runId: saved.run.id }
+    await assertOwnedExecutionDestinations(fixture.pool, selection)
+    await fixture.pool.query("update runs set record=jsonb_set(record,'{executionLocation,rootPath}',$2::jsonb) where id=$1",
+      [saved.run.id, JSON.stringify(outside.directory)])
+    await expect(assertOwnedExecutionDestinations(fixture.pool, selection)).rejects.toThrow('owned root')
+    await fixture.pool.query('update runs set record=$2::jsonb where id=$1', [saved.run.id, JSON.stringify(saved.run)])
+    const execution = HarnessExecutionSchema.parse({ ...candidateFor(saved),
+      workingDirectory: fixture.directory, runtimeDirectory: outside.directory })
+    await fixture.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [execution.id, execution.runId, execution.workflowNodeId,
+      execution.agentId, execution.attempt, JSON.stringify(execution)])
+    await expect(assertOwnedExecutionDestinations(fixture.pool, selection)).rejects.toThrow('owned root')
+    await fixture.pool.query('update harness_executions set record=$2::jsonb where id=$1',
+      [execution.id, JSON.stringify({ ...execution, runtimeDirectory: fixture.directory, workingDirectory: outside.directory })])
+    await expect(assertOwnedExecutionDestinations(fixture.pool, selection)).rejects.toThrow('owned root')
+    await fixture.pool.query('update harness_executions set record=$2::jsonb where id=$1',
+      [execution.id, JSON.stringify({ ...execution, runtimeDirectory: fixture.directory })])
+    await assertOwnedExecutionDestinations(fixture.pool, selection)
+  } finally {
     await fixture.close()
     removeTestRoot(outside)
   }
