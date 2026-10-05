@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
-import { HarnessCompatibilityListSchema } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessCompatibilityListSchema } from '@foreman-code/contracts'
 import { FileCompatibilityCache } from '../src/modules/harnesses/compatibility/cache.js'
 import { HarnessCompatibilityService } from '../src/modules/harnesses/compatibility/service.js'
 import { HarnessQualificationListSchema } from '@foreman-code/contracts/harness-qualification'
@@ -18,6 +18,11 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
+import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
+import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
 import { runWithReadOnlyQualification, requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
@@ -133,6 +138,49 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
       status: 'failed', checks: [{ id: 'static-compatibility', passed: false, detail: 'schema missing required method' }],
     }))
     expect(skippedSuite.run).not.toHaveBeenCalled()
+    const installedSettings = new HarnessInstanceSettingsRepository(pool)
+    const installedProofs = new HostHarnessProfileEvidenceRepository(pool)
+    const mainId = randomUUID(), deviceId = randomUUID(), applicationInstallationId = randomUUID()
+    const target = { hostRef: { kind: 'device' as const, mainId, deviceId }, applicationInstallationId,
+      harnessInstallationId: 'codex-installation', installationFingerprint: 'payload-a' }
+    const launcherSha = 'a'.repeat(64)
+    const saveInstalled = async (selected: typeof target, version: string) => {
+      const value: HostHarnessOverride = { instanceId: randomUUID(), instanceRevision: '1', revision: 1,
+        target: selected, presetId: 'fixture', enabled: true, driverId: 'codex', configuration: DEFAULT_HARNESS_DEFAULTS.codex,
+        configurationFingerprint: commandInputHash(DEFAULT_HARNESS_DEFAULTS.codex), qualification: 'qualified' }
+      const binding = { mainId: selected.hostRef.mainId, deviceId: selected.hostRef.deviceId,
+        workerInstallationId: selected.applicationInstallationId, keyRevision: 1, authorizationRevision: 1,
+        bootId: randomUUID(), connectionGeneration: 1, connectionEpoch: randomUUID() }
+      const record = { ...listed.qualifications[0]!, version, binarySha256: launcherSha, suiteRevision: 'installed-cache-fixture' }
+      const checkId = randomUUID()
+      const proof = HostHarnessProfileEvidenceSchema.parse({ target: selected, instanceRevision: value.instanceRevision,
+        configurationFingerprint: value.configurationFingerprint, driverId: 'codex', driverRevision: '1',
+        protocolRevision: 'codex-native-adapter-v1', suiteRevision: 'codex-profile-check-v1', environmentGeneration: 'fixture',
+        connectionGeneration: harnessConnectionGeneration(binding), authenticated: true, compatible: true, qualified: true,
+        checkedAt: record.checkedAt, completedNativeQualification: { purpose: 'explicit-host-qualification', checkId,
+          binding, target: selected, binarySha256: launcherSha, record } })
+      const client = await pool.connect()
+      try {
+        await client.query('begin')
+        await installedSettings.append(client, writer.principal.id, 0, value)
+        await installedProofs.append(client, checkId, value, proof)
+        await client.query('commit')
+      } catch (error) {
+        await client.query('rollback')
+        throw error
+      } finally { client.release() }
+      return record
+    }
+    const oldRecord = await saveInstalled(target, '0.158.0')
+    const currentTarget = { ...target, installationFingerprint: 'payload-b' }
+    const currentRecord = await saveInstalled(currentTarget, '0.160.0')
+    const otherTarget = { ...target, hostRef: { ...target.hostRef, deviceId: randomUUID() },
+      applicationInstallationId: randomUUID(), installationFingerprint: 'payload-c' }
+    const otherRecord = await saveInstalled(otherTarget, '0.160.0')
+    expect(await repository.findInstalled(currentTarget, launcherSha, 'installed-cache-fixture')).toEqual([currentRecord])
+    expect(await repository.findInstalled(target, launcherSha, 'installed-cache-fixture')).toEqual([oldRecord])
+    expect(await repository.findInstalled(otherTarget, launcherSha, 'installed-cache-fixture')).toEqual([otherRecord])
+
   } finally {
     await Promise.allSettled(clients.map((client) => client.close()))
     await app?.close()

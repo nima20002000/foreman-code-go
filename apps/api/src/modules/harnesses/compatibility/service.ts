@@ -24,7 +24,7 @@ export interface CompatibilityOptions {
 }
 export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
   return createHash('sha256').update(JSON.stringify([
-    harness, installation.identity, installation.version, process.platform, process.arch,
+    harness, installation.identity, installation.installationFingerprint ?? null, installation.version, process.platform, process.arch,
     process.version, revision,
   ])).digest('hex')
 }

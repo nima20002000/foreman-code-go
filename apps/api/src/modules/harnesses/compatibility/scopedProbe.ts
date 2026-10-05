@@ -97,6 +97,7 @@ export function scopedCompatibilityProbe(options: {
       const binding = options.pin(harness)
       return run(harness, binding, signal, async (probe, combined) => {
         const result = await probe.inspect(harness, combined, attempt)
+        result.installationFingerprint = binding.selection.installationFingerprint
         installations.set(result, { harness, binding })
         return result
       })

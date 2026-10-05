@@ -85,6 +85,7 @@ interface Runtime {
   replacingForResume?: boolean
   closed: boolean
   session?: NativeSessionReference
+  nativeProviderVersion?: string
   events: NativeHarnessEvent[]
   nextSequence: number
   turns: Map<string, Turn>
@@ -340,6 +341,7 @@ export function createClaudeNativeSessionManager(options: {
       runtime.turns.set(initial.turn.correlationId, initial.turn)
       runtime.active = initial.turn
     }
+    if (resume) runtime.session = structuredClone(resume)
     all.add(runtime)
     const startup = startupSignal(signal)
     try {
@@ -365,12 +367,9 @@ export function createClaudeNativeSessionManager(options: {
           }
         }
         if (inspected) prepared = { identity, opening: Promise.resolve(runtime) }
-        if (!runtime.session) {
-          runtime.session = { ...resume }
-          if (resident.has(resume.nativeSessionId)) throw new Error('Claude native session is already leased to another runtime')
-          resident.set(resume.nativeSessionId, runtime)
-          runtime.resolveInit(runtime.session)
-        }
+        if (resident.has(resume.nativeSessionId)) throw new Error('Claude native session is already leased to another runtime')
+        resident.set(resume.nativeSessionId, runtime)
+        runtime.resolveInit(runtime.session!)
       }
       if (initial) await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)
       const timer = setTimeout(() => runtime.rejectInit(new HarnessExecutionError('CLAUDE_INIT_TIMEOUT', 'Claude initialization did not provide an exact native session.')), options.initializationTimeoutMs ?? 10_000)
@@ -394,6 +393,7 @@ export function createClaudeNativeSessionManager(options: {
           if (typeof frame.claude_code_version !== 'string' || !frame.claude_code_version || frame.cwd !== options.scope.cwd) {
             throw new HarnessExecutionError('CLAUDE_CONTRACT_UNSUPPORTED', `Claude Code ${String(frame.claude_code_version ?? options.qualification.cliVersion)} does not satisfy the init version/cwd contract.`)
           }
+          runtime.nativeProviderVersion = frame.claude_code_version
         }
         if (!runtime.session && frame.type === 'system' && frame.subtype === 'init' && typeof frame.session_id === 'string' && frame.session_id.length > 0) {
           runtime.session = { harness, providerVersion: String(frame.claude_code_version), nativeSessionId: frame.session_id }
@@ -600,7 +600,8 @@ export function createClaudeNativeSessionManager(options: {
     },
     async capabilities() {
       const q = options.qualification
-      return { provider: harness, providerVersion: q.cliVersion, persistentSessions: q.basicTurns, reconnect: q.resume,
+      return { provider: harness, providerVersion: [...resident.values()].find(runtime => runtime.nativeProviderVersion)?.nativeProviderVersion
+          ?? q.cliVersion, persistentSessions: q.basicTurns, reconnect: q.resume,
         sameRequestResponses: Boolean(q.interactions && options.interactionPort), cancellation: q.basicTurns, history: q.history, configurationInspection: true,
         mcpDetection: true, supportedInteractionKinds: q.interactions && options.interactionPort ? [...(options.supportedInteractionKinds ?? ['permission'])] : [] }
     },

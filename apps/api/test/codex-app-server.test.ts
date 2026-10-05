@@ -419,6 +419,14 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal(session.providerVersion, 'codex-cli 0.154.0')
   })
 
+  it('reports the installed version and catalog contract when successful debug output changes shape', async () => {
+    await json('version.json', 'codex-cli 0.160.0')
+    await json('models.json', { unsupportedCatalog: [] })
+    await assert.rejects(manager.discoverModels(f.directory), error => error instanceof Error
+      && errorCode(error) === 'CODEX_CONTRACT_UNSUPPORTED' && error.message.includes('0.160.0')
+      && error.message.includes('debug models JSON catalog response contract'))
+  })
+
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
     const session = await manager.createSession(source)
     await assertCode(manager.attachSession(session, input(f.directory, 'agent-b')), 'CODEX_SESSION_OWNER_MISMATCH')

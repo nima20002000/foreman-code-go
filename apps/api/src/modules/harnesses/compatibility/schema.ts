@@ -29,6 +29,12 @@ function properties(document: ObjectValue, value: unknown): ObjectValue {
 function fields(value: ObjectValue, names: readonly string[]): void {
   for (const name of names) if (!Object.hasOwn(value, name) || !value[name] || typeof value[name] !== 'object') throw invalid(`field ${name}`)
 }
+function requiredFields(document: ObjectValue, schema: unknown, names: readonly string[], context: string): void {
+  const required = resolve(document, schema).required
+  for (const name of names) {
+    if (!Array.isArray(required) || !required.includes(name)) throw invalid(`required ${context}.${name}`)
+  }
+}
 function supportsEnum(document: ObjectValue, value: unknown, expected: readonly string[], depth = 0): void {
   if (depth > 40) throw invalid()
   const schema = resolve(document, value)
@@ -72,7 +78,9 @@ export function checkCodexSchema(document: ObjectValue): void {
     const v2 = definitions.v2 ? object(definitions.v2) : definitions
     for (const name of ['ThreadStartResponse', 'ThreadResumeResponse', 'ThreadForkResponse']) {
       const response = properties(document, v2[name] ?? definitions[name])
-      fields(response, ['thread', 'model', 'modelProvider', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'reasoningEffort', 'serviceTier'])
+      const names = ['thread', 'model', 'modelProvider', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'reasoningEffort', 'serviceTier']
+      fields(response, names)
+      requiredFields(document, v2[name] ?? definitions[name], names, name)
     }
     const responseContracts: Record<string, Record<string, string>> = {
       InitializeResponse: { userAgent: 'string' },
@@ -93,10 +101,12 @@ export function checkCodexSchema(document: ObjectValue): void {
         try {
           fields(response, [field])
           supportsType(document, response[field], type)
+          if (field !== 'nextCursor') requiredFields(document, v2[name] ?? definitions[name], [field], name)
         } catch { throw invalid(`${name}.${field} (${type})`) }
       }
     }
     fields(properties(document, v2.Thread ?? definitions.Thread), ['id', 'turns'])
+    requiredFields(document, v2.Thread ?? definitions.Thread, ['id', 'turns'], 'Thread')
     const start = properties(document, v2.ThreadStartParams ?? definitions.ThreadStartParams)
     fields(start, ['model', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config', 'ephemeral', 'serviceTier'])
     supportsType(document, start.model, 'string')
@@ -124,6 +134,60 @@ function jsonSchema(document: ObjectValue, value: unknown): ObjectValue {
   const content = object(resolve(document, value).content)
   return resolve(document, object(content['application/json']).schema)
 }
+function commonObjectFields(document: ObjectValue, value: unknown, names: readonly string[], context: string): void {
+  const schema = resolve(document, value)
+  const choices = schema.oneOf ?? schema.anyOf
+  if (Array.isArray(choices)) {
+    for (const choice of choices) commonObjectFields(document, choice, names, context)
+    return
+  }
+  fields(properties(document, schema), names)
+  requiredFields(document, schema, names, context)
+}
+
+function checkOpenCodeResponses(document: ObjectValue): void {
+  const contracts: [string, string, Record<string, string>][] = [
+    ['/global/health', 'get', { healthy: 'boolean', version: 'string' }],
+    ['/session', 'post', { id: 'string', directory: 'string', permission: 'array' }],
+    ['/session/{sessionID}', 'get', { id: 'string', directory: 'string', permission: 'array' }],
+    ['/provider', 'get', { all: 'array', connected: 'array' }],
+  ]
+  for (const [path, method, contract] of contracts) {
+    const schema = jsonSchema(document, object(operation(document, path, method).responses)['200'])
+    const value = properties(document, schema)
+    for (const [field, type] of Object.entries(contract)) {
+      try {
+        fields(value, [field])
+        supportsType(document, value[field], type)
+        // Directory and permission may be optional in native declarations; attach checks their observed values.
+        if (field !== 'directory' && field !== 'permission') requiredFields(document, schema, [field], `${method.toUpperCase()} ${path}`)
+      } catch { throw invalid(`${method.toUpperCase()} ${path} response.${field} (${type})`) }
+    }
+  }
+  for (const [path, names] of [
+    ['/session/{sessionID}/message', ['info', 'parts']],
+    ['/permission', ['id', 'sessionID', 'permission', 'patterns', 'always', 'metadata']],
+    ['/question', ['id', 'sessionID']],
+    ['/agent', ['name']],
+    ['/session/{sessionID}/children', ['id', 'directory', 'parentID']],
+  ] as const) {
+    const schema = jsonSchema(document, object(operation(document, path, 'get').responses)['200'])
+    supportsType(document, schema, 'array')
+    const item = resolve(document, schema).items
+    fields(properties(document, item), names)
+    if (path === '/session/{sessionID}/message') {
+      commonObjectFields(document, properties(document, item).info, ['id', 'sessionID', 'role'], 'message.info')
+    }
+  }
+  const message = jsonSchema(document,
+    object(operation(document, '/session/{sessionID}/message/{messageID}', 'get').responses)['200'])
+  fields(properties(document, message), ['info', 'parts'])
+  commonObjectFields(document, properties(document, message).info, ['id', 'sessionID', 'role'], 'message.info')
+  const status = jsonSchema(document, object(operation(document, '/session/status', 'get').responses)['200'])
+  supportsType(document, status, 'object')
+  commonObjectFields(document, resolve(document, status).additionalProperties, ['type'], 'session.status')
+}
+
 export function checkOpenCodeSchema(document: ObjectValue): void {
   try {
     if (typeof document.openapi !== 'string' || !/^3\.[01]\./.test(document.openapi)) throw invalid()
@@ -141,6 +205,7 @@ export function checkOpenCodeSchema(document: ObjectValue): void {
       const item = operation(document, path, method)
       if (typeof item.operationId !== 'string' || !item.responses) throw invalid()
     }
+    checkOpenCodeResponses(document)
     const config = operation(document, '/config', 'get')
     const settings = properties(document, jsonSchema(document, object(config.responses)['200']))
     fields(settings, ['model', 'agent', 'permission', 'mcp', 'plugin', 'compaction'])

@@ -14,7 +14,7 @@ export function codexSchema() {
     approvalPolicy: { type: 'string', enum: ['on-request', 'never'] },
     approvalsReviewer: { type: 'string', enum: ['user', 'auto_review'] },
   } }
-  const threadResponse = { type: 'object', properties: {
+  const threadResponse = { type: 'object', required: ['thread', 'model', 'modelProvider', 'cwd', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'reasoningEffort', 'serviceTier'], properties: {
     thread: { $ref: '#/definitions/v2/Thread' }, model: { type: 'string' }, modelProvider: { type: 'string' },
     reasoningEffort: { type: ['string', 'null'] }, serviceTier: { type: ['string', 'null'] }, cwd: { type: 'string' },
     sandbox: { type: 'object' }, approvalPolicy: { type: 'string' }, approvalsReviewer: { type: 'string' },
@@ -24,16 +24,16 @@ export function codexSchema() {
     ServerNotification: { oneOf: ['turn/started', 'turn/completed', 'item/started', 'item/completed', 'serverRequest/resolved'].map(branch) },
     v2: { ...Object.fromEntries(responses.map((name) => [name, { type: 'object' }])), ThreadStartParams: start,
       ThreadStartResponse: threadResponse, ThreadResumeResponse: threadResponse, ThreadForkResponse: threadResponse,
-      ThreadReadResponse: { type: 'object', properties: { thread: { $ref: '#/definitions/v2/Thread' } } },
+      ThreadReadResponse: { type: 'object', required: ['thread'], properties: { thread: { $ref: '#/definitions/v2/Thread' } } },
       ...Object.fromEntries(['ThreadTurnsListResponse', 'ThreadItemsListResponse', 'ModelListResponse', 'ListMcpServerStatusResponse'].map(name =>
-        [name, { type: 'object', properties: { data: { type: 'array', items: { type: 'object' } }, nextCursor: { type: ['string', 'null'] } } }])),
-      InitializeResponse: { type: 'object', properties: { userAgent: { type: 'string' } } },
-      ConfigReadResponse: { type: 'object', properties: { config: { type: 'object' } } },
-      ConfigWriteResponse: { type: 'object', properties: { status: { type: 'string' }, version: { type: 'string' } } },
-      TurnSteerResponse: { type: 'object', properties: { turnId: { type: 'string' } } },
-      CancelLoginAccountResponse: { type: 'object', properties: { status: { type: 'string' } } },
-      Thread: { type: 'object', properties: { id: { type: 'string' }, turns: { type: 'array', items: { type: 'object' } } } },
-      TurnStartResponse: { type: 'object', properties: { turn: { type: 'object' } } },
+        [name, { type: 'object', required: ['data'], properties: { data: { type: 'array', items: { type: 'object' } }, nextCursor: { type: ['string', 'null'] } } }])),
+      InitializeResponse: { type: 'object', required: ['userAgent'], properties: { userAgent: { type: 'string' } } },
+      ConfigReadResponse: { type: 'object', required: ['config'], properties: { config: { type: 'object' } } },
+      ConfigWriteResponse: { type: 'object', required: ['status', 'version'], properties: { status: { type: 'string' }, version: { type: 'string' } } },
+      TurnSteerResponse: { type: 'object', required: ['turnId'], properties: { turnId: { type: 'string' } } },
+      CancelLoginAccountResponse: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } },
+      Thread: { type: 'object', required: ['id', 'turns'], properties: { id: { type: 'string' }, turns: { type: 'array', items: { type: 'object' } } } },
+      TurnStartResponse: { type: 'object', required: ['turn'], properties: { turn: { type: 'object' } } },
     },
   } }
 }
@@ -49,7 +49,25 @@ export function openCodeSchema() {
       ['/session/{sessionID}/fork', 'post'], ['/session/{sessionID}/children', 'get'],
       ['/mcp/{name}/connect', 'post'], ['/mcp/{name}/disconnect', 'post'],
   ]) paths[path!] = { [method!]: { operationId: `${path}:${method}`, responses: { '200': {} } } }
-  const body = (properties: Record<string, unknown>) => ({ content: { 'application/json': { schema: { type: 'object', properties } } } })
+  const content = (schema: Record<string, unknown>) => ({ content: { 'application/json': { schema } } })
+  const body = (properties: Record<string, unknown>) => content({ type: 'object', properties, required: Object.keys(properties) })
+  const sessionResponse = body({ id: { type: 'string' }, directory: { type: 'string' }, permission: { type: 'array', items: { type: 'object' } } })
+  paths['/session']!.post!.responses = { '200': sessionResponse }
+  paths['/session/{sessionID}']!.get!.responses = { '200': sessionResponse }
+  paths['/global/health']!.get!.responses = { '200': body({ healthy: { type: 'boolean' }, version: { type: 'string' } }) }
+  paths['/provider']!.get!.responses = { '200': body({ all: { type: 'array', items: { type: 'object' } }, connected: { type: 'array', items: { type: 'string' } } }) }
+  const message = { type: 'object', properties: { info: { type: 'object', required: ['id', 'sessionID', 'role'], properties: { id: { type: 'string' }, sessionID: { type: 'string' }, role: { type: 'string' } } }, parts: { type: 'array', items: { type: 'object' } } } }
+  const arrays: Record<string, Record<string, unknown>> = {
+    '/session/{sessionID}/message': message,
+    '/permission': { type: 'object', properties: { id: { type: 'string' }, sessionID: { type: 'string' }, permission: { type: 'string' },
+      patterns: { type: 'array', items: { type: 'string' } }, always: { type: 'array', items: { type: 'string' } }, metadata: { type: 'object' } } },
+    '/question': { type: 'object', properties: { id: { type: 'string' }, sessionID: { type: 'string' } } },
+    '/agent': { type: 'object', properties: { name: { type: 'string' } } },
+    '/session/{sessionID}/children': { type: 'object', properties: { id: { type: 'string' }, directory: { type: 'string' }, parentID: { type: 'string' } } },
+  }
+  for (const [path, items] of Object.entries(arrays)) paths[path]!.get!.responses = { '200': content({ type: 'array', items }) }
+  paths['/session/{sessionID}/message/{messageID}']!.get!.responses = { '200': content(message) }
+  paths['/session/status']!.get!.responses = { '200': content({ type: 'object', additionalProperties: { type: 'object', required: ['type'], properties: { type: { type: 'string' } } } }) }
   paths['/config']!.get!.responses = { '200': body({ model: { type: 'string' }, agent: { type: 'object' }, permission: { type: 'object' }, mcp: { type: 'object' }, plugin: { type: 'array' }, compaction: { type: 'object' } }) }
   paths['/session']!.post!.requestBody = body({ permission: { type: 'array', items: { type: 'object', properties: {
     permission: { type: 'string' }, pattern: { type: 'string' }, action: { type: 'string', enum: ['allow', 'ask', 'deny'] },

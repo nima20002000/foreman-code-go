@@ -8,9 +8,17 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path'
 import type { CompatibilityHarness } from '@foreman-code/contracts'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { spawnOwnedStdioProcess } from '../process.js'
+import { passiveDriverPayloads } from '../payloadDiscovery.js'
+import { discoverLauncher } from '../hostDiscovery.js'
 import { CompatibilityCheckError } from './errors.js'
 
-export interface HarnessInstallation { executable: string; identity: string; version: string }
+export interface HarnessInstallation {
+  executable: string
+  identity: string
+  version: string
+  installationFingerprint?: string
+  payloadPaths?: string[]
+}
 export interface CompatibilityProbe {
   inspect(harness: CompatibilityHarness, signal: AbortSignal, attempt?: number): Promise<HarnessInstallation>
   probe(harness: CompatibilityHarness, installation: HarnessInstallation, signal: AbortSignal): Promise<string>
@@ -85,6 +93,12 @@ async function fingerprint(path: string, signal: AbortSignal): Promise<string> {
     throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during inspection. Retry after the installation has finished.')
   }
   return createHash('sha256').update(JSON.stringify([await realpath(path), metadata(after), hash.digest('hex')])).digest('hex')
+}
+
+async function installationIdentity(binary: string, payloadPaths: readonly string[], signal: AbortSignal): Promise<string> {
+  const paths = [...new Set([binary, ...payloadPaths])].sort()
+  const fingerprints = await Promise.all(paths.map(path => fingerprint(path, signal)))
+  return createHash('sha256').update(JSON.stringify(fingerprints)).digest('hex')
 }
 
 /** Only fixed version/schema commands call this. No shell, credentials, stdin prompts, or server. */
@@ -166,13 +180,17 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
   return {
     async inspect(harness, signal, attempt = 1) {
       const resolved = await executable(binaries[harness], workingDirectory, source)
-      const identity = await fingerprint(resolved, signal)
+      const payload = await passiveDriverPayloads(harness, resolved)
+      const launcher = await discoverLauncher(resolved, { path: source.PATH ?? '', cwd: workingDirectory,
+        provenance: 'terminal', generation: 'compatibility-inspection' }, [], signal)
+      const payloadPaths = [...payload.paths, ...(launcher.interpreter ? [launcher.interpreter] : [])]
+      const identity = await installationIdentity(resolved, payloadPaths, signal)
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
           AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes, ownership)
         return parseInstalledVersion(harness, output.stdout, output.stderr)
       })
-      return { executable: resolved, identity, version }
+      return { executable: resolved, identity, version, payloadPaths }
     },
     async probe(harness, installation, signal) {
       return isolated(source, directories, async (directory, environment) => {
@@ -210,7 +228,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
       })
     },
     async assertUnchanged(installation, signal) {
-      if (await fingerprint(installation.executable, signal) !== installation.identity) {
+      if (await installationIdentity(installation.executable, installation.payloadPaths ?? [], signal) !== installation.identity) {
         throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed while it was checked. Retry after the installation has finished.')
       }
     },

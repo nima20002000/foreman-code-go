@@ -85,6 +85,17 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     expect(compatibilityCacheKey('codex', installed, COMPATIBILITY_CHECKER_REVISION))
       .not.toBe(compatibilityCacheKey('codex', { ...installed, version: '99.0.1' }, COMPATIBILITY_CHECKER_REVISION))
   })
+  it('reprobes a changed native payload when launcher bytes and reported version are unchanged', async () => {
+    const options = fixture('0.160.0')
+    let payload = 'native-payload-a'
+    vi.mocked(options.probe.inspect).mockImplementation(async harness => ({ executable: `/fake/${harness}`,
+      identity: `${harness}-same-launcher`, version: harness === 'codex' ? '0.160.0' : '2.0.0',
+      installationFingerprint: payload }))
+    await create(options).checkAll()
+    payload = 'native-payload-b'
+    await create(options).checkAll()
+    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
+  })
   it('coalesces startup and concurrent retries and exposes checking immediately', async () => {
     const options = fixture()
     let finish: (value: string) => void = () => undefined

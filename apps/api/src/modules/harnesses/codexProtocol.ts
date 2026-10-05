@@ -148,7 +148,7 @@ export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknow
   }
   const check = (key: string, schema: JsonObject, value: unknown): void => {
     if (!compile(key, schema).safeParse(value).success) {
-      throw new HarnessExecutionError('CODEX_PROTOCOL_INVALID', `Codex ${providerVersion} does not satisfy the ${key} schema contract.`)
+      throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED', `Codex ${providerVersion} does not satisfy the ${key} schema contract.`)
     }
   }
   const branch = (name: string, method: string): JsonObject => {

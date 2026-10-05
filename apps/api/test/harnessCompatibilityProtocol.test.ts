@@ -40,6 +40,18 @@ describe('model-free command and schema diagnostics', () => {
     Reflect.deleteProperty(response.properties, 'thread')
     expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
   })
+  it('rejects Codex history fields that are declared optional despite being consumed unconditionally', () => {
+    const broken = codexSchema()
+    broken.definitions.v2.ThreadReadResponse.required = []
+    expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
+  })
+  it('rejects OpenCode session creation schemas that cannot return an unconditional session ID', () => {
+    const broken = openCodeSchema()
+    broken.paths['/session']!.post!.responses = { '200': { content: { 'application/json': {
+      schema: { type: 'object', properties: {}, required: [] },
+    } } } }
+    expect(() => checkOpenCodeSchema(broken)).toThrow('POST /session response.id')
+  })
   it('requires OpenCode permission replies, settings and control methods', () => {
     expect(() => checkOpenCodeSchema(openCodeSchema())).not.toThrow()
     const broken = openCodeSchema()

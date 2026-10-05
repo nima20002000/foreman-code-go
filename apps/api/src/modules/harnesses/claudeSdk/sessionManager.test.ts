@@ -99,6 +99,41 @@ describe('Claude native session manager admission', () => {
     expect(session?.providerVersion).toBe('2.2.0')
     await f.manager.dispose?.()
   })
+  it.each(['before', 'after'] as const)('keeps saved resume provenance when newer init arrives %s its control ACK', async order => {
+    const f = fixture()
+    const acknowledged = deferred<unknown>()
+    const consumed = deferred<void>()
+    const query = f.client.query
+    f.client.query = input => ({ ...query(input), initializationResult: () => acknowledged.promise })
+    const open = f.runner.open
+    f.runner.open = async input => {
+      const sdk = await open(input)
+      return { ...sdk, output: (async function* () {
+        for await (const observation of sdk.output) {
+          yield observation
+          if ((observation.raw as { type?: string }).type === 'system') consumed.resolve()
+        }
+      })() }
+    }
+    const saved = { harness: 'claude' as const, providerVersion: '2.1.280', nativeSessionId: 'native-session' }
+    const attaching = f.manager.attachSession(saved, start)
+    await vi.waitFor(() => expect(f.queries).toHaveBeenCalledOnce())
+    const init = { type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
+      claude_code_version: '2.2.0', cwd: '/work' }
+    if (order === 'before') {
+      f.frames.offer(init)
+      await consumed.promise
+    }
+    acknowledged.resolve({ models: [], account: {} })
+    expect(await attaching).toEqual(saved)
+    if (order === 'after') {
+      f.frames.offer(init)
+      await consumed.promise
+    }
+    expect((await f.manager.capabilities()).providerVersion).toBe('2.2.0')
+    await f.manager.dispose?.()
+  })
+
   it('interrupts only the exact active message and settles its aborted result as canceled', async () => {
     const f = fixture(); const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     expect((await f.manager.capabilities()).cancellation).toBe(true)
