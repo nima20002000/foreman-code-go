@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
@@ -129,26 +129,26 @@ it('keeps definitive failures selected and uses the same selection mode for regi
 })
 
 it('limits mixed select-all to 100 available rows and allows clearing without deletion', async () => {
-  const user = userEvent.setup()
   const items = Array.from({ length: 101 }, (_, index) => folder(`Folder ${index}`))
   server.use(emptyWorkspaces, http.get('/api/management/workspace-storage/folders', () => HttpResponse.json({ rootPath: '/workspaces', items, pageInfo: { nextCursor: null } })))
   renderWithRouter(<WorkspaceDirectory />)
   const first = await screen.findByLabelText('Select folder Folder 0')
   expect(first).toHaveAttribute('type', 'checkbox')
+  await userEvent.setup().click(first)
   expect(first).toBeVisible()
-  await user.click(first)
+  expect(first).toBeChecked()
   const header = screen.getByRole('heading', { name: 'Workspaces', level: 1 }).closest('header')!
   const controls = within(header)
-  await user.click(controls.getByRole('button', { name: 'Selection options' }))
-  await user.click(within(screen.getByRole('menu', { name: 'Selection options' }))
+  fireEvent.click(controls.getByRole('button', { name: 'Selection options' }))
+  fireEvent.click(within(screen.getByRole('menu', { name: 'Selection options' }))
     .getByRole('menuitem', { name: 'Select first 100 shown' }))
   expect(controls.getByRole('button', { name: 'Delete selected (100)' })).toBeEnabled()
   const last = screen.getByLabelText('Select folder Folder 100')
   expect(last).toHaveAttribute('type', 'checkbox')
   expect(last).toBeVisible()
   expect(last).toBeDisabled()
-  await user.click(controls.getByRole('button', { name: 'Selection options' }))
-  await user.click(within(screen.getByRole('menu', { name: 'Selection options' }))
+  fireEvent.click(controls.getByRole('button', { name: 'Selection options' }))
+  fireEvent.click(within(screen.getByRole('menu', { name: 'Selection options' }))
     .getByRole('menuitem', { name: 'Clear selection' }))
   expect(screen.queryByRole('button', { name: /Delete selected/ })).not.toBeInTheDocument()
   const removals = screen.getAllByLabelText(/^Delete folder Folder /, { selector: 'button' })
