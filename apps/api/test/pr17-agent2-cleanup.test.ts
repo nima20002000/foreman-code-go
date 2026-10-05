@@ -252,7 +252,10 @@ it('cleans up an owned permission whose saved Codex version is absent from relea
   const h = harness()
   const pending = PendingNativeInteractionSchema.parse({ session: saved,
     turn: { nativeTurnId: 'review-turn', nativeRequestId: 'saved-version-permission' },
-    nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [],
+    nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [{
+      optionId: 'reject-owned', semantic: 'reject', label: 'Reject', persistence: 'request',
+      affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false,
+    }],
   })
   h.input.session = saved
   h.input.pending = [pending]
