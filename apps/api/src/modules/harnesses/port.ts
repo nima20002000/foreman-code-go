@@ -74,6 +74,8 @@ export interface NativeTerminalObservation {
   submission: NativeMessageSubmission
   result: ExecutionResult
   nativeMessageId?: string
+  /** Owned history saved with the result so settlement survives process replacement. */
+  history?: NativeHistory
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */

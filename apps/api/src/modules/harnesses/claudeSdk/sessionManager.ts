@@ -129,6 +129,7 @@ export function createClaudeNativeSessionManager(options: {
   credentialEnvironmentVariables?: readonly string[]
   supportedInteractionKinds?: readonly string[]
   pendingInteractions?: (session: NativeSessionReference) => readonly import('@graphql/contracts').PendingNativeInteraction[]
+  responseDeliveries?: (session: NativeSessionReference) => NonNullable<NativeHistory['responseDeliveries']>
 }): ClaudeNativeSessionManager {
   // The provider enum addition is integrated by the designated shared-contract writer.
   const harness = 'claude' as AgentHarness
@@ -511,6 +512,18 @@ export function createClaudeNativeSessionManager(options: {
                 nativeMessageId: matched.nativeMessageId!, clientCorrelationId: matched.correlationId },
               result: matched.terminal,
               ...(matched.assistantMessageId ? { nativeMessageId: matched.assistantMessageId } : {}),
+              history: {
+                correlationId: matched.correlationId,
+                nativeSubmission: { kind: 'message', nativeSessionId: runtime.session!.nativeSessionId,
+                  nativeMessageId: matched.nativeMessageId!, clientCorrelationId: matched.correlationId },
+                ...(matched.assistantMessageId ? { nativeMessageId: matched.assistantMessageId } : {}),
+                terminalResult: matched.terminal,
+                terminalTurn: { correlationId: matched.correlationId, providerId: matched.nativeMessageId!,
+                  result: matched.terminal },
+                events: runtime.events.filter(event => event.payload.clientCorrelationId === matched.correlationId),
+                pendingInteractions: [...(options.pendingInteractions?.(runtime.session!) ?? [])],
+                responseDeliveries: [...(options.responseDeliveries?.(runtime.session!) ?? [])],
+              },
             })
           } catch (error) {
             // Keep the result resident so the caller can retry saving it before native disposal.

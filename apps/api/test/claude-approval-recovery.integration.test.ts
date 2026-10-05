@@ -56,6 +56,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
     qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: false, history: true, interactions: true },
     interactionPort: domain.interactionPort, liveCallbacks: domain.bridge, cancelPendingRequests: () => domain.bridge.close(),
     pendingInteractions: session => domain.bridge.pendingInteractions(session),
+    responseDeliveries: session => domain.bridge.deliveryEvidence(session),
     ownerForStart: () => ({ ownerId: conversationId, attemptId: 'model-request', generation: 'test-owner' }),
   }).manager
   domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
@@ -69,7 +70,8 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
   return { manager, ready, frames, options: () => options }
 }
 
-it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-with-stored-proof', 'restart-wrong-generation', 'terminal-after-response'] as const)(
+it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-with-stored-proof', 'restart-wrong-generation',
+  'terminal-after-response', 'restart-after-terminal'] as const)(
   'recovers %s Claude approval through authenticated MCP with no response or prompt replay', async scenario => {
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
@@ -88,11 +90,14 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
       const nativeHistory: unknown[] = []
       const offers: string[] = []
       const runtimes: ReturnType<typeof runtime>[] = []
-      const createChat = () => new OperatorChatService(repository, new PostgresOperatorRepository(pool), (configuration, id) => {
+      const resolver = (configuration: OperatorConfigurationVersion, id: string) => {
         const owned = runtime(pool, repository, configuration, id, directory, nativeHistory, offers)
         runtimes.push(owned)
         return owned.manager
-      }, directory, { current: id => access.currentOperator(id), assertConfiguration() {},
+      }
+      const closeRecoveredRuntime = vi.fn(async () => true)
+      const createChat = () => new OperatorChatService(repository, new PostgresOperatorRepository(pool),
+        Object.assign(resolver, { closeRecoveredRuntime }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
         prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} })
       let chat = createChat()
@@ -160,11 +165,13 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const readReceipt = async () => (await pool.query('select result from management_command_receipts where command_id=$1', [input.commandId])).rows[0].result
         const original = await readReceipt()
         expect(original.status).toBe(scenario === 'aborted' ? 'uncertain' : 'pending')
-        if (scenario === 'resident-write-loss' || scenario === 'terminal-after-response') {
+        if (scenario === 'resident-write-loss' || scenario === 'terminal-after-response' || scenario === 'restart-after-terminal') {
           await callbacks.hooks!.PostToolUse![0]!.hooks[0]!({ ...hook, hook_event_name: 'PostToolUse', tool_response: 'read-completed' },
             'read-tool', { signal: new AbortController().signal })
         }
-        if (scenario === 'terminal-after-response') {
+        const historyFault = scenario === 'restart-after-terminal'
+          ? vi.spyOn(repository.activity, 'append').mockRejectedValue(new Error('History save interrupted')) : undefined
+        if (scenario === 'terminal-after-response' || scenario === 'restart-after-terminal') {
           void owned.frames.offer({ type: 'user', uuid: 'completed-tool', session_id: session.nativeSessionId,
             parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-tool', content: 'read-completed' }] } })
           void owned.frames.offer({ type: 'assistant', uuid: 'after-approval-answer', session_id: session.nativeSessionId,
@@ -174,7 +181,17 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
             user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
           await vi.waitFor(async () => expect(await repository.terminal(id, 'model-request')).toBeDefined())
         }
-        if (scenario.startsWith('restart')) {
+        if (scenario === 'restart-after-terminal') {
+          const terminal = await repository.terminal(id, 'model-request')
+          expect(terminal?.history?.responseDeliveries).toHaveLength(1)
+          expect(terminal?.history?.events.some(event => event.type === 'claude.text')).toBe(true)
+          expect(terminal?.historyPersisted).toBe(false)
+          await expect(chat.shutdown()).rejects.toThrow('incomplete')
+          await owned.manager.dispose!()
+          historyFault!.mockRestore()
+          chat = createChat()
+        }
+        if (scenario.startsWith('restart') && scenario !== 'restart-after-terminal') {
           expect(Boolean(original.providerAcknowledgment)).toBe(storedProof)
           if (scenario === 'restart-wrong-generation') {
             original.providerAcknowledgment.nativeIdentity.generation = 'foreign-generation'
@@ -185,17 +202,26 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         }
         await chat.reconcileActive()
         const receipt = await readReceipt()
-        const completed = scenario === 'resident-write-loss' || scenario === 'restart-with-stored-proof' || scenario === 'terminal-after-response'
+        const completed = scenario === 'resident-write-loss' || scenario === 'restart-with-stored-proof'
+          || scenario === 'terminal-after-response' || scenario === 'restart-after-terminal'
         expect(receipt.status).toBe(completed ? 'completed' : original.status)
         if (completed) expect(receipt.providerAcknowledgment.nativeIdentity).toMatchObject({ kind: 'message', nativeMessageId: message.uuid })
         const readback = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: id } })
         expect(readback.result?.isError).not.toBe(true)
         const state = graphRpcValue(readback.result) as OperatorConversationState
-        if (scenario === 'terminal-after-response') {
+        if (scenario === 'terminal-after-response' || scenario === 'restart-after-terminal') {
           expect(state.activeRequestId).toBeNull()
           expect(state.messages).toContainEqual(expect.objectContaining({ content: 'Tool completed after approval.' }))
           expect(state.activities).toContainEqual(expect.objectContaining({ kind: 'file_read', status: 'completed' }))
-          expect((await repository.terminal(id, 'model-request'))?.closureState).toBe('closed')
+          const saved = (await pool.query(`select terminal_observation,native_closure_state,payload
+            from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, 'model-request'])).rows[0]
+          expect(saved.native_closure_state).toBe('closed')
+          expect(saved.terminal_observation.result.outcome).toBe('succeeded')
+          expect(saved.payload.terminalHistoryPersisted).toBe(true)
+          if (scenario === 'restart-after-terminal') {
+            expect(closeRecoveredRuntime).toHaveBeenCalledTimes(1)
+            expect(runtimes).toHaveLength(1)
+          }
         } else expect(state).toMatchObject({ nativeSubmission: { kind: 'message', nativeMessageId: message.uuid } })
         const activity = state.activitySnapshot?.activities.find(activity => activity.kind === 'interaction'
           && activity.interaction?.answerRecorded)
