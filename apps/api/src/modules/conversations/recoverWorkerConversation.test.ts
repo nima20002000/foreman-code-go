@@ -14,7 +14,8 @@ import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 
 /** Recorded native/process ports verify recovery behavior, not installed harness qualification. */
-async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agent' = 'agent') {
+async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agent' = 'agent',
+  options: { journalStatus?: 'completed' | 'uncertain' } = {}) {
   const f = workerConversationFixture(kind, harness)
   const directory = await privateFixtureDirectory('worker-recovery-')
   const journal = await RemoteOperationJournal.open(join(directory, 'operations.json'), { initializeNewInstallation: true })
@@ -33,7 +34,7 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
   await journal.conversations.reserveTurn(f.binding, 'original-input', commandInputHash({ prompt: 'Remembered context' }))
   await journal.conversations.submitted(f.binding, 'original-input', harness === 'claude'
     ? { nativeSubmission: submission } : { nativeTurnId: 'native-turn' })
-  await journal.conversations.finishTurn(f.binding, 'original-input', result)
+  await journal.conversations.finishTurn(f.binding, 'original-input', options.journalStatus === 'uncertain' ? undefined : result)
   const record = (await journal.conversations.read(f.binding))!
   const connection = { ...f.connection, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 2 }
   const attach = vi.fn(async () => f.session)
@@ -89,16 +90,16 @@ for (const harness of ['codex', 'opencode', 'claude'] as const) {
   })
 }
 
-it.each(['active-process', 'foreign-process', 'unfinished-turn', 'unfinished-compaction', 'revoked-device'] as const)(
+it.each(['active-process', 'foreign-process', 'unacknowledged-turn', 'undispatched-compaction', 'revoked-device'] as const)(
   'refuses %s before allocating or stopping native work', async fault => {
     const f = await fixture()
     try {
       if (fault === 'active-process') Object.assign(f.launch, { lifecycle: 'active', closureEvidence: undefined })
       if (fault === 'foreign-process') Object.assign(f.launch, { provider: { pid: 22222, startTicks: '20' } })
-      if (fault === 'unfinished-turn') f.record.turns[0]!.status = 'uncertain'
-      if (fault === 'unfinished-compaction') f.record.compactions.push({ inputHash: commandInputHash('compact'), state: {
+      if (fault === 'unacknowledged-turn') Object.assign(f.record.turns[0]!, { status: 'uncertain', nativeTurnId: null })
+      if (fault === 'undispatched-compaction') f.record.compactions.push({ inputHash: commandInputHash('compact'), state: {
         requestId: 'compact', nativeSessionId: f.session.nativeSessionId, nativeOperationId: null,
-        status: 'uncertain', dispatchPhase: 'dispatched', beforeTokens: null,
+        status: 'uncertain', dispatchPhase: 'reserved', beforeTokens: null,
         observedAt: new Date().toISOString(), message: 'Pending native result',
       } })
       if (fault === 'revoked-device') f.connection.authorizationRevision++
@@ -135,5 +136,78 @@ it('rechecks revoked Main authority before ownership persistence and closes the 
     await expect(f.recover()).rejects.toThrow('Original caller revoked')
     expect(f.close).toHaveBeenCalledOnce()
     expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+  } finally { await f.cleanup() }
+})
+
+for (const harness of ['codex', 'opencode', 'claude'] as const) {
+  it.each(['succeeded', 'failed'] as const)(`${harness}: saves an unrecorded native %s result without another input`, async outcome => {
+    const f = await fixture(harness, 'agent', { journalStatus: 'uncertain' })
+    const result = outcome === 'succeeded' ? f.result : {
+      outcome, error: { code: 'NATIVE_TURN_FAILED', message: 'Recorded native failure' },
+    }
+    f.observed.terminalResult = result
+    try {
+      expect(await f.recover()).toBe(f.allocation)
+      const saved = await f.journal.conversations.read(f.binding)
+      expect(saved?.turns).toEqual([{ ...f.record.turns[0], status: 'completed', result }])
+      expect(saved?.nativeOwner).toEqual(f.nextOwner)
+      expect(saved?.session).toEqual(f.session)
+      expect(f.reconcile).toHaveBeenCalledOnce()
+      expect(f.attach).toHaveBeenCalledOnce()
+    } finally { await f.cleanup() }
+  })
+}
+
+it.each(['missing-result', 'foreign-message', 'changed-sender'] as const)(
+  'keeps an uncertain Claude turn fenced after %s', async fault => {
+    const f = await fixture('claude', 'agent', { journalStatus: 'uncertain' })
+    try {
+      if (fault === 'missing-result') delete f.observed.terminalResult
+      if (fault === 'foreign-message') f.observed.nativeSubmission = {
+        ...f.observed.nativeSubmission!, nativeSessionId: 'foreign-session',
+      }
+      if (fault === 'changed-sender') f.assertCurrent.mockResolvedValueOnce()
+        .mockRejectedValueOnce(new Error('Original sender revoked'))
+      await expect(f.recover()).rejects.toThrow()
+      const saved = await f.journal.conversations.read(f.binding)
+      expect(saved?.turns[0]?.status).toBe('uncertain')
+      expect(saved?.turns[0]?.result).toBeUndefined()
+      expect(saved?.nativeOwner).toEqual(f.owner)
+      expect(f.close).toHaveBeenCalledOnce()
+    } finally { await f.cleanup() }
+  })
+
+it.each(['completed', 'failed', 'no-op'] as const)('recovers the dispatched native compact outcome %s by reading history', async status => {
+  const f = await fixture()
+  try {
+    const reservation = await f.journal.conversations.reserveCompact(f.binding, 'original-compact', commandInputHash('compact'))
+    const dispatched = { ...reservation.state, status: 'uncertain' as const, dispatchPhase: 'dispatched' as const,
+      nativeOperationId: 'native-compact' }
+    await f.journal.conversations.compactProgress(f.binding, dispatched)
+    f.record.compactions = (await f.journal.conversations.read(f.binding))!.compactions
+    const terminal = { ...dispatched, status, message: 'Native compact result' }
+    const read = vi.fn(async () => terminal)
+    f.allocation.manager.readCompaction = read
+    expect(await f.recover()).toBe(f.allocation)
+    expect(read).toHaveBeenCalledWith(f.session, expect.objectContaining({ correlationId: 'original-create' }),
+      dispatched, expect.any(AbortSignal))
+    const saved = await f.journal.conversations.read(f.binding)
+    expect(saved?.compactions[0]?.state).toEqual(terminal)
+    expect(saved?.nativeOwner).toEqual(f.nextOwner)
+  } finally { await f.cleanup() }
+})
+
+it('refuses an unknown compact result without changing the native owner or dispatching again', async () => {
+  const f = await fixture()
+  try {
+    const reservation = await f.journal.conversations.reserveCompact(f.binding, 'original-compact', commandInputHash('compact'))
+    const dispatched = { ...reservation.state, status: 'uncertain' as const, dispatchPhase: 'dispatched' as const }
+    await f.journal.conversations.compactProgress(f.binding, dispatched)
+    f.record.compactions = (await f.journal.conversations.read(f.binding))!.compactions
+    f.allocation.manager.readCompaction = async () => dispatched
+    await expect(f.recover()).rejects.toMatchObject({ status: 409 })
+    expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+    expect((await f.journal.conversations.read(f.binding))?.compactions[0]?.state).toEqual(dispatched)
+    expect(f.close).toHaveBeenCalledOnce()
   } finally { await f.cleanup() }
 })

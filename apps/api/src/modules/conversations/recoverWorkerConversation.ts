@@ -3,6 +3,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationConfiguration, WorkerConversationReceipt,
   WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import type { CompactionState, ExecutionResult } from '@foreman-code/contracts'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationJournal } from './workerJournal.js'
@@ -40,9 +41,10 @@ export async function recoverWorkerConversation(input: {
   for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
     if (record.connection[field] !== input.connection[field]) unavailable('The original paired worker authority changed.')
   }
-  if (record.turns.some(turn => turn.status !== 'completed')
-    || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status))) {
-    unavailable('Read the outstanding native result before reopening this chat; its input will not be replayed.')
+  if (record.turns.some(turn => turn.status !== 'completed' && !turn.nativeTurnId && !turn.nativeSubmission)
+    || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status)
+      && control.state.dispatchPhase !== 'dispatched')) {
+    unavailable('The outstanding native input has no persisted dispatch identity; it will not be replayed.')
   }
   const scopeOwner = `conversation:${record.binding.owner.conversationId}`
   const snapshot = input.registry.snapshot()
@@ -70,19 +72,38 @@ export async function recoverWorkerConversation(input: {
       ...(access ? { applicationAccess: access } : {}) })
     const attached = await allocation.manager.attachSession(session, start, signal)
     if (!isDeepStrictEqual(attached, session)) unavailable('Native recovery returned another session.')
+    const recoveredTurns: Array<{ correlationId: string; result: ExecutionResult }> = []
     for (const turn of record.turns) {
       const history = await allocation.manager.reconcile(session, turn.correlationId, signal)
       let terminal = history.correlationId === turn.correlationId ? history.terminalResult : undefined
       if (history.terminalTurn?.correlationId === turn.correlationId) terminal = history.terminalTurn.result
       const nativeId = history.nativeTurnId ?? history.nativeSubmission?.nativeMessageId
       const acceptedId = turn.nativeTurnId ?? turn.nativeSubmission?.nativeMessageId
-      if (!turn.result || !terminal || !isDeepStrictEqual(terminal, turn.result) || nativeId !== acceptedId
+      if (!terminal || !acceptedId || nativeId !== acceptedId
+        || turn.status === 'completed' && (!turn.result || !isDeepStrictEqual(terminal, turn.result))
+        || turn.result && !isDeepStrictEqual(terminal, turn.result)
+        || turn.nativeSubmission && !isDeepStrictEqual(history.nativeSubmission, turn.nativeSubmission)
         || history.pendingInteraction || history.pendingInteractions?.length) {
         unavailable('The recorded native turn could not be recovered on its original session.')
       }
+      if (turn.status !== 'completed') recoveredTurns.push({ correlationId: turn.correlationId, result: terminal })
+    }
+    const recoveredCompactions: CompactionState[] = []
+    for (const control of record.compactions) {
+      if (['completed', 'failed', 'no-op'].includes(control.state.status)) continue
+      if (!allocation.manager.readCompaction) unavailable('This native driver cannot read a cold compaction result.')
+      const state = await allocation.manager.readCompaction(session, start, control.state, signal)
+      if (state.requestId !== control.state.requestId || state.nativeSessionId !== session.nativeSessionId
+        || control.state.nativeOperationId && state.nativeOperationId !== control.state.nativeOperationId
+        || !['completed', 'failed', 'no-op'].includes(state.status)) {
+        unavailable('The dispatched native compaction has no confirmed result on its original session.')
+      }
+      recoveredCompactions.push(state)
     }
     signal.throwIfAborted()
     await input.assertCurrent()
+    for (const turn of recoveredTurns) await input.journal.finishTurn(record.binding, turn.correlationId, turn.result)
+    for (const state of recoveredCompactions) await input.journal.compactProgress(record.binding, state)
     await input.journal.recoveredOwner(record.binding, input.connection, owner, await allocation.nativeOwner(session))
     if (preferences) await input.journal.preferences(record.binding, preferences,
       allocation.manager.appliedSessionPreferences?.(session) ?? null)
