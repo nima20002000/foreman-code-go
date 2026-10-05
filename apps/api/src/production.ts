@@ -1262,6 +1262,15 @@ export function buildProductionApp(
         } }
       }
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
+        availableMemory: async profile => {
+          const fingerprint = profile.measurement?.fingerprint
+          if (!telemetry || !fingerprint) return null
+          const registration = profile.root.registration
+          return telemetry.service.availableComputerMemory({ hostRef: profile.root.selection.hostRef,
+            applicationInstallationId: registration?.workerInstallationId ?? fingerprint.mainInstallationId,
+            bootId: fingerprint.bootId, keyRevision: registration?.keyRevision ?? null,
+            authorizationRevision: registration?.authorizationRevision ?? null }, AbortSignal.timeout(5000))
+        },
         workerExecution,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,

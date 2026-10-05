@@ -2,7 +2,8 @@ import { verifyJobInputDirectory } from './inputs.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { constants } from 'node:fs'
-import { open, realpath } from 'node:fs/promises'
+import { open, realpath, readFile } from 'node:fs/promises'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { identity } from '../sources/privateFilesystem.js'
 import type { ChildProcess } from 'node:child_process'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
@@ -210,11 +211,24 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     try {
       await input.journal.jobReserveProcess(execution.operationId, { launchId: scope.launchId, processOwner, binary, argv: exact })
       const status = await input.journal.jobStatus(execution.operationId)
-      if (exact.includes('create') || exact[1] === 'start') {
+      if (exact[1] === 'create' || exact[1] === 'start' || exact[1] === 'exec') {
         if (Date.parse(measurementExpiresAt) <= Date.now()) throw new Error('Original Job qualification expired before native entry')
         if (status.status !== 'known' || status.receipt.stopFence || status.receipt.terminal) throw new Error('Job entry fenced')
         await input.authorize(status.receipt.intent, execution, 'start')
         await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: observedHost() })
+        if (execution.schemaVersion === 2 && execution.acceptedSpec.target.hostRef.kind === 'device') {
+          const operations = await input.journal.jobOperations()
+          const running = operations.filter(receipt => receipt.execution.schemaVersion === 2
+            && receipt.terminal?.processStopped !== true).length
+          const meminfo = await readFile('/proc/meminfo', 'utf8')
+          const availableKb = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1]
+          const bytes = availableKb ? Number(availableKb) * 1024 : NaN
+          const minimum = JOB_VERIFICATION_OWNER_CONFIGURATION.laptopMinimumAvailableBytes
+            + JOB_VERIFICATION_OWNER_CONFIGURATION.laptopPerRunningJobBytes * running
+          if (!Number.isSafeInteger(bytes) || bytes < minimum) {
+            throw new Error('Laptop memory headroom changed before verification entry.')
+          }
+        }
       }
       const child = spawnNativeProcess(binary, exact, { cwd: candidate.runtimeRoot, env, recovery: scope })
       launch.child = child; child.stdin.end()

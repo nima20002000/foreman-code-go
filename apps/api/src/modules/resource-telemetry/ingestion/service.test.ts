@@ -43,6 +43,33 @@ async function capture(s: ReturnType<typeof setup>, seq = '1', start = '1000000'
 async function ready() {
   const s = setup(); await s.service.handshake(s.context, 'collector-1', signal()); return s
 }
+describe('fresh computer memory for Job admission', () => {
+  it('uses current authenticated memory and refuses another boot or a stale sample', async () => {
+    const s = await ready()
+    const { c } = await capture(s)
+    const host = c.identity.host
+    const expected = { hostRef: host.hostRef, applicationInstallationId: host.applicationInstallationId,
+      bootId: host.bootId, keyRevision: host.keyRevision, authorizationRevision: host.authorizationRevision }
+    expect(await s.service.availableComputerMemory(expected, signal())).toBe(8192)
+    expect(await s.service.availableComputerMemory({ ...expected,
+      bootId: '22222222-2222-4222-8222-222222222222' }, signal())).toBeNull()
+    s.advance(TELEMETRY_LIMITS.freshMs)
+    expect(await s.service.availableComputerMemory(expected, signal())).toBeNull()
+  })
+
+  it('does not consume offline or revoked computer data for admission', async () => {
+    const s = await ready()
+    const { c } = await capture(s)
+    const host = c.identity.host
+    const expected = { hostRef: host.hostRef, applicationInstallationId: host.applicationInstallationId,
+      bootId: host.bootId, keyRevision: host.keyRevision, authorizationRevision: host.authorizationRevision }
+    s.presence('offline')
+    expect(await s.service.availableComputerMemory(expected, signal())).toBeNull()
+    s.presence('online')
+    s.active(false)
+    expect(await s.service.availableComputerMemory(expected, signal())).toBeNull()
+  })
+})
 async function collected(s: ReturnType<typeof setup>, views: OwnershipView[], wholeHostVisible = true) {
   const challenge = (await s.service.challenge(s.context, signal()))!
   vi.useFakeTimers()

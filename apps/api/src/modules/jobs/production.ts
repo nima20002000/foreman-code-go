@@ -42,7 +42,7 @@ import { dirname, join } from 'node:path'
 import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import { assertBuildComputerTarget, BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
 import { buildComputerReadiness } from '../settings/buildComputerReadiness.js'
-import { JobComputerSelection, releaseClosedJobComputers } from './computerSelection.js'
+import { JobComputerSelection, releaseClosedJobComputers, type VerificationMemoryReader } from './computerSelection.js'
 import { JobBuildQueueConfigurationSchema, type JobBuildQueueConfiguration } from '@foreman-code/contracts/job-admission'
 import { isAutoJobSpec } from '@foreman-code/contracts/jobs'
 import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
@@ -141,6 +141,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
   workerExecution?: WorkerExecutionPolicy;
+  availableMemory?: VerificationMemoryReader;
   activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
@@ -272,7 +273,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       })
       return { ...discovery, candidates }
     },
-  }, workerExecution)
+  }, workerExecution, input.availableMemory)
   const publication = new JobPublicationAuthority(dispatch, preparation)
   const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
     endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,
