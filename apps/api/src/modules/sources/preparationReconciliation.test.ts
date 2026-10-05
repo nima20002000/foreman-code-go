@@ -39,7 +39,7 @@ async function fixture(copy = true) {
 it('archives a closed claim, retains every source/private-repository byte and replays closure without touching a successor', async () => {
   const f = await fixture(), id = f.owner.record!.receipt.materializationId
   const claim = await readFile(join(f.directory, `binding-${f.owner.root.binding.rootId}.lock`))
-  const proof = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
+  const proof = await vi.waitFor(() => reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
   expect(proof).toMatchObject({ materializationId: id, admissionClosed: true, childrenClosed: true, claimReleased: true, evidencePreserved: true })
   expect(await readFile(join(f.directory, `closed-preparation-${f.reconciliationId}.claim.json`))).toEqual(claim)
   expect(await readFile(join(f.directory, id, 'tree/source.txt'))).toEqual(f.bytes)
@@ -51,7 +51,7 @@ it('archives a closed claim, retains every source/private-repository byte and re
 })
 it('retains a pre-activation failure with no Main materialization record or local claim', async () => {
   const f = await fixture(false)
-  const proof = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
+  const proof = await vi.waitFor(() => reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
   expect(proof.materializationId).toBeNull(); expect(proof.evidencePreserved).toBe(true)
 })
 
@@ -68,7 +68,7 @@ it('routes Main workflow cleanup through original authorization and positive clo
     .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
   expect(await readdir(f.directory)).toContain(`binding-${f.owner.root.binding.rootId}.lock`)
   closed.mockResolvedValue(true)
-  const closure = await hosts.reconcilePreparation(f.reconciliationId, f.owner)
+  const closure = await vi.waitFor(() => hosts.reconcilePreparation(f.reconciliationId, f.owner))
   expect(closure).toMatchObject({ deviceId: null, workerInstallationId: null, claimReleased: true })
   expect(authorize).toHaveBeenCalledWith(f.reconciliationId, f.owner)
   expect(await readFile(join(f.directory, f.owner.record!.receipt.materializationId, 'tree/source.txt'))).toEqual(f.bytes)

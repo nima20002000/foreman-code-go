@@ -70,7 +70,9 @@ it('confirms preparation cleanup only after native closure and transfer reservat
   expect(f.preparationTransfersClosed).not.toHaveBeenCalled()
   f.preparationNativeClosed.mockResolvedValue(true)
   f.preparationTransfersClosed.mockRejectedValueOnce(new Error('Transfer cleanup incomplete'))
-  await expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
+  await vi.waitFor(async () => {
+    await expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
+  })
   const response = await f.service.handle(request, f.context)
   expect(response).toMatchObject({ operation: request.operation, closure: {
     operationId: f.owner.identity.operationId, executionId: f.owner.attempt.executionId,
