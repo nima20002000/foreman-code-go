@@ -82,6 +82,15 @@ it.each(['models-refresh-failed', 'models-refresh-failed-on-close'])(
     expect(wire.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method))).toBe(false)
   })
 
+it('drains late stdout during metadata cleanup without treating it as transcript content', async () => {
+  const f = await native([model], 'models-late-stdout')
+  await qualifyNativeCodexModel({ ...DEFAULT_HARNESS_DEFAULTS.codex, model: model.slug,
+    reasoningEffort: 'medium' }, f.binary, f.directory, {}, undefined, undefined, f.inspection)
+  const wire = (await calls(f.directory)).filter(entry => entry.wire).map(entry => entry.wire as { method: string })
+  expect(wire.filter(entry => entry.method === 'model/list')).toHaveLength(1)
+  expect(wire.some(entry => entry.method === 'thread/start')).toBe(false)
+})
+
 function recordedInspection(request: () => Promise<unknown>, close: () => Promise<void>): CodexModelInspection {
   return { qualified: { binary: '/recorded-codex', identity: 'recorded', protocol: fixtureProtocol,
     providerVersion: 'codex-cli 0.154.0', schemaManifestSha256: 'recorded', stableSchemaGitBlob: 'recorded',

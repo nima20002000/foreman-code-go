@@ -69,6 +69,7 @@ if (args[1] === 'generate-json-schema') {
 }
 const agent = process.env.TEST_AGENT_ID || 'agent-a'
 process.stdin.on('end', () => {
+  if (flag('models-late-stdout')) fs.writeSync(1, JSON.stringify({ method: 'test/lateMetadata', params: {} }) + '\n')
   if (flag('models-refresh-failed-on-close')) fs.writeSync(2, 'failed to refresh available models: fixture refresh failure\n')
   process.exit(0)
 })

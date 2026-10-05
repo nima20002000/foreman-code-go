@@ -293,7 +293,10 @@ export class CodexStdioTransport {
     stdout.setEncoding('utf8')
     let pending = ''
     for await (const chunk of stdout) {
-      if (this.stopped) break
+      if (this.stopped) {
+        if (this.onModelRefreshFailure) continue
+        break
+      }
       pending += String(chunk)
       let newline: number
       while ((newline = pending.indexOf('\n')) >= 0) {
@@ -301,7 +304,10 @@ export class CodexStdioTransport {
         pending = pending.slice(newline + 1)
         if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error('Codex stdout frame exceeded its limit.')
         if (line.trim()) await this.receive(line)
-        if (this.stopped) return
+        if (this.stopped) {
+          if (this.onModelRefreshFailure) { pending = ''; break }
+          return
+        }
       }
       if (Buffer.byteLength(pending) > MAX_FRAME_BYTES) throw new Error('Codex stdout frame exceeded its limit.')
     }
