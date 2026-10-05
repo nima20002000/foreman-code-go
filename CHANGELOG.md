@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11] - 2026-10-05
+
+### Fixed
+
+- Restore the source workspace's full frozen dependency installation after production staging, including failed deployment, so later commands run unattended without switching to production-only dependencies.
+- Preserve both deployment and workspace-restoration errors when staging fails.
+
 ## [0.0.10] - 2026-10-05
 
 ### Added
