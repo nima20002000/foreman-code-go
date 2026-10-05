@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.16] - 2026-10-05
+
+### Fixed
+
+- Restore native chat and launcher test fixtures to the Foreman Code MCP naming, supported aliases and MCP list/get contracts without weakening credential or delivery checks.
+- Keep transfer security fixtures independent of checkout depth, align installed Codex qualification with the shipped suite, and validate current workflow saves through behavior rather than obsolete migration text.
+- Complete selected Board Activities and Operator file HTTP fixtures, retain exact Claude preset readback, and scope Stop reconciliation verification to the selected Run.
+- Keep attachment picker-order assertions independent of concurrent HTTP arrival order and complete workspace root metadata fixtures for route verification.
+
+### Security
+
+- Pin both Foreman Code and legacy GraphQL App MCP credential names during Codex diagnostics, preserving credential exclusion for existing native configurations.
+
 ## [0.0.15] - 2026-10-05
 
 ### Fixed
