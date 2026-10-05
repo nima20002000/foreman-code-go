@@ -70,8 +70,8 @@ export async function createCodexLiveApplication(binary: string, directory: stri
       checkpoints: { ping: async () => undefined },
     }, operator: { access, services } })
     const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
-    const manager = new CodexAppServerSessionManager(binary, undefined, endpoint)
-    const restored = new CodexAppServerSessionManager(binary, undefined, endpoint)
+    const manager = new CodexAppServerSessionManager(binary)
+    const restored = new CodexAppServerSessionManager(binary)
     managers.push(manager, restored)
     authority = new PostgresOperatorChatAuthority(pool, access,
       new NativeRollout({ ...process.env, HOST: '127.0.0.1' }), directory, endpoint,
