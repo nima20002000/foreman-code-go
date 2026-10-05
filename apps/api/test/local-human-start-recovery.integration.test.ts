@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { CurrentWorkflowSaveResultSchema, makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -27,7 +27,15 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
         fixture.writer.principal.id = id
       }
       const candidate = await fixture.create()
-      const saved = (await fixture.services.workflows.current.save(fixture.writer.principal, 'http', candidate)).value
+      const save = await fetch(new URL(
+        `/api/management/workspaces/${candidate.workspaceId}/workflows/${candidate.workflowId}/definition`,
+        fixture.address), { method: 'PUT',
+        headers: { authorization: `Bearer ${fixture.writer.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(candidate),
+      })
+      const savedBody = await save.json()
+      expect(save.status, JSON.stringify(savedBody)).toBe(200)
+      const saved = CurrentWorkflowSaveResultSchema.parse(savedBody).value
       const input = RunStartV3InputSchema.parse({
         workspaceId: saved.version.workspaceId,
         workflowId: saved.version.workflowId,
