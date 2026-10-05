@@ -9,6 +9,7 @@ import { JobVerificationQuotaPoolSchema, type JobVerificationQuotaPool }
 import { RootBindingSchema, type RootBinding, type SourceProjectQuotaSlot }
   from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
+import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRuntime.js'
 import { readProtectedRuntimeConfiguration, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 
 export const JobProjectQuotaReadbackSchema = z.object({
@@ -87,7 +88,7 @@ const SourceQuotaConfigurationSchema = z.object({
 export async function installedSourceQuotaPool(configuration: InstalledRuntimeConfigurationLocation | null,
   binding: RootBinding): Promise<JobVerificationQuotaPool | null> {
   if (!configuration) return null
-  const installed = await readProtectedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema)
+  const installed = await readProtectedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
   if (installed.schemaVersion !== 2 || !isDeepStrictEqual(installed.root.binding, binding)) return null
   if (!installed.descriptor?.quotaPool) {
     throw new DomainError('JOB_QUOTA_UNAVAILABLE', 'The verification installation has no per-Job quota pool.', 409)

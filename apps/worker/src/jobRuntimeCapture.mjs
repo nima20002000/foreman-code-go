@@ -24,7 +24,11 @@ async function readPrivateJson(parent, name, maximumBytes = 65536) {
     }
     const after = await file.stat();
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new WorkerError('job_runtime_input_changed');
-    return JSON.parse(bytes.toString('utf8'));
+    const value = JSON.parse(bytes.toString('utf8'));
+    if (maximumBytes > 65536 && value.schemaVersion !== 2 && before.size > 65536) {
+      throw new WorkerError('job_runtime_private_input_required');
+    }
+    return value;
   } finally { await file.close(); }
 }
 
@@ -63,7 +67,7 @@ export async function captureJobRuntime(stateDirectory, inputPath) {
       || input.root.binding.filesystem.mountId !== approved.runtimeFilesystem.mountId) throw new WorkerError('job_runtime_root_mismatch');
     const configuration = InstalledJobRuntimeConfigurationRecordSchema.parse(await captureInstalledRuntimeConfigurationRecord(input));
     const bytes = Buffer.from(`${JSON.stringify(configuration)}\n`);
-    if (bytes.length > 2 * 1024 * 1024 + 65536) throw new WorkerError('job_runtime_configuration_too_large');
+    if (bytes.length > (configuration.schemaVersion === 2 ? 2 * 1024 * 1024 + 65536 : 65536)) throw new WorkerError('job_runtime_configuration_too_large');
     const temporary = anchored(state, `.job-runtime-${randomUUID()}`);
     const staged = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {

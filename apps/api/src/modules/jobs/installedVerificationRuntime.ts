@@ -17,6 +17,8 @@ import { readFile } from 'node:fs/promises'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile, type InstalledRuntimeConfigurationLocation,
   type InstalledRuntimeObservedHost } from './installedRuntimeHost.js'
 
+export const MAX_VERIFICATION_CONFIGURATION_BYTES = 2 * 1024 * 1024 + 65536
+
 const machine = z.object({ ...JobVerificationRuntimeFingerprintSchema.shape }).omit({
   schemaVersion: true, profileId: true, profileRevision: true, specDigest: true,
   hostRef: true, registration: true, mainInstallationId: true, root: true,
@@ -133,7 +135,7 @@ export async function inspectInstalledVerificationRuntime(input: {
   host: InstalledRuntimeObservedHost
 }) {
   const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema)
+    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
   const { descriptor, machine: recorded } = configuration
   const profile = input.profile
   await assertSeedReceipt(configuration, input.configuration!.ownerUid)
@@ -175,7 +177,7 @@ export async function inspectInstalledVerificationCandidate(input: {
   const candidate = input.candidate
   if (candidate.fingerprint.schemaVersion !== 3) throw new Error('Verification candidate required.')
   const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema)
+    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
   await assertSeedReceipt(configuration, input.configuration!.ownerUid)
   const observed = JobVerificationRuntimeFingerprintSchema.parse({ ...configuration.machine,
     schemaVersion: 3, profileId: candidate.fingerprint.profileId,

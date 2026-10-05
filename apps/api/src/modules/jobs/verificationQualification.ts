@@ -13,7 +13,7 @@ import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryC
   JobVerificationOfflineSeedReceiptSchema, JOB_VERIFICATION_BASE_CHECKS,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationRuntime.js'
+import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRuntime.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks } from './executorPodman.js'
@@ -50,7 +50,7 @@ export async function qualifyVerificationRuntime(input: {
   const candidate = JobVerificationQualificationCandidateSchema.parse(input.candidate)
   const fingerprint = candidate.fingerprint
   const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema)
+    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
   const approval = await input.authority.readApproval(candidate.approvalId)
   if (!approval || approval.status !== 'approved' || approval.fingerprint !== jobQualificationFingerprint(candidate)
     || Date.parse(approval.expiresAt) <= Date.now()) {
