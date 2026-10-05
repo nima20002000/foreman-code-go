@@ -40,3 +40,17 @@ terminal timestamps with the original provider rollout, and separately account
 for application work before submission and after the native terminal. An open
 provider turn does not by itself prove that every second is irreducible provider
 work; stream backpressure must be checked against event-read and persistence spans.
+
+Set `FOREMAN_CODE_CODEX_RUNTIME_TIMING=1` to collect Codex's native API and stream
+durations. This opt-in starts a private loopback OTLP/HTTP JSON receiver for each
+app-server process and overrides only that process's log exporter. It never edits
+the user's native configuration. Prompt export stays disabled. The receiver
+discards all fields except transport event names, native timestamps, durations,
+session identifiers, stream kinds, attempts, HTTP status and success. It ignores
+prompt and tool-result events entirely and closes with the native transport.
+
+Native exporters deliver asynchronously: use the event's native timestamp, not
+its arrival time. `native.api_request`, `native.sse_event`,
+`native.websocket_request` and `native.websocket_event` distinguish request and
+stream waits inside a native turn from client startup, tool readiness and graph
+persistence. These diagnostics never authorize execution or schedule work.

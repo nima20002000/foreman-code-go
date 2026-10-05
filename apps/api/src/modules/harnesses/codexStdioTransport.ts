@@ -1,8 +1,9 @@
-import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
+import { beginRuntimeTiming, runtimeTimingPoint } from '../../infrastructure/runtimeTiming.js'
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
 import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
+import { openCodexRuntimeTiming } from './codexRuntimeTiming.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -60,6 +61,7 @@ export class CodexStdioTransport {
   private nextId = 1
   private stopped = false
   private closePromise: Promise<void> | undefined
+  private timing: Awaited<ReturnType<typeof openCodexRuntimeTiming>> | undefined
 
   constructor(
     private readonly binary: string,
@@ -81,13 +83,20 @@ export class CodexStdioTransport {
     if (this.disabledMcpServerNames.some((name) => !/^[A-Za-z0-9_-]+$/.test(name))) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'The App MCP name cannot be represented safely by a native dotted-key override.')
     }
-    this.owned = spawnOwnedStdioProcess({
-      binary: this.binary, args: ['app-server', '--stdio',
-        ...this.disabledMcpServerNames.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]),
-      ], cwd: this.cwd, environment: this.environment,
-      onError: (error) => this.fail(error),
-      ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
-    })
+    if (this.environment.FOREMAN_CODE_CODEX_RUNTIME_TIMING === '1') {
+      try { this.timing = await openCodexRuntimeTiming() }
+      catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_unavailable' }) }
+    }
+    try {
+      this.owned = spawnOwnedStdioProcess({
+        binary: this.binary, args: ['app-server', '--stdio',
+          ...this.disabledMcpServerNames.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]),
+          ...(this.timing?.arguments ?? []),
+        ], cwd: this.cwd, environment: this.environment,
+        onError: (error) => this.fail(error),
+        ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
+      })
+    } catch (error) { await this.closeTiming(); throw error }
     const { child, closed } = this.owned
     // Drain diagnostics without retaining or exposing provider stderr.
     child.stderr.resume()
@@ -164,11 +173,18 @@ export class CodexStdioTransport {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
-    const attempt = this.owned?.close() ?? Promise.resolve()
+    const physical = this.owned?.close() ?? Promise.resolve()
+    const attempt = this.timing ? physical.then(() => this.closeTiming()) : physical
     this.closePromise = attempt
     // A failed cleanup stays fenced, but the next explicit close must retry it.
     void attempt.catch(() => { if (this.closePromise === attempt) this.closePromise = undefined })
     return attempt
+  }
+
+  private async closeTiming() {
+    // Optional diagnostics cannot change native execution or physical-closure results.
+    try { await this.timing?.close() }
+    catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_close_failed' }) }
   }
 
   /** Current writable callback channel only; this snapshot is not delivery evidence. */

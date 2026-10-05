@@ -17,6 +17,9 @@ export interface RuntimeTimingFields {
   count?: number
   intervalMs?: number
   reused?: boolean
+  statusCode?: number
+  attempt?: number
+  success?: boolean
 }
 export interface RuntimeTimingRecord extends RuntimeTimingFields {
   component: LogComponent
@@ -48,6 +51,14 @@ export function beginRuntimeTiming(component: LogComponent, phase: string, field
 
 export function runtimeTimingPoint(component: LogComponent, phase: string, fields: RuntimeTimingFields = {}) {
   beginRuntimeTiming(component, phase, fields)()
+}
+
+/** Exported native events arrive later; keep the admission's identity and the native clock. */
+export function runtimeTimingPublisher() {
+  const identity = { ...scope.getStore() }
+  return (record: RuntimeTimingRecord) => {
+    if (runtimeTimingChannel.hasSubscribers) runtimeTimingChannel.publish({ ...identity, ...record })
+  }
 }
 
 export function withRuntimeTimingContext<T>(fields: RuntimeTimingFields, work: () => T): T {
