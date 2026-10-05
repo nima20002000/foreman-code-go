@@ -5,6 +5,7 @@ import { describe, it } from 'vitest'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { reviewCoordination, reviewSession } from './pr17-agent2-fixtures.js'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 describe('PR17 #6: targeted writer cancellation', () => {
   it('forwards current/stale targets exactly and preserves omitted-target behavior', async () => {
@@ -44,4 +45,36 @@ describe('PR17 #6: targeted writer cancellation', () => {
     })
     assert.deepEqual(targets, ['current-turn', 'stale-turn'])
   })
+})
+
+it.each(['turn', 'initial'] as const)('keeps the %s writer lease until the last partial batch is consumed', async (mode) => {
+  const frames = Array.from({ length: 3 }, (_, sequence) => ({
+    sequence, type: 'native.notification', occurredAt: new Date().toISOString(), payload: { text: `frame-${sequence}` },
+  }))
+  const coordination = nativeLanes()
+  const manager = {
+    harness: 'codex',
+    createSession: async () => reviewSession,
+    async *startTurn() { yield* frames },
+    async *startInitialTurn(_start, input) {
+      await input.onSessionObserved(reviewSession)
+      yield* frames
+    },
+    reconcile: async () => ({ events: [], pendingInteractions: [] }),
+  } as NativeHarnessSessionManager
+  const writer = new SingleWriterSessionManager(manager, coordination, 'reviewer')
+  if (mode === 'turn') await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const batches = mode === 'turn'
+    ? writer.startTurnBatches(reviewSession, { prompt: 'stream', clientCorrelationId: 'stream-turn' })
+    : writer.startInitialTurnBatches!({ kind: 'operator' } as Parameters<typeof writer.createSession>[0], {
+      prompt: 'stream', clientCorrelationId: 'stream-turn', onSessionObserved: async () => undefined,
+    })
+  const iterator = batches[Symbol.asyncIterator]()
+  assert.deepEqual(await iterator.next(), { value: frames, done: false })
+  const lease = writer.capturedLease(reviewSession)
+  assert.ok(lease)
+  assert.equal((await coordination.getLane('codex', reviewSession.nativeSessionId))?.leaseToken, lease.fence.token)
+  assert.equal((await iterator.next()).done, true)
+  assert.equal(writer.isActive(reviewSession), false)
+  assert.equal((await coordination.getLane('codex', reviewSession.nativeSessionId))?.leaseToken, undefined)
 })

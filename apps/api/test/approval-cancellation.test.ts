@@ -146,6 +146,7 @@ async function fixture(items: HarnessExecution[], cold = false) {
     },
     recordActivity: async () => undefined,
     appendNativeEvent: async () => undefined,
+    appendNativeEvents: async () => undefined,
   }
   const coordination = nativeLanes()
   for (const item of items) {

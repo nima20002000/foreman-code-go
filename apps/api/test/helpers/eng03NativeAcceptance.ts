@@ -288,6 +288,21 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
             JSON.stringify({ scenario, ...stats })).catch(() => undefined)
         }
       }
+      const appendNativeEvents = runs.appendNativeEvents.bind(runs)
+      runs.appendNativeEvents = async (...args) => {
+        const began = performance.now()
+        try { return await appendNativeEvents(...args) }
+        finally {
+          const stats = (evidence.nativeEventBatches ??= { count: 0, frames: 0, totalMs: 0, maxMs: 0 }) as {
+            count: number; frames: number; totalMs: number; maxMs: number
+          }
+          const elapsedMs = Math.round(performance.now() - began)
+          stats.count++
+          stats.frames += args[0].length
+          stats.totalMs += elapsedMs
+          stats.maxMs = Math.max(stats.maxMs, elapsedMs)
+        }
+      }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {

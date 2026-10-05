@@ -225,6 +225,9 @@ function fixture(harness: AgentHarness = 'codex') {
     async appendNativeEvent() {
       if (activityFailure) { const error = activityFailure; activityFailure = undefined; throw error }
     },
+    async appendNativeEvents() {
+      if (activityFailure) { const error = activityFailure; activityFailure = undefined; throw error }
+    },
   } as unknown as PostgresRunRepository
   const interactions = {
     coordination: nativeLanes(),
@@ -345,10 +348,10 @@ it('captures complete native history only when needed for a pending request or t
 it('publishes queued native events before committing their complete terminal history', async () => {
   const f = fixture()
   const published: HarnessNativeEvent[] = []
-  const append = f.runs.appendNativeEvent.bind(f.runs)
-  f.runs.appendNativeEvent = async (...args) => {
+  const append = f.runs.appendNativeEvents.bind(f.runs)
+  f.runs.appendNativeEvents = async (...args) => {
     await append(...args)
-    published.push(structuredClone(args[0]))
+    published.push(...args[0].map(({ event }) => structuredClone(event)))
   }
   const update = f.runs.updateExecution.bind(f.runs)
   f.runs.updateExecution = async (...args) => {

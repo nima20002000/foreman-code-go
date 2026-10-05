@@ -106,6 +106,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     updateExecution: vi.fn(async (next: HarnessExecution) => { execution = next }),
     recordActivity: vi.fn(async () => undefined),
     appendNativeEvent: vi.fn(async () => undefined),
+    appendNativeEvents: vi.fn(async () => undefined),
   }
   const pendingApproval = DurableInteractionSchema.parse({
     id: 'worker-pending', revision: 0, workspaceId: configuration.workspaceId, workflowId: 'workflow-1',

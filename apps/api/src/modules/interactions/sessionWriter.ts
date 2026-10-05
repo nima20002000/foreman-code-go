@@ -1,5 +1,6 @@
 import type { ResponseAvailabilityInspector } from '../harnesses/responseAvailability.js'
 import { randomUUID } from 'node:crypto'
+import { nativeEventBatches } from './nativeEventBatches.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 
@@ -130,6 +131,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private controlTail: Promise<unknown> = Promise.resolve()
   private disposal: Promise<void> | undefined
   readonly startInitialTurn?: NonNullable<NativeHarnessSessionManager['startInitialTurn']>
+  readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput,
+    signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
 
   constructor(
@@ -140,7 +143,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   ) {
     this.harness = manager.harness
     if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
-    if (manager.startInitialTurn) this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
+    if (manager.startInitialTurn) {
+      this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
+      this.startInitialTurnBatches = (start, input, signal) => this.initialTurnBatches(start, input, signal)
+    }
   }
 
   capabilities: NativeHarnessSessionManager['capabilities'] = (signal) => this.manager.capabilities(signal)
@@ -309,7 +315,13 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       : evidence.acknowledged || evidence.nativeBusy ? 'busy' : 'uncertain'
   }
 
-  private async *initialTurn(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+  private async *initialTurn(start: NativeSessionStart, input: NativeInitialTurnInput,
+    signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+    for await (const batch of this.initialTurnBatches(start, input, signal, individualEvents)) yield* batch
+  }
+
+  private async *initialTurnBatches(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal,
+    batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     signal?.throwIfAborted()
     if (this.disposal || !this.manager.startInitialTurn) throw new DomainError('NATIVE_INITIAL_TURN_UNAVAILABLE', 'The admitted initial lifecycle is unavailable.', 409)
     let session: NativeSessionReference | undefined
@@ -350,12 +362,12 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           await lease.guard.check()
         },
       }, initialSignal)
-      for await (const event of events) {
+      for await (const batch of batches(events)) {
         if (!lease || !evidence) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Provider output preceded observed session persistence.', 409)
         await lease.guard.check()
-        evidence.observeEvent(event)
+        for (const event of batch) evidence.observeEvent(event)
         this.observeEvidence(evidence.snapshot(), lease)
-        yield event
+        yield batch
       }
       if (!session || !lease || !evidence) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed native session.', 409)
       const history = await lease.guard.wait(this.manager.reconcile(session, input.clientCorrelationId, lease.guard.signal))
@@ -372,7 +384,18 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     }
   }
 
-  async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+  async *startTurn(session: NativeSessionReference, input: NativeTurnInput,
+    signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+    for await (const batch of this.turnBatches(session, input, signal, individualEvents)) yield* batch
+  }
+
+  startTurnBatches(session: NativeSessionReference, input: NativeTurnInput,
+    signal?: AbortSignal): AsyncIterable<NativeHarnessEvent[]> {
+    return this.turnBatches(session, input, signal)
+  }
+
+  private async *turnBatches(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal,
+    batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
     const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
     let submitted = false
@@ -384,7 +407,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.active.set(session.nativeSessionId, lease)
       await lease.guard.check()
       submitted = true
-      for await (const event of ownedEvents(this.manager.startTurn(session, {
+      for await (const batch of batches(ownedEvents(this.manager.startTurn(session, {
         ...input,
         onMessageSubmitted: async (receipt) => {
           await lease.guard.check()
@@ -409,11 +432,11 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           await input.onSubmitted?.(providerId)
           await lease.guard.check()
         },
-      }, lease.guard.signal), lease.guard)) {
+      }, lease.guard.signal), lease.guard))) {
         await lease.guard.check()
-        evidence.observeEvent(event)
+        for (const event of batch) evidence.observeEvent(event)
         this.observeEvidence(evidence.snapshot(), lease)
-        yield event
+        yield batch
       }
       await lease.guard.check()
       const history = await lease.guard.wait(this.manager.reconcile(session, input.clientCorrelationId, lease.guard.signal))
@@ -569,4 +592,8 @@ export function coordinateSessionManager(manager: NativeHarnessSessionManager,
     return manager
   }
   return new SingleWriterSessionManager(manager, coordination, agentId, leaseMs)
+}
+
+async function* individualEvents(events: AsyncIterable<NativeHarnessEvent>): AsyncIterable<NativeHarnessEvent[]> {
+  for await (const event of events) yield [event]
 }

@@ -1397,15 +1397,15 @@ export class ApprovalExecutionCoordinator {
             return persistObservedSession(observed, lane)
           })
         }
-        let nativeEvents: AsyncIterable<NativeHarnessEvent>
+        let nativeEvents: AsyncIterable<NativeHarnessEvent[]>
         let rejectObserved: ((error: unknown) => void) | undefined
         try {
-          if (manager.startInitialTurn) {
+          if (manager.startInitialTurnBatches) {
             let resolveObserved!: (observed: NativeSessionReference) => void
             const observed = new Promise<NativeSessionReference>((resolve, reject) => { resolveObserved = resolve; rejectObserved = reject })
             const opening = this.openingSession(ownedSession, observed)
             void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
-            nativeEvents = manager.startInitialTurn(start, {
+            nativeEvents = manager.startInitialTurnBatches(start, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
               onSessionObserved: async (native) => {
                 resolveObserved(native)
@@ -1414,22 +1414,24 @@ export class ApprovalExecutionCoordinator {
             }, signal)
           } else {
             await publishObservedSession(await this.openingSession(ownedSession, manager.createSession(start, signal)))
-            nativeEvents = manager.startTurn(session!, {
+            nativeEvents = manager.startTurnBatches(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
             }, signal)
           }
-          for await (const event of nativeEvents) {
+          for await (const events of nativeEvents) {
             signal.throwIfAborted()
             await this.budgets.assertActive(execution.id)
             const lease = manager.currentProjectionLease(session!)
-            const originalEvent = safeValue({ ...event, executionId: execution.id })
-            await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
-              this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'live', manager.capturedLease(session!)))
+            const frames = events.map((event) => {
+              const original = safeValue({ ...event, executionId: execution.id })
+              return { event: original, evidence: this.captureNative(input.owner, execution,
+                { type: 'event', event: original }, 'live', manager!.capturedLease(session!)) }
+            })
+            await this.runs.appendNativeEvents(frames, input.owner, lease)
             const history = await manager.history(session!, signal)
-            const waiting = await observePending(history, event, lease)
+            const waiting = await observePending(history, events.at(-1), lease)
             if (waiting) return waiting
-            // Drain each captured frame before publishing complete terminal history.
-            // This lets lease renewal run between native-event transactions.
+            // Commit bounded frames while their writer lease remains held.
           }
         } catch (error) { rejectObserved?.(error); throw error }
         finally { if (!session) rejectObserved?.(new Error('Initial input has no observed native session.')) }

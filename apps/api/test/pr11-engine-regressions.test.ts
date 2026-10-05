@@ -102,6 +102,9 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     },
     acceptExecutionResult: async (value: HarnessExecution) => { accepted.push(value) },
     appendNativeEvent: async (value: unknown) => { events.push(value) },
+    appendNativeEvents: async (frames: { event: unknown }[]) => {
+      events.push(...frames.map(({ event }) => event))
+    },
     recordActivity: async (...args: unknown[]) => { activities.push(args) },
     listExecutions: async () => [...rows.values()],
     acquireOwnership: async () => undefined,

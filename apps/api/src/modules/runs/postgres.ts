@@ -23,6 +23,7 @@ import { requestWorkflowCleanup, finishWorkflowCleanup, settleWorkflowRun } from
 import type { WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { WorkflowNativeLease, WorkflowApprovalCorrelation, WorkflowContinuationProof } from './workflowNativeGraph.js'
 import { WorkflowNativeProofServices } from './workflowNativeProof.js'
+import { NATIVE_EVENT_BATCH_SIZE } from '../interactions/nativeEventBatches.js'
 
 /** Saved pins never default to an old mode. Independent native/graph protocol
  * versions and WorkflowVersion revision numbers are not execution semantics. */
@@ -163,6 +164,23 @@ export class PostgresRunRepository implements RunRepository {
       await this.nativeProof.appendEventLocked(sql, snapshot.run, original, evidence, owner, lease, approval, continuation)
     })
     await this.nativeCommitted?.(evidence)
+  }
+  async appendNativeEvents(input: readonly { event: HarnessNativeEvent; evidence: RepeatNativeEvidence }[],
+    owner: RunOwnership, lease?: WorkflowNativeLease): Promise<void> {
+    if (!input.length || input.length > NATIVE_EVENT_BATCH_SIZE) throw new DomainError(
+      'NATIVE_EVENT_BATCH_INVALID', 'Native event publication requires a bounded group of captured frames.', 409)
+    const frames = input.map(({ event, evidence }) => ({
+      event: HarnessNativeEventSchema.parse(structuredClone(event)),
+      evidence: captureRepeatNativeEvidence(evidence),
+    }))
+    owner.assertOwned()
+    await owner.oneShotConnection().transaction(async (sql) => {
+      const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+      for (const { event, evidence } of frames) {
+        await this.nativeProof.appendEventLocked(sql, snapshot.run, event, evidence, owner, lease)
+      }
+    })
+    for (const { evidence } of frames) await this.nativeCommitted?.(evidence)
   }
   async updateState(runId: string, update: RunStateUpdate, owner: RunOwnership, resume?: WorkflowResumePermit): Promise<void> {
     await markRepeatRunRunning(this.requireOwner(runId, owner), this.locations, update, resume)
