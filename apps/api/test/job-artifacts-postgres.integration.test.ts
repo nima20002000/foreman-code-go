@@ -152,11 +152,13 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
   })
   it('publishes repetitive generated logs through canonical storage and reads persisted bytes', async () => {
     await pool.query('update job_fixture_owner set revoked=false')
-    const job = JobExecutionRecordSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID() })
     const logPath = '.logs/verification/logs.tar.gz'
-    const output = { path: logPath, required: true, mediaType: 'application/gzip',
-      ...(job.schemaVersion === 2 ? { kind: 'logs-archive', maxBytes: 65536 } : {}) }
-    job.acceptedSpec.outputs = [output] as typeof job.acceptedSpec.outputs
+    const output = { path: logPath, required: true, mediaType: 'application/gzip' as const,
+      ...(execution.schemaVersion === 2 ? { kind: 'logs-archive' as const, maxBytes: 65536 } : {}) }
+    const job = JobExecutionRecordSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID(),
+      acceptedSpec: { ...execution.acceptedSpec,
+        policy: { ...execution.acceptedSpec.policy, maxOutputBytes: 128 * 1024 },
+        outputs: execution.schemaVersion === 2 ? [...execution.acceptedSpec.outputs, output] : [output] } })
     await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
       [job.id, job.workspaceId, JSON.stringify(job), JSON.stringify(job.acceptedSpec), 'owner'])
     const parts = join(root, `logs-${job.id}`)

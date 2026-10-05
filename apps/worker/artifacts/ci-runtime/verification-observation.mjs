@@ -4,6 +4,15 @@ import { networkInterfaces } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { prepareVerificationPnpm, assertEffectivePackagePolicy, assertEffectiveVerificationStore } from './verification-policy.mjs';
 
+export async function probeExecutableScratch(directory) {
+  const path = `${directory}/qualification-${randomUUID()}`;
+  await writeFile(path, '#!/bin/sh\nexit 0\n', { mode: 0o700, flag: 'wx' });
+  try {
+    const result = spawnSync(path, [], { stdio: 'ignore', timeout: 5000 });
+    return result.error?.code ?? result.status;
+  } finally { await unlink(path); }
+}
+
 /** Runs inside the admitted verification container. It reports observations, never a qualification flag. */
 export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [] }) {
   if (!Array.isArray(ownerSentinelPaths) || !ownerSentinelPaths.length
@@ -11,14 +20,6 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
     throw new Error('Original controller-owned sentinel paths required.');
   }
   await mkdir('/job-scratch/tmp', { recursive: true, mode: 0o700 });
-  const execution = async directory => {
-    const path = `${directory}/qualification-${randomUUID()}`;
-    await writeFile(path, '#!/bin/sh\nexit 0\n', { mode: 0o700, flag: 'wx' });
-    try {
-      const result = spawnSync(path, [], { stdio: 'ignore', timeout: 5000 });
-      return result.error?.code ?? result.status;
-    } finally { await unlink(path); }
-  };
   const { env } = await prepareVerificationPnpm(['pnpm', 'config', 'list', '--json']);
   const config = JSON.parse(execFileSync(process.execPath,
     ['/usr/local/lib/node_modules/corepack/dist/corepack.js', 'pnpm', 'config', 'list', '--json'],
@@ -74,7 +75,7 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
     swapMax: (await readFile('/sys/fs/cgroup/memory.swap.max', 'utf8')).trim(),
     pidsMax: (await readFile('/sys/fs/cgroup/pids.max', 'utf8')).trim(), cpuRatio: cpu[0] / cpu[1],
     capabilities: /^CapEff:\s*(\S+)/m.exec(status)?.[1], noNewPrivileges: /^NoNewPrivs:\s*(\S+)/m.exec(status)?.[1],
-    controlExecution: await execution('/tmp'), scratchExecution: await execution('/job-scratch/tmp'),
+    controlExecution: await probeExecutableScratch('/tmp'), scratchExecution: await probeExecutableScratch('/job-scratch/tmp'),
     shmType: shm.type, shmCapacityBytes: shm.blocks * shm.bsize,
     controlTempType: tmp.type, controlTempCapacityBytes: tmp.blocks * tmp.bsize,
     mountInfo: await readFile('/proc/self/mountinfo', 'utf8'), ownerSentinels,
