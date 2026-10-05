@@ -73,7 +73,7 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   if (payload.driverId !== 'codex' && payload.driverId !== 'opencode') unavailable('unsupported_driver')
   const harness = payload.driverId as CompatibilityHarness
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint
-  if (!binarySha256 || !suites[harness]) unavailable('binary_identity_missing')
+  if (!binarySha256 || !suites[harness]) return unavailable('binary_identity_missing')
   let measuredQualification: unknown
   if (!installation.observedVersion) {
     if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable('worker_qualification_missing')
