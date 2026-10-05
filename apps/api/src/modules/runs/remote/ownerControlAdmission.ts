@@ -15,7 +15,7 @@ export async function admitRemoteOwnerControl(sql: GraphTransactionSql, owner: R
   assertGraphTransaction(sql)
   if (input.kind === 'stop') return prepareRemoteOwnerControl(sql, owner, binding, input)
   if (!claim || claim.mode !== 'submit' || !/^[1-9][0-9]*$/.test(claim.deliveryFence ?? '')
-    || !/^[1-9][0-9]*$/.test(claim.approvalConnectionGeneration ?? '')
+    || !/^(0|[1-9][0-9]*)$/.test(claim.approvalConnectionGeneration ?? '')
     || claim.interaction.runId !== owner.runId || claim.interaction.executionId !== binding.intent.executionId
     || claim.interaction.nativeSessionId !== input.native.sessionId || claim.interaction.nativeRequestId !== input.nativeRequestId) {
     throw new DomainError('REMOTE_CONTROL_ORIGINAL_CLAIM_REQUIRED', 'Remote response admission requires its original exact delivery claim.', 409)
