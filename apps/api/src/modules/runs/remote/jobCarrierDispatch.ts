@@ -16,7 +16,7 @@ export interface JobApplicationChannel {
 /** Uses CI-B's actual accepted row and W07 channel. It grants neither scheduling nor SQL to workers. */
 export class RemoteJobCarrierDispatch implements RemoteJobDispatchRecordPort {
   private readonly repository = new JobRepository()
-  constructor(private readonly pool: pg.Pool, private readonly channel: JobApplicationChannel, private readonly local: RemoteJobExecutionHost | undefined) {}
+  constructor(private readonly pool: pg.Pool, private readonly channel: JobApplicationChannel, private readonly local: Pick<RemoteJobExecutionHost, 'handle'> | undefined) {}
   private async execution(intent: RemoteJobDispatchIntent) {
     const sql = await this.pool.connect()
     try {
