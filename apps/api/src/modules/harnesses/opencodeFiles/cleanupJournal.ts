@@ -24,7 +24,7 @@ const recoveries = new Map<string, Promise<void>>()
 /** Stored in the API vault, outside every native filesystem namespace. */
 export class OpenCodeFileCleanupJournal {
   private readonly root: string
-  constructor(vault: string) {
+  constructor(vault: string, private readonly conversationId?: string) {
     this.root = privateDirectory(join(vault, 'opencode-file-cleanup'))
   }
 
@@ -49,6 +49,7 @@ export class OpenCodeFileCleanupJournal {
 
   recover(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal): Promise<void> {
     const previous = recoveries.get(this.root) ?? Promise.resolve()
+    // The previous caller receives its failure; subsequent recovery can retry independently.
     const task = previous.catch(() => undefined).then(() => this.recoverReady(onClosed, signal))
     recoveries.set(this.root, task)
     void task.finally(() => {
@@ -65,6 +66,7 @@ export class OpenCodeFileCleanupJournal {
       const raw = readRecord(join(this.root, name))
       if (!raw) continue
       const record = recordSchema.parse(raw)
+      if (this.conversationId && record.context.scope.chat.conversationId !== this.conversationId) continue
       if (record.boot === bootIdentity() && identityAlive(record.api) && identityAlive(record.native)) continue
       try {
         if (record.recovery) {
