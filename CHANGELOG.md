@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2026-10-05
+
+### Fixed
+
+- Align Operator OpenCode file-delivery fixtures with the canonical Foreman Code MCP entry, preserving exactly-once attachment delivery and file-only authority for Markdown, images and publication flows.
+- Report persisted Operator turn errors directly in delivery tests and verify MCP isolation for supported and legacy connection names.
+
 ## [0.0.14] - 2026-10-05
 
 ### Fixed
