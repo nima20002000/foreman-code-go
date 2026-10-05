@@ -82,3 +82,31 @@ it('confirms a standalone form with session/request identity and an unchanged na
   expect(new NativeResponseJournal(journalPath).read(session, identity)).toEqual(evidence)
   expect(await f.wire('turn/start')).toHaveLength(0)
 })
+
+it('keeps a form uncertain when resolution is followed by a native turn transition', async () => {
+  const manager = f.makeManager()
+  const source = input(f.directory)
+  delete source.environment
+  const session = await manager.createSession(source)
+  const completed = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'transition' }))
+  const turnId = await until(async () => {
+    const history = await manager.reconcile(session, 'transition')
+    return history.nativeTurnId
+  })
+  await f.flag('no-resolution')
+  await emit(f.directory, { id: 6201, method: 'mcpServer/elicitation/request', params: {
+    threadId: session.nativeSessionId, turnId, mode: 'form', serverName: 'app', message: 'Enter details',
+    requestedSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] },
+  } })
+  const pending = await until(async () => manager.pending(session))
+  const option = withInteractionResponse(pending.responseOptions[0]!, { count: 2 })
+  const responding = manager.respond(session, pending.turn.nativeRequestId!, option)
+  await until(async () => (await manager.history(session)).events.some(event => event.type === 'interaction.submitted'))
+  await emit(f.directory, { method: 'serverRequest/resolved', params: { threadId: session.nativeSessionId, requestId: 6201 } })
+  await responding
+  await manager.cancel(session)
+  await completed
+  const history = await manager.reconcileResponse(session, { nativeRequestId: pending.turn.nativeRequestId!,
+    nativeRequestType: pending.nativeRequestType, option })
+  expect(history.responseDeliveries).toEqual([])
+})
