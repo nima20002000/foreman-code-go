@@ -60,7 +60,9 @@ describe('Claude native session manager admission', () => {
           const opening = operation === 'inspection' ? f.manager.prepareInspection(selected)
             : f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
               nativeSessionId: 'native-session' }, selected)
-          await expect(opening).rejects.toMatchObject({ code: 'CLAUDE_ENVIRONMENT_INVALID' })
+          await expect(opening).rejects.toMatchObject({ result: {
+            outcome: 'failed', error: { code: 'CLAUDE_ENVIRONMENT_INVALID', retryable: false },
+          } })
           expect(f.queries).not.toHaveBeenCalled()
           expect(f.offers).not.toHaveBeenCalled()
           const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'native-session' }
