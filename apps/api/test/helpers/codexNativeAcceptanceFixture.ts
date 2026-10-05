@@ -48,7 +48,7 @@ export async function codexNativeAcceptanceFixture() {
   try {
     await seedAgent3(pool, workingDirectory, fixture)
     const configuration = fixture.configurations[0]!
-    const node = fixture.version.definition.nodes.find(row => row.kind !== 'job' && row.agentId === configuration.agentId)
+    const node = fixture.version.definition.nodes.find(row => row.agentId === configuration.agentId)
     assert(node)
     const run = WorkflowRunV3Schema.parse({ ...fixture.run, executionState: 'running' })
     await pool.query('update runs set execution_state=$2,record=$3 where id=$1', [run.id, run.executionState, run])
