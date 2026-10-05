@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { open, type FileHandle } from 'node:fs/promises'
+import { open, unlink, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { MaterializationReceiptSchema, RootBindingSchema, SourceProjectQuotaSlotSchema, type RootBinding }
@@ -26,10 +26,35 @@ export function sourceMaterializationClaimName(binding: RootBinding, attempt: Ma
   return `binding-${binding.rootId}-${owner}.lock`
 }
 
+/** An interrupted exclusive write removes only its own incomplete record. */
+export async function writeSourceClaim(root: FileHandle, name: string, bytes: string | Buffer,
+  signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  const file = await open(anchored(root, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+    | constants.O_NOFOLLOW, 0o600)
+  let durable = false
+  try {
+    signal?.throwIfAborted()
+    await file.writeFile(bytes, signal ? { signal } : undefined)
+    signal?.throwIfAborted()
+    await file.sync()
+    durable = true
+    signal?.throwIfAborted()
+    await root.sync()
+    signal?.throwIfAborted()
+  } catch (error) {
+    if (!durable) {
+      await unlink(anchored(root, name))
+      await root.sync()
+    }
+    throw error
+  } finally { await file.close() }
+}
 /** The namespace lock is held by the caller. A quota claim can outlive a crash before the attempt claim was written. */
 export async function restoreQuotaMaterializationClaim(root: FileHandle, binding: RootBinding,
-  attempt: MaterializationAttempt, pool: JobVerificationQuotaPool): Promise<void> {
+  attempt: MaterializationAttempt, pool: JobVerificationQuotaPool, signal?: AbortSignal): Promise<void> {
   for (const slot of pool.slots) {
+    signal?.throwIfAborted()
     let file: FileHandle
     try { file = await open(anchored(root, `quota-${slot.namespace}.claim.json`), constants.O_RDONLY | constants.O_NOFOLLOW) }
     catch (error) {
@@ -38,25 +63,24 @@ export async function restoreQuotaMaterializationClaim(root: FileHandle, binding
     }
     let bytes: Buffer
     try {
+      signal?.throwIfAborted()
       const stat = await file.stat()
+      signal?.throwIfAborted()
       if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.size > 16384) {
         throw new SourceError('SOURCE_CLAIM_INVALID', 'Quota owner record is invalid.')
       }
-      bytes = await file.readFile()
+      bytes = await file.readFile(signal ? { signal } : undefined)
+      signal?.throwIfAborted()
     } finally { await file.close() }
     const owner = z.union([SourceQuotaClaimSchema, QualificationQuotaClaimSchema]).parse(JSON.parse(bytes.toString('utf8')))
     if ('kind' in owner) continue
     if (!isDeepStrictEqual(owner.binding, binding) || !isDeepStrictEqual(owner.attempt, attempt)) continue
     if (!isDeepStrictEqual(owner.quota, slot)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Quota configuration changed.')
+    signal?.throwIfAborted()
     const name = sourceMaterializationClaimName(binding, attempt, pool)
-    const restored = await open(anchored(root, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-      | constants.O_NOFOLLOW, 0o600).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null
-      throw error
-    })
-    if (restored) {
-      try { await restored.writeFile(bytes); await restored.sync(); await root.sync() }
-      finally { await restored.close() }
+    try { await writeSourceClaim(root, name, bytes, signal) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
     return
   }

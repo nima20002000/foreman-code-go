@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open, readdir, unlink, rmdir, rename, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
@@ -8,7 +9,8 @@ import { anchored, identity, openChildDirectory, openPrivateRoot } from './priva
 import { verifyJobQuotaOwnership } from '../jobs/quotaOwnership.js'
 import { SourceError } from './manifest.js'
 
-async function readRecord(root: FileHandle, name: string): Promise<unknown | null> {
+async function readRecord(root: FileHandle, name: string, signal: AbortSignal): Promise<unknown | null> {
+  signal.throwIfAborted()
   let file: FileHandle
   try { file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW) }
   catch (error) {
@@ -16,19 +18,37 @@ async function readRecord(root: FileHandle, name: string): Promise<unknown | nul
     throw error
   }
   try {
+    signal.throwIfAborted()
     const stat = await file.stat()
+    signal.throwIfAborted()
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 32768 || stat.mode & 0o077) {
       throw new SourceError('SOURCE_CLAIM_INVALID', 'Quota cleanup record is invalid.')
     }
-    return JSON.parse(await file.readFile('utf8')) as unknown
+    const bytes = await file.readFile({ encoding: 'utf8', signal })
+    signal.throwIfAborted()
+    return JSON.parse(bytes) as unknown
   } finally { await file.close() }
 }
-async function writeRecord(root: FileHandle, name: string, record: unknown): Promise<void> {
-  const file = await open(anchored(root, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+async function writeRecord(root: FileHandle, name: string, record: unknown, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  const pending = `${name}.pending-${randomUUID()}`
+  const file = await open(anchored(root, pending), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
     | constants.O_NOFOLLOW, 0o600)
-  try { await file.writeFile(JSON.stringify(record)); await file.sync() }
-  finally { await file.close() }
-  await root.sync()
+  let installed = false
+  try {
+    signal.throwIfAborted()
+    await file.writeFile(JSON.stringify(record), { signal })
+    signal.throwIfAborted()
+    await file.sync()
+    signal.throwIfAborted()
+    await rename(anchored(root, pending), anchored(root, name))
+    installed = true
+    await root.sync()
+    signal.throwIfAborted()
+  } finally {
+    await file.close()
+    if (!installed) await unlink(anchored(root, pending))
+  }
 }
 async function removeDirectory(parent: FileHandle, name: string,
   receipt: Pick<MaterializationReceipt, 'binding' | 'quota'>, signal: AbortSignal): Promise<void> {
@@ -40,20 +60,27 @@ async function removeDirectory(parent: FileHandle, name: string,
     throw error
   }
   try {
+    signal.throwIfAborted()
     const filesystem = await identity(directory)
+    signal.throwIfAborted()
     if (filesystem.device !== receipt.quota!.filesystem.device
       || filesystem.mountId !== receipt.quota!.filesystem.mountId) {
       throw new SourceError('SOURCE_MOUNT_CHANGED', 'Quota cleanup cannot cross a filesystem boundary.')
     }
-    for (const entry of await readdir(anchored(directory), { withFileTypes: true })) {
+    const entries = await readdir(anchored(directory), { withFileTypes: true })
+    signal.throwIfAborted()
+    for (const entry of entries) {
       signal.throwIfAborted()
       if (entry.isDirectory()) await removeDirectory(directory, entry.name, receipt, signal)
       else await unlink(anchored(directory, entry.name))
+      signal.throwIfAborted()
     }
   } finally { await directory.close() }
   signal.throwIfAborted()
   await rmdir(anchored(parent, name))
+  signal.throwIfAborted()
   await parent.sync()
+  signal.throwIfAborted()
 }
 
 /** Main retains the source snapshot and published artifacts before authorizing this cleanup. */
@@ -63,58 +90,72 @@ export async function reclaimMaterializationQuota(receipt: MaterializationReceip
   if (!receipt.quota) throw new SourceError('SOURCE_QUOTA_MISSING', 'Per-Job quota ownership is missing.')
   signal.throwIfAborted()
   if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Original Job closure is unconfirmed.')
+  signal.throwIfAborted()
   const root = await openPrivateRoot(receipt.binding.canonicalPath)
   const removingName = `reclaiming-${receipt.materializationId}.json`
   const completedName = `reclaimed-${receipt.materializationId}.json`
   try {
+    signal.throwIfAborted()
     if (!isDeepStrictEqual(await identity(root), receipt.binding.filesystem)) {
       throw new SourceError('SOURCE_ROOT_CHANGED', 'The original quota namespace changed.')
     }
-    const completed = await readRecord(root, completedName)
+    signal.throwIfAborted()
+    const completed = await readRecord(root, completedName, signal)
     if (completed) {
       if (!isDeepStrictEqual(completed, receipt)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Cleanup belongs to another Job.')
       await withClaimLock(root, async () => {
         signal.throwIfAborted()
         const name = `quota-${receipt.quota!.namespace}.claim.json`
-        const active = await readRecord(root, name) as { materializationId: string } | null
+        const active = await readRecord(root, name, signal) as { materializationId: string } | null
+        signal.throwIfAborted()
         if (active?.materializationId === receipt.materializationId) {
           await rename(anchored(root, name), anchored(root, `released-quota-${receipt.materializationId}.json`))
+          signal.throwIfAborted()
           await root.sync()
+          signal.throwIfAborted()
         }
-      })
+      }, { signal })
       return
     }
-    const removing = await readRecord(root, removingName)
+    const removing = await readRecord(root, removingName, signal)
     if (removing && !isDeepStrictEqual(removing, receipt)) {
       throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Cleanup belongs to another Job.')
     }
     if (!removing) {
-      await archiveMaterializationClaim(receipt, { filesystem: receipt.binding.filesystem }, reconcile)
-      await writeRecord(root, removingName, receipt)
+      await archiveMaterializationClaim(receipt, { filesystem: receipt.binding.filesystem, signal }, reconcile)
+      await writeRecord(root, removingName, receipt, signal)
     }
     await withClaimLock(root, async () => {
       signal.throwIfAborted()
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Original Job closure is unconfirmed.')
       const claimName = `quota-${receipt.quota!.namespace}.claim.json`
-      const claim = await readRecord(root, claimName) as { materializationId: string; quota: unknown } | null
+      const claim = await readRecord(root, claimName, signal) as { materializationId: string; quota: unknown } | null
       if (!claim || claim.materializationId !== receipt.materializationId || !isDeepStrictEqual(claim.quota, receipt.quota)) {
         throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Quota cleanup does not own this slot.')
       }
       await verifyJobQuotaOwnership({ ...quotaPool, binding: receipt.binding, slot: receipt.quota!, signal })
+      signal.throwIfAborted()
       const slot = await openChildDirectory(root, receipt.quota!.namespace)
       try {
         await removeDirectory(slot, receipt.materializationId, receipt, signal)
         const usage = await verifyJobQuotaOwnership({ ...quotaPool, binding: receipt.binding, slot: receipt.quota!, signal })
+        signal.throwIfAborted()
         const stat = await slot.stat()
-        if ((await readdir(anchored(slot))).length || usage.usedBytes > stat.blocks * 512 || usage.usedInodes > 1) {
+        signal.throwIfAborted()
+        const entries = await readdir(anchored(slot))
+        signal.throwIfAborted()
+        if (entries.length || usage.usedBytes > stat.blocks * 512 || usage.usedInodes > 1) {
           throw new SourceError('SOURCE_QUOTA_OWNED', 'The quota still contains Job data or an open deleted file.')
         }
         if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Original Job closure is unconfirmed.')
-        await writeRecord(root, completedName, receipt)
+        signal.throwIfAborted()
+        await writeRecord(root, completedName, receipt, signal)
         await rename(anchored(root, claimName), anchored(root, `released-quota-${receipt.materializationId}.json`))
+        signal.throwIfAborted()
         await root.sync()
+        signal.throwIfAborted()
       } finally { await slot.close() }
-    })
+    }, { signal })
   } finally { await root.close() }
 }
 
@@ -123,31 +164,42 @@ export async function reclaimPreparationQuota(
   claim: Pick<MaterializationReceipt, 'binding' | 'quota' | 'materializationId'>, root: FileHandle,
   quotaPool: SourceQuotaPool, closed: () => Promise<boolean>, signal: AbortSignal,
 ): Promise<void> {
+  signal.throwIfAborted()
   if (!claim.quota || !await closed()) throw new SourceError('SOURCE_ROOT_OWNED', 'Original preparation closure is unconfirmed.')
+  signal.throwIfAborted()
   const name = `quota-${claim.quota.namespace}.claim.json`
   const releasedName = `released-quota-${claim.materializationId}.json`
-  const released = await readRecord(root, releasedName) as { materializationId: string; quota: unknown } | null
+  const released = await readRecord(root, releasedName, signal) as { materializationId: string; quota: unknown } | null
   if (released) {
     if (released.materializationId !== claim.materializationId || !isDeepStrictEqual(released.quota, claim.quota)) {
       throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Preparation release belongs to another quota.')
     }
     return
   }
-  const active = await readRecord(root, name) as { materializationId: string; quota: unknown; binding: unknown } | null
+  const active = await readRecord(root, name, signal) as { materializationId: string; quota: unknown; binding: unknown } | null
   if (!active || active.materializationId !== claim.materializationId
     || !isDeepStrictEqual(active.quota, claim.quota) || !isDeepStrictEqual(active.binding, claim.binding)) {
     throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Preparation cleanup does not own this quota.')
   }
   await verifyJobQuotaOwnership({ ...quotaPool, binding: claim.binding, slot: claim.quota, signal })
+  signal.throwIfAborted()
   const slot = await openChildDirectory(root, claim.quota.namespace)
   try {
     await removeDirectory(slot, claim.materializationId, claim, signal)
     const usage = await verifyJobQuotaOwnership({ ...quotaPool, binding: claim.binding, slot: claim.quota, signal })
-    if ((await readdir(anchored(slot))).length || usage.usedBytes > (await slot.stat()).blocks * 512
+    signal.throwIfAborted()
+    const entries = await readdir(anchored(slot))
+    signal.throwIfAborted()
+    const stat = await slot.stat()
+    signal.throwIfAborted()
+    if (entries.length || usage.usedBytes > stat.blocks * 512
       || usage.usedInodes > 1 || !await closed()) {
       throw new SourceError('SOURCE_QUOTA_OWNED', 'Original preparation still owns quota storage.')
     }
+    signal.throwIfAborted()
     await rename(anchored(root, name), anchored(root, releasedName))
+    signal.throwIfAborted()
     await root.sync()
+    signal.throwIfAborted()
   } finally { await slot.close() }
 }
