@@ -95,12 +95,16 @@ describe('disposable test resources', () => {
   it('isolates storage and harness homes, discards ambient authentication, and copies only test authentication', async () => {
     const resource = createTestRoot()
     const auth = join(resource.directory, 'test-auth.json')
+    const opencodeAuth = join(resource.directory, 'test-opencode-auth.json')
     await writeFile(auth, '{"test":"credential"}')
+    await writeFile(opencodeAuth, '{"test":"opencode-credential"}')
     try {
       const environment = testEnvironment({ HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
-        OPENAI_API_KEY: 'real-key', GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log',
+        OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
+        GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log',
         GRAPHQL_API_ENV_FILE: '/real/api.env',
-        GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key' },
+        GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key',
+        GRAPHQL_TEST_OPENCODE_AUTH_FILE: opencodeAuth, GRAPHQL_TEST_OPENCODE_API_KEY: 'test-opencode-key' },
       { ...resource, name: 'graphql_test_unit', databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
         'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR']) {
@@ -114,10 +118,14 @@ describe('disposable test resources', () => {
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
       expect(environment.OPENAI_API_KEY).toBe('test-key')
+      expect(environment.OPENCODE_API_KEY).toBe('test-opencode-key')
       const nested = testEnvironment(environment, { ...resource, name: 'graphql_test_unit',
         databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       expect(nested.OPENAI_API_KEY).toBe('test-key')
+      expect(nested.OPENCODE_API_KEY).toBe('test-opencode-key')
       expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"credential"}')
+      expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
+        .toBe('{"test":"opencode-credential"}')
     } finally { removeTestRoot(resource) }
   })
 })
