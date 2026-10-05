@@ -133,6 +133,8 @@ export interface NativeSubagentHistoryPage {
 
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
+  /** Read the original protected credential environment for a verified restart attachment. */
+  recoverEnvironment?(): ChildProcessEnvironment | undefined
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

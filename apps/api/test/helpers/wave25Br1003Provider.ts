@@ -60,6 +60,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     const original = this.requests.get(session.nativeSessionId)!
     if (original.executionId !== input.request.executionId) throw new Error('Attachment changed the execution identity')
     this.counts.attaches++
+    this.closedSessions.delete(session.nativeSessionId)
     return session
   }
   async *startTurn(session: NativeSessionReference, input: Parameters<NativeHarnessSessionManager['startTurn']>[1]): AsyncIterable<NativeHarnessEvent> {

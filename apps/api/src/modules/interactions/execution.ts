@@ -3,6 +3,7 @@ import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
 import type { InteractionActivityEvidence } from './activityProjection.js'
 import type { ReviewNativeCapture, ReviewNativeCapturePort, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
 import { setTimeout as delay } from 'node:timers/promises'
+import { isDeepStrictEqual } from 'node:util'
 
 import {
   HarnessExecutionSchema,
@@ -33,6 +34,7 @@ import { attemptCleanup } from './cleanup.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { capturedWorkflowNativeTime, type WorkflowNativeCapturePort, type WorkflowOriginalNativeSource } from './workflowNativeCapture.js'
@@ -50,8 +52,9 @@ import type {
   ResolvedNativeSessionManager,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
-import { recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
+import { readDetachedWorkflowSession, recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
+import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -591,16 +594,20 @@ export class ApprovalExecutionCoordinator {
   private async prepareEnvironment(
     context: NativeManagerResolutionContext,
     resolved: ResolvedNativeSessionManager,
-    signal?: AbortSignal,
-    purpose?: 'reviewer',
-    enterNative?: () => Promise<void>,
+    options: { signal?: AbortSignal | undefined; purpose?: 'reviewer' | undefined;
+      enterNative?: () => Promise<void>; restartOwner?: RunOwnership | undefined },
   ) {
+    const { signal, purpose, enterNative, restartOwner } = options
+    restartOwner?.assertOwned()
+    const recoveredEnvironment = restartOwner && resolved.manager.recoverEnvironment?.()
+    if (restartOwner && resolved.manager.recoverEnvironment && !recoveredEnvironment) throw new HarnessExecutionError(
+      'NATIVE_PROCESS_RECOVERY_UNAVAILABLE', 'The original native process has no verified restart environment.', false)
     if (this.workflowClosures) {
       const owned = this.ownedSessions.get(context.executionId)
       if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
       // The original process intent must be durable before entered commits.
       // Allocation/reviewer cleanup alone must not reserve or dispatch anything.
-      if (resolved.processState === 'needs_start' && !owned.launchReserved) {
+      if (resolved.processState === 'needs_start' && !owned.launchReserved && !recoveredEnvironment) {
         signal?.throwIfAborted()
         this.reserveNativeLaunch?.(context.executionId, this.rawManagers.get(owned.manager) ?? owned.manager)
         owned.launchReserved = true
@@ -621,6 +628,15 @@ export class ApprovalExecutionCoordinator {
     }
     await enterNative?.()
     signal?.throwIfAborted()
+    if (recoveredEnvironment) {
+      if (!this.credentials?.restore) throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED',
+        'The original native credential cannot be restored by this execution owner.', 409)
+      const credential = await this.credentials.restore(context.executionId, recoveredEnvironment)
+      restartOwner!.assertOwned()
+      signal?.throwIfAborted()
+      this.managerCredentials.set(resolved.manager, credential)
+      return credential.environment
+    }
     if (!this.credentials) return undefined
     if (resolved.processState === 'resident') {
       const credential = this.managerCredentials.get(resolved.manager)
@@ -960,18 +976,29 @@ export class ApprovalExecutionCoordinator {
     sessionReference: { harness: NativeManagerResolutionContext['harness']; providerVersion: string; nativeSessionId: string },
     signal?: AbortSignal,
   ): Promise<AttachedInteractionSession> {
+    return this.attachSession(context, sessionReference, { signal })
+  }
+
+  private async attachSession(
+    context: NativeManagerOwnershipContext,
+    sessionReference: NativeSessionReference,
+    options: { signal?: AbortSignal | undefined; restartOwner?: RunOwnership },
+  ): Promise<AttachedInteractionSession> {
+    let signal = options.signal
+    options.restartOwner?.assertOwned()
     const execution = await this.runs.getExecution(context.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory || execution.agentId !== context.agentId
       || execution.workingDirectory !== context.workingDirectory
       || execution.nativeSessionId !== sessionReference.nativeSessionId || sessionReference.harness !== context.harness) {
       throw new Error('The native session ownership context does not match its durable execution.')
     }
-    // The delivery reconciler can race the Run reconciler after API restart.
-    // Do not let a cold attach allocate a manager and masquerade as a resident
-    // requester before its Run owner can fence and settle the dead lifetime.
-    if (!this.ownedSessions.has(execution.id) && (execution.state !== 'completed'
-      || !await this.workflowClosures?.read(execution))) throw new DomainError(
-      'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester is not resident. Reconcile its Run without replaying native work.', 409)
+    if (!this.ownedSessions.has(execution.id)) {
+      const detached = options.restartOwner
+        ? await readDetachedWorkflowSession(options.restartOwner, execution) : undefined
+      if (detached) this.assertSessionIdentity(detached, sessionReference)
+      else if (execution.state !== 'completed' || !await this.workflowClosures?.read(execution)) throw new DomainError(
+        'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester requires verified Run recovery.', 409)
+    }
     const run = await this.runs.get(execution.runId)
     if (!run) throw new Error('The durable execution Run is unavailable.')
     if (run.executionState === 'completed') throw new Error('A completed Run cannot restart native work.')
@@ -1001,15 +1028,18 @@ export class ApprovalExecutionCoordinator {
       runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
     })
     if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping.')
-    const resolved = this.resolveManager(resolutionContext)
+    const resolved = this.resolveManager(resolutionContext, options.restartOwner)
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
     if (resolved.processState === 'needs_start') resolved.beginStart?.()
     const owned = this.ownSession(execution, resolutionContext, resolved.manager)
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
     try {
-      const environment = await this.prepareEnvironment(resolutionContext, resolved, signal, context.purpose)
+      const environment = await this.prepareEnvironment(resolutionContext, resolved, {
+        signal, purpose: context.purpose, restartOwner: options.restartOwner,
+      })
       await this.validateContinuation?.(execution.id, signal)
+      options.restartOwner?.assertOwned()
       signal.throwIfAborted()
       if (resolved.processState === 'resident') {
         await resolved.manager.history(sessionReference, signal)
@@ -1029,8 +1059,62 @@ export class ApprovalExecutionCoordinator {
       if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw safe.error(error)
       resolved.markFailed?.()
       owned.failed = true
+      if (options.restartOwner) throw safe.error(error)
       await this.cleanupSession(owned)
       throw safe.error(error)
+    }
+  }
+
+  private async restorePendingWorkflowApprovals(owner: RunOwnership, execution: HarnessExecution,
+    pending: readonly DurableInteraction[], signal?: AbortSignal): Promise<boolean> {
+    const detached = await readDetachedWorkflowSession(owner, execution)
+    if (!detached) return false
+    if (pending.some((item) => item.runId !== owner.runId || item.nativeSessionId !== detached.nativeSessionId
+      || item.harness !== detached.harness || item.providerVersion !== detached.providerVersion
+      || item.requestingAgentId !== execution.agentId || !item.graphInterruptId)) {
+      throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'Restart approval changed its saved native identity.', 409)
+    }
+    const originals = await owner.oneShotConnection().transaction(async (sql) => {
+      const requests: PendingNativeInteraction[] = []
+      for (const item of pending) {
+        const proof = await assertSavedPendingApprovalOriginalLocked(sql, item)
+        if (proof.original.type !== 'history') throw new DomainError(
+          'APPROVAL_ORIGINAL_SOURCE_REQUIRED', 'The approval has no saved native request.', 409)
+        requests.push(proof.original.history.pendingInteractions.find((request) =>
+          request.turn.nativeRequestId === item.nativeRequestId)!)
+      }
+      return requests
+    })
+    try {
+      const first = originals[0]!
+      const attached = await this.attachSession({ harness: detached.harness, executionId: execution.id,
+        agentId: execution.agentId, workingDirectory: execution.workingDirectory!,
+        ...(first.turn.nativeTurnId ? { nativeTurnId: first.turn.nativeTurnId } : {}),
+      }, detached, { signal, restartOwner: owner })
+      const history = await attached.manager.reconcile(detached, `execution:${execution.id}`, attached.signal)
+      owner.assertOwned()
+      for (const original of originals) {
+        const restored = history.pendingInteractions.find((request) =>
+          request.turn.nativeRequestId === original.turn.nativeRequestId)
+        if (!isDeepStrictEqual(restored, original)) throw new DomainError(
+          'NATIVE_SESSION_IDENTITY_MISMATCH', 'The restored session has no matching pending approval.', 409)
+      }
+      return true
+    } catch (error) {
+      owner.assertOwned()
+      signal?.throwIfAborted()
+      await this.runs.requestCleanup(owner.runId, owner)
+      const owned = this.ownedSessions.get(execution.id)
+      if (!owned) throw error
+      const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
+      owned.controller.abort(error)
+      // Dispose the attempted attachment; the cold registry still has to prove physical closure.
+      await owned.manager.dispose()
+      this.managerCredentials.delete(owned.manager)
+      this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager, 'failed')
+      if (this.ownedSessions.get(execution.id) === owned) this.ownedSessions.delete(execution.id)
+      componentLogger('native').warn({ err: safe.error(error), executionId: execution.id }, 'workflow approval restoration requires cleanup')
+      return false
     }
   }
 
@@ -1055,16 +1139,20 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  /** Cold non-terminal work selects conservative interruption, not closure.
-   * A durable terminal needs only physical recovery here: its original source,
-   * ACKs and finite technical retry are checked by normal same-slot re-entry.
-   * Never turn missing close evidence alone into a negative Run intent. */
-  async requestColdRunCleanup(owner: RunOwnership): Promise<boolean> {
+  /** Recover checkpoint-bound pending approvals after verified restart detachment.
+   * Other cold nonterminal lifetimes require physical cleanup before settlement. */
+  async requestColdRunCleanup(owner: RunOwnership, approvals: readonly DurableInteraction[] = [],
+    signal?: AbortSignal): Promise<boolean> {
     owner.assertOwned()
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
         if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
+        const pending = approvals.filter((item) => item.executionId === execution.id)
+        if (execution.state === 'waiting' && pending.length
+          && pending.every((item) => item.status === 'pending' && item.deliveryState === 'not_started')) {
+          if (await this.restorePendingWorkflowApprovals(owner, execution, pending, signal)) continue
+        }
         if (execution.state === 'completed') {
           if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
             // A finalized workflow has already closed its original lifetime and
@@ -1366,12 +1454,12 @@ export class ApprovalExecutionCoordinator {
         const launchContext = context
         const launchManager = resolved
         const environment = await timeRuntimeOperation('harness', 'native.prepare_environment', () =>
-          this.prepareEnvironment(launchContext, launchManager, signal, undefined, async () => {
+          this.prepareEnvironment(launchContext, launchManager, { signal, enterNative: async () => {
             await repeat.authorizeNativeSubmission(execution.id)
             repeatLaunch = repeat.consumeLaunch(execution.id)
             if (!repeatLaunch) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
               'No exact committed launch permit exists. Native work was not started.', 409)
-          }))
+          } }))
         startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
@@ -1448,7 +1536,7 @@ export class ApprovalExecutionCoordinator {
         if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Recovery requires the exact saved session.', 409)
         ownedSession.session = session
         if (existing) this.assertSessionIdentity(session, existing)
-        const environment = await this.prepareEnvironment(context, resolved, signal)
+        const environment = await this.prepareEnvironment(context, resolved, { signal })
         startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()

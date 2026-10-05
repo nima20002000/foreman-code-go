@@ -167,18 +167,16 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
       if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
         && await hasWorkDirectionWait(owner)) return
-      // Classify cold native lifetimes before binding/consuming an interrupt.
-      // A dead requester may leave a valid approval alongside a task error. Do
-      // not weaken checkpoint validation or replay delivery to escape that wait.
-      if (await this.nativeExecutions.requestColdRunCleanup(owner)) {
+      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
+      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
+      const current = checkpoint.tasks.some((task) => task.interrupts?.length)
+        ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+      if (await this.nativeExecutions.requestColdRunCleanup(owner, current, controller.signal)) {
         await this.cleanupOwned(owner)
         return
       }
-      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
-      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
       let permit: WorkflowResumePermit | undefined
       if (checkpoint.tasks.some((task) => task.interrupts?.length)) {
-        const current = await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint)
         owner.assertOwned(); controller.signal.throwIfAborted()
         if (requestedIds && !current.some((item) => requestedIds.includes(item.id))) return
         const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
