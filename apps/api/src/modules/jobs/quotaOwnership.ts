@@ -13,6 +13,7 @@ import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationRun
 import { readProtectedRuntimeConfiguration, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 
 export const JobProjectQuotaReadbackSchema = z.object({
+  filesystemUuid: z.uuid().optional(),
   volumeCapacityBytes: z.number().int().positive(), volumeCapacityInodes: z.number().int().positive(),
   projectId: z.number().int().positive(), inheritance: z.literal(true),
   hardLimitBytes: z.number().int().positive(), hardInodes: z.number().int().positive(),
@@ -66,6 +67,7 @@ export async function verifyJobQuotaOwnership(input: {
     || (!input.directory && !isDeepStrictEqual(observed.filesystem, slot.filesystem))
     || observed.filesystem.device !== input.binding.filesystem.device
     || observed.filesystem.mountId !== input.binding.filesystem.mountId
+    || (input.pool.filesystemUuid && observed.filesystemUuid !== input.pool.filesystemUuid)
     || observed.volumeCapacityInodes !== input.pool.volumeCapacityInodes
     || input.pool.slots.reduce((sum, item) => sum + item.hardLimitBytes, 0) > observed.volumeCapacityBytes
     || input.pool.slots.reduce((sum, item) => sum + item.hardInodes, 0) > observed.volumeCapacityInodes

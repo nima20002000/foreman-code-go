@@ -1,3 +1,4 @@
+import { readVerificationQuotaPool } from './quotaOwnership.js'
 import { z } from 'zod'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -73,6 +74,13 @@ export async function captureInstalledVerificationRuntimeConfiguration(raw: Inst
     fingerprintQualificationPath(descriptor.ociExecutable, true),
     fingerprintQualificationPath(descriptor.findmntExecutable, true),
   ])
+  if (!descriptor.quotaPool) throw new DomainError('JOB_QUOTA_UNAVAILABLE', 'Protected per-Job quota pool is required.', 409)
+  const quotaReadbacks = await readVerificationQuotaPool(descriptor.quotaPool, input.root.binding, AbortSignal.timeout(30_000))
+  const filesystemUuid = quotaReadbacks[0]?.filesystemUuid
+  if (!filesystemUuid || quotaReadbacks.some(value => value.filesystemUuid !== filesystemUuid)) {
+    throw new DomainError('JOB_QUOTA_UNAVAILABLE', 'Kernel filesystem UUID readback is required for recovery.', 409)
+  }
+  const quotaPool = { ...descriptor.quotaPool, filesystemUuid }
   const source = await openPrivateRoot(input.qualificationSource.directory)
   try { await verifyMaterializedSourceTree(source, verifySourceManifest(input.qualificationSource.manifest)) }
   finally { await source.close() }
@@ -94,9 +102,9 @@ export async function captureInstalledVerificationRuntimeConfiguration(raw: Inst
       backingBytes: descriptor.backingFile === null ? null : descriptor.volumeCapacityBytes }))
   return InstalledVerificationRuntimeConfigurationSchema.parse({
     schemaVersion: 2, root: input.root,
-    descriptor: { ...descriptor, findmntBinarySha256: findmnt.sha256 },
+    descriptor: { ...descriptor, quotaPool, findmntBinarySha256: findmnt.sha256 },
     qualificationSource: input.qualificationSource, seedReceiptPath: input.seedReceiptPath, seedReceiptSha256,
-    machine: { ...input.machine, bootId: bootIdentity(), runtimeBinarySha256: runtime.sha256,
+    machine: { ...input.machine, quotaPool, bootId: bootIdentity(), runtimeBinarySha256: runtime.sha256,
       ociBinarySha256: oci.sha256, configurationDigest, seedReceiptSha256, tools },
   })
 }
