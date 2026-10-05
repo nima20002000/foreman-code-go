@@ -1,3 +1,4 @@
+import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
@@ -64,15 +65,18 @@ export class JobOutputRsyncSource {
     signal.throwIfAborted()
     const {record,source}=await this.retained.resolve(intent.transferId,signal)
     if(!isDeepStrictEqual(record.intent,intent))throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Source lookup cannot replace the original admission.',403)
-    await this.closed(record)
+    const execution = await this.closed(record)
+    const lifetime = jobLifecycleSignal(execution, 'publication')
+    lifetime.throwIfAborted()
     return {read:async(accepted,offset,length,bounded)=>{
-      bounded?.throwIfAborted()
+      const readSignal = AbortSignal.any([signal, lifetime, ...(bounded ? [bounded] : [])])
+      readSignal.throwIfAborted()
       if(!isDeepStrictEqual(accepted,intent)||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)
         ||length<1||length>BYTE_TRANSFER_POLICY.maxChunkBytes||offset+length>intent.byteSize)throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Sealed output range differs from its original admission.',403)
       await this.closed(record)
-      const bytes=await source.read(accepted,offset,length,bounded)
+      const bytes=await source.read(accepted,offset,length,readSignal)
       if(bytes.length!==length)throw new DomainError('JOB_OUTPUT_HASH_CONFLICT','Retained sealed output range is incomplete.',410)
-      bounded?.throwIfAborted()
+      readSignal.throwIfAborted()
       return bytes
     }}
   }

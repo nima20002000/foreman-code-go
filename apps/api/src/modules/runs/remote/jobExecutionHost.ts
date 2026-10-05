@@ -182,7 +182,9 @@ export class RemoteJobExecutionHost {
         await this.ports.preparePublication?.(receipt.execution, receipt.terminal)
         await this.ports.collectOutputs(receipt.execution)
       } catch (error) {
-        if (!(error instanceof JobOutputCollectionError)) throw error
+        const publicationExpired = receipt.execution.schemaVersion === 2
+          && Date.parse(receipt.execution.acceptedSpec.lifecycle.publicationDeadlineAt) <= Date.now()
+        if (!(error instanceof JobOutputCollectionError) && !publicationExpired) throw error
         await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return
       }
     }

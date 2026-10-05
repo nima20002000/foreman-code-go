@@ -152,7 +152,12 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
           const slot=(await sql.query(`select 1 from management_command_receipts where operation=$1 and result #>> '{input,executionId}'=$2
             and result #>> '{input,attemptId}'=$3 and result #>> '{input,path}'=$4`,[OPERATION,input.executionId,input.attemptId,input.path])).rows
           if(slot.length)throw new DomainError('JOB_OUTPUT_ADMISSION_CONFLICT','This output already has an original admission command.',409)
-          const expiry=Math.min(Date.parse(allocationExpiresAt),facts.credentialExpiresAt.getTime(),this.clock().getTime()+BYTE_TRANSFER_POLICY.maxLifetimeMs)
+          const publicationDeadline = current.execution.schemaVersion === 2
+            ? Date.parse(current.execution.acceptedSpec.lifecycle.publicationDeadlineAt) : Infinity
+          const expiry=Math.min(Date.parse(allocationExpiresAt),facts.credentialExpiresAt.getTime(),
+            this.clock().getTime()+BYTE_TRANSFER_POLICY.maxLifetimeMs, publicationDeadline)
+          if (expiry <= this.clock().getTime()) throw new DomainError('JOB_PUBLICATION_DEADLINE_EXPIRED',
+            'The original Job publication deadline expired.', 409)
           const context=outputTransferContext(facts.binding)
           return JobOutputAdmissionSchema.parse({version:1,input,principalId:current.principal.id,inputHash:commandInputHash(input),
             specDigest:current.execution.acceptedSpec.specDigest,materializationId:current.execution.acceptedSpec.source.materializationId,

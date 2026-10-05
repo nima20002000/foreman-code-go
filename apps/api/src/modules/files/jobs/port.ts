@@ -1,3 +1,4 @@
+import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
@@ -121,6 +122,14 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       execution.acceptedSpec.specDigest,execution.acceptedSpec.outputSpecDigest,input.path,input.mediaType,input.byteSize,input.sha256])
     const check = async (sql: JobSql) => {
       const current = await this.authority.authorizePublication(sql,input)
+      if (execution.schemaVersion === 2
+        && Date.parse(execution.acceptedSpec.lifecycle.publicationDeadlineAt) <= this.clock().getTime()) {
+        const completed = await sql.query(`select 1 from file_allocations a join files f on f.file_id=a.file_id
+          where a.owner_principal_id=$1 and a.request_id=$2 and a.state='finalized' and f.state='ready'`,
+        [initial.principal.id, requestId])
+        if (!completed.rowCount) throw new DomainError('JOB_PUBLICATION_DEADLINE_EXPIRED',
+          'The original Job publication deadline expired.', 409)
+      }
       const reserved = await sql.query<{total:string}>(`select coalesce(sum(r.byte_size),0)::text as total
         from files f join file_revisions r on r.file_id=f.file_id join file_allocations a on a.file_id=r.file_id and a.revision_id=r.revision_id
         where f.scope_kind='job_execution' and f.workspace_id=$1 and f.job_execution_id=$2 and a.request_id<>$3 and a.state<>'canceled'`,[input.workspaceId,input.executionId,requestId])
@@ -151,7 +160,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     if (allocated.value.file.state !== 'ready') {
       const bytes = await this.reader.open(input,execution)
       try { await this.files.upload(initial.principal,scope(input.workspaceId,input.executionId),requestId,bytes,{commitAuthorization:guard,
-        source,signal:AbortSignal.timeout(120_000),reauthorize:async()=>{await this.transaction(check);return initial.principal}}) }
+        source,signal:jobLifecycleSignal(execution, 'publication'),reauthorize:async()=>{await this.transaction(check);return initial.principal}}) }
       finally {bytes.destroy()}
     }
     const finalized = await this.files.finalize(initial.principal,scope(input.workspaceId,input.executionId),requestId,source,guard)

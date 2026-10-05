@@ -56,13 +56,13 @@ export function createAuthenticatedTransferReceiver(input: { stagingRoot: string
     frame.signal.throwIfAborted()
     if (input.receiver) await authority.authorize(intent, context, request.method)
     let payload
-    if (request.method === 'start') payload = await receiver.start(intent, context)
-    else if (request.method === 'status') payload = await receiver.status(intent.transferId, context)
-    else if (request.method === 'finish') payload = await receiver.finish(intent.transferId, context)
-    else if (request.method === 'cancel') payload = await receiver.cancel(intent.transferId, context)
+    if (request.method === 'start') payload = await receiver.start(intent, context, frame.signal)
+    else if (request.method === 'status') payload = await receiver.status(intent.transferId, context, frame.signal)
+    else if (request.method === 'finish') payload = await receiver.finish(intent.transferId, context, frame.signal)
+    else if (request.method === 'cancel') payload = await receiver.cancel(intent.transferId, context, frame.signal)
     else if (request.method === 'append') {
       if (!frame.bytes || frame.bytes.byteLength !== request.byteLength) throw new Error('Transfer binary length differs')
-      payload = await receiver.append(intent.transferId, context, { offset: request.offset, sha256: request.sha256, bytes: frame.bytes })
+      payload = await receiver.append(intent.transferId, context, { offset: request.offset, sha256: request.sha256, bytes: frame.bytes }, frame.signal)
     } else throw new Error('Unknown transfer operation')
     if (input.receiver) await authority.authorize(intent, context, request.method)
     frame.signal.throwIfAborted()
