@@ -17,6 +17,9 @@ async function fixture(work) {
 }
 test('defaults are independent of ambient database and service configuration', () => {
   assert.deepEqual(options([]), { apiPort: 3307, webPort: 5307, smoke: false })
+  assert.deepEqual(options(['--smoke']), { apiPort: 3307, webPort: 5307, smoke: true })
+  assert.deepEqual(options(['--api-port', '3307', '--web-port', '5307']),
+    { apiPort: 3307, webPort: 5307, smoke: false })
   assert.deepEqual(options(['--api-port', '3407', '--web-port', '5407', '--smoke']), { apiPort: 3407, webPort: 5407, smoke: true })
 })
 test('rejects reuse/reset/URL options and malformed, duplicate or conflicting ports', () => {

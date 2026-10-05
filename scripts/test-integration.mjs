@@ -12,6 +12,7 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 const exclusiveFiles = [startupFile,
+  'apps/api/test/test-startup-isolation.integration.test.ts',
   'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
   'apps/api/test/operator-chat.integration.test.ts',
   'apps/api/test/production-lifecycle.integration.test.ts',
@@ -450,6 +451,7 @@ async function main() {
         if (interrupted) break
         try {
           await dropTestDatabase(admin, slot)
+          removeTestRoot(slot)
           const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
           Object.assign(slot, await createTestDatabase(admin, resource))
           retestSlots.push(slot)
@@ -490,7 +492,10 @@ async function main() {
     try {
       if (!cleanupError) {
         for (const slot of slots) if (slot.name) {
-          try { await dropTestDatabase(admin, slot) }
+          try {
+            await dropTestDatabase(admin, slot)
+            removeTestRoot(slot)
+          }
           catch (error) { cleanupError ??= error }
         }
       }

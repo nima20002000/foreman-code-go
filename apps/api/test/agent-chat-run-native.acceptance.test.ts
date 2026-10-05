@@ -1,4 +1,5 @@
-import { assertOwnedTestApi, ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
+import { assertOwnedExecutionDestinations, assertOwnedTestApi,
+  ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
@@ -89,6 +90,7 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
     }
     try {
       await assertOwnedTestApi(api, pool)
+      await assertOwnedExecutionDestinations(pool, { workspaceId: context.workspaceId, runId: context.runId })
       const run = WorkflowRunV3Schema.parse((await pool.query<{ record: unknown }>('select record from runs where id=$1', [context.runId])).rows[0]?.record)
       expect(run.workspaceId).toBe(context.workspaceId)
       expect(run.workflowId).toBe(context.workflowId)

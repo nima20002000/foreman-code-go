@@ -18,6 +18,8 @@ let end
 const ended = new Promise((resolve) => { end = resolve })
 let safeEnv = {}
 let toolEnv = {}
+let completeCleanup
+const cleanupOwners = []
 const children = []
 function interrupted() { if (abort.signal.aborted) throw new Error('Acceptance interrupted.') }
 function finish(code = 0) {
@@ -126,6 +128,7 @@ async function shutdown() {
     return
   }
   await assertOwned(state, owner)
+  for (const cleanup of cleanupOwners) completeCleanup(cleanup.resource, cleanup.id)
   try {
     if (resources.databaseUrl) await dropDatabase(admin, resources)
   } finally { await admin.end() }
@@ -153,18 +156,32 @@ async function main() {
   createRequire(join(root, 'apps/web/package.json')).resolve('vite')
   apiRequire.resolve('pg'); apiRequire.resolve('@modelcontextprotocol/client')
   const { createTestRoot, createTestDatabase, testAdminPool, testEnvironment,
+    completeTestResourceCleanup, registerTestResourceCleanup,
     dropTestDatabase, removeTestRoot } = await import('../test-resources.mjs')
   dropDatabase = dropTestDatabase
   removeRoot = removeTestRoot
+  completeCleanup = completeTestResourceCleanup
   admin = await testAdminPool()
   resources = createTestRoot(undefined, 'eng07-')
   state = resources.directory
+  cleanupOwners.push({ resource: resources, id: registerTestResourceCleanup(resources,
+    { kind: 'local-acceptance', stateDirectory: state }) })
+  if (process.env.GRAPHQL_TEST_ROOT) {
+    const parent = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }
+    cleanupOwners.push({ resource: parent, id: registerTestResourceCleanup(parent,
+      { kind: 'local-acceptance', stateDirectory: state }) })
+  }
   owner = randomUUID()
   await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
   resources = await createTestDatabase(admin, resources)
   const isolated = testEnvironment(process.env, resources)
-  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS }
-  toolEnv = Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY')))
+  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS,
+    GRAPHQL_API_ENV_FILE: isolated.GRAPHQL_API_ENV_FILE }
+  toolEnv = {
+    ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
+    ...(isolated.GRAPHQL_HEAVY_JOB_COMMON ? { GRAPHQL_HEAVY_JOB_COMMON: isolated.GRAPHQL_HEAVY_JOB_COMMON } : {}),
+    ...(isolated.GRAPHQL_HEAVY_JOB_TOKEN ? { GRAPHQL_HEAVY_JOB_TOKEN: isolated.GRAPHQL_HEAVY_JOB_TOKEN } : {}),
+  }
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {
     stage = 'OpenCode prerequisite (qualified 1.18.31 binary)'
@@ -180,7 +197,7 @@ async function main() {
   interrupted()
   process.umask(0o077)
   await assertOwned(state, owner)
-  for (const name of ['projects', 'runtime', 'empty-env', 'tmp']) await mkdir(join(state, name), { mode: 0o700 })
+  for (const name of ['projects', 'runtime', 'empty-env']) await mkdir(join(state, name), { mode: 0o700 })
   const database = resources.name
   const apiRequirePg = apiRequire('pg')
   const pool = new apiRequirePg.Pool({ connectionString: resources.databaseUrl, max: 1 })

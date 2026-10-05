@@ -30,7 +30,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
-import { appMcpTokenEnvironment, inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, isControllerEnvironmentVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
@@ -276,8 +276,7 @@ function credentialIdentity(input: NativeSessionStart): string {
 function validateEnvironmentVariables(input?: NativeSessionStart['environment']): void {
   for (const key of Object.keys(input?.variables ?? {})) {
     // Operator and Worker credentials use the admitted App token; the server resolves its role.
-    if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key)
-      || isDatabaseCredentialVariable(key)) {
+    if (!isSupportedAppMcpTokenName(key) && isControllerEnvironmentVariable(key)) {
       throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
     }
   }

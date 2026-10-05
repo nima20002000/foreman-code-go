@@ -2,10 +2,16 @@ import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import pg from 'pg'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@foreman-code/contracts'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -24,6 +30,11 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { provisionTestResources } from '../../../scripts/test-resources.mjs'
+import { stopGroup } from '../../../scripts/integration-process.mjs'
+
+const require = createRequire(import.meta.url)
 
 async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
@@ -81,6 +92,74 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       }
     }
   }, 90_000)
+  it.each(['unset', 'enabled'])(
+    'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
+      const previous = { ...process.env }
+      const input = { ...previous }
+      delete input.GRAPHQL_TEST_ROOT
+      delete input.GRAPHQL_TEST_OWNER
+      const resources = await provisionTestResources(input)
+      for (const key of Object.keys(process.env)) delete process.env[key]
+      Object.assign(process.env, resources.environment)
+      if (keep === 'enabled') process.env.ENG03_A_KEEP_RUNTIME = '1'
+      else delete process.env.ENG03_A_KEEP_RUNTIME
+      const recoveryState: { context?: Eng03NativeControl; reservation?: NativeProcessRecovery } = {}
+      try {
+        await expect(runEng03NativeScenario('E03-P01', 'codex', 'codex', {
+          control: async current => {
+            recoveryState.context = current
+            await current.startTask
+            recoveryState.reservation = current.registry.reserveLaunch('acceptance-cleanup-recovery')
+          },
+        })).rejects.toThrow('cleanup remains unconfirmed')
+        const { context, reservation } = recoveryState
+        if (!context || !reservation) throw new Error('Acceptance helper did not reach the recovery cut')
+        const artifact = JSON.parse(await readFile(context.artifactPath, 'utf8')) as {
+          resources: { invocation: { directory: string; token: string }; cleanupId: string;
+            root: string; schema: string; registryDirectory: string }
+          resourcesRetained: boolean
+        }
+        expect(artifact.resourcesRetained).toBe(true)
+        expect(existsSync(artifact.resources.registryDirectory)).toBe(true)
+        await expect(resources.close()).rejects.toThrow('cleanup remains unconfirmed')
+        const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL,
+          options: `-c search_path=${artifact.resources.schema}`, max: 1 })
+        try {
+          expect((await pool.query('select id from runs where id=$1', [context.runId])).rows)
+            .toEqual([{ id: context.runId }])
+        } finally { await pool.end() }
+        await context.registry.abandonReservedLaunch(reservation)
+        const registryModule = new URL('../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
+        const resourcesModule = new URL('../../../scripts/test-resources.mjs', import.meta.url).href
+        const recovery = spawn(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', `
+          import pg from ${JSON.stringify(pathToFileURL(require.resolve('pg')).href)};
+          import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
+          import { completeTestResourceCleanup, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory }
+            from ${JSON.stringify(resourcesModule)};
+          const saved = ${JSON.stringify(artifact.resources)};
+          const registry = new NativeProcessRegistry(saved.registryDirectory);
+          for (const owner of new Set(registry.snapshot().launches.map(launch => launch.owner))) {
+            if (!await registry.closeOwner(owner)) throw new Error('Native closure remains unconfirmed');
+          }
+          const pool = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 });
+          try { await dropFixtureSchema(pool, saved.schema); } finally { await pool.end(); }
+          await removeFixtureDirectory(saved.root);
+          completeTestResourceCleanup(saved.invocation, saved.cleanupId);
+        `], { env: resources.environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        recovery.stdout?.resume()
+        recovery.stderr?.resume()
+        try {
+          const [code] = await once(recovery, 'exit')
+          expect(code).toBe(0)
+        } finally { await stopGroup(recovery.pid) }
+        expect(existsSync(artifact.resources.root)).toBe(false)
+        await resources.close()
+        expect(existsSync(resources.environment.GRAPHQL_TEST_ROOT!)).toBe(false)
+      } finally {
+        for (const key of Object.keys(process.env)) delete process.env[key]
+        Object.assign(process.env, previous)
+      }
+    }, 240_000)
 
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []

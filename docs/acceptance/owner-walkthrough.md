@@ -9,52 +9,53 @@ This is a procedure and expected-results checklist, **not a completed acceptance
 
 ### Prerequisites
 
-Use a non-root **Linux** account for the full walkthrough. This head's durable native process recovery uses Linux process identity/guardian evidence; macOS is allowed for the setup-only `--smoke` command, not as restart-recovery acceptance. Windows and root execution are rejected. Have Node 22+, Corepack and PostgreSQL **17** server/client binaries (`initdb`, `postgres`, `psql`, `pg_isready`). No Docker, existing database or database administrator credential is needed.
+Use a non-root **Linux** account for the full walkthrough. This head's durable native process recovery uses Linux process identity/guardian evidence; macOS is allowed for the setup-only `--smoke` command, not as restart-recovery acceptance. Windows and root execution are rejected. Have Node 22+, Corepack and Docker with Compose. Run `corepack pnpm db:up` to start the dedicated disposable PostgreSQL **17** server from `compose.test.yaml` on **127.0.0.1:55439**. The provisioner verifies its server marker and uses its test-only credentials. A system PostgreSQL installation or the application's database cannot substitute for this server.
 
 Install the repository's pinned dependencies before running the launcher. Do not substitute another package manager, relax package-age checks, update the lockfile or install a newer native provider as part of acceptance.
 
 ```sh
 git rev-parse HEAD
 corepack pnpm install --frozen-lockfile
+corepack pnpm db:up
 node --test scripts/acceptance/*.test.mjs
 node scripts/acceptance/local.mjs --help
 ```
 
-For native work, have **OpenCode 1.18.31** installed and already authenticated for **`opencode-go/deepseek-v4.1-flash`** through its normal account flow. The version is taken from this head's `opencodeTransport.ts` and `opencodeMcpConfiguration.ts`, not an assumption about the latest release. OpenCode model availability and authentication remain live preflight checks. Native Starts may incur provider charges; seeding itself does not start a Run.
+For native work, have **OpenCode 1.18.31** installed and test credentials authorized for **`opencode-go/deepseek-v4.1-flash`**. The version is taken from this head's `opencodeTransport.ts` and `opencodeMcpConfiguration.ts`, not an assumption about the latest release. OpenCode model availability and authentication remain live preflight checks. Native Starts may incur provider charges; seeding itself does not start a Run.
 
-Use existing native account state. Do not paste tokens into commands, prompts, `.env`, configuration, screenshots or this launcher's input. Optional provider key environment variables are inherited **only by the API/native process**, not Vite or PostgreSQL. The launcher does not copy account files or print environment values. It ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. It does not enable experimental/parity gates to make a provider appear qualified.
+Supply authentication explicitly through `GRAPHQL_TEST_OPENCODE_AUTH_FILE` and, for a mixed run, `GRAPHQL_TEST_CODEX_AUTH_FILE`. Each value is an absolute path to a credential file authorized for tests; the provisioner copies it into this invocation's private OpenCode or Codex home with mode 0600. Provider keys may instead be supplied through `GRAPHQL_TEST_OPENAI_API_KEY`, `GRAPHQL_TEST_ANTHROPIC_API_KEY` or `GRAPHQL_TEST_OPENCODE_API_KEY` using a secure environment source. Do not paste credential values into commands, prompts, `.env`, screenshots or the launcher's input. Ambient provider keys and native account/configuration directories are excluded. The API/native process receives the selected test authentication; Vite does not receive provider keys. The launcher ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. It does not enable experimental/parity gates to make a provider appear qualified.
 
-Run a disposable setup smoke check first. Supply your PostgreSQL 17 binary directory when `pg_config` does not select 17:
+Run a disposable setup smoke check first; native credentials are unnecessary for smoke mode:
 
 ```sh
-node scripts/acceptance/local.mjs --pg-bin /usr/lib/postgresql/17/bin --smoke
+node scripts/acceptance/local.mjs --smoke
 ```
 
-**Expected:** a new private cluster, database and schemas; real migrations/checkpointer setup; eight saved workflows and 27 persisted Agents; web/API readiness; authenticated HTTP/MCP reads, idempotent metadata write/replay and read/write denials; orderly teardown. No native Run or browser acceptance is claimed by this command. Failure is nonzero, with a stage/code rather than raw logs. Do not continue on a failed smoke check.
+**Expected:** a new owned database and schemas on the dedicated test server; real migrations/checkpointer setup; eight saved workflows and 27 persisted Agents; web/API readiness; authenticated HTTP/MCP reads, idempotent metadata write/replay and read/write denials; orderly teardown. No native Run or browser acceptance is claimed by this command. Failure is nonzero, with a stage/code rather than raw logs. Do not continue on a failed smoke check.
 
 Start the interactive session with available ports:
 
 ```sh
+GRAPHQL_TEST_OPENCODE_AUTH_FILE=/absolute/path/to/test-opencode-auth.json \
 node scripts/acceptance/local.mjs \
-  --pg-bin /usr/lib/postgresql/17/bin \
   --api-port 3307 --web-port 5307
 ```
 
-The PG directory above is a Linux example, not an installation instruction. Omit `--pg-bin` when `pg_config --bindir` points to 17. The launcher builds contracts using pinned pnpm, starts API and Vite, and prints the exact loopback web/API URLs, workspace ID and execution folder. Open the printed **127.0.0.1** web URL, not `localhost`, another port or a remotely forwarded origin.
+Replace the credential-file path with your test account's file. The launcher builds contracts using pinned pnpm, starts API and Vite, and prints the exact loopback web/API URLs, workspace ID and execution folder. Open the printed **127.0.0.1** web URL, not `localhost`, another port or a remotely forwarded origin.
 
-**Expected:** dev browser access without bearer-token enrollment; workspace **ENG07 Acceptance**; one Board containing the saved scenarios below. No Run has started. An occupied API/web port fails; no existing process is killed or reused. The API uses the same production composition, migrations, atomic checkpointer, engine and native recovery services as the application, with a task-owned storage root and logging disabled.
+**Expected:** dev browser access without bearer-token enrollment; workspace **ENG07 Acceptance**; one Board containing the saved scenarios below. No Run has started. An occupied API/web port fails; no existing process is killed or reused. The API uses the same production composition, migrations, atomic checkpointer, engine and native recovery services as the application, with isolated storage, harness homes and logs.
 
 ### Storage and ownership boundary
 
-Every invocation creates a fresh owner-only `/tmp/eng07-*` directory (canonical `/private/tmp` on macOS). PostgreSQL listens **only on its private Unix socket**, with TCP disabled. The fresh cluster's bootstrap `postgres` database is used only to create this invocation's generated `eng07_<random>` database. Application tables use schema `eng07`; checkpoints use `eng07_checkpoints`. The API verifies database name, data directory, search path and disabled TCP **before migrating**.
+Every invocation creates a fresh owner-only `eng07-*` directory under `~/.cache/graphql-disposable-tests` (beneath the outer invocation's isolated HOME when nested). Its generated `graphql_test_<random>` database carries the invocation's ownership marker on the dedicated **127.0.0.1:55439** test server. Application tables use schema `eng07`; checkpoints use `eng07_checkpoints`. Before migrating, the API verifies the owned root, database marker, selected database and search path.
 
-There is no external database URL, existing-state attachment, reset or drop-database option. All PG calls carry the explicit private socket, user and database. No other installation's database, schema, role, volume or service is used. Task project files and native runtime files have separate roots. Cleanup targets only exact owned child handles and a verified ownership marker, never a process name, port owner or a broad directory glob.
+There is no external database URL, existing-state attachment, reset or drop-database option. PostgreSQL calls use the dedicated loopback test endpoint, test administrator and generated database. The app/production database is excluded. Project files, native runtime files, provider homes, logs and temporary files stay beneath the private invocation root. Cleanup targets owned child handles and verified ownership markers. Nested invocation ownership keeps the parent root and database available until child cleanup completes.
 
 The execution folder receives an `opencode.json` with the selected API's `/mcp` URL and the literal reference `Bearer {env:GRAPHQL_MCP_TOKEN}`. That reference is **not a token**. Runtime issues scoped credentials; the launcher does not fabricate or persist them. Do not archive task database/runtime directories: the existing native recovery subsystem retains private control/ownership state there, and private Run bodies also belong outside acceptance evidence bundles.
 
 ### Optional mixed Codex/OpenCode run
 
-Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Use an actual model available to the owner's already authenticated, repository-qualified Codex installation; the launcher does not guess a model, copy credentials, change trust settings or auto-enable an experimental rollout.
+Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Supply `GRAPHQL_TEST_CODEX_AUTH_FILE` or `GRAPHQL_TEST_OPENAI_API_KEY` and use a model available to that test account's repository-qualified Codex installation. The launcher does not guess a model, change trust settings or auto-enable an experimental rollout.
 
 A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "GRAPHQL_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-OpenCode S3-02 does not establish mixed-provider acceptance.
 
@@ -190,13 +191,13 @@ For each row retain: source commit, date, platform/provider versions (not accoun
 
 Inspect only application-level Board/readback evidence. Do not export raw HAR files, request headers, browser storage, provider debug/config output, native sessions, database dumps or the task runtime. Public graph snapshots/deltas must not contain credential values, raw native session payloads or private input/result bodies; use the authorized private inspector for exact disclosure. Browser reconnect should restore a consistent recorded cut, not optimistically acknowledge an uncertain command. Check that history remains paged instead of eagerly loading every result.
 
-When finished, Stop active Runs through the Board and confirm cleanup. Enter `quit` or press Ctrl-C once. **Expected:** API drains native work, owned web/API exit, then the owned PostgreSQL postmaster shuts down; only the verified task directory is removed. No shared service or database is stopped.
+When finished, Stop active Runs through the Board and confirm cleanup. Enter `quit` or press Ctrl-C once. **Expected:** API drains native work, owned web/API exit, then the invocation's marked database and verified private directory are removed. The dedicated test PostgreSQL server remains running; no shared service or app database is stopped.
 
-If cleanup/ownership is uncertain, or recovery emitted an unresolved notice, the launcher exits nonzero and conservatively retains the private task directory. Do **not** archive it as evidence or run broad removal/kill commands. Retain the exact identity/receipt state for diagnosis by the owner; inspect any surviving process using that task's durable registry, not a reused PID or name. The launcher deliberately provides no attach-existing-state or force-reset command. A new invocation always creates a separate task and cannot establish recovery of the retained Run. An uncatchable launcher/host crash also requires this conservative path.
+If cleanup/ownership is uncertain, or recovery emitted an unresolved notice, the launcher exits nonzero and retains the private task directory and owned database. Do **not** archive them as evidence or run broad removal/kill commands. Retain the exact identity/receipt state for diagnosis by the owner; inspect any surviving process using that task's durable registry, not a reused PID or name. The launcher deliberately provides no attach-existing-state or force-reset command. A new invocation always creates a separate task and cannot establish recovery of the retained Run. An uncatchable launcher/host crash also requires this conservative path.
 
 ### Failure triage
 
-An argument/prerequisite failure creates no cluster. For PG/version/dependency failures, check the pinned installation and run the dependency-free tests; do not substitute an existing database. A migration or seed-stage failure is a failed setup, not permission to seed SQL fixtures into another instance. Native preflight/authentication failure requires normal provider readiness inspection; do not print native debug output or hard-code a token. A model violating the finite-choice output contract is a native failure, not proof of routing. A product defect discovered by the walkthrough should be reported with source head, Run/cut, redacted error code and missing invariant; this lane changes no product code.
+Argument validation runs before provisioning. For test-server/version/dependency failures, check `corepack pnpm db:up`, the dedicated server marker and the pinned installation; do not substitute the application's database. A migration or seed-stage failure is a failed setup, not permission to seed SQL fixtures into another instance. Native preflight/authentication failure requires test-account readiness inspection; do not print native debug output or hard-code a token. A model violating the finite-choice output contract is a native failure, not proof of routing. A product defect discovered by the walkthrough should be reported with source head, Run/cut, redacted error code and missing invariant; this lane changes no product code.
 
 ### Source anchors at the baseline
 
