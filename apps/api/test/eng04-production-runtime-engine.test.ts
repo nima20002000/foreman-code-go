@@ -58,6 +58,7 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const runs = { acquireOwnership: async () => owner, getRepeatSnapshot: async () => {
     AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
   }, repeatRepositoryFactory() { state.factoryReads++; return factory },
+    get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(state.run) },
     requestCleanup: async () => { state.cleanupPending = true; state.events.push('request-cleanup') },
     finishCleanup: async (_id: string, failed: boolean) => { state.cleanupPending = failed; state.events.push('finish-cleanup') },
     reconciliationCandidates: async () => [state.run] }
@@ -70,7 +71,9 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
     closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
   const { LangGraphWorkflowEngine: Engine } = await import('../src/modules/runs/engine.js')
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
-  const engine = new Engine(runs as unknown as Args[0], {} as Args[1], native as unknown as Args[2], {} as Args[3],
+  const engine = new Engine(runs as unknown as Args[0], {
+    getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
+  } as unknown as Args[1], native as unknown as Args[2], {} as Args[3],
     '/synthetic/a1-engine', {} as Args[5], {} as Args[6], {} as Args[7],
     async () => { state.events.push('terminal-notification') }, { workerParallelism: 2 })
   return { f, run, state, owner, native, runs, engine, factory, terminal }

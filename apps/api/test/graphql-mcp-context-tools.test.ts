@@ -5,6 +5,8 @@ import { expect, it, vi } from 'vitest'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
+import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
 
 const scope = { workspaceIds: ['workspace'], workflowIds: ['workflow'], runIds: ['run'] }
 const worker: ManagementPrincipal = { id: 'worker-1', name: 'Worker', audience: 'worker', agentId: 'agent-1',
@@ -32,10 +34,11 @@ it('advertises only declared OpenCode output tools permitted by the pinned setti
   const row = { role: 'coder', defaults: null, override: null, purpose: 'workflow', local_outputs: true,
     artifact_outputs: { version: 1, outputKeys: ['report'] },
     harness: { ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'build', advanced: {
-      ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
-        { permission: 'graphql_files_native_output_*', pattern: '*', effect: 'ask' },
-        { permission: 'graphql_files_native_output_publish', pattern: '*', effect: 'deny' },
-      ],
+      ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: APP_MCP_SERVER_NAMES.flatMap(name => [
+        { permission: nativeOpenCodeMcpToolName('files.native_output_*', name), pattern: '*', effect: 'ask' as const },
+        { permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, name),
+          pattern: '*', effect: 'deny' as const },
+      ]),
     } } }
   query.mockResolvedValueOnce({ rows: [row] })
   expect((await service.context(worker) as { tools: string[] }).tools)
