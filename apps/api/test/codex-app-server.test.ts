@@ -603,6 +603,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('withdraws unsent preparation without interrupting the previous completed turn', async () => {
+    const uncredentialed = structuredClone(source)
+    delete uncredentialed.environment
     let preparing!: () => void
     const prepared = new Promise<void>((resolve) => { preparing = resolve })
     const fileManager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none', {
@@ -616,7 +618,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       },
     })
     managers.push(fileManager)
-    const session = await fileManager.createSession(source)
+    const session = await fileManager.createSession(uncredentialed)
     await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'previous' }))
     const previous = (await fileManager.history(session)).terminalResult
     const stream = collect(fileManager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'unsent' }))

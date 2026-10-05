@@ -157,7 +157,8 @@ describe('Claude native session manager admission', () => {
       const output = drain(f.manager.startTurn(session, { prompt: 'next task', clientCorrelationId: 'next-offer',
         sessionPreferences: SessionPreferencesSchema.parse({}) }))
       const message = await f.nextMessage()
-      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+      f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'next-reply', user_message_uuid: message.uuid })
+      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
         subtype: 'success', is_error: false, result: 'done' })
       await output
       expect(f.offers).toHaveBeenCalledTimes(1)
@@ -186,7 +187,8 @@ describe('Claude native session manager admission', () => {
       sessionPreferences: SessionPreferencesSchema.parse({}) }))
     await vi.waitFor(() => expect(messages).toBeDefined())
     const message = (await messages.next()).value!
-    frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+    frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'resumed-reply', user_message_uuid: message.uuid })
+    frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'resumed-result', user_message_uuid: message.uuid,
       subtype: 'success', is_error: false, result: 'done' })
     await output
     expect(f.offers).toHaveBeenCalledTimes(1)
@@ -377,7 +379,8 @@ describe('Claude native session manager admission', () => {
     const changed = fixture()
     changed.client.query = () => {
       void changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/work' })
-      return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(), interrupt: async () => undefined }
+      return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(),
+        initializationResult: async () => ({ models: [], account: {} }), interrupt: async () => undefined }
     }
     const changedResult = drain(changed.manager.startInitialTurn(start, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
     await expect(changedResult).rejects.toThrow('qualified CLI version')
@@ -888,7 +891,7 @@ it('releases its runtime fence after a failed pre-dispatch save without offering
   const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'next-task' }))
   const message = await f.nextMessage()
   f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
-  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
     subtype: 'success', is_error: false, result: 'done' })
   await output
   await f.manager.dispose!()
