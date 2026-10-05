@@ -22,6 +22,12 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
   } catch (error) {
     console.error('Remote review production failure', error)
     console.error('Remote review production error codes', fixture.failures())
+    console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
+      record->'error' as error,record->>'retryAfter' as retry_after,
+      record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
+    console.error('Remote review provider activity', (await fixture.provider.calls()).slice(-30).map(call => ({
+      method: call.method, nativeStarted: call.nativeStarted, review: call.review, providerFailure: call.providerFailure,
+    })))
     try {
       await fixture.close()
     } catch (cleanupError) {
@@ -55,7 +61,9 @@ async function reviewInProgress(fixture: Fixture) {
     await fixture.reconcile()
     const row = (await fixture.db.pool.query<{ record: unknown }>(
       'select record from review_jobs where interaction_id=$1', [interaction.id])).rows[0]
-    return row ? ReviewJobSchema.parse(row.record) : undefined
+    const current = row ? ReviewJobSchema.parse(row.record) : undefined
+    if (current?.state === 'failed') throw new Error(`Remote reviewer failed: ${JSON.stringify(current.error)}`)
+    return current
   }, value => value?.state === 'acknowledged', 'authenticated remote review submission')
   if (!job) throw new Error('The retained reviewer has no submitted review job.')
   const executions = await fixture.executions(started.run.id)
