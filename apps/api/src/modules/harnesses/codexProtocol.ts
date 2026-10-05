@@ -86,7 +86,7 @@ async function identity(binary: string): Promise<string> {
   return canonical([await realpath(binary), value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs])
 }
 
-export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {
+export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>): Promise<void> {
   if (await identity(qualified.binary) !== qualified.identity) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed during qualification; qualify the replacement before launch.')
   }

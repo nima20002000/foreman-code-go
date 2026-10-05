@@ -43,6 +43,7 @@ export async function createInstalledWorkerDomains(input: {
   configuration: InstalledWorkflowConfigurationLocation | null
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   openCodeNativeOutputs?: InstalledWorkflowHostOptions['openCodeNativeOutputs']
+  bufferedCodexNativeOutputs?: InstalledWorkflowHostOptions['bufferedCodexNativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
@@ -154,6 +155,7 @@ export async function createInstalledWorkerDomains(input: {
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       ...(input.openCodeNativeOutputs ? { openCodeNativeOutputs: input.openCodeNativeOutputs } : {}),
+      ...(input.bufferedCodexNativeOutputs ? { bufferedCodexNativeOutputs: input.bufferedCodexNativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision,
       ...(input.openCodeSuiteRevision ? { openCodeSuiteRevision: input.openCodeSuiteRevision } : {}), signal: lifetime.signal, registry, journal })
     extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
