@@ -933,6 +933,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (state.nativeSessionId !== session.nativeSessionId) return state
     const result = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
+    if (result.thread.id !== session.nativeSessionId) throw new Error('Codex read a different native thread')
     const recovered = this.compactionFromTurns(state, result.thread.turns)
     runtime.compaction = recovered
     if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
@@ -951,7 +952,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (!turn) return state
     return codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', {
-      threadId: session.nativeSessionId, turn,
+      threadId: state.nativeSessionId, turn,
     })
   }
 

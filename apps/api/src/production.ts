@@ -823,8 +823,7 @@ export function buildProductionApp(
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
-  const recoverChatCompaction: NonNullable<import('./modules/conversations/operatorChat.js').NativeManagerResolver['recoverCompaction']>
-    | NonNullable<AgentChatManagerFactory['recoverCompaction']> = async (
+  const recoverChatCompaction = async (
       configuration: import('@graphql/contracts').OperatorConfigurationVersion | import('@graphql/contracts').AgentConfigurationVersion,
       conversationId: string, session: import('@graphql/contracts').NativeSessionReference,
       start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@graphql/contracts').CompactionState,

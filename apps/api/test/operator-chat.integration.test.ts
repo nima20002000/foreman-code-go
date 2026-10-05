@@ -279,8 +279,10 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       })
       authority.prepare = async () => { throw new Error('Read issued an execution credential') }
       chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
-      const app = await buildApp({ auth: { mode: 'bearer', resolveBearer: async token => access.authenticate(token) },
-        operator: { access, services: { chat } as unknown as OperatorServices } })
+      const app = buildApp({
+        readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+        operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) }
+          as unknown as OperatorServices } })
       registerOperatorChatRoutes(app, chat)
       const client = new Client({ name: 'cold-control-reader', version: '1' })
       try {
@@ -294,6 +296,12 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         const denied = await client.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id,
           request: { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision } } })
         expect(denied.isError).toBe(true)
+        const denial = (denied.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')
+        expect(JSON.parse(denial!.text)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+        const audit = await pool.query<{ outcome: string }>(
+          'select outcome from management_audit where principal_id=$1 and source=$2 and action=$3',
+          [reader.principal.id, 'mcp', 'operator_chat_controls_update'])
+        expect(audit.rows).toEqual([{ outcome: 'denied' }])
         const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}/session-controls`,
           headers: { authorization: `Bearer ${reader.token}` } })
         expect(http.statusCode).toBe(200)
