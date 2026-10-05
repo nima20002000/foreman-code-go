@@ -15,11 +15,17 @@ export const WorkerNativeOutputBytesSchema = z.string().max(4 * Math.ceil(MAX_FI
     <= MAX_FILE_READ_BYTES, 'Expected at most 64 KiB of canonical base64')
 export const WorkerNativeOutputPublicationInputSchema = FileDescriptionSchema.safeExtend({ commandId, artifactId })
 export type WorkerNativeOutputPublicationInput = z.infer<typeof WorkerNativeOutputPublicationInputSchema>
+export const WorkerNativeOutputToolInputSchemas = {
+  create: FileDescriptionSchema.safeExtend({ commandId }),
+  append: z.object({ commandId, artifactId, offset: z.number().int().min(0).max(MAX_FILE_BYTES),
+    contentBase64: WorkerNativeOutputBytesSchema }).strict(),
+  seal: z.object({ commandId, artifactId }).strict(),
+  publish: WorkerNativeOutputPublicationInputSchema,
+}
 export const WorkerNativeOutputCommandSchema = z.discriminatedUnion('operation', [
-  FileDescriptionSchema.safeExtend({ operation: z.literal('create'), commandId }),
-  z.object({ operation: z.literal('append'), commandId, artifactId,
-    offset: z.number().int().min(0).max(MAX_FILE_BYTES), contentBase64: WorkerNativeOutputBytesSchema }).strict(),
-  z.object({ operation: z.literal('seal'), commandId, artifactId }).strict(),
+  WorkerNativeOutputToolInputSchemas.create.safeExtend({ operation: z.literal('create') }),
+  WorkerNativeOutputToolInputSchemas.append.extend({ operation: z.literal('append') }),
+  WorkerNativeOutputToolInputSchemas.seal.extend({ operation: z.literal('seal') }),
   z.object({ operation: z.literal('publish'), publication: WorkerNativeOutputPublicationInputSchema }).strict(),
 ])
 export type WorkerNativeOutputCommand = z.infer<typeof WorkerNativeOutputCommandSchema>
@@ -41,3 +47,18 @@ export const WORKER_NATIVE_OUTPUT_TOOL_NAMES = {
   create: 'files.native_output_create', append: 'files.native_output_append',
   seal: 'files.native_output_seal', publish: 'files.native_output_publish',
 } as const
+
+export function parseNativeOutputToolCommand(toolName: string, raw: unknown): WorkerNativeOutputCommand {
+  const operation = WorkerNativeOutputOperationSchema.options.find(operation =>
+    WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation] === toolName)
+  if (!operation) throw new Error('Unknown native output tool')
+  const input = WorkerNativeOutputToolInputSchemas[operation].parse(raw)
+  if (operation === 'publish') return WorkerNativeOutputCommandSchema.parse({ operation, publication: input })
+  return WorkerNativeOutputCommandSchema.parse({ ...input, operation })
+}
+
+export function nativeOutputToolArguments(command: WorkerNativeOutputCommand) {
+  if (command.operation === 'publish') return command.publication
+  const { operation: _operation, ...input } = command
+  return input
+}

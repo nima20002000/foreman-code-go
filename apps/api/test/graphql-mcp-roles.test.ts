@@ -89,4 +89,12 @@ describe('one Foreman Code MCP server scoped by role', () => {
     })])
     expect(recordDenied).toHaveBeenCalledWith(readonly.id, 'mcp', 'interaction_respond', 'mcp:interaction_respond')
   })
+  it('audits direct output calls outside the role or saved Agent tool set', async () => {
+    const name = 'files.native_output_publish'
+    expect(await deniedText('operator', name)).toContain('ROLE_NOT_ALLOWED')
+    expect(recordDenied).toHaveBeenCalledWith('operator-1', 'mcp', name, `mcp:${name}`)
+    expect(await deniedText('coder', name, ['context_get'])).toContain('TOOL_NOT_ENABLED')
+    expect(recordDenied).toHaveBeenCalledWith('worker-1', 'mcp', name, `mcp:${name}`)
+    expect(await roleDeniedToolCall(context('coder', [name]), call(name))).toBeUndefined()
+  })
 })

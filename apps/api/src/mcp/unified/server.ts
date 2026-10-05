@@ -2,6 +2,7 @@ import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
+import { GRAPHQL_AGENT_TOOLS } from '@graphql/contracts'
 
 import { DomainError } from '../../modules/errors.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
@@ -49,11 +50,8 @@ function operatorCatalog(services: OperatorServices): Promise<ToolDefinition[]> 
   }
   return catalog
 }
-let appCatalog: Promise<ToolDefinition[]> | undefined
-function agentCatalog(): Promise<ToolDefinition[]> {
-  const everything = { canRead: async () => true, canRespond: async () => true } as unknown as AppInteractionService
-  appCatalog ??= collectTools((server) => registerAppTools(server, { principal: CATALOG_PRINCIPAL, interactions: everything }))
-  return appCatalog
+function agentCatalog(): ToolDefinition[] {
+  return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
 }
 
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
