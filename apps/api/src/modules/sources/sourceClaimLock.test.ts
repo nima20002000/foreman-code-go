@@ -1,6 +1,5 @@
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { chmod, readdir, readFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { withClaimLock } from './materialization.js'
 import { openPrivateRoot } from './privateFilesystem.js'
