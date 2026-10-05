@@ -30,7 +30,7 @@ export function createInstalledNativeQualificationRetention(input: {
 }): NativeQualificationRetention {
   return { refresh: input.refreshInstallation, async retain(client, value, proof, checkId, signal) {
     const parsedDriver = CompatibilityHarnessSchema.safeParse(value.driverId)
-    if (!parsedDriver.success) denied()
+    if (!parsedDriver.success) return denied()
     const harness = parsedDriver.data
     const suiteRevision = harness === 'codex' ? input.suiteRevision : input.opencodeSuiteRevision
     if (!suiteRevision) denied()
