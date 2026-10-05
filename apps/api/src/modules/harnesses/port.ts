@@ -157,6 +157,7 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly harness: AgentHarness
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  applySessionPreferences?(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal): Promise<void>
   configureSessionPreferences?(preferences: SessionPreferences): Promise<void>
   sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
   compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>

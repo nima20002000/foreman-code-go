@@ -59,6 +59,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
       }}>
         <p>{context?.usedTokens == null ? 'Current usage unknown' : `${context.usedTokens.toLocaleString()} tokens in context`}
           {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
+        {state.applied?.contextBudget ? <p>Configured budget: {state.applied.contextBudget.toLocaleString()}</p> : null}
         {state.capabilities.modelCapacity !== null ? <p>Model capacity: {state.capabilities.modelCapacity.toLocaleString()}</p> : null}
         {context?.stale ? <p>Last known usage. Waiting for a native update.</p> : null}
         {context?.lifetimeTokens != null ? <p>Total processed: {context.lifetimeTokens.toLocaleString()}</p> : null}
@@ -68,7 +69,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
         <details><summary>Context options for this chat</summary>
           {state.capabilities.contextBudgets.length ? <Select label="Context budget" value={String(state.desired.contextBudget ?? '')}
             options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextBudgets.map(value => ({ value: String(value), label: value.toLocaleString() }))]}
-            disabled={pending} onChange={event => update({ ...state.desired, contextBudget: event.target.value ? Number(event.target.value) : null })} /> : <p>Context size follows the native model/profile.</p>}
+            disabled={pending} onChange={event => update({ ...state.desired, contextBudget: event.target.value ? Number(event.target.value) : null })} /> : <p>{state.capabilities.contextBudgetReason ?? 'Context size follows the native model/profile.'}</p>}
           {state.capabilities.contextProfiles.length ? <Select label="Context profile" options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextProfiles.map(profile => ({ value: profile.id, label: profile.label }))]} value={state.desired.contextProfile ?? ''} disabled={pending}
             onChange={event => update({ ...state.desired, contextProfile: event.target.value || null })} /> : null}
           {state.capabilities.autoCompact.supported ? <Select label="Auto compact" options={[{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]} value={state.desired.autoCompact} disabled={pending}

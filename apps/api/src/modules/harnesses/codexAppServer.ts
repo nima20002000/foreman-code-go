@@ -1,6 +1,7 @@
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { SessionPreferencesSchema, type SessionPreferences } from '@foreman-code/contracts'
 import { codexCollaborationMode, codexCompactionNotification, codexContextSnapshot } from './codexSessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionControlCapabilities } from '@foreman-code/contracts'
 import type { NativeCompactInput } from './port.js'
@@ -161,6 +162,8 @@ interface StartingTurn {
 }
 interface Runtime extends TurnSnapshot {
   parent?: Runtime
+  contextBudgetLimit?: number
+  sessionPreferences?: SessionPreferences
   compactionPreviousTurns?: Set<string>
   compaction?: CompactionState
   context?: ContextSnapshot
@@ -349,6 +352,10 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
+      ...(prepared.input.sessionPreferences?.contextBudget != null
+        ? { model_context_window: prepared.input.sessionPreferences.contextBudget } : {}),
+      ...(prepared.input.sessionPreferences?.autoCompactTokens != null
+        ? { model_auto_compact_token_limit: prepared.input.sessionPreferences.autoCompactTokens } : {}),
       ...Object.fromEntries(prepared.disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
     },
@@ -404,6 +411,7 @@ function deadline<T>(promise: Promise<T>, signal?: AbortSignal, milliseconds = R
 
 export class CodexAppServerSessionManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
+  private startupPreferences: SessionPreferences | undefined
   private readonly runtimes = new Map<string, Runtime>()
   private readonly locks = new Set<string>()
   private readonly creations = new Map<string, Creation>()
@@ -521,7 +529,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     options: { forkSource?: NativeSessionReference; signal?: AbortSignal | undefined }): Promise<NativeSessionReference> {
     const { forkSource, signal } = options
     this.shutdownController.signal.throwIfAborted()
-    const input = structuredClone(source)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
     if (forkSource && input.kind !== 'operator') input.instructionsDelivered = true
     const key = this.creationKey(input)
     const identity = this.creationIdentity(input, forkSource)
@@ -670,7 +679,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.assertSessionVersion(session)
     const runtime = this.runtimes.get(session.nativeSessionId)
     if (!runtime) return undefined
-    const input = structuredClone(source), reference = structuredClone(session)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source), reference = structuredClone(session)
     this.assertOriginalBinding(runtime, session, input)
     if (!this.isOriginalResident(runtime)) return undefined
     const residency: CodexOriginalResidency = {
@@ -685,7 +695,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   /** Reattach only the surviving original stdio runtime. Cold/generation reconnect is unsupported. */
   async reattachOriginalSession(session: NativeSessionReference, source: NativeSessionStart,
     residency: CodexOriginalResidency, signal?: AbortSignal): Promise<NativeSessionReference> {
-    const input = structuredClone(source), pin = structuredClone(residency)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source), pin = structuredClone(residency)
     return this.exclusive(session.nativeSessionId, async () => {
       signal?.throwIfAborted()
       const runtime = this.requireOriginalResidency(session, input, pin)
@@ -761,7 +772,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
     }
     return this.exclusive(session.nativeSessionId, async () => {
-      const input = structuredClone(source)
+      const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
       const loaded = this.runtimes.get(session.nativeSessionId)
       if (loaded) {
         if (loaded.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'Session closure is still unconfirmed; retry cleanup before attaching.')
@@ -804,6 +816,39 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async configureSessionPreferences(preferences: SessionPreferences) {
+    if (this.runtimes.size) throw new HarnessExecutionError('CODEX_SETTINGS_BUSY', 'Startup settings require an idle new allocation.')
+    this.startupPreferences = SessionPreferencesSchema.parse(preferences)
+  }
+
+  async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      this.assertIdle(runtime)
+      const capabilities = await this.sessionControlCapabilities(session)
+      if (preferences.contextBudget !== null && !capabilities.contextBudgets.includes(preferences.contextBudget)) {
+        throw new HarnessExecutionError('CODEX_CONTEXT_BUDGET_INVALID', 'Choose a qualified native context budget.')
+      }
+      const start = { ...runtime.input, sessionPreferences: preferences }
+      const prepared = await this.prepareIdleInput(runtime, start, signal)
+      const response = object(await runtime.transport.request('thread/resume', {
+        ...threadParameters(prepared, true), threadId: session.nativeSessionId, excludeTurns: true,
+      }, signal), 'CODEX_THREAD_RESUME_INVALID')
+      this.validateThreadResponse(prepared, response, session.nativeSessionId)
+      runtime.input = start
+      runtime.sessionPreferences = structuredClone(preferences)
+      if (runtime.context) runtime.context = { ...runtime.context, stale: true }
+    })
+  }
+
+  appliedSessionPreferences(session: NativeSessionReference): SessionPreferences | null {
+    const runtime = this.requireRuntime(session)
+    const preferences = runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({})
+    const expected = preferences.contextBudget ?? runtime.contextBudgetLimit
+    if (expected !== undefined && runtime.context?.capacityTokens !== expected) return null
+    return preferences
+  }
+
   async sessionControlCapabilities(session: NativeSessionReference): Promise<SessionControlCapabilities> {
     const runtime = this.requireRuntime(session)
     const supports = (method: string, params: JsonObject) => {
@@ -812,10 +857,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const plan = supports('turn/start', { threadId: session.nativeSessionId, input: [],
       collaborationMode: codexCollaborationMode('plan', runtime.configuration.model, runtime.configuration.reasoningEffort) })
     const compact = supports('thread/compact/start', { threadId: session.nativeSessionId })
-    const unsupported = { supported: false, reason: 'This installed profile has no qualified context override.' }
+    const supportedBudget = supports('thread/resume', { threadId: session.nativeSessionId, config: { model_context_window: 100000 } })
+    const capacity = runtime.contextBudgetLimit
+      ?? (runtime.input.sessionPreferences?.contextBudget == null ? runtime.context?.capacityTokens ?? null : null)
+    if (capacity !== null && runtime.input.sessionPreferences?.contextBudget == null) runtime.contextBudgetLimit = capacity
+    const budgets = supportedBudget && capacity !== null
+      ? [...new Set([Math.floor(capacity / 2), capacity])].filter(value => value > 0) : []
+    const contextBudgetReason = !supportedBudget ? 'This qualified app-server schema has no per-thread context override.'
+      : capacity === null ? 'A native default context-window observation is required before choosing a budget.' : null
+    const unsupported = { supported: false, reason: 'This installed profile has no automatic-compaction toggle.' }
     return { compact: { supported: compact, reason: compact ? null : 'Native compaction is unavailable in this schema.' },
       plan: { supported: plan, reason: plan ? null : 'Native Plan mode is unavailable in this schema.' },
-      autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
+      autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgetReason, contextBudgets: budgets, contextProfiles: [],
       modelCapacity: null, model: runtime.configuration.model, profileKey: createHash('sha256').update(runtime.configurationIdentity).digest('hex') }
   }
 
@@ -898,6 +951,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
       if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
         throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+      }
+      if (input.sessionPreferences && canonical(input.sessionPreferences) !== canonical(runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({}))) {
+        await this.applySessionPreferences(session, input.sessionPreferences, signal)
       }
       if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
     } catch (error) {
@@ -1793,7 +1849,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private async prepareInput(source: NativeSessionStart, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies, binary = this.binary): Promise<Prepared> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const input = structuredClone(source)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
     validateEnvironmentOwner(input)
     validateEnvironmentVariables(input.environment)
     if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {

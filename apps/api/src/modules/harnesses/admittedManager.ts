@@ -35,6 +35,11 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     harness,
     requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
+    applySessionPreferences: async (session, preferences, signal) => {
+      const current = await actual(signal)
+      if (!current.applySessionPreferences) throw new DomainError('SESSION_PREFERENCES_RESUME_REQUIRED', 'These settings need an owned startup or safe resume.', 409)
+      await current.applySessionPreferences(session, preferences, signal)
+    },
     configureSessionPreferences: async preferences => {
       const current = await actual()
       if (current.configureSessionPreferences) await current.configureSessionPreferences(preferences)
