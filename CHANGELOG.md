@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] - 2026-10-05
+
+### Added
+
+- Run-wide Activities for selected Runs, including Job-only Runs and failures before an Agent execution exists.
+- Refresh and bounded execution discovery when a selected Run's Agent execution becomes available later.
+
+### Changed
+
+- Page complete public Activity rows within 128 KiB over HTTP and Operator MCP, with cursors for all retained history and heavier snapshots available through Run details.
+- Keep incremental Activity reads independent of full execution history, back off unchanged feeds, and batch authorized workspace Run summaries.
+
+### Fixed
+
+- Preserve historical WorkflowVersion and Run records through database upgrades while keeping current execution on semantics 3.
+- Order Run pages chronologically, update cached rows from fresh summaries, refresh evicted history pages, and distinguish Runs that never started.
+- Preserve admission-time Agent names in Activity history and save node display names without changing executable version pins or stopping Runs.
+- Recover retained rename edits and commands across reloads with concurrent-name checks and existing Stop uncertainty preserved.
+- Report native null-error success, cancellation and Claude tool activity consistently in public Activities and normalized Run snapshots.
+- Serialize older Activity reads with polling and Refresh, retain valid cursors as history advances, and recover transient failures without losing loaded rows.
+
+### Security
+
+- Revalidate live and delegated Run-list grants, including empty pages, and deny unauthorized workspace and workflow scopes while retaining scoped readers and redacted HTTP/MCP parity.
+
 ## [0.0.7] - 2026-10-05
 
 ### Changed
