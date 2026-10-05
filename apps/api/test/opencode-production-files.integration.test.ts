@@ -47,7 +47,8 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
     const root = join(directory, randomUUID())
     const workspace = join(root, 'workspace')
     await mkdir(workspace, { recursive: true, mode: 0o700 })
-    const config = loadConfig({ FILE_STORAGE_ROOT: join(root, 'vault'), HARNESS_WORKSPACE_ROOT: workspace })
+    const config = loadConfig({ DATABASE_URL: database.pool.options.connectionString,
+      FILE_STORAGE_ROOT: join(root, 'vault'), HARNESS_WORKSPACE_ROOT: workspace })
     const harness = { ...configuration(), model: process.env.TEST_OPENCODE_MODEL ?? configuration().model }
     const source = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
     const seeded = await seedAgent3(database.pool, workspace, { ...source,

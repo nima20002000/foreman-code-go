@@ -99,11 +99,19 @@ it('dispatches qualified native child input through authenticated MCP with scope
     }
     const allowed = await connect(writer.token)
     const denied = await connect(reader.token)
-    const listed = RunSubagentsPageSchema.parse((await allowed.callTool({
-      name: 'run_subagents_list_v1', arguments: input,
-    })).structuredContent)
-    const detail = listed.items.find(value => value.subagent.native.childSessionId === child.id)!
+    let detail: ReturnType<typeof RunSubagentsPageSchema.parse>['items'][number] | undefined
+    // The native roster and each child's history occupy separate readback pages.
+    await eventually(async () => {
+      const result = await allowed.callTool({ name: 'run_subagents_list_v1', arguments: input })
+      assert.notEqual(result.isError, true, JSON.stringify(result))
+      const listed = RunSubagentsPageSchema.parse(result.structuredContent)
+      detail = listed.items.find(value => value.subagent.native.childSessionId === child.id)
+      return detail?.availableActions.sendInput === true
+    }).catch((error: unknown) => {
+      throw new Error(`Native child input did not become available: ${JSON.stringify(detail)}`, { cause: error })
+    })
     assert(detail)
+    assert.equal(detail.subagent.status, 'completed')
     assert.equal(detail.availableActions.sendInput, true)
     assert.equal(detail.subagent.capabilities.sendInput.qualification, 'passed')
     const command = { ...input, subagentId: detail.subagent.id, commandId: randomUUID(),

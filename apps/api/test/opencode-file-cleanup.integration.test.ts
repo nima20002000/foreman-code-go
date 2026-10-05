@@ -47,9 +47,18 @@ function waitForDelivery(chat: AgentChatService, repository: PostgresAgentChatRe
       else resolve()
     }
     const check = async () => {
-      if ((await repository.turn(id, requestId))?.delivery === delivery) finish()
+      const turn = await repository.turn(id, requestId)
+      if (turn?.delivery === delivery) finish()
+      else if (turn && ['failed', 'canceled', 'completed'].includes(turn.delivery)) {
+        finish(new Error(`Expected ${delivery} for ${requestId}; observed ${JSON.stringify(turn)}.`))
+      }
     }
-    const timeout = setTimeout(() => finish(new Error(`No persisted ${delivery} result for ${requestId}.`)), 30_000)
+    const timeout = setTimeout(() => {
+      void Promise.all([repository.turn(id, requestId), repository.get(id)]).then(([turn, conversation]) => {
+        finish(new Error(`No persisted ${delivery} result for ${requestId}: `
+          + JSON.stringify({ turn, state: conversation?.turn_state, error: conversation?.last_error })))
+      }).catch(finish)
+    }, 30_000)
     const unsubscribe = chat.events.subscribe(id, () => { void check().catch(finish) })
     void check().catch(finish)
   })

@@ -39,7 +39,8 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
   const { pool } = database
   const clients: Client[] = []
   const allocations: ReturnType<typeof f.allocateChat>[] = []
-  const config = loadConfig({ FILE_STORAGE_ROOT: f.vault, HARNESS_WORKSPACE_ROOT: f.workspaceRoot })
+  const config = loadConfig({ DATABASE_URL: pool.options.connectionString,
+    FILE_STORAGE_ROOT: f.vault, HARNESS_WORKSPACE_ROOT: f.workspaceRoot })
   const repository = new PostgresAgentChatRepository(pool)
   const access = new PostgresAccessService(pool)
   let service: AgentChatService | undefined

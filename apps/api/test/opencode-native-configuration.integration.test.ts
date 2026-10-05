@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { it } from 'vitest'
+import { expect, it } from 'vitest'
 import { nativeMessageId, object, providerSupports } from '../src/modules/harnesses/opencodeProtocol.js'
 import {
   nativeConfigurationFixture, nativeJson, nativePrompt,
@@ -82,8 +82,9 @@ it('rejects named default variant metadata when reattaching an unnamed configura
       'default')
     await native.dispose()
     const restarted = f.allocate()
-    await assert.rejects(restarted.native.attachSession(session, f.start()),
-      { code: 'OPENCODE_SESSION_CONFIGURATION_MISMATCH' })
+    await expect(restarted.native.attachSession(session, f.start())).rejects.toMatchObject({
+      result: { outcome: 'failed', error: { code: 'OPENCODE_SESSION_CONFIGURATION_MISMATCH' } },
+    })
     assert.deepEqual(await restarted.native.attachSession(session, f.start(named)), session)
   } finally {
     await f.close()

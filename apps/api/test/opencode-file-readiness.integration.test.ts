@@ -103,7 +103,7 @@ it('waits for the file manifest before the first native model request and keeps 
     const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-a',
       appMcpAccess: 'none', chatFiles: runtime })
     let running: Promise<void> | undefined
-    let read: Promise<Response> | undefined
+    let read: Promise<{ status: number; body: string }> | undefined
     try {
       const harness = { ...configuration(), model: 'fixture/manifest', variant: '' }
       const nativeRequest = { ...request(harness), workingDirectory: directory, runtimeDirectory: directory }
@@ -135,6 +135,7 @@ it('waits for the file manifest before the first native model request and keeps 
         accept: 'application/json, text/event-stream',
       }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
         params: { name: 'files.read', arguments: source } }), signal: AbortSignal.timeout(45_000) })
+        .then(async (response) => ({ status: response.status, body: await response.text() }))
       read.then(() => { readFinished = true }, () => { readFinished = true })
       await progress(fileCallRequested.promise)
       await progress(modelRequested.promise)
@@ -145,7 +146,7 @@ it('waits for the file manifest before the first native model request and keeps 
       acknowledgementReady.release()
       const response = await read
       expect(response.status).toBe(200)
-      expect(await response.text()).toContain('contentBase64')
+      expect(response.body).toContain('contentBase64')
       modelResponseReady.release()
       await running
     } finally {
