@@ -13,7 +13,9 @@ const databaseSchemaName = z
   .regex(/^[a-z_][a-z0-9_]*$/, 'must be a lowercase PostgreSQL identifier')
 
 const EnvironmentSchema = z.object({
-  HOST: z.enum(['127.0.0.1', '::1', 'localhost']).default('127.0.0.1'),
+  HOST: z.enum(['127.0.0.1', '::1', 'localhost'], {
+    error: 'The local app requires a loopback HOST: 127.0.0.1, ::1 or localhost.',
+  }).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   DATABASE_URL: z.string().url().startsWith('postgresql://'),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
