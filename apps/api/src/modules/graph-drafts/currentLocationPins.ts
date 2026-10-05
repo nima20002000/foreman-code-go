@@ -7,7 +7,7 @@ import { DomainError } from '../errors.js'
 /** Shared journal pins, extracted from the repeat-only editor. Read under the
  * workspace/workflow locks. No locations, credentials or Run inputs go on wire. */
 export async function readCurrentEditLocationPins(client: pg.PoolClient, principal: ManagementPrincipal,
-  scope: { workspaceId: string; workflowId: string; stagedAgentIds?: string[] }) {
+  scope: { workspaceId: string; workflowId: string; stagedAgentIds?: string[]; presentationOnly?: boolean }) {
   const workspace = (await client.query<{
     location_revision: string; execution_location: unknown; execution_location_identity: unknown
   }>(`select location_revision::text,execution_location,execution_location_identity
@@ -15,6 +15,9 @@ export async function readCurrentEditLocationPins(client: pg.PoolClient, princip
   const revision = Number(workspace?.location_revision)
   if (!workspace || !Number.isSafeInteger(revision) || revision < 0) {
     throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location pin is unavailable.', 409)
+  }
+  if (scope.presentationOnly) {
+    return { locationRevision: revision, locationDigest: commandInputHash(workspace), runLocationPins: [] }
   }
   const rows = await client.query<{
     id: string; workspace_id: string; workflow_id: string; workflow_version_id: string

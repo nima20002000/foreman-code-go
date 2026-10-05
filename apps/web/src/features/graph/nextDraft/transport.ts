@@ -4,7 +4,8 @@ import {
   type GraphEditReadInputV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3, type GraphEditDiscardInputV3, type GraphEditReadResultV3,
   GraphDraftV3Schema, WorkflowDefinitionV3Schema, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveResultSchema, CurrentWorkflowValidationSchema, CURRENT_WORKFLOW_ROUTES,
-  GraphDraftOperationV3Schema, CurrentRunPageSchema, sameExecutableWorkflow, preserveWorkflowGeometry,
+  GraphDraftOperationV3Schema, CurrentRunPageSchema, sameAuthoredWorkflow, sameExecutableWorkflow,
+  preserveWorkflowPresentation, workflowNodeNames,
   type GraphDraftOperationV3, type WorkflowDefinitionV3,
 } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
@@ -57,10 +58,16 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     if (saved && (saved.currentVersionId !== workflow.currentVersionId || saved.revision !== workflow.revision)) {
       throw new ApiError({ code: 'GRAPH_CHANGING', message: 'The saved workflow changed while loading. Retry after the current edit.' }, 409)
     }
+    if (saved && (workflow.workflow.version !== saved.version.version
+      || workflow.workflow.createdAt !== saved.version.definition.createdAt
+      || !sameExecutableWorkflow({ ...workflow.workflow, name: saved.version.definition.name,
+        description: saved.version.definition.description }, saved.version.definition))) {
+      throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The current workflow differs from its saved execution definition.' })
+    }
     const draft = GraphDraftV3Schema.parse({
       id: draftIdFor(workflowId), workspaceId, workflowId, revision: workflow.revision, publishedRevision: workflow.revision,
       baseWorkflowVersionId: workflow.currentVersionId ?? null,
-      graph: saved ? preserveWorkflowGeometry({ ...saved.version.definition, name: workflow.workflow.name,
+      graph: saved ? preserveWorkflowPresentation({ ...saved.version.definition, name: workflow.workflow.name,
         description: workflow.workflow.description }, workflow.workflow) : workflow.workflow, stagedAgents: [],
       updatedByPrincipalId: 'board', updatedAt: new Date().toISOString(),
     })
@@ -192,11 +199,15 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         const before = await load(workspaceId, workflowId, options)
         const agents = await client.listManagedAgents(workspaceId, options)
         const after = await load(workspaceId, workflowId, options)
-        if (before.savedRevision === after.savedRevision) {
+        if (before.savedRevision === after.savedRevision
+          && sameAuthoredWorkflow(before.savedDraft.graph, after.savedDraft.graph)) {
           // Keep local acknowledgements while the saved base has not moved.
           const current = opened.get(key(workspaceId, workflowId))
           if (!reload && current && current.savedRevision === after.savedRevision
-            && current.draft.baseWorkflowVersionId === after.draft.baseWorkflowVersionId) return { draft: current.draft, savedDraft: current.savedDraft, agents: agents.items }
+            && current.draft.baseWorkflowVersionId === after.draft.baseWorkflowVersionId
+            && sameAuthoredWorkflow(current.savedDraft.graph, after.savedDraft.graph)) {
+            return { draft: current.draft, savedDraft: current.savedDraft, agents: agents.items }
+          }
           opened.set(key(workspaceId, workflowId), after)
           return { draft: after.draft, savedDraft: after.savedDraft, agents: agents.items }
         }
@@ -222,16 +233,17 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         CurrentWorkflowSaveResultSchema, { method: 'PUT', body: {
           commandId: request.commandId, executionSemanticsVersion: 3, expectedRevision: entry.savedRevision,
           expectedWorkflowVersionId: base.baseWorkflowVersionId, expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
+          expectedNodePresentation: workflowNodeNames(entry.savedDraft.graph),
           expectedLocationRevision: pins.expectedLocationRevision, graph: base.graph } })
       const saved = result.value
       if (saved.workspaceId !== request.workspaceId || saved.workflowId !== request.workflowId
-        || !sameExecutableWorkflow(saved.version.definition, base.graph)) {
+        || !sameAuthoredWorkflow(saved.presentation ?? saved.version.definition, base.graph)) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The publication acknowledgement is missing its immutable version pin.' })
       }
       // Published drafts carry the saved workflow revision, the pin later
       // edit intents and Start use. Local apply counts restart from it.
       const draft = GraphDraftV3Schema.parse({ ...base, revision: saved.revision, publishedRevision: saved.revision, baseWorkflowVersionId: saved.currentVersionId,
-        graph: saved.version.definition, updatedAt: new Date().toISOString() })
+        graph: saved.presentation ?? saved.version.definition, updatedAt: new Date().toISOString() })
       opened.set(key(request.workspaceId, request.workflowId), { draft, savedDraft: draft, savedRevision: saved.revision })
       return { draft, agents: pins.agents, version: saved.version }
     },

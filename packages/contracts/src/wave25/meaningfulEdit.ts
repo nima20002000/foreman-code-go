@@ -66,6 +66,26 @@ export function sameExecutableWorkflow(left: PresentedWorkflow, right: Presented
   return sameWorkflowValue(executableWorkflowContent(left), executableWorkflowContent(right))
 }
 
+export function workflowNodeNames(graph: PresentedWorkflow) {
+  return graph.nodes.map(({ id, name, label }) => ({ id, name, label }))
+}
+
+/** Hydrate mutable names and geometry after the executable definition is checked. */
+export function preserveWorkflowPresentation<T extends PresentedWorkflow>(definition: T, presentation: T): T {
+  const current = new Map(presentation.nodes.map((node) => [node.id, node]))
+  const nodes = definition.nodes.map((node) => {
+    const displayed = current.get(node.id)
+    if (!displayed) return node
+    const result = { ...preserveNodeGeometry(node, displayed) }
+    for (const field of ['name', 'label'] as const) {
+      if (Object.hasOwn(displayed, field)) result[field] = displayed[field]
+      else delete result[field]
+    }
+    return result
+  })
+  return { ...definition, nodes }
+}
+
 export function preserveNodeGeometry<T extends PresentedNode>(definition: T, presentation: PresentedNode): T {
   if (geometryFields.every((field) => sameWorkflowValue(definition[field], presentation[field]))) return definition
   const result = { ...definition }

@@ -1,4 +1,5 @@
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
+import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -820,6 +821,7 @@ export const migrations = [
   jobAdmissionQueueMigration,
   jobQueueCleanupMigration,
   runPresentationMigration,
+  workflowPresentationMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import {
-  CurrentWorkflowSaveResultSchema, RunActivitiesPageSchema, WorkflowDefinitionV3Schema,
+  CurrentWorkflowSaveResultSchema, RunActivitiesPageSchema, WorkflowDefinitionV3Schema, workflowNodeNames,
 } from '@graphql/contracts/wave25'
 import { RunBoardSnapshotGetResultSchema } from '@graphql/contracts/run-snapshots'
 import { buildApp } from '../src/app.js'
@@ -37,12 +37,13 @@ it('keeps admission-time Agent names in the Run board and Activities after prese
           'select record,revision::text from workflows where id=$1 and workspace_id=$2',
           [fixture.scope.workflowId, fixture.scope.workspaceId])).rows[0]!
         const graph = WorkflowDefinitionV3Schema.parse(stored.record)
+        const expectedNodePresentation = workflowNodeNames(graph)
         graph.nodes.forEach((node, index) => { node.name = names[index]! })
         const input = {
           workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
           executionSemanticsVersion: 3, expectedRevision: Number(stored.revision),
           expectedWorkflowVersionId: fixture.version.id, expectedLocationRevision: location.value.locationRevision,
-          expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds, graph,
+          expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds, graph, expectedNodePresentation,
         }
         let result: unknown
         if (source === 'http') {

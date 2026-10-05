@@ -434,7 +434,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     expect(CurrentWorkflowSaveResultSchema.parse(moved.json()).value.currentVersionId).toBe(saved.value.currentVersionId)
     expect(await count(t, 'workflow_versions')).toBe(1)
     const meaningful = { ...move, commandId: randomUUID(), expectedRevision: moved.json().value.revision,
-      graph: { ...move.graph, nodes: move.graph.nodes.map((node) => ({ ...node, name: 'Meaningful change' })) } }
+      graph: { ...move.graph, nodes: move.graph.nodes.map((node) => ({ ...node, initialPrompt: 'Meaningful change' })) } }
     expect((await httpSave(t, meaningful)).statusCode).toBe(409)
     const stop = { workspaceId: t.input.workspaceId, runId: accepted.run.id, commandId: randomUUID() }
     expect(graphRpcValue((await t.call('run_stop', stop)).result)).toMatchObject({ error: { code: 'REPEAT_STOP_RUNTIME_UNAVAILABLE' } })

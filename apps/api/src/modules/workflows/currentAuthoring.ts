@@ -7,7 +7,8 @@ import {
   workflowSaveIssues, CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
   CurrentWorkflowSavedSchema, CurrentWorkflowReadInputSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowValidationSchema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
-  ExecutableWorkflowV3Schema, canonicalGraphJson, sameExecutableWorkflow, sameWorkflowValue,
+  ExecutableWorkflowV3Schema, canonicalGraphJson, sameAuthoredWorkflow, sameExecutableWorkflow,
+  sameWorkflowValue, workflowNodeNames,
   CurrentEditSaveInputSchema, CurrentEditMutationInputSchema, CurrentEditReadInputSchema, preserveWorkflowGeometry,
   type CurrentWorkflowValidateInput, type CurrentEditSaveInput,
 } from '@graphql/contracts/wave25'
@@ -63,8 +64,7 @@ export class CurrentWorkflowAuthoring {
       validate: async (client, principal, input) => {
         authorize(principal, input, true)
         const prepared = await this.prepare(client, principal, input, false)
-        if (prepared.presentationOnly) return fail('CURRENT_EDIT_NOT_MEANINGFUL', 'Save presentation directly; it does not require a Stop-and-save intent.')
-        return prepared.version
+        return { version: prepared.version, presentationOnly: prepared.presentationOnly }
       },
       publish: (principal, source, input, intentId) => this.write(principal, source, input, intentId),
       assertStopReady: () => {
@@ -176,6 +176,9 @@ export class CurrentWorkflowAuthoring {
           if (!sameWorkflowValue(version, saved.version) || !sameWorkflowValue(version.agentConfigurationVersionIds, input.resultantAgentConfigurationVersionIds ?? input.expectedAgentConfigurationVersionIds)) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The receipt differs from its exact immutable version/configuration pins.')
           }
+          if (saved.presentation && !sameAuthoredWorkflow(saved.presentation, input.graph)) {
+            return fail('WORKFLOW_RECEIPT_CONFLICT', 'The saved presentation differs from the submitted node names.')
+          }
           const witness = (await client.query<{ workflow_version_id: string; input_hash: string; input: unknown }>(
             `select workflow_version_id,input_hash,input from current_workflow_publications where principal_id=$1 and command_id=$2`,
             [principal.id, input.commandId])).rows[0]
@@ -217,7 +220,8 @@ export class CurrentWorkflowAuthoring {
         const live = await readLiveManagementPrincipal(client, principal.id)
         authorize(live, input, true)
         const value = CurrentWorkflowSavedSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId,
-          revision, currentVersionId: prepared.version.id, version: prepared.version, ...(agents ? { agents } : {}) })
+          revision, currentVersionId: prepared.version.id, version: prepared.version,
+          ...(prepared.presentationOnly ? { presentation: prepared.definition } : {}), ...(agents ? { agents } : {}) })
         if (intentId) await this.editIntents.saved(client, principal, intentId, value)
         return value
       },
@@ -252,6 +256,17 @@ export class CurrentWorkflowAuthoring {
     const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
     const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
+    const names = workflowNodeNames(current)
+    const expectedNames = 'expectedNodePresentation' in input ? input.expectedNodePresentation : undefined
+    if (expectedNames && !sameWorkflowValue(names, expectedNames)) {
+      return fail('PRESENTATION_REVISION_CONFLICT', 'The saved node names changed. Reload before saving these edits.')
+    }
+    const submittedNames = new Map(workflowNodeNames(input.graph).map((node) => [node.id, node]))
+    const renamed = names.some((node) => submittedNames.has(node.id)
+      && !sameWorkflowValue(node, submittedNames.get(node.id)))
+    if (base && 'commandId' in input && !expectedNames && renamed) {
+      return fail('PRESENTATION_BASE_REQUIRED', 'Supply expectedNodePresentation from the saved workflow before changing node names.')
+    }
     if ('expectedGeometry' in input && input.expectedGeometry) {
       if (!presentationOnly) return fail('LAYOUT_MEANING_CONFLICT', 'A geometry command cannot publish executable changes.')
       const geometry = current.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
@@ -260,7 +275,8 @@ export class CurrentWorkflowAuthoring {
       }
     }
     if (presentationOnly && base) return { presentationOnly, version: base, content: '',
-      definition: WorkflowDefinitionV3Schema.parse({ ...input.graph, updatedAt: new Date().toISOString() }) }
+      definition: WorkflowDefinitionV3Schema.parse({ ...(intentId ? preserveWorkflowGeometry(input.graph, current) : input.graph),
+        updatedAt: new Date().toISOString() }) }
 
     if (publication) {
       await assertMeaningfulSaveAdmitted(client, { ...input, stagedAgentIds: staged?.prepared.map((item) => item.agent.id) ?? [] })

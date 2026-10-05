@@ -1,10 +1,16 @@
 import { AgentSchema } from '@graphql/contracts'
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveResultSchema, CurrentWorkflowReadResultSchema } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveResultSchema,
+  CurrentWorkflowReadResultSchema, workflowNodeNames } from '@graphql/contracts/wave25'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
-import { graphHeaders, graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { writerFixture, type WriterFixture } from './eng04-writer-fixtures.js'
+import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
+import { buildApp } from '../src/app.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit parity', () => {
   let db: Awaited<ReturnType<typeof currentDatabase>>
@@ -12,6 +18,126 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
   beforeAll(async () => { db = await currentDatabase() }, 60000)
   afterEach(async () => { await Promise.all(fixtures.splice(0).map((t) => t.app.close())) })
   afterAll(async () => { await db?.close() })
+  it.each(['name', 'label'] as const)('saves a node %s through a restarted edit journal while a Run remains active', async (field) => {
+    const t = await writerFixture(db); fixtures.push(t)
+    const initial = await t.app.inject({ method: 'PUT', url: t.url,
+      headers: graphHeaders(t.writer.token), payload: t.input })
+    expect(initial.statusCode, initial.body).toBe(200)
+    const saved = CurrentWorkflowSaveResultSchema.parse(initial.json()).value
+    const accepted = await insertCurrentRunFixture(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1,
+        identityHash: `sha256:${'1'.repeat(64)}` } } }, saved, t.writer.principal.id)
+    const before = (await db.pool.query('select record from runs where id=$1', [accepted.run.id])).rows[0]!.record
+    const renamer = await t.credential([{ actions: ['workflows:read', 'workflows:update', 'graph:read',
+      'graph:edit', 'graph:save', 'agents:read', 'workspace_locations:read'],
+    scope: { workspaceIds: [t.input.workspaceId] } }])
+    const stage = { ...t.input, action: 'stage_edits', draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
+      expectedRevision: saved.revision, expectedWorkflowVersionId: saved.currentVersionId,
+      expectedNodePresentation: workflowNodeNames(saved.version.definition),
+      graph: { ...saved.version.definition, nodes: saved.version.definition.nodes.map((node, index) =>
+        index ? node : { ...node, [field]: 'Saved presentation' }) } }
+    const response = await t.app.inject({ method: 'POST', url: `${t.url}/edits`,
+      headers: graphHeaders(renamer.token), payload: stage })
+    expect(response.statusCode, response.body).toBe(200)
+    const staged = CurrentEditReadResultSchema.parse(response.json())
+    expect(staged.current).toEqual([])
+    expect(staged.intent?.affected).toEqual([])
+    expect(staged.intent?.stops).toEqual([])
+    expect(staged.intent?.stagedDraft.presentationOnly).toBe(true)
+    const denied = await t.credential([{ actions: ['workflows:read', 'graph:read'],
+      scope: { workspaceIds: [t.input.workspaceId] } }])
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, denied.token)).result?.isError).toBe(true)
+    const commands = new PostgresCommandCoordinator(db.pool)
+    const workflows = new WorkflowManagementService(db.pool, commands)
+    const restarted = buildApp({ readiness: { database: { ping: async () => undefined },
+      checkpoints: { ping: async () => undefined } },
+    operator: { access: t.access, services: { workflows, commands } as OperatorServices } })
+    try {
+      const intent = staged.intent!
+      const advance = { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId, draftId: stage.draftId,
+        intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId }
+      const call = (name: string, args: unknown) => graphRpc(restarted, renamer.token,
+        'tools/call', { name, arguments: args })
+      const completed = await call(CURRENT_WORKFLOW_TOOLS.edits, advance)
+      expect(completed.result?.isError, JSON.stringify(completed.result)).not.toBe(true)
+      const published = CurrentEditReadResultSchema.parse(graphRpcValue(completed.result))
+      expect(published.intent?.state).toBe('saved')
+      expect(published.intent?.result).toMatchObject({ revision: saved.revision,
+        currentVersionId: saved.currentVersionId, version: saved.version })
+      expect(published.intent?.result?.presentation?.nodes[0]).toHaveProperty(field, 'Saved presentation')
+      expect(graphRpcValue((await call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).toEqual(published)
+      const current = graphRpcValue((await call('workflow_get', {
+        workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })).result)
+      expect(current).toMatchObject({ workflow: { nodes: stage.graph.nodes } })
+      const read = await restarted.inject({ method: 'GET', url: t.url,
+        headers: graphHeaders(renamer.token) })
+      expect(CurrentWorkflowReadResultSchema.parse(read.json()).version).toEqual(saved.version)
+      expect((await db.pool.query('select record from runs where id=$1', [accepted.run.id])).rows[0]!.record).toEqual(before)
+      expect((await db.pool.query('select 1 from workflow_versions where workflow_id=$1', [t.input.workflowId])).rowCount).toBe(1)
+      expect((await db.pool.query("select 1 from management_command_receipts where operation='run.stop' and principal_id=$1",
+        [renamer.principal.id])).rowCount).toBe(0)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  it.each(['http', 'mcp'] as const)('conflicts a stale rename after a %s save while retaining immutable pins', async (source) => {
+    const t = await writerFixture(db); fixtures.push(t)
+    const response = await t.app.inject({ method: 'PUT', url: t.url,
+      headers: graphHeaders(t.writer.token), payload: t.input })
+    expect(response.statusCode, response.body).toBe(200)
+    const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
+    const input = { ...t.input, commandId: randomUUID(), expectedRevision: saved.revision,
+      expectedWorkflowVersionId: saved.currentVersionId,
+      expectedNodePresentation: workflowNodeNames(saved.version.definition), graph: { ...saved.version.definition,
+        nodes: saved.version.definition.nodes.map((node, index) => index ? node : { ...node, name: 'First rename' }) } }
+    const firstReply = source === 'http'
+      ? (await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(t.writer.token), payload: input })).json()
+      : graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, input)).result)
+    const first = CurrentWorkflowSaveResultSchema.parse(firstReply)
+    const competing = { ...input, commandId: randomUUID(), graph: { ...saved.version.definition,
+      nodes: saved.version.definition.nodes.map((node, index) => index === 1 ? { ...node, label: 'Second rename' } : node) } }
+    const rejected = await t.app.inject({ method: 'PUT', url: t.url,
+      headers: graphHeaders(t.writer.token), payload: competing })
+    expect(rejected.statusCode, rejected.body).toBe(409)
+    expect(rejected.json().error.code).toBe('PRESENTATION_REVISION_CONFLICT')
+    const mcp = await t.call(CURRENT_WORKFLOW_TOOLS.save, { ...competing, commandId: randomUUID() })
+    expect(mcp.result?.isError).toBe(true)
+    expect(graphRpcValue(mcp.result)).toMatchObject({ error: { code: 'PRESENTATION_REVISION_CONFLICT' } })
+    const persisted = graphRpcValue((await t.call('workflow_get', {
+      workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })).result)
+    expect(persisted).toMatchObject({ revision: saved.revision, currentVersionId: saved.currentVersionId,
+      workflow: { nodes: first.value.presentation!.nodes } })
+    const corrected = { ...competing, commandId: randomUUID(),
+      expectedNodePresentation: workflowNodeNames(first.value.presentation!),
+      graph: { ...first.value.presentation!, nodes: first.value.presentation!.nodes.map((node, index) =>
+        index === 1 ? { ...node, label: 'Second rename' } : node) } }
+    const second = CurrentWorkflowSaveResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, corrected)).result))
+    expect(second.value.presentation?.nodes).toEqual(corrected.graph.nodes)
+    expect(second.value.version).toEqual(saved.version)
+    expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, input)).result)).toEqual({ ...first, replayed: true })
+    const drag = { ...corrected, commandId: randomUUID(),
+      expectedNodePresentation: workflowNodeNames(second.value.presentation!),
+      expectedGeometry: second.value.presentation!.nodes.map(({ id, position, width, height }) => ({ id, position, width, height })),
+      graph: { ...second.value.presentation!, nodes: second.value.presentation!.nodes.map((node, index) =>
+        index ? node : { ...node, position: { x: 700, y: 80 } }) } }
+    const moved = await t.app.inject({ method: 'PUT', url: t.url,
+      headers: graphHeaders(t.writer.token), payload: drag })
+    expect(moved.statusCode, moved.body).toBe(200)
+    expect(CurrentWorkflowSaveResultSchema.parse(moved.json()).value.version).toEqual(saved.version)
+    const readback = await t.app.inject({ method: 'GET', url: t.url.replace(/\/definition$/, ''),
+      headers: graphHeaders(t.writer.token) })
+    expect(readback.statusCode, readback.body).toBe(200)
+    expect(readback.json()).toMatchObject({ workflow: { nodes: drag.graph.nodes } })
+    const executable = { ...corrected, commandId: randomUUID(),
+      expectedNodePresentation: workflowNodeNames(second.value.presentation!), graph: { ...second.value.presentation!,
+        nodes: second.value.presentation!.nodes.map((node, index) => index ? node : { ...node, initialPrompt: 'Executable edit' }) } }
+    const next = await t.app.inject({ method: 'PUT', url: t.url,
+      headers: graphHeaders(t.writer.token), payload: executable })
+    expect(next.statusCode, next.body).toBe(200)
+    expect(CurrentWorkflowSaveResultSchema.parse(next.json()).value.revision).toBe(saved.revision + 1)
+  })
+
   it.each(['approval', 'limits', 'low-limits', 'both', 'empty'] as const)('rejects invalid %s before staging and permits a corrected save', async (invalid) => {
     const t = await writerFixture(db, 'sequential'); fixtures.push(t)
     const graph = structuredClone(t.input.graph)

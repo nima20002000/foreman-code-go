@@ -9,7 +9,8 @@ import {
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema,
   ExecutableWorkflowV3Schema, AcceptedWorkflowRunV3Schema, GraphEditStageInputV3Schema, GraphEditReadResultV3Schema,
   GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema, CURRENT_WORKFLOW_CAPABILITIES, sameExecutableWorkflow,
-  RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue,
+  RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue, workflowNodeNames,
+  preserveWorkflowGeometry,
   type WorkflowDefinitionV3, type WorkflowVersionV3, type GraphDraftV3,
   type GraphEditReadResultV3, type CurrentRunDetails, type RepeatGraphCurrentV3,
 } from '@graphql/contracts/wave25'
@@ -90,6 +91,13 @@ export function createCurrentBoardMock(options: {
     versions.set(version.id, copy(version)); drafts.set(id, draft); workflows.set(id, draft.graph)
     revisions.set(id, (revisions.get(id) ?? 0) + 1); options.onSaved?.(copy(draft.graph))
     return { workspaceId, workflowId: id, revision, currentVersionId: version.id, version, agents: catalog }
+  }
+  function savePresentation(workflowId: string, graph: WorkflowDefinitionV3) {
+    const version = versions.get(drafts.get(workflowId)!.baseWorkflowVersionId!)!
+    workflows.set(workflowId, copy(graph))
+    options.onSaved?.(copy(graph))
+    return { workspaceId, workflowId, revision: revisions.get(workflowId)!,
+      currentVersionId: version.id, version, presentation: graph }
   }
   if (options.initialWorkflow) install(options.initialWorkflow, options.initialWorkflow.nodes.length > 0)
   const record = (id: string): GraphEditReadResultV3 => {
@@ -269,13 +277,14 @@ export function createCurrentBoardMock(options: {
           const save = CurrentWorkflowSaveInputSchema.parse(input)
           return HttpResponse.json(journal(`save:${save.commandId}`, save, () => {
             check()
+            if (save.expectedNodePresentation && !sameWorkflowValue(
+              save.expectedNodePresentation, workflowNodeNames(workflows.get(id)!))) throw new Error('PRESENTATION_REVISION_CONFLICT')
             const version = versions.get(draft.baseWorkflowVersionId!)
             if (version && sameExecutableWorkflow(workflows.get(id)!, save.graph)
               && sameWorkflowValue(version.agentConfigurationVersionIds, save.expectedAgentConfigurationVersionIds)) {
               const geometry = (graph: WorkflowDefinitionV3) => graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
               if (save.expectedGeometry && !sameWorkflowValue(save.expectedGeometry, geometry(workflows.get(id)!))) throw new Error('GEOMETRY_CONFLICT')
-              workflows.set(id, copy(save.graph)); options.onSaved?.(copy(save.graph))
-              return { workspaceId, workflowId: id, revision: revisions.get(id)!, currentVersionId: version.id, version }
+              return savePresentation(id, save.graph)
             }
             // Mirror currentAuthoring.prepare -> assertMeaningfulSaveAdmitted.
             // A stale Board summary cannot authorize publication or an implicit Stop.
@@ -294,11 +303,19 @@ export function createCurrentBoardMock(options: {
               const input = GraphEditStageInputV3Schema.parse(body)
               const response = journal(`stage:${input.commandId}`, input, () => {
                 if (input.expectedRevision !== revisions.get(id) || input.expectedWorkflowVersionId !== draft.baseWorkflowVersionId) throw new Error('REVISION_CONFLICT')
+                if (input.expectedNodePresentation && !sameWorkflowValue(
+                  input.expectedNodePresentation, workflowNodeNames(workflows.get(id)!))) throw new Error('PRESENTATION_REVISION_CONFLICT')
+                const version = versions.get(draft.baseWorkflowVersionId!)
+                const presentationOnly = !!version && !input.stagedAgents?.length
+                  && sameExecutableWorkflow(workflows.get(id)!, input.graph)
+                  && sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
                 const stagedDraft = { id: input.draftId, workspaceId, workflowId: id, revision: input.expectedRevision,
                   baseWorkflowVersionId: input.expectedWorkflowVersionId, graph: input.graph,
+                  expectedNodePresentation: input.expectedNodePresentation,
+                  ...(presentationOnly ? { presentationOnly: true as const } : {}),
                   agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, locationRevision: input.expectedLocationRevision,
                   locationDigest: hash, runLocationPins: [] as Array<{ runId: string; digest: string }> }
-                const affected = [...runs.values()].filter((r) => r.run.executionState !== 'completed' || r.cleanupPending).map(({ run }) => ({
+                const affected = (presentationOnly ? [] : [...runs.values()]).filter((r) => r.run.executionState !== 'completed' || r.cleanupPending).map(({ run }) => ({
                   workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId,
                   executionSemanticsVersion: 3 as const, agentConfigurationVersionIds: run.agentConfigurationVersionIds }))
                 stagedDraft.runLocationPins = affected.map((pin) => ({ runId: pin.runId, digest: hash }))
@@ -308,7 +325,7 @@ export function createCurrentBoardMock(options: {
                   expectedWorkflowVersionId: input.expectedWorkflowVersionId, savedWorkflowRevision: revisions.get(id)!, stagedDraft, agentPins: input.graph.nodes.filter(node=>node.kind!=='job').map((node) => ({ agentId: nativeNode(node).agentId, metadataRevision: catalog.find((a) => a.agent.id === nativeNode(node).agentId)!.metadataRevision, configurationVersionId: input.expectedAgentConfigurationVersionIds[nativeNode(node).agentId] })), affected,
                   advanceCommandId: `advance-${input.commandId}`, advanceInputHash: hash, discardCommandId: `discard-${input.commandId}`, discardInputHash: hash,
                   stops: affected.map((pin) => ({ input: { workspaceId, runId: pin.runId, commandId: `stop-${intentId}-${pin.runId}` }, inputHash: hash })),
-                  saveInput: { workspaceId, workflowId: id, commandId: `save-${input.commandId}`, executionSemanticsVersion: 3 as const, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, graph: input.graph },
+                  saveInput: { workspaceId, workflowId: id, commandId: `save-${input.commandId}`, executionSemanticsVersion: 3 as const, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, graph: input.graph, expectedNodePresentation: input.expectedNodePresentation },
                   saveInputHash: hash, state: 'staged' as const, saveAttempted: false, createdAt: at, updatedAt: at }
                 intents.set(id, GraphEditReadResultV3Schema.parse({ ...emptyIntent(), intent })); return record(id)
               })
@@ -324,7 +341,13 @@ export function createCurrentBoardMock(options: {
                 if (!['waiting', 'stopping'].includes(intent.state)) controls.stopCalls += intent.stops.length
                 intent.state = 'waiting'; for (const pin of intent.affected) { const detail = runs.get(pin.runId)
                   if (detail) detail.cleanupPending = true; markStop(pin.runId) }
-              } else { intent.result = publish(intent.stagedDraft); intent.saveAttempted = true; intent.state = 'saved' }
+              } else {
+                intent.result = intent.stagedDraft.presentationOnly
+                  ? savePresentation(id, preserveWorkflowGeometry(intent.stagedDraft.graph, workflows.get(id)!))
+                  : publish(intent.stagedDraft)
+                intent.saveAttempted = true
+                intent.state = 'saved'
+              }
               intents.set(id, read); return HttpResponse.json(record(id))
             }
             if (method === 'POST' && (body as { action?: string }).action === 'discard_edits') {

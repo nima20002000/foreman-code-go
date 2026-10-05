@@ -16,7 +16,8 @@ import { DurableEditIntentService, type EditIntentSource } from './durableEditIn
 
 export interface CurrentEditWriter {
   assertStopReady(): void
-  validate(client: pg.PoolClient, principal: ManagementPrincipal, input: CurrentEditSaveInput): Promise<WorkflowVersionV3>
+  validate(client: pg.PoolClient, principal: ManagementPrincipal, input: CurrentEditSaveInput):
+    Promise<{ version: WorkflowVersionV3; presentationOnly: boolean }>
   publish(principal: ManagementPrincipal, source: EditIntentSource, input: CurrentEditSaveInput, intentId: string): Promise<unknown>
 }
 /** Same durable Stage/Discard/Stop-and-save coordinator, now with a complete
@@ -29,11 +30,12 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
     authorize: (principal, scope, write) => requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', scope),
     authorizeContent: (principal, intent) => authorizeStagedAgents(principal, intent.saveInput),
     stagedAgentIds: (draft) => (draft.stagedAgents ?? []).map((item) => item.agent.id),
+    requiresRunSettlement: (draft) => !draft.presentationOnly,
     prepare: async (client, principal, input, saveCommandId) => {
       const { action, draftId, commandId, ...definition } = input
       void action; void commandId
       let saveInput = CurrentEditSaveInputSchema.parse({ ...definition, commandId: saveCommandId })
-      const version = await writer.validate(client, principal, saveInput)
+      const { version, presentationOnly } = await writer.validate(client, principal, saveInput)
       if (input.stagedAgents?.length) saveInput = CurrentEditSaveInputSchema.parse({ ...saveInput,
         resultantAgentConfigurationVersionIds: version.agentConfigurationVersionIds })
       else if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) {
@@ -55,11 +57,14 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
         }
         return { agentId: id, metadataRevision: Number(row.metadata_revision), configurationVersionId: row.current_configuration_version_id }
       })
-      const locations = await readCurrentEditLocationPins(client, principal, { ...input, stagedAgentIds: (input.stagedAgents ?? []).map((item) => item.agent.id) })
+      const locations = await readCurrentEditLocationPins(client, principal, { ...input, presentationOnly,
+        stagedAgentIds: (input.stagedAgents ?? []).map((item) => item.agent.id) })
       if (locations.locationRevision !== input.expectedLocationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The displayed workspace location changed.', 409)
       const stagedDraft = CurrentEditDraftSchema.parse({ id: draftId, workspaceId: input.workspaceId,
         workflowId: input.workflowId, revision: input.expectedRevision, baseWorkflowVersionId: input.expectedWorkflowVersionId,
         graph: input.graph, agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds,
+        ...(presentationOnly ? { presentationOnly: true } : {}),
+        ...(input.expectedNodePresentation ? { expectedNodePresentation: input.expectedNodePresentation } : {}),
         ...(input.stagedAgents ? { stagedAgents: input.stagedAgents } : {}),
         ...(input.stagedAgents?.length ? { resultantAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
           saveCommandId } : {}), ...locations })
@@ -67,7 +72,9 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
         agentPins }
     },
     assertDraft: async (client, principal, intent) => {
-      const pins = await readCurrentEditLocationPins(client, principal, { ...intent, stagedAgentIds: (intent.stagedDraft.stagedAgents ?? []).map((item) => item.agent.id) })
+      const pins = await readCurrentEditLocationPins(client, principal, { ...intent,
+        presentationOnly: !!intent.stagedDraft.presentationOnly,
+        stagedAgentIds: (intent.stagedDraft.stagedAgents ?? []).map((item) => item.agent.id) })
       if (pins.locationRevision !== intent.stagedDraft.locationRevision || pins.locationDigest !== intent.stagedDraft.locationDigest
         || !sameWorkflowValue(pins.runLocationPins, intent.stagedDraft.runLocationPins)) {
         throw new DomainError('CURRENT_EDIT_LOCATION_CONFLICT', 'The workspace/Run location pins or exact affected set changed. The private payload is retained.', 409)
@@ -78,6 +85,7 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
       await writer.validate(client, principal, { workspaceId: draft.workspaceId, workflowId: draft.workflowId,
         executionSemanticsVersion: 3, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
         expectedAgentConfigurationVersionIds: draft.agentConfigurationVersionIds, expectedLocationRevision: draft.locationRevision,
+        expectedNodePresentation: draft.expectedNodePresentation,
         graph: draft.graph, commandId: draft.saveCommandId ?? 'validate-current-draft', stagedAgents: draft.stagedAgents,
         resultantAgentConfigurationVersionIds: draft.resultantAgentConfigurationVersionIds })
     },

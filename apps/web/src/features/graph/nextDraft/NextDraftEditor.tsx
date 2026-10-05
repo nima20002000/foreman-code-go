@@ -9,7 +9,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { flushSync } from 'react-dom'
 import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphDraftV3Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import { GraphDraftV3Schema, staysOnWorkflowBoard, sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { ActionMenu, AgentFacts, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentationStore } from '../useGraphPresentation'
@@ -71,6 +71,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
     if (useGraphDraftStore.getState().nextDrafts[draftKey]) return
     try {
       const snapshot = readEditSnapshot(draftKey)
+      if (snapshot && !initialContext && !source.isFetchedAfterMount && !source.isError) return
       const fresh = source.data && !source.isError ? source.data.draft : undefined
       // A snapshot of an older saved base is superseded when it was clean or its
       // meaning is exactly what has since been saved. Remote hydration waits for
@@ -79,8 +80,9 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
       // belong to shared Agents, not the graph, and need explicit save or discard.
       const agentEdited = Object.keys(snapshot?.agentEdits ?? {}).length > 0 || Object.keys(snapshot?.agentForms ?? {}).length > 0
       const stale = snapshot && !snapshot.remoteEditIntent && !agentEdited && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
-        || snapshot.context.draft.publishedRevision !== fresh.publishedRevision)
-        && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameExecutableWorkflow(snapshot.graph, fresh.graph))
+        || snapshot.context.draft.publishedRevision !== fresh.publishedRevision
+        || !sameAuthoredWorkflow(snapshot.context.draft.graph, fresh.graph))
+        && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameAuthoredWorkflow(snapshot.graph, fresh.graph))
       const retained = stale ? undefined : snapshot
       if (retained) {
         useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
@@ -90,7 +92,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
     } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
-  }, [draftKey, source.data, source.isError])
+  }, [draftKey, initialContext, source.data, source.isError, source.isFetchedAfterMount])
   if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">
     <h2>Authoring unavailable</h2><p>{storageError ?? source.error?.message}</p>
@@ -164,7 +166,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const change = useCallback((update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => {
     useGraphDraftStore.getState().changeNextDraft(draftKey, (value) => {
       const next = update(value)
-      if (editIntent.locked && !sameExecutableWorkflow(value, next)) {
+      if (editIntent.locked && !sameAuthoredWorkflow(value, next)) {
         setLocalError('Saving is still in progress. You can move agents, but other edits wait until it finishes or you discard it.')
         return value
       }

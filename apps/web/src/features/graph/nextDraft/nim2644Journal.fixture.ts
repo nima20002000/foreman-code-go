@@ -24,6 +24,7 @@ export function journalIntent(request: GraphEditStageInputV3, context: NextDraft
   const save = { workspaceId: request.workspaceId, workflowId: request.workflowId, expectedRevision: request.expectedRevision,
     expectedWorkflowVersionId: request.expectedWorkflowVersionId, executionSemanticsVersion: request.executionSemanticsVersion,
     graph: request.graph, expectedAgentConfigurationVersionIds: request.expectedAgentConfigurationVersionIds,
+    expectedNodePresentation: request.expectedNodePresentation,
     expectedLocationRevision: request.expectedLocationRevision, stagedAgents: request.stagedAgents }
   const saveCommandId = `save-${request.commandId}`
   const resultant = { ...request.expectedAgentConfigurationVersionIds,
@@ -37,6 +38,7 @@ export function journalIntent(request: GraphEditStageInputV3, context: NextDraft
     savedWorkflowRevision: request.expectedRevision,
     stagedDraft: { id: draftId, workspaceId: request.workspaceId, workflowId: request.workflowId,
       revision: request.expectedRevision, baseWorkflowVersionId: request.expectedWorkflowVersionId, graph: request.graph,
+      expectedNodePresentation: request.expectedNodePresentation,
       agentConfigurationVersionIds: request.expectedAgentConfigurationVersionIds, stagedAgents: request.stagedAgents,
       saveCommandId, resultantAgentConfigurationVersionIds: resultant,
       locationRevision: request.expectedLocationRevision, locationDigest: hash,

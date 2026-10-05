@@ -21,7 +21,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clea
 
 describe('NIM-2644-FE-001 exact no-effect Stage reservation rejection', () => {
   it.each(['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID', 'AGENT_ID_CONFLICT',
-    'AGENT_REVISION_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS', 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED'])('recognizes pre-insert %s only with its domain status', (code) => {
+    'AGENT_REVISION_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS', 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED',
+    'PRESENTATION_REVISION_CONFLICT', 'PRESENTATION_BASE_REQUIRED'])('recognizes pre-insert %s only with its domain status', (code) => {
     expect(isDefinitiveStageRejection(failure(code))).toBe(true)
     for (const status of [0, 200, 400, 401, 403, 408, 429, 500, 503]) expect(isDefinitiveStageRejection(failure(code, status))).toBe(false)
   })
@@ -44,19 +45,24 @@ describe('NIM-2644-FE-001 exact no-effect Stage reservation rejection', () => {
       expect(reserveEditOutbox(key, candidate('replacement'))).toEqual(outbox)
     })
   })
-  it('releases only the proven rejected reservation; the durable local form and newer typing survive', async () => {
-    const context = repairFixture(), edit = newNextDraft(context, 'instance'), outbox = candidate()
-    edit.graph = { ...edit.graph, nodes: edit.graph.nodes.map((node) => ({ ...node, initialPrompt: 'correctable local form' })) }
-    storeEditSnapshot(key, edit)
-    await withEditIntentLock(key, async () => {
-      reserveEditOutbox(key, outbox)
-      const before = readEditSnapshot(key)
-      expect(rejectEditOutbox(key, outbox.request, failure('REVISION_CONFLICT'))).toBe(true)
-      expect(readEditOutbox(key)).toBeUndefined()
-      expect(readEditSnapshot(key)).toEqual(before)
-      expect(reserveEditOutbox(key, candidate('explicit-new-attempt')).request.commandId).toBe('explicit-new-attempt')
-    })
-  })
+  it.each(['REVISION_CONFLICT', 'PRESENTATION_REVISION_CONFLICT', 'PRESENTATION_BASE_REQUIRED'])(
+    'releases the %s reservation while preserving the local form and newer typing', async (code) => {
+      const context = repairFixture()
+      const edit = newNextDraft(context, 'instance')
+      const outbox = candidate()
+      edit.graph = { ...edit.graph,
+        nodes: edit.graph.nodes.map((node) => ({ ...node, initialPrompt: 'correctable local form' })) }
+      storeEditSnapshot(key, edit)
+      await withEditIntentLock(key, async () => {
+        reserveEditOutbox(key, outbox)
+        const before = readEditSnapshot(key)
+        expect(rejectEditOutbox(key, outbox.request, failure(code))).toBe(true)
+        expect(readEditOutbox(key)).toBeUndefined()
+        expect(readEditSnapshot(key)).toEqual(before)
+        expect(reserveEditOutbox(key, candidate('explicit-new-attempt')).request.commandId).toBe('explicit-new-attempt')
+      })
+    },
+  )
   it('does not clear another command or an altered payload with the same command identity', async () => {
     const outbox = candidate()
     await withEditIntentLock(key, async () => {

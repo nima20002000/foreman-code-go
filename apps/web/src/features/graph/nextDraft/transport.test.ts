@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../shared/api/client'
 import { createNextDraftApi } from './transport'
 import { createCurrentBoardMock } from '../../../shared/mocks/currentBoard'
+import { CurrentWorkflowSaveResultSchema, workflowNodeNames } from '@graphql/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../../../shared/mocks/currentWorkflow'
 import type { DraftRequest } from './state'
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -37,6 +38,7 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     // Optional undefined form fields are absent on the JSON wire, not lost edits.
     expect(JSON.parse(String(init!.body))).toEqual({ graph: JSON.parse(JSON.stringify(target)), expectedRevision: draft.revision,
       expectedWorkflowVersionId: draft.baseWorkflowVersionId, commandId: 'shared-save', executionSemanticsVersion: 3,
+      expectedNodePresentation: JSON.parse(JSON.stringify(workflowNodeNames(draft.graph))),
       expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds })
     expect(mock.versions.size).toBe(2)
     expect(mock.calls.some((call) => call.path.includes('/drafts'))).toBe(false)
@@ -46,6 +48,34 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     await expect(createNextDraftApi(new ApiClient({ fetch })).open('workspace', 'workflow')).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 })
     expect(fetch).toHaveBeenCalledOnce()
     expect(new Headers(fetch.mock.calls[0]![1]!.headers).has('Authorization')).toBe(false)
+  })
+  it('reloads persisted node names on reopen and preserves them through the next layout save', async () => {
+    const { saved, mock, fetch, api } = harness()
+    const original = await api.context(saved.scope.workspaceId, saved.scope.workflowId)
+    const graph = { ...original.draft.graph, nodes: original.draft.graph.nodes.map((node) => ({ ...node, name: 'Persisted rename' })) }
+    const client = new ApiClient({ fetch })
+    await client.request(`/api/management/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/definition`,
+      CurrentWorkflowSaveResultSchema, { method: 'PUT', body: {
+        commandId: 'operator-rename', executionSemanticsVersion: 3, expectedRevision: original.draft.publishedRevision,
+        expectedWorkflowVersionId: original.draft.baseWorkflowVersionId, expectedLocationRevision: 1,
+        expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
+        expectedNodePresentation: workflowNodeNames(original.draft.graph), graph } })
+    const reopened = await api.context(saved.scope.workspaceId, saved.scope.workflowId)
+    expect(reopened.draft.graph.nodes.map((node) => node.name)).toEqual(graph.nodes.map((node) => node.name))
+    const layout = await api.layoutBase(saved.scope.workspaceId, saved.scope.workflowId)
+    const moved = { ...layout.draft.graph, nodes: layout.draft.graph.nodes.map((node, index) =>
+      index ? node : { ...node, position: { x: 700, y: 80 } }) }
+    await client.request(`/api/management/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/definition`,
+      CurrentWorkflowSaveResultSchema, { method: 'PUT', body: {
+        commandId: 'board-drag', executionSemanticsVersion: 3, expectedRevision: layout.draft.publishedRevision,
+        expectedWorkflowVersionId: layout.draft.baseWorkflowVersionId,
+        expectedAgentConfigurationVersionIds: layout.expectedAgentConfigurationVersionIds,
+        expectedLocationRevision: layout.expectedLocationRevision,
+        expectedNodePresentation: workflowNodeNames(layout.draft.graph),
+        expectedGeometry: layout.draft.graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height })),
+        graph: moved } })
+    expect(mock.managed(saved.scope.workflowId).workflow.nodes).toEqual(moved.nodes)
+    expect(mock.versions.size).toBe(1)
   })
   it('rejects mismatched saved revision while opening the local Board draft', async () => {
     const { saved, mock, fetch, api } = harness()

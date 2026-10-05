@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue,
+import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue, workflowNodeNames,
   type GraphEditIntentV3, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { queryKeys } from '../../../shared/api/query'
@@ -70,7 +70,7 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     // The saved acknowledgement is the new published base of the local draft.
     const saved = intent.result
     context = { ...context, draft: { ...context.draft, revision: saved.revision, publishedRevision: saved.revision,
-      baseWorkflowVersionId: saved.currentVersionId, graph: saved.version.definition } }
+      baseWorkflowVersionId: saved.currentVersionId, graph: saved.presentation ?? saved.version.definition } }
     const agents = saved.agents
     if (intent.stagedDraft.stagedAgents?.some(({ agent }) => !agents?.some((savedAgent) =>
       savedAgent.agent.id === agent.id && savedAgent.agent.configurationVersionId === saved.version.agentConfigurationVersionIds[agent.id]))) return current
@@ -221,6 +221,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
         commandId: crypto.randomUUID(), expectedRevision: current.context.draft.publishedRevision,
         expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
         expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
+        expectedNodePresentation: workflowNodeNames((current.context.savedDraft ?? current.context.draft).graph),
         expectedLocationRevision: pins.expectedLocationRevision, graph: current.graph,
         ...(stagedAgents.length ? { stagedAgents } : {}) })
       const reserved = reserveEditOutbox(draftKey, { request, target: current.graph,

@@ -44,6 +44,7 @@ export interface EditIntentBoundary<S extends EditStageScope, I extends DurableE
   prepare(client: pg.PoolClient, principal: ManagementPrincipal, input: S, saveCommandId: string):
     Promise<Pick<I, 'savedWorkflowRevision' | 'stagedDraft' | 'agentPins' | 'saveInput'>>
   stagedAgentIds(draft: I['stagedDraft']): string[]
+  requiresRunSettlement(draft: I['stagedDraft']): boolean
   authorize(principal: ManagementPrincipal, input: Scope, write: boolean): void
   authorizeContent(principal: ManagementPrincipal, intent: I): void
   assertDraft(client: pg.PoolClient, principal: ManagementPrincipal, intent: I): Promise<void>
@@ -67,9 +68,10 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly drafts: EditIntentBoundary<S, I>) {}
 
-  private scope(intent: I) {
-    return { workspaceId: intent.workspaceId, workflowId: intent.workflowId,
-      stagedAgentIds: this.drafts.stagedAgentIds(intent.stagedDraft) }
+  private affectedRuns(client: pg.PoolClient, intent: Pick<I, 'workspaceId' | 'workflowId' | 'stagedDraft'>) {
+    if (!this.drafts.requiresRunSettlement(intent.stagedDraft)) return Promise.resolve([])
+    return readAffectedGraphRuns(client, { workspaceId: intent.workspaceId, workflowId: intent.workflowId,
+      stagedAgentIds: this.drafts.stagedAgentIds(intent.stagedDraft) })
   }
 
   private authorize(principal: ManagementPrincipal, input: { workspaceId: string; workflowId: string }, write: boolean) {
@@ -141,7 +143,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
   }
   private async readback(client: pg.PoolClient, live: ManagementPrincipal, intent: I): Promise<EditIntentReadResult<I>> {
     this.authorizeContent(live, intent, false)
-    const current = await readAffectedGraphRuns(client, this.scope(intent))
+    const current = await this.affectedRuns(client, intent)
     this.authorizeCurrent(live, current)
     const canStop = current.filter((item) => !item.settled).every((item) => isAuthorized(live, 'runs:stop', item.pin))
     return this.drafts.readResultSchema.parse({ intent, current, canStop, affectedSetChanged: !sameAffectedSet(intent, current) })
@@ -185,8 +187,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
         [principal.id, input.workspaceId, input.workflowId])
         if (existing.rows[0]) throw new DomainError('GRAPH_EDIT_INTENT_EXISTS',
           'An unresolved edit intent already exists. Read and reconcile it; do not allocate replacement Stop or save commands.', 409)
-        const current = await readAffectedGraphRuns(client, { workspaceId: input.workspaceId, workflowId: input.workflowId,
-          stagedAgentIds: this.drafts.stagedAgentIds(prepared.stagedDraft) })
+        const current = await this.affectedRuns(client, { ...input, stagedDraft: prepared.stagedDraft })
         this.authorizeCurrent(principal, current)
         const saveInput = prepared.saveInput
         const id = `graph-edit-${randomUUID()}`, now = new Date().toISOString()
@@ -250,7 +251,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
       }
     }
     await this.drafts.authorizePublication(client, live, intent.stagedDraft)
-    const current = await readAffectedGraphRuns(client, this.scope(intent))
+    const current = await this.affectedRuns(client, intent)
     this.authorizeCurrent(live, current)
     if (!sameAffectedSet(intent, current)) throw new DomainError('AFFECTED_RUN_SET_CHANGED',
       'The affected Run/version set changed after planning. No newly discovered Run will be stopped by this intent.', 409)

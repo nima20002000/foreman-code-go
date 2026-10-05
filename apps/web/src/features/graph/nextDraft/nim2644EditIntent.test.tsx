@@ -108,12 +108,13 @@ function expectNoSavedStart() {
   expect(screen.queryByRole('button', { name: 'Start saved version' })).not.toBeInTheDocument()
   expect(startButton()).toHaveAccessibleName('Save and run')
 }
-function mount() {
+function mount(initialContext?: ReturnType<typeof repairFixture>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   clients.push(client)
   client.setQueryData(queryKeys.managedWorkspace('workspace'), { workspace: { id: 'workspace', name: 'Fixture' },
     locationRevision: 1, locationValidation: { status: 'ready', checkedAt: now } })
-  return render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow"
+    initialContext={initialContext} /></QueryClientProvider>)
 }
 function typeMeaning(value = 'submitted instruction') {
   act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
@@ -180,6 +181,77 @@ afterEach(() => {
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
+  it('reloads a clean retained form with remote node names without a new executable version', async () => {
+    const first = mount()
+    const original = structuredClone(edit().context)
+    await waitFor(() => expect(readEditSnapshot(key)?.graph).toEqual(original.draft.graph))
+    first.unmount()
+    act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
+    const fresh = { ...original, draft: { ...original.draft, graph: { ...original.draft.graph,
+      nodes: original.draft.graph.nodes.map((node) => ({ ...node, name: 'Remote saved name' })) } } }
+    vi.mocked(nextDraftApi.context).mockResolvedValue(fresh)
+    mount()
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    expect(edit().graph.nodes[0]?.name).toBe('Remote saved name')
+    expect(edit().context.draft.baseWorkflowVersionId).toBe(original.draft.baseWorkflowVersionId)
+    expect(nextDraftDirty(edit())).toBe(false)
+  })
+
+  it('keeps an unsaved node name after reopening against a newly published Agent configuration', async () => {
+    const stage = vi.spyOn(nextDraftApi, 'editStage')
+    const first = mount()
+    const original = structuredClone(edit().context)
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+      nodes: graph.nodes.map((node) => ({ ...node, name: 'Unsaved node name' })) })))
+    await waitFor(() => expect(readEditSnapshot(key)?.graph.nodes[0]?.name).toBe('Unsaved node name'))
+    first.unmount()
+    act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
+    const fresh = { ...original, draft: { ...original.draft, revision: 8, publishedRevision: 8,
+      baseWorkflowVersionId: 'version-agent-change', graph: { ...original.draft.graph, version: 2 } },
+    agents: original.agents.map((item) => ({ ...item, metadataRevision: item.metadataRevision + 1,
+      agent: { ...item.agent, configurationVersionId: 'configuration-agent-change' } })) }
+    mount(fresh)
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    expect(edit().graph.nodes[0]?.name).toBe('Unsaved node name')
+    expect(edit().context.draft.baseWorkflowVersionId).toBe(original.draft.baseWorkflowVersionId)
+    expect(nextDraftDirty(edit())).toBe(true)
+    expect(stage).not.toHaveBeenCalled()
+  })
+
+  it('acknowledges a presentation-only Save without a Stop dialog or a new version', async () => {
+    const user = userEvent.setup()
+    mount()
+    const original = structuredClone(edit().context)
+    let staged = empty
+    const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (request) => {
+      const intent = journalIntent(request, original)
+      staged = GraphEditReadResultV3Schema.parse({ ...empty, intent: { ...intent,
+        stagedDraft: { ...intent.stagedDraft, presentationOnly: true } } })
+      return staged
+    })
+    vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => {
+      const graph = original.draft.graph
+      return GraphEditReadResultV3Schema.parse({ ...staged, intent: { ...staged.intent!, state: 'saved',
+        saveAttempted: true, result: { workspaceId: graph.workspaceId, workflowId: graph.id,
+          revision: original.draft.revision, currentVersionId: original.draft.baseWorkflowVersionId,
+          presentation: staged.intent!.stagedDraft.graph,
+          version: { id: original.draft.baseWorkflowVersionId, workspaceId: graph.workspaceId,
+            workflowId: graph.id, version: graph.version, executionSemanticsVersion: 3,
+            definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
+            agentConfigurationVersionIds: staged.intent!.stagedDraft.agentConfigurationVersionIds,
+            contentHash: `sha256:${'1'.repeat(64)}`, createdAt: now } } } })
+    })
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+      nodes: graph.nodes.map((node) => ({ ...node, name: 'Saved node name' })) })))
+    await requestSave(user)
+    await waitFor(() => expect(nextDraftDirty(edit())).toBe(false))
+    expect(stage.mock.calls[0]![0].expectedNodePresentation).toEqual([{ id: 'node-0', name: 'Node 0' }])
+    expect(edit().graph.nodes[0]?.name).toBe('Saved node name')
+    expect(edit().context.draft.baseWorkflowVersionId).toBe(original.draft.baseWorkflowVersionId)
+    expect(edit().context.draft.publishedRevision).toBe(original.draft.publishedRevision)
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
   it('FE-001 retains a rejected form, unlocks it, and lets the next Discard finish without Stage replay or Stop', async () => {
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({ code: 'REVISION_CONFLICT', message: 'Rejected before insert' }, 409))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance'), user = userEvent.setup()

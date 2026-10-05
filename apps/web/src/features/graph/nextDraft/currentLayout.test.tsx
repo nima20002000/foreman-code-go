@@ -112,7 +112,8 @@ it('reloads stored geometry and current labels with immutable configuration pins
   const { makeCurrentWorkflowFixture } = await import('@graphql/contracts/wave25')
   const f = makeCurrentWorkflowFixture('layout-read', 'sequential')
   const stored = { ...f.version.definition, name: 'Current saved label',
-    nodes: f.version.definition.nodes.map((node) => ({ ...node, position: { x: 81, y: 29 } })) }
+    nodes: f.version.definition.nodes.map((node) => ({ ...node, name: 'Current node name',
+      position: { x: 81, y: 29 } })) }
   const send = vi.fn<typeof fetch>().mockImplementation(async (url) => {
     const path = String(url)
     const value = path.endsWith('/definition') ? { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
@@ -124,6 +125,7 @@ it('reloads stored geometry and current labels with immutable configuration pins
   })
   const base = await createNextDraftApi(new ApiClient({ fetch: send })).layoutBase(f.scope.workspaceId, f.scope.workflowId)
   expect(base.draft.graph.name).toBe('Current saved label')
+  expect(base.draft.graph.nodes[0]?.name).toBe('Current node name')
   expect(nativeNode(base.draft.graph.nodes[0])?.position).toEqual({ x: 81, y: 29 })
   expect(base.expectedAgentConfigurationVersionIds).toEqual(f.version.agentConfigurationVersionIds)
   expect(base.expectedLocationRevision).toBe(5)

@@ -3,7 +3,7 @@ import { LocalWorkflowFormSchema } from './localGraph'
 import { z } from 'zod'
 import { AgentSchema } from '@graphql/contracts'
 import { ManagedAgentSchema } from '@graphql/contracts/management'
-import { GraphDraftV3Schema, GraphEditStageInputV3Schema, WorkflowDefinitionV3Schema, sameExecutableWorkflow, sameWorkflowValue,
+import { GraphDraftV3Schema, GraphEditStageInputV3Schema, WorkflowDefinitionV3Schema, sameAuthoredWorkflow, sameWorkflowValue,
   type GraphEditIntentV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
@@ -146,7 +146,7 @@ function snapshotMatchesSubmission(snapshot: z.infer<typeof SnapshotSchema>, val
   const request = value.request, draft = snapshot.context.draft
   return draft.workspaceId === request.workspaceId && draft.workflowId === request.workflowId && draft.id === request.draftId
     && draft.publishedRevision === request.expectedRevision && draft.baseWorkflowVersionId === request.expectedWorkflowVersionId
-    && sameExecutableWorkflow(snapshot.graph, value.target)
+    && sameAuthoredWorkflow(snapshot.graph, value.target)
     && sameWorkflowValue(snapshot.agentEdits ?? {}, value.agentTarget ?? {})
 }
 /** Capture only tabs whose local form still matches this Stage at reservation time.
@@ -221,6 +221,7 @@ export function isDefinitiveStageRejection(error: unknown): boolean {
   if (error.status === 404) return error.code === 'GRAPH_DRAFT_NOT_FOUND'
   return error.status === 409 && ['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID',
     'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'AGENT_SOURCE_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS',
+    'PRESENTATION_REVISION_CONFLICT', 'PRESENTATION_BASE_REQUIRED',
     'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED'].includes(error.code)
 }
 /** Call only for the exact editStage failure, under the same session/scope lock.

@@ -3,6 +3,7 @@ import { CurrentAgentWorkflowNodeSchema } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
+import { sameExecutableWorkflow } from './meaningfulEdit.js'
 
 /** Metadata-only creation selects current semantics by product policy, never
  * complexity. An explicit retired/unknown tag fails before any command work. */
@@ -26,6 +27,12 @@ export const CurrentWorkflowValidateInputSchema = z.object({
 }).strict()
 export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema.extend({
   commandId: CommandIdSchema,
+  // Compare names independently of immutable execution pins and geometry.
+  expectedNodePresentation: z.array(z.object({
+    id: GraphIdSchema,
+    name: CurrentAgentWorkflowNodeSchema.shape.name,
+    label: CurrentAgentWorkflowNodeSchema.shape.label,
+  }).strict()).optional(),
   // Optional compare-and-swap for presentation-only Save. It never changes the
   // executable revision and cannot accompany a meaningful publication.
   expectedGeometry: z.array(z.object({
@@ -41,10 +48,18 @@ export type CurrentWorkflowValidateInput = z.infer<typeof CurrentWorkflowValidat
 export const CurrentWorkflowSavedSchema = z.object({
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema, revision: ExpectedRevisionSchema,
   currentVersionId: GraphIdSchema, version: WorkflowVersionV3Schema,
+  presentation: WorkflowDefinitionV3Schema.optional(),
   agents: z.array(ManagedAgentSchema).optional(),
 }).strict().superRefine((value, context) => {
   if (value.workspaceId !== value.version.workspaceId || value.workflowId !== value.version.workflowId
     || value.currentVersionId !== value.version.id) context.addIssue({ code: 'custom', message: 'WORKFLOW_SAVED_PIN_MISMATCH' })
+  const presentation = value.presentation
+  if (presentation && (presentation.id !== value.workflowId || presentation.workspaceId !== value.workspaceId
+    || presentation.version !== value.version.version || presentation.createdAt !== value.version.definition.createdAt
+    || !sameExecutableWorkflow({ ...presentation, name: value.version.definition.name,
+      description: value.version.definition.description }, value.version.definition))) {
+    context.addIssue({ code: 'custom', message: 'WORKFLOW_SAVED_PRESENTATION_MISMATCH' })
+  }
 })
 export const CurrentWorkflowSaveResultSchema = z.object({ value: CurrentWorkflowSavedSchema, replayed: z.boolean() }).strict()
 export const CurrentWorkflowReadInputSchema = z.object({
@@ -86,7 +101,8 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
   savedAuthoring: z.literal(true), persistedReadback: z.literal(true),
   runtimeAdmission: z.boolean(), stopAvailable: z.boolean(), meaningfulEdit: z.boolean(),
   editIntents: z.object({ stage: z.literal(true), read: z.literal(true), discard: z.literal(true),
-    publishWhenSettled: z.literal(true), stopUnsettled: z.boolean(), stagedAgents: z.literal(true) }).strict(),
+    publishWhenSettled: z.literal(true), stopUnsettled: z.boolean(), stagedAgents: z.literal(true),
+    presentationOnly: z.literal(true) }).strict(),
   reasons: z.array(z.enum(['NATIVE_START_NOT_READY', 'NATIVE_STOP_CLEANUP_NOT_READY'])).max(2),
   repeatLimits: z.object({ nesting: z.literal(false), arbitraryCycles: z.literal(false),
     minimumOccurrences: z.literal(1), maximumOccurrences: z.literal(2147483647),
@@ -107,7 +123,8 @@ export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.p
   executionSemanticsVersion: 3, repeatOptional: true,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
   savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, stopAvailable: false, meaningfulEdit: false,
-  editIntents: { stage: true, read: true, discard: true, publishWhenSettled: true, stopUnsettled: false, stagedAgents: true },
+  editIntents: { stage: true, read: true, discard: true, publishWhenSettled: true, stopUnsettled: false,
+    stagedAgents: true, presentationOnly: true },
   reasons: ['NATIVE_START_NOT_READY', 'NATIVE_STOP_CLEANUP_NOT_READY'],
   repeatLimits: { nesting: false, arbitraryCycles: false, minimumOccurrences: 1,
     maximumOccurrences: 2147483647, explicitLimitExit: true, executionBudgetAlsoApplies: true },

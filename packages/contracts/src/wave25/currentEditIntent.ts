@@ -7,7 +7,7 @@ import {
   CurrentJournalDiscardInputSchema as GraphEditDiscardInputSchema, CurrentJournalRunStateSchema as GraphEditRunStateSchema,
 } from './currentJournal.js'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSavedSchema } from './currentAuthoring.js'
-import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
+import { sameAuthoredWorkflow, sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 
 /** Full current-v3 payload in the EXISTING private durable edit journal. No
  * selected Run or caller-provided Stop IDs. All graph forms use this one arm. */
@@ -31,6 +31,8 @@ export const CurrentEditDraftSchema = z.object({
   revision: CurrentWorkflowSaveInputSchema.shape.expectedRevision,
   baseWorkflowVersionId: CurrentWorkflowSaveInputSchema.shape.expectedWorkflowVersionId,
   graph: CurrentWorkflowSaveInputSchema.shape.graph,
+  presentationOnly: z.literal(true).optional(),
+  expectedNodePresentation: CurrentWorkflowSaveInputSchema.shape.expectedNodePresentation,
   agentConfigurationVersionIds: CurrentWorkflowSaveInputSchema.shape.expectedAgentConfigurationVersionIds,
   saveCommandId: GraphIdSchema.optional(),
   stagedAgents: CurrentEditSaveInputSchema.shape.stagedAgents,
@@ -53,6 +55,7 @@ export const CurrentEditIntentSchema = z.object({
   if (save.workspaceId !== value.workspaceId || save.workflowId !== value.workflowId
     || save.expectedRevision !== value.expectedRevision || save.expectedWorkflowVersionId !== value.expectedWorkflowVersionId
     || !sameWorkflowValue(save.graph, draft.graph)
+    || !sameWorkflowValue(save.expectedNodePresentation, draft.expectedNodePresentation)
     || !sameWorkflowValue(save.expectedAgentConfigurationVersionIds, draft.agentConfigurationVersionIds)
     || !sameWorkflowValue(save.stagedAgents, draft.stagedAgents)
     || !sameWorkflowValue(save.resultantAgentConfigurationVersionIds, draft.resultantAgentConfigurationVersionIds)
@@ -70,6 +73,9 @@ export const CurrentEditIntentSchema = z.object({
   const updates = draft.stagedAgents ?? []
   if (updates.length && (draft.saveCommandId !== save.commandId || !draft.resultantAgentConfigurationVersionIds)) fail('CURRENT_EDIT_PAYLOAD_CONFLICT')
   const resultant = draft.resultantAgentConfigurationVersionIds ?? draft.agentConfigurationVersionIds
+  if (draft.presentationOnly && (updates.length || value.affected.length || value.stops.length)) {
+    fail('CURRENT_EDIT_PRESENTATION_SCOPE_CONFLICT')
+  }
   if (value.result && updates.length && (value.result.agents?.length !== updates.length
     || new Set(value.result.agents?.map((item) => item.agent.id)).size !== updates.length
     || value.result.agents?.some((item) => {
@@ -92,10 +98,18 @@ export const CurrentEditIntentSchema = z.object({
     ...value.stops.map((stop) => stop.input.commandId)]
   if (new Set(commands).size !== commands.length) fail('CURRENT_EDIT_COMMAND_ID_CONFLICT')
   if ((value.state === 'saved') !== !!value.result || value.state === 'saved' && !value.saveAttempted) fail('CURRENT_EDIT_RESULT_STATE_CONFLICT')
-  if (value.result && (value.result.workspaceId !== value.workspaceId || value.result.workflowId !== value.workflowId
-    || value.result.revision !== value.expectedRevision + 1 || value.result.currentVersionId === value.expectedWorkflowVersionId
-    || !sameExecutableWorkflow(value.result.version.definition, draft.graph)
-    || !sameWorkflowValue(value.result.version.agentConfigurationVersionIds, resultant))) fail('CURRENT_EDIT_SAVED_RESULT_CONFLICT')
+  const result = value.result
+  const savedPinsValid = draft.presentationOnly
+    ? result?.revision === value.expectedRevision && result.currentVersionId === value.expectedWorkflowVersionId
+      && !!result.presentation && sameAuthoredWorkflow(result.presentation, draft.graph)
+    : result?.revision === value.expectedRevision + 1 && result.currentVersionId !== value.expectedWorkflowVersionId
+  const executedGraph = draft.presentationOnly && result
+    ? { ...draft.graph, name: result.version.definition.name, description: result.version.definition.description }
+    : draft.graph
+  if (result && (result.workspaceId !== value.workspaceId || result.workflowId !== value.workflowId
+    || !savedPinsValid
+    || !sameExecutableWorkflow(result.version.definition, executedGraph)
+    || !sameWorkflowValue(result.version.agentConfigurationVersionIds, resultant))) fail('CURRENT_EDIT_SAVED_RESULT_CONFLICT')
 })
 export type CurrentEditIntent = z.infer<typeof CurrentEditIntentSchema>
 export type CurrentEditDraft = z.infer<typeof CurrentEditDraftSchema>
