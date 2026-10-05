@@ -730,7 +730,8 @@ export class AgentChatService {
       return this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id,
         assertCurrent, ...(create ? { create } : {}) })
     }
-    const admitted = row ? await this.control(row.id, admit) : await admit()
+    // The repository locks admission with compaction; settlement can proceed after its commit.
+    const admitted = await admit()
     if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })

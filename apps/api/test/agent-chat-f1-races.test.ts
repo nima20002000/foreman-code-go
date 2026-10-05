@@ -337,4 +337,5 @@ it('queues a Plan task as one new turn when the caller selected steering', async
   await f.idle()
   assert.deepEqual(f.manager.starts, ['A', 'plan-task'])
   assert.equal(f.manager.modes.at(-1), 'plan')
+  assert.equal(f.manager.prompts.at(-1), 'Inspect the repository')
 })

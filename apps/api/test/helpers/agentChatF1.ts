@@ -4,6 +4,7 @@ import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message,
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference, SessionControlState } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference, SessionControlState, SessionMode } from '@foreman-code/contracts'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import type { OperatorActivityChange } from '../../src/modules/conversations/operatorActivity.js'
@@ -41,7 +42,7 @@ interface Receipt {
   request_id: string; turn_sequence: string; intent: AgentChatTurn['intent']; delivery: AgentChatTurn['delivery']
   message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null; input_hash: string
-  payload: { content: string; interruptRequestId?: string; ownerPrincipalId?: string; nativeSubmission?: { kind: string; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } }; result?: ExecutionResult
+  payload: { content: string; sessionMode?: SessionMode; interruptRequestId?: string; ownerPrincipalId?: string; nativeSubmission?: { kind: string; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } }; result?: ExecutionResult
   created_at: Date; updated_at: Date; started_at?: Date | null
 }
 
@@ -103,6 +104,19 @@ export class F1Store {
     if (sql === 'update conversation_session_controls set record=$2::jsonb where conversation_id=$1') {
       const conversationId = String(values[0])
       if (!this.sessionControls.has(conversationId)) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
+    if (sql.startsWith('select record from conversation_session_defaults')) return result()
+    if (sql.startsWith('insert into conversation_session_controls(conversation_id,record)')) {
+      const conversationId = String(values[0])
+      if (this.sessionControls.has(conversationId)) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
+    if (sql === "update conversation_session_controls set record=$2::jsonb where conversation_id=$1 and (record->>'revision')::bigint=$3") {
+      const conversationId = String(values[0])
+      if (this.sessionControls.get(conversationId)?.revision !== Number(values[2])) return result()
       this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
       return result([], 1)
     }
@@ -188,7 +202,11 @@ export class F1Store {
       return result([...this.turns.values()].filter((entry) => entry.intent !== 'steer'
         && ['submitting', 'accepted', 'unknown'].includes(entry.delivery)).slice(0, 1).map(() => ({ '1': 1 })))
     }
-    if (sql.startsWith('select payload')) return result(receipt ? [{ content: receipt.payload.content }] : [])
+    if (sql.startsWith('select payload')) return result(receipt ? [{
+      content: receipt.payload.content,
+      mode: receipt.payload.sessionMode ?? null,
+      owner: receipt.payload.ownerPrincipalId ?? null,
+    }] : [])
     if (sql.startsWith('with open as (')) {
       const deliveries = values[1] as string[]
       const limit = Number(values[2])
@@ -301,6 +319,7 @@ export class F1Native implements NativeHarnessSessionManager {
   readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
   readonly starts: string[] = []
   readonly modes: Array<NativeTurnInput['sessionMode']> = []
+  readonly prompts: string[] = []
   readonly cancels: string[] = []
   readonly steers: NativeSteerInput[] = []
   readonly holds = new Map<string, ReturnType<typeof deferred>>()
@@ -315,9 +334,11 @@ export class F1Native implements NativeHarnessSessionManager {
     const requestId = input.clientCorrelationId.split(':').at(-1)!
     this.starts.push(requestId)
     this.modes.push(input.sessionMode)
+    this.prompts.push(input.prompt)
     this.active = requestId
     const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: `turn-${requestId}`, events: [], pendingInteractions: [] }
     this.histories.set(input.clientCorrelationId, history)
+    await input.onSettingsApplied?.()
     await input.onSubmitted?.(history.nativeTurnId!)
     const hold = this.holds.get(requestId)
     if (hold) {
