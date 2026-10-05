@@ -67,8 +67,7 @@ it.skipIf(process.env.RUN_CLAUDE_NATIVE_PROFILE_TESTS !== '1' || process.platfor
     let qualified = false
     try {
       const observed = await current(currentContext, signal)
-      assert.equal(observed.status, 'available', observed.status === 'unavailable' ? observed.reason : undefined)
-      if (observed.status !== 'available') throw new Error(observed.reason)
+      if (observed.status === 'unavailable') assert.fail(observed.reason)
       const target = { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId,
         installationFingerprint: discovered.launcher.fingerprint }
       const value: HostHarnessOverride = { instanceId, instanceRevision: '1', revision: 1, target,
@@ -79,8 +78,8 @@ it.skipIf(process.env.RUN_CLAUDE_NATIVE_PROFILE_TESTS !== '1' || process.platfor
         assertCurrent: async () => {
           await factories.assertInstallationUnchanged(binding, signal)
           const replacement = await current(currentContext, signal)
-          assert.equal(replacement.status, 'available')
-          if (replacement.status === 'available') assert.deepEqual(replacement.pin, observed.pin)
+          if (replacement.status === 'unavailable') assert.fail(replacement.reason)
+          assert.deepEqual(replacement.pin, observed.pin)
         },
       })
       assert.equal(proof.qualified, true, JSON.stringify(proof.failure))
