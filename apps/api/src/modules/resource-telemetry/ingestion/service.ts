@@ -418,7 +418,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     if (!cached || !('latest' in cached)) return null
     const age = this.ports.clock.monotonicMs() - cached.issuedMonoMs
     const metric = cached.latest.memory
-    if (age < 0 || age >= TELEMETRY_LIMITS.freshMs || metric.state !== 'ok'
+    if (age < 0 || age >= TELEMETRY_LIMITS.freshMs || metric.state !== 'fresh'
       || metric.value?.kind !== 'host-used-estimate') return null
     return metric.value.availableBytes
   }
