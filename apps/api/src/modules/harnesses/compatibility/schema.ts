@@ -174,7 +174,12 @@ function checkOpenCodeResponses(document: ObjectValue): void {
     const schema = jsonSchema(document, object(operation(document, path, 'get').responses)['200'])
     supportsType(document, schema, 'array')
     const item = resolve(document, schema).items
-    fields(properties(document, item), names)
+    const itemFields = properties(document, item)
+    fields(itemFields, names)
+    const types: Record<string, string> = { id: 'string', sessionID: 'string', permission: 'string',
+      patterns: 'array', always: 'array', metadata: 'object', name: 'string', directory: 'string',
+      parentID: 'string', info: 'object', parts: 'array' }
+    for (const name of names) supportsType(document, itemFields[name], types[name]!)
     if (path === '/session/{sessionID}/message') {
       commonObjectFields(document, properties(document, item).info, ['id', 'sessionID', 'role'], 'message.info')
     }

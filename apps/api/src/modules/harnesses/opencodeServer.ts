@@ -206,7 +206,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return this.exclusive(async () => {
       await this.ready(combined)
       const [providers, agents] = await Promise.all([this.json('/provider', directory, combined), this.json('/agent', directory, combined)])
-      return { providerVersion: this.providerVersion, ...openCodeOptions(providers, agents) }
+      try {
+        return { providerVersion: this.providerVersion, ...openCodeOptions(providers, agents) }
+      } catch {
+        throw new HarnessExecutionError('OPENCODE_CONTRACT_UNSUPPORTED',
+          `OpenCode ${this.providerVersion} does not satisfy the /provider and /agent model catalog response contract.`)
+      }
     })
   }
 

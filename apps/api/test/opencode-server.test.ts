@@ -784,3 +784,15 @@ it('reports the version and missing cleanup route through configuration qualific
       && error.message.includes('OpenCode 2.0.0') && error.message.includes('/question/{requestID}/reject'))
   } finally { await native.dispose() }
 })
+
+it('preserves the installed version and catalog response contract on malformed provider metadata', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  server.providers = { unsupportedCatalog: [] }
+  const native = manager(server)
+  try {
+    await assert.rejects(native.discoverOptions('/workspace/project'), error => error instanceof Error
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('model catalog response contract'))
+  } finally { await native.dispose() }
+})
