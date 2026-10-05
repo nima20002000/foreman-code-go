@@ -49,6 +49,7 @@ export class QueuedSourcePreparationCleanup {
           expiresAt: new Date(Date.now() + 300000).toISOString() },
         root: state.root, attempt: state.attempt, source: state.root.source, record: state.record,
         physicalClosureConfirmed: false, preparationClosed: true,
+        ...(current.definition.schemaVersion === 2 ? { quotaRequired: true } : {}),
       })
       await sql.query(`insert into source_preparation_reconciliations
         (operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner,queue_ticket_id)

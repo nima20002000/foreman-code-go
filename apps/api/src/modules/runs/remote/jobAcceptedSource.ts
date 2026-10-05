@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { RemoteJobAcceptedSourceReadoutRecord } from '@foreman-code/contracts/remote-job-execution'
-import { JobRuntimeProfileRecordSchema, jobRuntimeProfilePolicy, jobRuntimeProfileLimits }
+import { JobRuntimeProfileRecordSchema, JobVerificationRuntimeMeasurementSchema, jobRuntimeProfilePolicy, jobRuntimeProfileLimits }
   from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from '../../jobs/repository.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../../sources/bindingHash.js'
@@ -65,5 +65,19 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
     !same(policy, spec.policy) || !same(original.selection, root.selection) || !same(original.registration, root.registration) ||
     original.binding.workspaceId !== execution.workspaceId || original.binding.canonicalPath !== binding.canonicalPath || !same(original.binding.filesystem, binding.filesystem) ||
     !Number.isSafeInteger(limits.diskBytes) || limits.diskBytes <= 0 || receipt.verifiedBytes > limits.diskBytes) conflict()
+  if (execution.schemaVersion === 2) {
+    const accepted = execution.acceptedSpec
+    const qualified = (await sql.query<{ measurement: unknown }>(`select measurement
+      from job_runtime_qualification_approvals where id=$1 and qualification_id=$2
+        and profile_id=$3 and profile_revision=$4 and workspace_id=$5 and record->>'status'='complete' for share`,
+    [accepted.profile.approvalId, accepted.profile.qualificationId, profile.id, profile.revision, execution.workspaceId])).rows[0]
+    if (!qualified || profile.schemaVersion !== 2 || !receipt.quota) conflict()
+    const measured = JobVerificationRuntimeMeasurementSchema.parse(qualified.measurement)
+    const slot = measured.fingerprint.quotaPool?.slots.find(value => value.namespace === receipt.quota!.namespace)
+    if (!same(measured.identity, accepted.profile) || !slot || !same(slot, receipt.quota)
+      || !same(measured.fingerprint.root, original)
+      || slot.hardLimitBytes !== accepted.verification.resources.limits.diskBytes
+      || slot.hardInodes !== accepted.verification.resources.mutableInodes) conflict()
+  }
   return { execution, materialization, root, diskQuotaBytes: limits.diskBytes }
 }
