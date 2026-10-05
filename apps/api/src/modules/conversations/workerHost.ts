@@ -86,7 +86,7 @@ export class WorkerConversationHost {
   }
 
   private async allocate(request: Extract<WorkerConversationRpcRequest, { configuration: WorkerConversationConfiguration }>,
-    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<Resident> {
     validateConfiguration(request.binding, request.configuration)
     const id = request.binding.owner.conversationId
     const original = this.residents.get(id)
@@ -243,7 +243,7 @@ export class WorkerConversationHost {
           requestId: request.requestId, clientCorrelationId: request.correlationId,
           onDispatch: async () => {
             await this.authorize(request, connection, this.lifetime.signal)
-            await this.ports.journal.compactProgress(request.binding, { ...reserved.state, dispatchPhase: 'offered' })
+            await this.ports.journal.compactProgress(request.binding, { ...reserved.state, dispatchPhase: 'dispatched' })
             offered = true
           },
           onProgress: async state => { await this.ports.journal.compactProgress(request.binding, state) },
@@ -300,6 +300,7 @@ export class WorkerConversationHost {
       const record = await this.ports.journal.read(request.binding)
       if (record?.closed && isDeepStrictEqual(record.session, request.session)) return { receipt: record }
     }
+    if (!('session' in request)) unavailable('This native operation requires its conversation session.')
     const { resident, record } = await this.resident(request)
     const manager = resident.allocation.manager
     switch (request.method) {

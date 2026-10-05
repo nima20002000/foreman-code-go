@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
-import { SessionPreferencesSchema, pendingSessionControls,
+import { SessionPreferencesSchema,
   type AgentHarness, type CompactionState, type NativeSessionReference, type SessionPreferences } from '@foreman-code/contracts'
 import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeHarnessSessionManager, NativeHistory, NativeInitialTurnInput, NativeSessionStart,
@@ -12,6 +12,7 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeInitialTurnInput
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
 import { WorkerConversationHost, type WorkerConversationHostPorts } from './workerHost.js'
+import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'

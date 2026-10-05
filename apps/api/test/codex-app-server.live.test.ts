@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type PendingNativeInteraction } from '@foreman-code/contracts'
-import type { PendingNativeInteraction } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'

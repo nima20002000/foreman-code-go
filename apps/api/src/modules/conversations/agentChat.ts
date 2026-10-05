@@ -1,7 +1,6 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import type { SessionControlRequest } from '@foreman-code/contracts'
-import { sessionTaskContent } from '@foreman-code/contracts'
 import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'

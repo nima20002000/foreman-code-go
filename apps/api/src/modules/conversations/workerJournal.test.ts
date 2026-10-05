@@ -75,7 +75,7 @@ it('persists compaction reservation/outcome and never dispatches the same reques
   const hash = commandInputHash({ correlationId: 'compact' })
   const reserved = await f.chats.reserveCompact(f.binding, 'compact-request', hash)
   expect(reserved.dispatch).toBe(true)
-  await f.chats.compactProgress(f.binding, { ...reserved.state, status: 'uncertain', dispatchPhase: 'offered' })
+  await f.chats.compactProgress(f.binding, { ...reserved.state, status: 'uncertain', dispatchPhase: 'dispatched' })
   expect((await f.chats.reserveCompact(f.binding, 'compact-request', hash)).dispatch).toBe(false)
   await expect(f.chats.reserveTurn(f.binding, 'task', commandInputHash({ prompt: 'task' }))).rejects.toThrow('pending')
   const completed = { ...reserved.state, status: 'completed' as const, nativeOperationId: 'observed-boundary' }
