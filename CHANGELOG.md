@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-10-05
+
+### Added
+
+- Retain redacted OpenCode qualification transcripts and MCP request and file-response details for diagnosing native failures.
+- Select explicit native acceptance test files through the root runner while preserving isolated test databases and the default lifecycle gate.
+
+### Changed
+
+- Run each OpenCode live qualification check once and require qualification suite revision 5, so another model attempt cannot hide a failed check.
+
+### Fixed
+
+- Include decoded UTF-8 Markdown in authenticated file MCP reads alongside the unchanged pinned byte result, preventing marker corruption during model-side base64 decoding.
+
 ## [0.0.9] - 2026-10-05
 
 ### Added

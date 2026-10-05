@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { describe, expect, it } from 'vitest'
-import { AgentFileReadResultSchema, DEFAULT_FILE_RETENTION_SECONDS } from '@graphql/contracts/files'
+import { AgentFileReadResultSchema, DEFAULT_FILE_RETENTION_SECONDS } from '@foreman-code/contracts/files'
 import { DomainError } from '../src/modules/errors.js'
 import { registerFileToolsMcp } from '../src/modules/files/tools/mcp.js'
 import { fileToolFixture } from './support/fileTools.js'
