@@ -404,7 +404,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
           this.options.managedFileRoot && this.ownedFileRoot
             ? { root: this.options.managedFileRoot, owned: this.ownedFileRoot } : undefined,
           this.conversationStorage && hiddenStorage
-            ? { root: this.conversationStorage.root, owned: this.conversationStorage.owned, hidden: hiddenStorage }
+            ? { root: this.conversationStorage.root, owned: this.conversationStorage.owned,
+              database: this.conversationStorage.database, hidden: hiddenStorage }
             : undefined)
         : undefined
       const launch = this.fileIsolation

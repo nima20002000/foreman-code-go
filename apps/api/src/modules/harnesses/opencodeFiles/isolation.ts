@@ -18,7 +18,7 @@ export class OpenCodeVaultIsolation {
   private verified = false
 
   constructor(readonly root: string, private readonly materializations?: { root: string; owned: string },
-    private readonly storage?: { root: string; owned: string; hidden: string[] }) {}
+    private readonly storage?: { root: string; owned: string; hidden: string[]; database?: string }) {}
 
   async launch(input: { binary: string; args: string[]; workingDirectory: string; environment: NodeJS.ProcessEnv },
     signal: AbortSignal) {
@@ -37,7 +37,8 @@ export class OpenCodeVaultIsolation {
     }
     const ancestors = new Set<string>()
     const protectedRoots = [this.root, ...(this.materializations ? [this.materializations.root] : []),
-      ...(this.storage ? [this.storage.root, ...this.storage.hidden] : [])]
+      ...(this.storage ? [this.storage.root, ...this.storage.hidden,
+        ...(this.storage.database ? [this.storage.database] : [])] : [])]
     for (const protectedRoot of protectedRoots) {
       for (let parent = dirname(protectedRoot); parent !== '/'; parent = dirname(parent)) ancestors.add(parent)
     }
@@ -113,6 +114,7 @@ export class OpenCodeVaultIsolation {
         '--tmpfs', this.storage.root,
         '--bind', this.storage.owned, this.storage.owned,
         '--remount-ro', this.storage.root,
+        ...(this.storage.database ? ['--bind', this.storage.database, this.storage.database] : []),
       ] : []),
       '--', process.execPath, '-e', openCodeIsolationHost, hostInput,
     ] }

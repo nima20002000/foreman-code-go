@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { copyFile, lstat, mkdir, readdir } from 'node:fs/promises'
+import { copyFile, lstat, open, readdir } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,10 +9,12 @@ import { checkFileCondition } from './types.js'
 
 export class OpenCodeConversationStorage {
   readonly owned: string
+  readonly database: string
   private legacyDatabase: string | undefined
 
   constructor(readonly root: string, conversationId: string) {
     this.owned = join(root, digest(['opencode-conversation', conversationId]))
+    this.database = join(this.owned, 'data', 'opencode', 'opencode.db')
   }
 
   async prepare(environment: NodeJS.ProcessEnv): Promise<string[]> {
@@ -20,9 +22,11 @@ export class OpenCodeConversationStorage {
     const originalData = join(environment.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'opencode')
     const originalCache = join(environment.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'opencode')
     const originalState = join(environment.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'opencode')
-    this.legacyDatabase = environment.OPENCODE_DB
-      ? (isAbsolute(environment.OPENCODE_DB) ? environment.OPENCODE_DB : join(originalData, environment.OPENCODE_DB))
-      : join(originalData, 'opencode.db')
+    this.legacyDatabase = join(originalData, 'opencode.db')
+    if (environment.OPENCODE_DB) {
+      this.legacyDatabase = isAbsolute(environment.OPENCODE_DB)
+        ? environment.OPENCODE_DB : join(originalData, environment.OPENCODE_DB)
+    }
     const hidden = [originalData, originalCache, originalState, join(tmpdir(), 'opencode')]
     if (environment.OPENCODE_DB && isAbsolute(environment.OPENCODE_DB)) {
       hidden.push(this.legacyDatabase, `${this.legacyDatabase}-wal`, `${this.legacyDatabase}-shm`)
@@ -32,8 +36,16 @@ export class OpenCodeConversationStorage {
       environment[`XDG_${name}_HOME`] = directory
     }
     environment.TMPDIR = privateDirectory(join(this.owned, 'tmp'))
-    environment.OPENCODE_DB = join(this.owned, 'data', 'opencode', 'opencode.db')
-    await mkdir(dirname(environment.OPENCODE_DB), { recursive: true, mode: 0o700 })
+    environment.OPENCODE_DB = this.database
+    privateDirectory(dirname(this.database))
+    const database = await open(this.database, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600)
+    try {
+      const stat = await database.stat()
+      checkFileCondition(stat.isFile() && stat.nlink === 1, 'FILE_SOURCE_ISOLATION_REQUIRED',
+        'Native storage requires a regular conversation database.')
+    } finally {
+      await database.close()
+    }
     try {
       await copyFile(join(originalData, 'auth.json'), join(dirname(environment.OPENCODE_DB), 'auth.json'),
         constants.COPYFILE_EXCL)
@@ -57,7 +69,7 @@ export class OpenCodeConversationStorage {
 
   /** Copy only the admitted session tree; the native namespace never sees another owner's database. */
   async importSession(sessionId: string, directory: string, signal: AbortSignal): Promise<void> {
-    const destination = new DatabaseSync(join(this.owned, 'data', 'opencode', 'opencode.db'))
+    const destination = new DatabaseSync(this.database)
     try {
       destination.exec('PRAGMA busy_timeout=5000')
       if (destination.prepare('select id from session where id=?').get(sessionId)) return

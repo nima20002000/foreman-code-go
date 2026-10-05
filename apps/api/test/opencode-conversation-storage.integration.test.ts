@@ -57,9 +57,10 @@ it('isolates persisted native media by conversation while retaining imported for
       const assert = require('node:assert/strict')
       const [own, foreign, legacy] = process.argv.slice(1)
       assert(fs.readFileSync(own).length > 0)
+      assert.throws(() => fs.renameSync(own, own + '.replaced'), { code: 'EBUSY' })
       for (const path of [foreign, legacy]) {
         assert.throws(() => fs.readFileSync(path), { code: 'ENOENT' })
-        assert.throws(() => fs.writeFileSync(path, 'tampered'), { code: 'ENOENT' })
+        assert.throws(() => fs.writeFileSync(path, 'tampered'), error => ['ENOENT', 'EROFS'].includes(error.code))
       }
       console.log('isolated-storage-ok')
     `

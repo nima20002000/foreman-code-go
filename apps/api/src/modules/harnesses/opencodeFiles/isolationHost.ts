@@ -45,6 +45,11 @@ if (input.storage) {
   const owner = fs.lstatSync(input.storage.owned)
   check(owner.isDirectory() && owner.dev === input.stored.dev && owner.ino === input.stored.ino)
   check(mounts.some((mount) => mount.path === input.storage.owned && mount.options.includes('rw')))
+  if (input.storage.database) {
+    check(mounts.some((mount) => mount.path === input.storage.database && mount.options.includes('rw')))
+    const database = fs.lstatSync(input.storage.database)
+    check(database.isFile() && !database.isSymbolicLink() && database.nlink === 1)
+  }
   for (const hidden of input.storage.hidden) {
     const mount = mounts.findLast((mount) => mount.path === hidden)
     check(mount && mount.options.includes('ro'))
