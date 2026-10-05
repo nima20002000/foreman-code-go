@@ -82,18 +82,26 @@ export type RunSubagentCommandReceipt = z.infer<typeof RunSubagentCommandReceipt
 export const SUBAGENT_MCP_TOOLS = ['run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1',
   'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1'] as const
 
-/** Native research support is version/mode specific. No app qualification follows from transport types or observed text. */
+/** OpenCode 1.18.31 idle input is covered by the native control qualification and authenticated MCP regression. */
 export function subagentCapabilities(mode: SubagentNativeMode, version: string): SubagentCapabilities {
   const unverified = { support: 'unverified', qualification: 'unverified' } as const
   const observed = { support: 'supported', qualification: 'unverified' } as const
   const codex = mode === 'codex-multi-agent-v2' && version === '0.154.0'
-  const opencode = mode === 'opencode-task' && version === '1.18.33'
+  const opencode = mode === 'opencode-task' && ['1.18.31', '1.18.33'].includes(version)
+  const qualifiedOpenCode = mode === 'opencode-task' && version === '1.18.31'
   // Claude's probe did not preserve exact CLI identity; the app candidate remains behind its authority qualification.
   const observation = codex || opencode ? observed : unverified
+  let sendInput: SubagentCapabilities['sendInput'] = unverified
+  if (mode === 'codex-multi-agent-v2') {
+    sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CODEX_V2_DIRECT_INPUT_UNSUPPORTED' }
+  } else if (mode === 'claude-agent') {
+    sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CLAUDE_DIRECT_INPUT_UNSUPPORTED' }
+  } else if (qualifiedOpenCode) {
+    sendInput = { support: 'supported', qualification: 'passed' }
+  } else if (opencode) {
+    sendInput = observed
+  }
   return { lifecycle: observation, transcript: observation, historyReadback: observation,
-    toolCalls: codex ? observed : unverified, toolResults: codex ? observed : unverified,
-    sendInput: mode === 'codex-multi-agent-v2' ? { ...unverified, support: 'unsupported', reasonCode: 'CODEX_V2_DIRECT_INPUT_UNSUPPORTED' }
-      : mode === 'claude-agent' ? { ...unverified, support: 'unsupported', reasonCode: 'CLAUDE_DIRECT_INPUT_UNSUPPORTED' }
-      : opencode ? observed : unverified,
+    toolCalls: codex ? observed : unverified, toolResults: codex ? observed : unverified, sendInput,
     inputTiming: opencode ? 'idle' : 'none', interrupt: unverified, executionResume: unverified }
 }

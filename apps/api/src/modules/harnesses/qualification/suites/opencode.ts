@@ -1,3 +1,4 @@
+import { qualifyOpenCodeSubagentInput } from './opencodeSubagentInput.js'
 import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -194,6 +195,11 @@ export const opencodeQualificationSuite: QualificationSuite = {
         evidence['text-turnAttempts'] = 1
         await turn('Reply with a short sentence confirming this qualification text turn. Do not call tools.')
         return 'Asynchronous text turn completed.'
+      }],
+      ['subagent-input', async () => {
+        requireCondition(sessionId, 'The qualification parent is unavailable.')
+        evidence.subagentInput = await qualifyOpenCodeSubagentInput(request, sessionId, input.model)
+        return 'Idle child input preserves native identity, agent, model, variant and system instructions.'
       }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })

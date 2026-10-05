@@ -66,9 +66,9 @@ export async function nativeConfigurationFixture() {
     const start = (configuration = harness): WorkflowNativeSessionStart => ({ request: {
       ...request(configuration), workingDirectory: directory, runtimeDirectory: directory,
     } })
-    const allocate = () => {
+    const allocate = (ownerAgentId = 'agent-1') => {
       const allocation = factory.allocate({ harness: 'opencode', role: 'workflow',
-        workingDirectory: directory, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
+        workingDirectory: directory, ownerAgentId, appMcpAccess: 'none' })
       assert(allocation.harness === 'opencode')
       managers.push(allocation.manager)
       return { native: allocation.manager, server: servers.at(-1)! }

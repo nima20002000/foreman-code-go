@@ -13,7 +13,7 @@ describe('native mode and current child action gates', () => {
   })
   it('requires exact live lease, scoped permission and a clear Run-stop fence', () => {
     const qualified = { ...child, nativeMode: 'opencode-task' as const, status: 'waiting' as const,
-      capabilities: { ...subagentCapabilities('opencode-task', '1.18.33'), sendInput: { support: 'supported' as const, qualification: 'passed' as const } } }
+      capabilities: subagentCapabilities('opencode-task', '1.18.31') }
     expect(subagentAvailableActions(qualified, principal, false, { ...lease, nativeTurnId: null }).sendInput).toBe(true)
     expect(subagentAvailableActions(qualified, principal, false, lease).sendInput).toBe(false)
     expect(subagentAvailableActions(qualified, principal, true, lease).sendInput).toBe(false)
