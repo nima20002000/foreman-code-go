@@ -14,6 +14,7 @@ import { sourceSha256 } from '../../src/modules/sources/manifest.js'
 import { WorkspaceBoundLocationService } from '../../src/modules/workspace-roots/service.js'
 import type { Sch11Fixture } from './sch11Fixture.js'
 import type { schedulePlacementFixture } from './schedulePlacementFixture.js'
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 
 /** Real pairing, root attestation, source binding and installed launcher discovery on the test host. */
 export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
@@ -88,8 +89,8 @@ export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
     path: configurationPath, ownerUid: process.getuid!(),
   }, environment: process.env, cwd: f.database.directory, signal: new AbortController().signal })
   if (!inspected.currentTarget) throw new Error('Expected a discovered installed device launcher.')
-  const workflow = await f.workflows.get(placement.writer.principal, f.scope.workspaceId, f.scope.workflowId)
-  const graph = structuredClone(f.fixture.version.definition)
+  const workflow = await f.workflows.current.read(placement.writer.principal, f.scope)
+  const graph = structuredClone(agentWorkflowVersion(workflow.version).definition)
   for (const node of graph.nodes) {
     const configuration = f.fixture.configurations.find(item => item.agentId === node.agentId)!
     const instance = (await placement.harness.service.save(placement.writer.principal, 'http', {
@@ -104,7 +105,7 @@ export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
   await f.workflows.current.save(placement.writer.principal, 'http', { ...f.scope, commandId: randomUUID(),
     executionSemanticsVersion: 3, expectedRevision: workflow.revision,
     expectedWorkflowVersionId: workflow.currentVersionId, expectedLocationRevision: bound.locationRevision,
-    expectedAgentConfigurationVersionIds: f.fixture.version.agentConfigurationVersionIds, graph })
+    expectedAgentConfigurationVersionIds: workflow.version.agentConfigurationVersionIds, graph })
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   return { ...placement, policy, root, workerExecution,
     get sources() { return placement.sources },
