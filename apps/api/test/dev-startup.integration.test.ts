@@ -45,7 +45,10 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     const file = join(directory, 'api.env')
     await writeFile(file, `DATABASE_URL=${connectionString}\nPORT=${address.port}\nHOST=127.0.0.1\nFOREMAN_CODE_BROWSER_ORIGIN=${browserOrigin}\nFOREMAN_CODE_WEB_PORT=${frontendAddress.port}\n`, { mode: 0o600 })
     const environment = resolveProductEnvironment(process.env)
-    for (const key of ['DATABASE_URL', 'PORT', 'HOST', 'FOREMAN_CODE_BROWSER_ORIGIN', 'FOREMAN_CODE_WEB_PORT']) delete environment[key]
+    for (const key of ['DATABASE_URL', 'PORT', 'HOST', 'FOREMAN_CODE_API_ENV_FILE', 'GRAPHQL_API_ENV_FILE',
+      'FOREMAN_CODE_BROWSER_ORIGIN', 'GRAPHQL_BROWSER_ORIGIN', 'FOREMAN_CODE_WEB_PORT', 'GRAPHQL_WEB_PORT']) {
+      delete environment[key]
+    }
     coordinator = spawn('corepack', ['pnpm', 'dev'], { cwd: root,
       env: { ...environment, FOREMAN_CODE_API_ENV_FILE: file }, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''

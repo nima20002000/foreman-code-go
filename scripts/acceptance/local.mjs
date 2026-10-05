@@ -11,7 +11,7 @@ import { BASE, HELP, assertOwned, environment, freePort, options, publicError } 
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const exec = promisify(execFile)
-const service = join(root, 'scripts/acceptance/service.mjs')
+const service = join(root, 'apps/api/scripts/local-acceptance-service.mjs')
 const abort = new AbortController()
 let state, owner, resources, admin, removeRoot, dropDatabase, api, web, input, stage = 'arguments', stopping = false, preserve = false
 let end
