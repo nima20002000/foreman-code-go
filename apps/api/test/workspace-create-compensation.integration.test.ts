@@ -232,6 +232,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
     const children: ChildProcess[] = []
     const gate = join(f.parentPath, 'publication-gate')
     let publisherPid: number | undefined
+    const errors: unknown[] = []
     try {
       await mkdir(gate)
       await writeFile(join(gate, 'mv'), `#!/usr/bin/env node
@@ -297,19 +298,29 @@ publish().catch(error => { console.error(error); process.exitCode = 1 })
       expect(readback.locationValidation.status).toBe('ready')
       expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
         contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
-    } finally {
-      for (const child of children) {
+    } catch (error) {
+      errors.push(error)
+    }
+    for (const child of children) {
+      try {
         if (child.exitCode === null && child.signalCode === null) {
           const exited = once(child, 'exit')
           child.kill('SIGKILL')
           await exited
         }
+      } catch (error) {
+        errors.push(error)
       }
-      if (publisherPid) {
-        try { process.kill(publisherPid, 'SIGKILL') }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
-      }
-      await f.close()
     }
+    if (publisherPid) {
+      try { process.kill(publisherPid, 'SIGKILL') }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') errors.push(error)
+      }
+    }
+    try { await f.close() }
+    catch (error) { errors.push(error) }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Workspace publication test and cleanup failed.')
   }, 30_000)
 })
