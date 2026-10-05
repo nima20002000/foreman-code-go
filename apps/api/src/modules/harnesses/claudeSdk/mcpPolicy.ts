@@ -1,6 +1,7 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { HarnessExecutionError } from '../errors.js'
+import { appMcpServerName } from '../appMcpLauncher.js'
 
 export interface ClaudeMcpToolManifest {
   serverName: string
@@ -15,14 +16,15 @@ export async function acceptedClaudeAppTools(input: {
   token: string | undefined
   signal?: AbortSignal
 }): Promise<ClaudeMcpToolManifest[]> {
-  const accepted = input.configuration.mcpServers.graphql
-  const supplied = input.servers.graphql as { type?: string; url?: string; headers?: Record<string, unknown> } | undefined
+  const serverName = appMcpServerName(input.configuration.mcpServers)
+  const accepted = input.configuration.mcpServers[serverName]
+  const supplied = input.servers[serverName] as { type?: string; url?: string; headers?: Record<string, unknown> } | undefined
   if (!accepted || !supplied) return []
   if (!input.token || supplied.type !== 'http' || supplied.url !== accepted.url
     || supplied.headers?.Authorization !== `Bearer ${input.token}`) {
     throw new HarnessExecutionError('CLAUDE_MCP_MANIFEST_SCOPE_CONFLICT', 'MCP discovery requires the accepted server and owner credential.')
   }
-  const client = new Client({ name: 'graphql-claude-tool-policy', version: '1.0.0' })
+  const client = new Client({ name: 'foreman-code-claude-tool-policy', version: '1.0.0' })
   const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(input.signal ? [input.signal] : [])])
   const transport = new StreamableHTTPClientTransport(new URL(accepted.url), {
     requestInit: { signal, headers: { Authorization: `Bearer ${input.token}` } },
@@ -42,7 +44,7 @@ export async function acceptedClaudeAppTools(input: {
       }
       if (cursor) cursors.add(cursor)
     } while (cursor)
-    return [{ serverName: 'graphql', source: { kind: 'http', url: accepted.url }, tools }]
+    return [{ serverName, source: { kind: 'http', url: accepted.url }, tools }]
   } finally {
     await client.close()
   }

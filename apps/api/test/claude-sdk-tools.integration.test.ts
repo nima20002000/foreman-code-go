@@ -3,7 +3,8 @@ import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -24,8 +25,15 @@ import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
 import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
 
-it.each(['management', 'denied-management', 'files'] as const)(
-  'executes %s through the official SDK and production composition with persisted readback', async scenario => {
+it.each([
+  { scenario: 'management', serverName: 'graphql' },
+  { scenario: 'denied-management', serverName: 'graphql' },
+  { scenario: 'files', serverName: 'graphql-files' },
+  { scenario: 'management', serverName: 'foreman-code' },
+  { scenario: 'denied-management', serverName: 'foreman-code' },
+] as const)(
+  'executes $scenario on $serverName through the official SDK and production composition with persisted readback',
+  async ({ scenario, serverName }) => {
     const vault = await privateFixtureDirectory('claude-sdk-files-')
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
@@ -55,11 +63,11 @@ it.each(['management', 'denied-management', 'files'] as const)(
       })
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       const endpoint = `${address}/mcp`
-      const tool = scenario === 'files' ? 'mcp__graphql-files__files.read' : 'mcp__graphql__workspace_create'
+      const tool = scenario === 'files' ? 'mcp__graphql-files__files.read' : `mcp__${serverName}__workspace_create`
       const harness: ClaudeHarnessConfiguration = { harness: 'claude', model: 'recorded-model', authMode: 'subscription',
         configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'read-only', tools: [tool],
         permissionRules: [{ tool, effect: 'ask' }], instructions: '',
-        mcpServers: scenario === 'files' ? {} : { graphql: { type: 'http', url: endpoint } } }
+        mcpServers: scenario === 'files' ? {} : { [serverName]: { type: 'http', url: endpoint } } }
       const mainId = randomUUID()
       const selection = { instanceId: randomUUID(), instanceRevision: 'profile-1', target: {
         hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
@@ -85,7 +93,7 @@ it.each(['management', 'denied-management', 'files'] as const)(
         arguments_ = { fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId }
       }
       const transport = claudeSdkToolTransport(directory, () => [{ name: scenario === 'files' ? 'files.read' : 'workspace_create',
-        arguments: arguments_, server: scenario === 'files' ? 'graphql-files' : 'graphql', source: scenario === 'files' ? 'sdk' : 'dynamic' }])
+        arguments: arguments_, server: serverName, source: scenario === 'files' ? 'sdk' : 'dynamic' }])
       const start = { kind: 'operator' as const, correlationId: `operator:${conversation.id}:${requestId}`, configuration,
         workingDirectory: directory, environment: { agentId: configuration.operatorId, variables: {} } }
       const f = productionClaudeFixture('operator', undefined, endpoint, scenario === 'files' ? productionFileTools(app) : undefined,
@@ -93,12 +101,17 @@ it.each(['management', 'denied-management', 'files'] as const)(
       const nativeAuthority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test' }),
         directory, endpoint, manager => f.factories.inspector(manager), async (manager, configuration, environment, signal) => {
           expect(manager).toBe(f.manager)
-          const scoped = { ...start, configuration, environment }
-          const token = environment.variables.GRAPHQL_MCP_TOKEN!
+          const token = readProductEnvironment(environment.variables, 'MCP_TOKEN')!
+          const variables = { ...environment.variables }
+          if (serverName === 'foreman-code') {
+            variables.FOREMAN_CODE_MCP_TOKEN = token
+            delete variables.GRAPHQL_MCP_TOKEN
+          }
+          const scoped = { ...start, configuration, environment: { ...environment, variables } }
           const delegate = await access.authenticate(token)
           expect(delegate.id).not.toBe(owner.principal.id)
           expect(delegate.grants.flatMap(grant => grant.actions)).not.toContain('operator_chat:write')
-          await f.manager.refreshInspectionCredentials(scoped, { graphql: { type: 'http', url: endpoint,
+          await f.manager.refreshInspectionCredentials(scoped, { [serverName]: { type: 'http', url: endpoint,
             headers: { Authorization: `Bearer ${token}` } } }, signal)
         })
       const chat: OperatorChatService = new OperatorChatService(repository, operators, () => f.manager, directory, {

@@ -51,7 +51,8 @@ function deferred<T>() {
 async function drain<T>(input: AsyncIterable<T>) { const values: T[] = []; for await (const value of input) values.push(value); return values }
 
 describe('Claude native session manager admission', () => {
-  it.each(['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD'])(
+  it.each(['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD',
+    'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'])(
     'rejects scoped %s before SDK inspection or resume', async key => {
       const selected = { ...start, environment: { agentId: 'operator', variables: { [key]: 'test-only-credential' } } }
       for (const operation of ['inspection', 'resume']) {

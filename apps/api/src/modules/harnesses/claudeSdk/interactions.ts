@@ -6,6 +6,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
 import type { ClaudeMcpToolManifest } from './mcpPolicy.js'
 import { HarnessExecutionError } from '../errors.js'
+import { appMcpServerName } from '../appMcpLauncher.js'
 import type { ClaudeCallbackJournal, ClaudeCallbackRecord } from './callbackJournal.js'
 
 export interface ClaudeCallbackIdentity {
@@ -78,8 +79,9 @@ export class ClaudeInteractionBridge {
   }
   bindMcpTools(manifests: readonly ClaudeMcpToolManifest[]): void {
     if (this.controller.signal.aborted) throw new HarnessExecutionError('CLAUDE_CALLBACK_CLOSED', 'The callback owner is closed.')
+    const serverName = appMcpServerName(this.configuration.mcpServers)
     if (manifests.some(manifest => manifest.source.kind === 'http'
-      ? manifest.serverName !== 'graphql' || this.configuration.mcpServers.graphql?.url !== manifest.source.url
+      ? manifest.serverName !== serverName || this.configuration.mcpServers[serverName]?.url !== manifest.source.url
       : manifest.serverName !== manifest.source.name)) {
       throw new HarnessExecutionError('CLAUDE_MCP_MANIFEST_SCOPE_CONFLICT', 'The tool manifest differs from the accepted MCP server.')
     }

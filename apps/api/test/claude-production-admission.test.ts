@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import { productionClaudeFixture, managementEndpoint, deferred } from './support/claudeProduction.js'
 
 async function replay(f: ReturnType<typeof productionClaudeFixture>) {
@@ -73,6 +73,7 @@ describe('common admitted production Claude four-surface replay', () => {
     const options = f.sdkQuery.mock.calls[0]![0].options
     expect(options.canUseTool).toBeTypeOf('function'); expect(options.settingSources).toEqual([])
     expect(options.env).not.toHaveProperty('GRAPHQL_MCP_TOKEN')
+    expect(options.env).not.toHaveProperty('FOREMAN_CODE_MCP_TOKEN')
     if (surface === 'agent' || surface === 'selected-run') expect(options.mcpServers).not.toHaveProperty('graphql')
     await f.manager.dispose?.()
   })
@@ -88,9 +89,10 @@ describe('common admitted production Claude four-surface replay', () => {
     for (const owner of owners.slice(1)) expect(await owner.manager.capabilities()).toMatchObject({ provider: 'claude', persistentSessions: true })
     await Promise.all(owners.slice(1).map(owner => owner.manager.dispose?.()))
   })
-  it('rejects a workflow credential copied into Agent chat before opening the SDK query', async () => {
+  it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])(
+    'rejects a workflow %s credential copied into Agent chat before opening the SDK query', async tokenName => {
     const f = productionClaudeFixture('agent')
-    const iterator = f.manager.startInitialTurn({ ...f.start, environment: { agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: 'copied-token' } } }, {
+    const iterator = f.manager.startInitialTurn({ ...f.start, environment: { agentId: 'agent', variables: { [tokenName]: 'copied-token' } } }, {
       prompt: 'Recorded input', clientCorrelationId: 'agent:request-1', onSessionObserved: async () => {},
     })[Symbol.asyncIterator]()
     await expect(iterator.next()).rejects.toThrow('cannot inherit')

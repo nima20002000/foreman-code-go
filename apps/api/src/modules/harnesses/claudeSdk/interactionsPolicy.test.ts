@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity } from './interactions.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'

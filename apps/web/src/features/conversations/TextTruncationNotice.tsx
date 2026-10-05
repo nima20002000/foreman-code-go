@@ -1,4 +1,4 @@
-import type { Message } from '@graphql/contracts'
+import type { Message } from '@foreman-code/contracts'
 
 export function TextTruncationNotice({ truncation }: { truncation?: Message['truncation'] }) {
   if (!truncation?.truncated) return null

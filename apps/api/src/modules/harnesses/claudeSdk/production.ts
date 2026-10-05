@@ -6,6 +6,7 @@ import type pg from 'pg'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../appMcpLauncher.js'
 import { DomainError } from '../../errors.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
@@ -193,7 +194,7 @@ export function productionClaudeManager(input: {
     refreshingMcp = true
     try {
       policyBridge?.bindMcpTools(fileServer ? [fileServer.manifest] : [])
-      if (input.appMcpAccess === 'none' && servers.graphql) {
+      if (input.appMcpAccess === 'none' && Object.keys(servers).some(isSupportedAppMcpServerName)) {
         throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This Claude owner cannot receive management MCP tools.', 403)
       }
       if (fileServer && servers['graphql-files'] !== undefined && servers['graphql-files'] !== fileServer.server) {
@@ -202,7 +203,8 @@ export function productionClaudeManager(input: {
       const acceptedServers = { ...servers, ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }
       const snapshot = await refresh(start, acceptedServers, signal)
       const manifests = input.appMcpAccess === 'none' ? [] : await acceptedClaudeAppTools({
-        configuration: input.configuration, servers: acceptedServers, token: start.environment?.variables.GRAPHQL_MCP_TOKEN,
+        configuration: input.configuration, servers: acceptedServers,
+        token: readProductEnvironment(start.environment?.variables ?? {}, 'MCP_TOKEN'),
         ...(signal ? { signal } : {}),
       })
       policyBridge!.bindMcpTools([...manifests, ...(fileServer ? [fileServer.manifest] : [])])
