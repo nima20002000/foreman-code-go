@@ -1,3 +1,5 @@
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
+import { verifyJobQuotaOwnership } from '../../jobs/quotaOwnership.js'
 import { join } from 'node:path'
 import { isDeepStrictEqual as same } from 'node:util'
 import type { JobSourcePort } from '../../jobs/executor.js'
@@ -39,6 +41,15 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
         || !same(input.currentBinding(), binding) || !same(await input.approvedRoots(), roots)
         || !same(refreshed.execution.acceptedSpec, accepted.execution.acceptedSpec)) throw new Error('Original Job source authority changed')
       signal.throwIfAborted()
+    }
+    if (spec.schemaVersion === 2) {
+      const qualified = await input.journal.qualifiedJobRuntime(accepted.execution)
+      const fingerprint = qualified.candidate.fingerprint
+      if (fingerprint.schemaVersion !== 3 || !fingerprint.quotaPool || !receipt.quota) {
+        throw new Error('Original per-Job quota ownership is missing.')
+      }
+      await verifyJobQuotaOwnership({ pool: fingerprint.quotaPool, binding: receipt.binding,
+        slot: receipt.quota, directory: sourceMaterializationParent(receipt), signal })
     }
     const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId,
       keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }

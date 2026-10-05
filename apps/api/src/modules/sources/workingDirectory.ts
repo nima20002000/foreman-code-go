@@ -1,3 +1,4 @@
+import { sourceMaterializationParent, sourceMaterializationComponents } from '@foreman-code/contracts/source-materialization'
 import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -55,12 +56,12 @@ export async function verifyMaterializedWorkingDirectory(record: SourceMateriali
   const receipt = record.receipt
   const materializer = new PrivateSourceMaterializer(null, authorize)
   if (capture) { await assertSourceNativeSession(record, capture); await authorize(); await assertSourceNativeSession(record, capture) }
-  const canonicalProjectRoot = capture ? join(receipt.binding.canonicalPath, receipt.materializationId, 'tree')
+  const canonicalProjectRoot = capture ? join(sourceMaterializationParent(receipt), 'tree')
     : await materializer.resolve(receipt, { binding: receipt.binding, attempt: { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision } })
   let directory = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
     if (!isDeepStrictEqual(await identity(directory), receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Approved source root changed.')
-    for (const component of [receipt.materializationId, 'tree']) {
+    for (const component of [...sourceMaterializationComponents(receipt), 'tree']) {
       const child = await openChildDirectory(directory, component)
       await directory.close(); directory = child
     }
@@ -85,9 +86,9 @@ export async function verifyMaterializedWorkingDirectory(record: SourceMateriali
     let current = await openPrivateRoot(receipt.binding.canonicalPath)
     try {
       if (!isDeepStrictEqual(await identity(current), receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Approved source root changed during verification.')
-      for (const [index, component] of [receipt.materializationId, 'tree', ...(relativeCwd ? relativeCwd.split('/') : [])].entries()) {
+      for (const [index, component] of [...sourceMaterializationComponents(receipt), 'tree', ...(relativeCwd ? relativeCwd.split('/') : [])].entries()) {
         const child = await openChildDirectory(current, component); await current.close(); current = child
-        if (index === 1 && !isDeepStrictEqual(await identity(current), receipt.localTreeIdentity))
+        if (index === sourceMaterializationComponents(receipt).length && !isDeepStrictEqual(await identity(current), receipt.localTreeIdentity))
           throw new SourceError('SOURCE_TREE_CHANGED', 'Verified source tree identity changed during verification.')
       }
       await access(anchored(current), accessFlags)

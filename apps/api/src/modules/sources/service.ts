@@ -37,7 +37,7 @@ export interface SourceExecutionHostPort {
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
-  releaseClaim(record: SourceMaterializationRecord): Promise<number>
+  releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number>
   authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
   reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
 }
@@ -365,17 +365,37 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const root = SourceRootRecordSchema.parse(row.record)
     return this.resolveRootBinding(sql, principal, { workspaceId: root.binding.workspaceId, rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision, source: root.source })
   }
-  async confirmClosed(record: SourceMaterializationRecord): Promise<void> {
+  async confirmClosed(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<void> {
     record = SourceMaterializationRecordSchema.parse(record)
+    options?.signal?.throwIfAborted()
     if (!await this.closure.confirmedClosed(record)) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original execution physical closure is not confirmed.', 409)
-    const retainedBytes = await this.executions.releaseClaim(record) + 16 * 1024
+    if (record.receipt.quota) {
+      const binding = record.receipt.binding
+      const retained = (await this.pool.query<{ availability: string }>(
+        'select availability from source_snapshots where workspace_id=$1 and snapshot_id=$2 and manifest_digest=$3',
+        [binding.workspaceId, binding.snapshotId, binding.manifestDigest])).rows[0]
+      const manifest = await this.store.manifest(binding.snapshotId)
+      if (retained?.availability !== 'retained' || manifest.manifestDigest !== binding.manifestDigest) {
+        throw new DomainError('SOURCE_UNAVAILABLE', 'The canonical source must remain retained before Job quota cleanup.', 409)
+      }
+      const signal = options?.signal ?? AbortSignal.timeout(60_000)
+      for (const entry of manifest.entries) await this.store.read(manifest, entry, signal)
+    }
+    const physicalBytes = await this.executions.releaseClaim(record, options)
+    const retainedBytes = physicalBytes + 16 * 1024
+    const quotaReclaimed = Boolean(record.receipt.quota && physicalBytes === 0)
     await this.lifecycle.closed?.(record)
     await this.transaction(async sql => {
       const row = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 for update', [record.receipt.materializationId])).rows[0]
       if (!row || !isDeepStrictEqual(row.record, record)) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Closure does not match the original materialization.', 409)
       await sql.query(`update source_execution_materializations set state='closed' where materialization_id=$1`, [record.receipt.materializationId])
       const reservation = (await sql.query<{ record: SourceReservation }>('select record from source_storage_reservations where reservation_id=$1', [record.reservationId])).rows[0]!.record
-      await this.reservations.retain(sql, reservation, 'retained', retainedBytes)
+      if (record.receipt.quota) {
+        await this.reservations.reclaimed(sql, reservation, async () => quotaReclaimed
+          && await this.closure.confirmedClosed(record))
+      } else {
+        await this.reservations.retain(sql, reservation, 'retained', retainedBytes)
+      }
     })
   }
 }

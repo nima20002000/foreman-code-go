@@ -1,3 +1,5 @@
+import { materializationDirectory } from './materialization.js'
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual } from 'node:util'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -71,7 +73,7 @@ async function buildPrivateSourceRepository(input: {
   let gitDirectory: string
   try {
     if (JSON.stringify(await identity(root)) !== JSON.stringify(receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    const reservation = await openChildDirectory(root, receipt.materializationId)
+    const reservation = await materializationDirectory(root, receipt)
     try {
       const prior = await open(anchored(reservation, 'repository-receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
@@ -87,7 +89,7 @@ async function buildPrivateSourceRepository(input: {
       })
     }
     finally { await reservation.close() }
-    gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    gitDirectory = join(sourceMaterializationParent(receipt), 'repository')
   } finally { await root.close() }
   // Every Git subprocess uses only this new store, qualified system Git, no
   // global/system config, no replace refs, no hooks and no interactive prompts.
@@ -134,7 +136,7 @@ async function buildPrivateSourceRepository(input: {
   await input.materializer.verify(receipt, expected)
   const owner = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
-    const reservation = await openChildDirectory(owner, receipt.materializationId)
+    const reservation = await materializationDirectory(owner, receipt)
     try {
       const repository = await openChildDirectory(reservation, 'repository')
       let configDigest: string
@@ -163,7 +165,7 @@ export async function verifyPrivateSourceRepository(input: {
   const root = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
     if (JSON.stringify(await identity(root)) !== JSON.stringify(receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    const reservation = await openChildDirectory(root, receipt.materializationId)
+    const reservation = await materializationDirectory(root, receipt)
     try {
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       let manifest: SourceManifest
@@ -196,7 +198,7 @@ async function readPrivateRepository(prior: FileHandle, reservation: FileHandle,
           throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository configuration changed.')
       } finally { await config.close() }
     } finally { await repository.close() }
-    const gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    const gitDirectory = join(sourceMaterializationParent(receipt), 'repository')
     const head = () => signal ? qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'], 2 * 1024 * 1024, signal) : qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])
     if (saved.materializationId !== receipt.materializationId || saved.manifestDigest !== manifest.manifestDigest
       || saved.receiptDigest !== sourceSha256(Buffer.from(JSON.stringify(receipt))) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.generatedCommit)
@@ -275,7 +277,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
   const root=await openPrivateRoot(receipt.binding.canonicalPath)
   try {
     if(!isDeepStrictEqual(await identity(root),receipt.binding.filesystem))throw new SourceError('SOURCE_ROOT_CHANGED','Original Job root changed.')
-    const reservation=await openChildDirectory(root,receipt.materializationId)
+    const reservation=await materializationDirectory(root,receipt)
     try {
       try {
         const claim=JSON.parse((await privateFile(reservation,'job-heavy-jobs-claim.json',16384)).toString())
@@ -300,7 +302,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
             git:{directory:original.gitDirectory,filesystem:await identity(git),generatedCommit:original.generatedCommit,sourceCommit:original.sourceCommit,
               repositoryReceiptDigest:sourceSha256(await privateFile(reservation,'repository-receipt.json',16384)),
               configDigest:sourceSha256(await privateFile(git,'config',16384)),indexDigest:sourceSha256(await privateFile(git,'index',4*1024*1024)),mountpoint:await identity(mountpoint)},
-            scheduler:{directory:join(receipt.binding.canonicalPath,receipt.materializationId,'job-heavy-jobs'),filesystem:await identity(scheduler)}})
+            scheduler:{directory:join(sourceMaterializationParent(receipt),'job-heavy-jobs'),filesystem:await identity(scheduler)}})
           await input.reauthorize()
           const bytes=Buffer.from(JSON.stringify(saved)),file=await open(anchored(reservation,schedulerReceipt),constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
           try {await file.writeFile(bytes);await file.sync()} finally {await file.close()}
