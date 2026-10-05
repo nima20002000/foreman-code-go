@@ -9,7 +9,9 @@ import type { DistributedPublicationLink } from '../../files/distributed/publica
 import type { FileQuery } from '../../files/repository.js'
 import { fileScopeIdentity } from '../../files/requests.js'
 import { DomainError } from '../../errors.js'
-import { NativeArtifactOutputSchema, type NativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
+import { NativeArtifactOutputSchema, LocalNativeArtifactOutputSchema, WorkflowNativeArtifactOutputSchema,
+  type LocalNativeArtifactOutput, type WorkflowNativeArtifactOutput, type NativeArtifactOutput,
+  type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
 
 const operation = 'remote.native-artifact.output'
 const conflict = (): never => { throw new DomainError('NATIVE_ARTIFACT_OUTPUT_CONFLICT', 'The original native output slot identifies different canonical facts.', 409) }
@@ -20,16 +22,24 @@ function outputTarget(mainId: string, producer: ArtifactAttempt, outputKey: stri
   outputKey = ArtifactEdgeBindingSchema.shape.outputKey.parse(outputKey)
   return JSON.stringify([mainId, producer.executionId, producer.attemptId, outputKey])
 }
-function validateOutput(mainId: string, record: NativeArtifactOutput): void {
-  const { producer, transferReceipt: receipt, scope } = record, intent = receipt.intent
-  if (intent.mainId !== mainId || intent.executionId !== producer.executionId || intent.attemptId !== producer.attemptId
+function validateOutput(mainId: string, record: WorkflowNativeArtifactOutput): void {
+  const { producer, scope } = record
+  if ('transferReceipt' in record) {
+    const receipt = record.transferReceipt, intent = receipt.intent
+    if (intent.mainId !== mainId || intent.executionId !== producer.executionId || intent.attemptId !== producer.attemptId
     || intent.placementHash !== producer.placementHash || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
-    || receipt.sha256 !== record.pins.sha256 || receipt.byteSize !== record.pins.byteSize
-    || scope.kind !== 'temporary' || scope.chat.kind !== 'agent' || scope.chat.workspaceId !== producer.workspaceId
+    || receipt.sha256 !== record.pins.sha256 || receipt.byteSize !== record.pins.byteSize) conflict()
+  } else {
+    const local = record.localPublication
+    if (local.mainId !== mainId || local.executionId !== producer.executionId || local.attemptId !== producer.attemptId
+      || local.placementHash !== producer.placementHash) conflict()
+  }
+  if (scope.kind !== 'temporary' || scope.chat.kind !== 'agent' || scope.chat.workspaceId !== producer.workspaceId
     || scope.chat.workflowId !== producer.workflowId || scope.chat.runId !== producer.runId || scope.chat.executionId !== producer.executionId) conflict()
 }
 
-export async function assertNativeArtifactOutputLive(query: FileQuery, mainId: string, record: NativeArtifactOutput): Promise<void> {
+export async function assertNativeArtifactOutputLive(query: FileQuery, mainId: string,
+  record: WorkflowNativeArtifactOutput): Promise<void> {
     validateOutput(mainId, record)
     const result = await query.query<{ record: DistributedPublicationLink }>(`select p.record from file_tool_publications p
       join file_revisions r on r.file_id=p.file_id and r.revision_id=p.revision_id
@@ -46,8 +56,10 @@ export async function assertNativeArtifactOutputLive(query: FileQuery, mainId: s
       ...(link.context.nativeMessageId ? { nativeMessageId: link.context.nativeMessageId } : {}), ...(link.context.messageId ? { messageId: link.context.messageId } : {}) }
     if (link.ownerPrincipalId !== record.publication.ownerPrincipalId || link.requestId !== record.publication.requestId
       || link.binding !== record.publication.binding || !same(link.ref, { fileId: record.pins.fileId, revisionId: record.pins.revisionId })
-      || !same(native, record.nativeIdentity) || fileScopeIdentity(link.context.scope) !== fileScopeIdentity(record.scope)
-      || !same(VerifiedTransferReceiptSchema.parse(link.transferReceipt), record.transferReceipt)) conflict()
+      || !same(native, record.nativeIdentity) || fileScopeIdentity(link.context.scope) !== fileScopeIdentity(record.scope)) conflict()
+    if ('transferReceipt' in record) {
+      if (!same(VerifiedTransferReceiptSchema.parse(link.transferReceipt), record.transferReceipt)) conflict()
+    } else if (link.transferReceipt) conflict()
     // Resample after the file row wait; the initial WHERE can predate lock acquisition.
     if ((await query.query(`select file_id from files where file_id=$1 and state='ready' and expires_at>clock_timestamp()`, [record.pins.fileId])).rowCount !== 1) unavailable()
   }
@@ -57,10 +69,15 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
   private readonly mainId: string
   constructor(private readonly pool: pg.Pool, mainId: string) { this.mainId = z.uuid().parse(mainId) }
   private target(producer: ArtifactAttempt, outputKey: string): string { return outputTarget(this.mainId, producer, outputKey) }
-  private validate(record: NativeArtifactOutput): void { validateOutput(this.mainId, record) }
   async bind(raw: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput> {
-    const record = NativeArtifactOutputSchema.parse(raw)
-    this.validate(record)
+    return this.bindOutput(NativeArtifactOutputSchema.parse(raw), authorize)
+  }
+  async bindLocal(raw: LocalNativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<LocalNativeArtifactOutput> {
+    return this.bindOutput(LocalNativeArtifactOutputSchema.parse(raw), authorize)
+  }
+  private async bindOutput<T extends WorkflowNativeArtifactOutput>(record: T,
+    authorize: (query: FileQuery) => Promise<void>): Promise<T> {
+    validateOutput(this.mainId, record)
     const target = this.target(record.producer, record.outputKey), serialized = canonicalGraphJson(record)
     const commandId = createHash('sha256').update(target).digest('hex'), inputHash = createHash('sha256').update(serialized).digest('hex')
     const client = await this.pool.connect()
@@ -75,13 +92,14 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
         where operation=$1 and target_key=$2`, [operation, target])
       const original = stored.rows[0]
       if (stored.rowCount !== 1 || !original || original.principal_id !== record.publication.ownerPrincipalId
-        || original.input_hash !== inputHash || !same(NativeArtifactOutputSchema.parse(original.result), record)) conflict()
+        || original.input_hash !== inputHash || !same(WorkflowNativeArtifactOutputSchema.parse(original.result), record)) conflict()
       // Revalidate after all canonical/receipt row waits, including an idempotent readback.
       await authorize(client)
       await assertNativeArtifactOutputLive(client, this.mainId, record)
       if (inserted.rowCount === 1) await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-        values($1,'device',$2,$3,'succeeded',$4::jsonb)`,
-      [record.publication.ownerPrincipalId, operation, target, JSON.stringify({ commandId: record.commandId })])
+        values($1,$2,$3,$4,'succeeded',$5::jsonb)`,
+      [record.publication.ownerPrincipalId, 'transferReceipt' in record ? 'device' : 'mcp', operation, target,
+        JSON.stringify({ commandId: record.commandId })])
       await client.query('commit')
       return structuredClone(record)
     } catch (error) { await client.query('rollback').catch(() => {}); throw error }
@@ -98,6 +116,18 @@ export async function readNativeArtifactOutput(query: FileQuery, mainId: string,
     [operation, outputTarget(mainId, producer, outputKey)])
   if (!result.rows[0]) return undefined
   const original = NativeArtifactOutputSchema.parse(result.rows[0].result)
+  validateOutput(mainId, original)
+  if (result.rowCount !== 1 || !same(original.producer, producer) || original.outputKey !== outputKey) conflict()
+  return original
+}
+
+export async function readLocalNativeArtifactOutput(query: FileQuery, mainId: string, producer: ArtifactAttempt,
+  outputKey: string): Promise<LocalNativeArtifactOutput | undefined> {
+  const result = await query.query<{ result: unknown }>(
+    'select result from management_command_receipts where operation=$1 and target_key=$2',
+    [operation, outputTarget(mainId, producer, outputKey)])
+  if (!result.rows[0]) return undefined
+  const original = LocalNativeArtifactOutputSchema.parse(result.rows[0].result)
   validateOutput(mainId, original)
   if (result.rowCount !== 1 || !same(original.producer, producer) || original.outputKey !== outputKey) conflict()
   return original

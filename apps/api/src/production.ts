@@ -94,6 +94,13 @@ import { createWorkflowRepositoryServices } from './modules/runs/workflowReposit
 import { createProductionWorkflowArtifactResultSource } from './modules/runs/remote/workflowArtifactResultProduction.js'
 import { WorkflowArtifactResultAdoption } from './modules/runs/remote/workflowArtifactResultAdoption.js'
 import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflowArtifactAcceptance.js'
+import { LocalWorkflowArtifactAuthority, workflowArtifactsAreLocal } from './modules/runs/remote/localWorkflowArtifactAuthority.js'
+import { LocalWorkflowArtifacts } from './modules/runs/remote/localWorkflowArtifacts.js'
+import { createLocalWorkflowNativeOutputs } from './modules/runs/remote/localWorkflowNativeOutputs.js'
+import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
+import { WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
+import { runCommand } from './modules/harnesses/process.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
 import { fileURLToPath } from 'node:url'
@@ -379,12 +386,23 @@ export function buildProductionApp(
   let admitWorkflowFileContext: ReturnType<typeof createProductionWorkflowFileContexts> | undefined
   let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
   let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
+  let localWorkflowArtifacts: LocalWorkflowArtifacts | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
   }, async (sql, evidence, proof) => {
     if (!admitWorkflowFileContext) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original Main file-context composition is unavailable.', 503)
     await admitWorkflowFileContext(sql, evidence, proof)
+    if (await workflowArtifactsAreLocal(sql, proof.scope.runId, proof.ref.nodeId)) {
+      const snapshot = await readAcceptedRepeatRunLocked(sql, proof.scope.runId)
+      const node = snapshot.version.definition.nodes.find(item => item.id === proof.ref.nodeId)
+      if (node && node.kind !== 'job' && node.artifactOutputs) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localWorkflowArtifacts.admitContextLocked(sql, workflowCapture.verify.read(evidence), proof)
+      }
+      return
+    }
     await artifactResultSource?.retainOriginalLocked(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
@@ -392,6 +410,12 @@ export function buildProductionApp(
       const snapshot = await runs.getRepeatSnapshot(run.id, owner)
       const node = snapshot.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
       if (!node || node.kind === 'job' || !node.artifactOutputs) return
+      if (await workflowArtifactsAreLocal(database.pool, execution.runId, execution.workflowNodeId)) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localWorkflowArtifacts.recover(owner, execution)
+        return
+      }
       if (!artifactComposition || !workflowArtifacts) {
         throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original artifact composition is unavailable.', 503)
       }
@@ -399,6 +423,12 @@ export function buildProductionApp(
         outputs: workflowArtifacts.artifacts.outputs })
     },
     async assertWorkflowArtifactOutputsLocked(sql, run, version, execution) {
+      if (await workflowArtifactsAreLocal(sql, execution.runId, execution.workflowNodeId)) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localWorkflowArtifacts.assertOutputsLocked(sql, run, version, execution)
+        return
+      }
       if (!artifactOutputsGate) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact acceptance composition is unavailable.', 503)
       await artifactOutputsGate(sql, run, version, execution)
     },
@@ -648,6 +678,18 @@ export function buildProductionApp(
     const remote = remoteWorkflow!.manager(context, getOwner)
     if (remote) return remote
     const placement = context.acceptedPlacement
+    const nativeOutputs = configuration.harness === 'codex' && context.artifactOutputs && !context.purpose
+      ? createLocalWorkflowNativeOutputs({ executionId: context.executionId, artifacts: () => {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        return localWorkflowArtifacts
+      }, stateDirectory: fileStorageRoot, assertCurrent: async signal => {
+        signal?.throwIfAborted()
+        const owner = getOwner()
+        if (!owner || owner.runId !== context.runId) throw new DomainError('RUN_OWNERSHIP_LOST',
+          'The local workflow no longer owns its native output turn.', 409)
+        owner.assertOwned()
+      }, qualification: { registry: processRegistry, qualify: qualifyCodex, command: runCommand } }) : undefined
     let selector: AcceptedProfileSelector | undefined
     if (placement) {
       if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
@@ -690,7 +732,8 @@ export function buildProductionApp(
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
           ...(context.purpose ? { purpose: context.purpose } : {}) },
-        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId, recovery, appMcpAccess: 'scoped' })
+        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
+        recovery, appMcpAccess: 'scoped', ...(nativeOutputs ? { nativeOutputs } : {}) })
       launchScopes.set(manager, recovery)
       return manager
     }
@@ -701,7 +744,7 @@ export function buildProductionApp(
       configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
         enabled: true, configuration },
       processRecovery: recovery, appMcpAccess: 'scoped',
-      ...(configuration.harness === 'codex' ? { harness: 'codex' as const }
+      ...(configuration.harness === 'codex' ? { harness: 'codex' as const, ...(nativeOutputs ? { nativeOutputs } : {}) }
         : { harness: 'opencode' as const, ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}) }),
     })
     launchScopes.set(manager, recovery)
@@ -817,7 +860,18 @@ export function buildProductionApp(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
-    context => remoteWorkflow!.prepareContext(context),
+    async context => {
+      const prepared = await remoteWorkflow!.prepareContext(context)
+      if (!context.runId || context.purpose) return prepared
+      const row = (await database.pool.query<{ version: unknown; node_id: string }>(
+        `select v.record as version,e.workflow_node_id as node_id from harness_executions e
+         join runs r on r.id=e.run_id join workflow_versions v on v.id=r.workflow_version_id
+         where e.id=$1 and r.id=$2`, [context.executionId, context.runId])).rows[0]
+      if (!row) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The saved native execution is unavailable.', 409)
+      const node = WorkflowVersionV3Schema.parse(row.version).definition.nodes.find(item => item.id === row.node_id)
+      return node && node.kind !== 'job' && node.artifactOutputs
+        ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
+    },
   )
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()
@@ -1316,6 +1370,12 @@ export function buildProductionApp(
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
+      localWorkflowArtifacts = new LocalWorkflowArtifacts(database.pool,
+        new LocalWorkflowArtifactAuthority(machine.installationId, database.pool, locations, artifactPorts.producer), () => {
+          if (!fileStorage) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+            'Local workflow artifact storage is unavailable.', 503)
+          return fileStorage
+        })
       const outputAuthorization = infrastructure?.nativeOutputAuthorization?.(artifactAuthority)
         ?? createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (input, connection, sql) => {
           const binding = deviceRuntime.currentBinding(connection.deviceId)

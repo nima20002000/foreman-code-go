@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
+import type { WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -24,6 +25,7 @@ export interface NativeManagerResolutionContext extends NativeManagerOwnershipCo
   attempt?: number
   /** Exact immutable W08 placement loaded by the existing continuation owner. */
   acceptedPlacement?: AcceptedNodePlacement
+  artifactOutputs?: WorkflowArtifactOutputsV1
 }
 
 export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'released' | 'failed'
@@ -71,6 +73,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         || existing.context.purpose !== context.purpose
         || existing.context.runId !== context.runId || existing.context.attempt !== context.attempt
         || !isDeepStrictEqual(existing.context.acceptedPlacement, context.acceptedPlacement)
+        || !isDeepStrictEqual(existing.context.artifactOutputs, context.artifactOutputs)
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }

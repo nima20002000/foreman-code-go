@@ -21,7 +21,7 @@ const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILE
 export async function qualifyCodexOutputProtection(input: {
   qualification: CodexNativeOutputQualificationInput
   protectedDirectory: string
-  registry: NativeProcessRegistry
+  registry: Pick<NativeProcessRegistry, 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'>
   qualify: typeof qualifyCodex
   command: typeof runCommand
   assertCurrent(signal: AbortSignal): Promise<void>

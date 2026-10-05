@@ -3,12 +3,16 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
+import type pg from 'pg'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { AgentConfigurationVersionSchema, AgentSchema, HarnessExecutionSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+  DEFAULT_CODEX_ADVANCED_CONFIGURATION, ListInteractionsResponseSchema, WorkspaceSchema,
+  type HarnessExecution } from '@foreman-code/contracts'
 import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
+  RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema, ManualRunStartResultSchema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
@@ -30,6 +34,8 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -48,6 +54,10 @@ async function taskPort(): Promise<number> {
 describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
   it.each([
     { name: 'single Codex activation', form: 'single', providers: ['codex'], review: false, approval: false, capLoop: false, attemptFourth: false },
+    { name: 'local Codex artifact through authenticated MCP', form: 'single', providers: ['codex'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true },
+    { name: 'local Codex artifact recovery before adoption', form: 'single', providers: ['codex'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true, restartOnArtifacts: true },
     { name: 'Codex to OpenCode handoff', form: 'sequential', providers: ['codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
     { name: 'Codex conditional final route to OpenCode', form: 'conditional',
       providers: ['codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
@@ -75,6 +85,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
     const restartOnApproval = 'restartOnApproval' in scenario && scenario.restartOnApproval
     const noRoute = 'noRoute' in scenario && scenario.noRoute
     const finalAccepted = 'finalAccepted' in scenario && scenario.finalAccepted
+    const artifacts = 'artifacts' in scenario && scenario.artifacts
+    const restartOnArtifacts = 'restartOnArtifacts' in scenario && scenario.restartOnArtifacts
     await nim2691TaskDatabase(async (pool, directory, suppliedUrl) => {
       const projectPath = join(directory, 'workspaces')
       const runtimeRoot = join(directory, 'runtime')
@@ -110,7 +122,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
         HARNESS_WORKSPACE_ROOT: runtimeRoot, DATABASE_QUERY_TIMEOUT_MS: '10000' }),
-        workspaceStorageRoot: projectPath }
+        workspaceStorageRoot: projectPath, ...(artifacts ? { fileStorageRoot: join(directory, 'files') } : {}) }
       const database = createDatabase(config.database)
       const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
       let app: ReturnType<typeof buildProductionApp>['app'] | undefined
@@ -155,6 +167,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             throw error
           }
         })
+      const mcpClients: Client[] = []
+      let artifactBoundary: pg.PoolClient | undefined
       try {
         await database.migrate()
         await checkpoints.setup()
@@ -185,6 +199,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           }
         }
         app = production.app
+        if (artifacts) production.registerFileStorage()
         await production.initialize()
         expect((await settings.getHarnessDefaults()).claude?.model).toBe('claude-haiku-4-5-20251001')
         await app.listen({ host: config.host, port: config.port })
@@ -209,6 +224,15 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               : 'Follow the Foreman Code work-handoff output contract. Do not use tools.'
             : 'Summarize only the received work. Follow the Foreman Code work-handoff output contract.' },
         }))
+        if (artifacts) {
+          const original = configurations[0]!
+          configurations[0] = AgentConfigurationVersionSchema.parse({ ...original,
+            harness: { ...original.harness, sandbox: 'workspace-write',
+              advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, workspaceWrite: { networkAccess: false,
+                excludeTmpdirEnvVar: true, excludeSlashTmp: true } } },
+            prompt: { system: 'Produce the requested report using only the four declared files_native_output tools. Do not write files with shell tools. Follow the GraphQL artifact and work-handoff result contracts.' },
+          })
+        }
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
         const canonicalPath = await realpath(projectPath), details = await stat(projectPath)
         await pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
@@ -298,6 +322,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           edges: capEdges ?? fixture.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
           handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: scenario.form === 'parallel' && !scenario.capLoop ? 2 : 1,
             maxNodeExecutions: scenario.capLoop ? 12 : configurations.length } }
+        if (artifacts) {
+          const node = graph.nodes[0]!
+          node.artifactOutputs = { version: 1, outputKeys: ['report'] }
+          node.initialPrompt = 'Produce one report.md text/markdown artifact containing exactly LOCAL_ARTIFACT_REPORT\\n. Create it with files_native_output_create, append base64 TE9DQUxfQVJUSUZBQ1RfUkVQT1JUCg== at offset 0, seal, and publish. Use distinct command IDs. Return routing.kind finish, data.latestDeliverable "local report", data.remainingFindings [], and the report output key with the publication commandId in artifactOutputs. Do not invent a publication or use other tools.'
+        }
         const saveInput = CurrentWorkflowSaveInputSchema.parse({ workspaceId: workspace.id,
           workflowId: managed.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
           expectedRevision: managed.revision, expectedWorkflowVersionId: null,
@@ -308,20 +337,76 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           payload: saveInput })
         expect(savedResponse.statusCode, savedResponse.body).toBe(200)
         const saved = CurrentWorkflowSaveResultSchema.parse(savedResponse.json())
-        const started = await app.inject({ method: 'POST', headers,
-          url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/runs`,
-          payload: { workspaceId: workspace.id, workflowId: managed.workflow.id,
+        const startInput = { workspaceId: workspace.id, workflowId: managed.workflow.id,
             workflowVersionId: saved.value.version.id, executionSemanticsVersion: 3,
             commandId: randomUUID(), expectedWorkflowRevision: saved.value.revision,
             expectedAgentConfigurationVersionIds: saved.value.version.agentConfigurationVersionIds,
-            expectedLocationRevision: 1, input: { task: 'Say hello once.' } } })
-        expect(started.statusCode, started.body).toBe(202)
-        const runId = started.json().run.id as string
+            expectedLocationRevision: 1, input: { task: 'Say hello once.' } }
+        let artifactCut: HarnessExecution | undefined
+        let runId: string
+        if (artifacts) {
+          const connect = async (token: string) => {
+            const client = new Client({ name: 'local-artifact-acceptance', version: '1.0.0' })
+            mcpClients.push(client)
+            await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),
+              { authProvider: { token: async () => token } }))
+            return client
+          }
+          const reader = await access.issue({ name: 'Artifact denied reader', audience: 'operator',
+            expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{
+              actions: ['runs:read', 'workflows:read'], scope: { workspaceIds: [workspace.id] },
+            }] })
+          const denied = await connect(reader.token)
+          expect((await denied.callTool({ name: 'run_start', arguments: startInput })).isError).toBe(true)
+          expect((await pool.query('select 1 from runs where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
+          const client = await connect(writer.token)
+          const launched = await client.callTool({ name: 'run_start', arguments: startInput })
+          expect(launched.isError, JSON.stringify(launched)).not.toBe(true)
+          runId = ManualRunStartResultSchema.parse(launched.structuredContent).run.id
+        } else {
+          const started = await app.inject({ method: 'POST', headers,
+            url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/runs`, payload: startInput })
+          expect(started.statusCode, started.body).toBe(202)
+          runId = started.json().run.id as string
+        }
+        if (restartOnArtifacts) {
+          artifactBoundary = await pool.connect()
+          await artifactBoundary.query('begin')
+          // Publication uses the real file ledger. Only output binding's INSERT
+          // waits here, then rolls back under its production lock timeout.
+          await artifactBoundary.query('lock table management_command_receipts in share mode')
+        }
         observedRunId = runId
         const approved = new Set<string>()
         let restarted = false
+        let approvalNativeLaunch: ReturnType<NativeProcessRegistry['snapshot']>['launches'][number] | undefined
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
+          if (restartOnArtifacts && !restarted) {
+            const terminal = (await pool.query<{ execution: unknown; closed: boolean; published: boolean }>(
+              `select e.record as execution,
+                exists(select 1 from execution_native_closures c where c.execution_id=e.id and c.closed_at is not null) as closed,
+                exists(select 1 from file_tool_publications p join files f on f.file_id=p.file_id
+                  where f.execution_id=e.id and f.state='ready') as published
+               from harness_executions e where e.run_id=$1 and e.record->>'state'='completed'`, [runId])).rows[0]
+            if (terminal?.closed && terminal.published) {
+              artifactCut = HarnessExecutionSchema.parse(terminal.execution)
+              expect((await pool.query(`select 1 from management_command_receipts
+                where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`,
+              [runId])).rowCount).toBe(0)
+              await production.shutdown()
+              await artifactBoundary!.query('rollback')
+              artifactBoundary!.release()
+              artifactBoundary = undefined
+              production = buildProductionApp(config, database, checkpoints, false)
+              production.registerFileStorage()
+              app = production.app
+              await production.initialize()
+              await app.listen({ host: config.host, port: config.port })
+              await production.reconcile((error) => { throw error })
+              restarted = true
+            }
+          }
           if (scenario.approval) {
             const pendingResponse: { statusCode: number; body: string; json(): unknown } = await app.inject({ method: 'GET',
               url: `/api/user/interactions?workspaceId=${encodeURIComponent(workspace.id)}&workflowId=${encodeURIComponent(managed.workflow.id)}&runId=${encodeURIComponent(runId)}&status=pending&limit=20`,
@@ -337,12 +422,25 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 await new Promise((resolve) => setTimeout(resolve, 50))
                 continue
               }
+              const registry = new NativeProcessRegistry(join(runtimeRoot, 'native-process-registry'))
+              const ownedLaunches = registry.snapshot().launches.filter(launch =>
+                launch.owner === `execution:${pending[0]!.executionId}` && launch.lifecycle === 'active')
+              expect(ownedLaunches).toHaveLength(1)
+              approvalNativeLaunch = ownedLaunches[0]!
+              expect(approvalNativeLaunch.guardian).toBeDefined()
+              expect(approvalNativeLaunch.provider).toBeDefined()
               await production.shutdown()
               production = buildProductionApp(config, database, checkpoints, false)
               app = production.app
               await production.initialize()
               await app.listen({ host: config.host, port: config.port })
               await production.reconcile((error) => { throw error })
+              const recoveredLaunches = registry.snapshot().launches.filter(launch =>
+                launch.owner === approvalNativeLaunch!.owner && launch.lifecycle === 'active')
+              expect(recoveredLaunches).toHaveLength(1)
+              expect(recoveredLaunches[0]).toMatchObject({ launchId: approvalNativeLaunch.launchId,
+                bootId: approvalNativeLaunch.bootId, guardian: approvalNativeLaunch.guardian,
+                provider: approvalNativeLaunch.provider })
               restarted = true
               continue
             }
@@ -392,6 +490,33 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
+        if (artifacts) {
+          if (restartOnArtifacts) expect(restarted).toBe(true)
+          const records = (await pool.query<{ result: unknown }>(`select result from management_command_receipts
+            where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`, [runId])).rows
+          expect(records).toHaveLength(1)
+          const output = LocalNativeArtifactOutputSchema.parse(records[0]!.result)
+          expect(output.outputKey).toBe('report')
+          expect((await pool.query('select 1 from execution_dispatch_intents where run_id=$1', [runId])).rowCount).toBe(0)
+          if (artifactCut) {
+            expect(output.producer.executionId).toBe(artifactCut.id)
+            expect(output.nativeIdentity.nativeSessionId).toBe(artifactCut.nativeSessionId)
+            expect((await pool.query<{ record: unknown }>('select record from harness_executions where id=$1',
+              [artifactCut.id])).rows[0]!.record).toEqual(artifactCut)
+          }
+          const download = await app.inject({ method: 'GET', headers,
+            url: `/api/workspaces/${workspace.id}/agent-chat/conversations/${output.scope.chat.conversationId}/files/${output.pins.fileId}/revisions/${output.pins.revisionId}/content` })
+          expect(download.statusCode, download.body).toBe(200)
+          expect(download.body).toBe('LOCAL_ARTIFACT_REPORT\n')
+          const reader = new Client({ name: 'artifact-readback', version: '1.0.0' })
+          mcpClients.push(reader)
+          await reader.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),
+            { authProvider: { token: async () => writer.token } }))
+          const readback = await reader.callTool({ name: 'run_get', arguments: { workspaceId: workspace.id, runId } })
+          expect(readback.isError, JSON.stringify(readback)).not.toBe(true)
+          expect(readback.structuredContent).toMatchObject({ run: { id: runId, outcome: 'succeeded' },
+            executions: [expect.objectContaining({ id: output.producer.executionId, state: 'completed' })] })
+        }
         if (noRoute) {
           expect(runError?.code).toBeNull()
           expect(activityKinds).toContain('work_needs_direction')
@@ -622,6 +747,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         executionObserver.mockRestore()
         sessionObserver.mockRestore()
         cancellationObserver.mockRestore()
+        if (artifactBoundary) {
+          try { await artifactBoundary.query('rollback') } finally { artifactBoundary.release() }
+        }
+        await Promise.allSettled(mcpClients.map(client => client.close()))
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
         await rm(projectPath, { recursive: true, force: true })

@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { ArtifactAttemptSchema, ArtifactEdgeBindingSchema, type ArtifactAttempt, type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
-import { AgentFilePublishInputSchema, FileScopeSchema } from '@foreman-code/contracts/files'
+import { AgentFilePublishInputSchema, FileScopeSchema, TemporaryFileScopeSchema } from '@foreman-code/contracts/files'
 import { VerifiedTransferReceiptSchema } from '@foreman-code/contracts/byte-transfer'
 import type { AcceptedArtifactPublication, ArtifactPublicationAuthority } from '../../files/distributed/publication.js'
 import type { CanonicalNativeArtifactResults, CanonicalNativeArtifactResult } from '../../files/distributed/nativeResults.js'
@@ -19,6 +19,14 @@ export const NativeArtifactOutputSchema = z.object({
   scope: FileScopeSchema, transferReceipt: VerifiedTransferReceiptSchema,
 }).strict()
 export type NativeArtifactOutput = z.infer<typeof NativeArtifactOutputSchema>
+export const LocalNativeArtifactOutputSchema = NativeArtifactOutputSchema.omit({ transferReceipt: true }).extend({
+  scope: TemporaryFileScopeSchema,
+  localPublication: z.object({ mainId: z.uuid(), executionId: z.string().min(1),
+    attemptId: z.string().min(1), placementHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+}).strict()
+export type LocalNativeArtifactOutput = z.infer<typeof LocalNativeArtifactOutputSchema>
+export const WorkflowNativeArtifactOutputSchema = z.union([NativeArtifactOutputSchema, LocalNativeArtifactOutputSchema])
+export type WorkflowNativeArtifactOutput = z.infer<typeof WorkflowNativeArtifactOutputSchema>
 export interface NativeArtifactOutputRepository {
   /** Atomic first binding; a conflicting command, native identity or pin must fail. */
   bind(record: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput>
