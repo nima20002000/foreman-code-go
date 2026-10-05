@@ -233,6 +233,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   else if (message.method === 'turn/start') {
     const prompt = params.input[0].text
     if (prompt === 'reject') { fail(message.id); return }
+    if (prompt === 'late-reject') { setTimeout(() => fail(message.id), 800); return }
     const owner = loadThread(params.threadId)
     if (!owner) { fail(message.id); return }
     const turnNumber = owner.turns.length + 1

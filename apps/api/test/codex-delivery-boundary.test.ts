@@ -123,6 +123,24 @@ describe('Codex creation and prompt write boundaries', () => {
     assert.equal((await f.wire('turn/start')).length, 1)
   })
 
+  it('retains a late prompt rejection only for its correlation without inventing a turn', async () => {
+    const manager = f.makeManager()
+    const session = await manager.createSession(chatInput(f.directory))
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'late-reject', clientCorrelationId: 'rejected' })),
+      boundary('turn_submission', 'unknown'))
+    const result = await until(async () => {
+      try { return (await manager.reconcile(session, 'rejected')).nonSubmission } catch { return undefined }
+    })
+    assert.equal(result.nativeSessionId, session.nativeSessionId)
+    assert.equal(result.clientCorrelationId, 'rejected')
+    assert.equal(result.result.outcome, 'failed')
+    assert.deepEqual((await manager.reconcile(session, 'rejected')).nonSubmission, result)
+    assert.equal((await manager.reconcile(session, 'another')).nonSubmission, undefined)
+    assert.equal((await f.wire('turn/start')).length, 1)
+    await collect(manager.startTurn(session, { prompt: 'retry', clientCorrelationId: 'retry' }))
+    assert.equal((await f.wire('turn/start')).length, 2)
+  })
+
   for (const phase of ['preparation', 'pre-send'] as const) {
     it(`retains the ${phase} failure and failed cleanup without authorizing a retry`, async () => {
       const ports = filePorts()

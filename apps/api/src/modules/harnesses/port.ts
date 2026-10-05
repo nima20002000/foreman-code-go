@@ -97,6 +97,8 @@ export interface NativeResponseIdentity {
 
 export interface NativeHistory {
   nativeSubmission?: NativeMessageSubmission
+  /** Definitive provider rejection of a correlated prompt before a turn exists. */
+  nonSubmission?: { nativeSessionId: string; clientCorrelationId: string; result: ExecutionResult }
   /** Set only when the provider result was matched to this exact request. */
   correlationId?: string
   nativeTurnId?: string

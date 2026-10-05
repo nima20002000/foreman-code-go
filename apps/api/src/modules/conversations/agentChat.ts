@@ -1103,6 +1103,14 @@ export class AgentChatService {
     const row = await this.repository.get(id)
     if (!row || row.active_request_id !== requestId) return
     const history = await runtime.manager.reconcile(runtime.session!, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
+    const rejected = history.nonSubmission
+    if (rejected && rejected.nativeSessionId === row.native_session_id
+      && rejected.clientCorrelationId === correlationId && !row.active_native_turn_id) {
+      if (!await this.repository.recordNonSubmission(id, requestId, 'turn_submission', rejected.result)) return
+      await this.release(id)
+      await this.settle(id, requestId, row.cancel_requested ? { outcome: 'canceled' } : rejected.result)
+      return
+    }
     const receipt = history.nativeSubmission
     const messageIdentity = receipt?.kind === 'message' && receipt.nativeSessionId === runtime.session!.nativeSessionId && receipt.clientCorrelationId === correlationId
     const providerId = history.nativeTurnId ?? (messageIdentity ? receipt.nativeMessageId : undefined)

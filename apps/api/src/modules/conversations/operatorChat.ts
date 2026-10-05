@@ -715,6 +715,14 @@ export class OperatorChatService {
     if (!row || row.active_request_id !== requestId) return
     const correlationId = nativeCorrelation(id, requestId)
     const history: NativeHistory = await runtime.manager.reconcile(runtime.session, correlationId, signal)
+    const rejected = history.nonSubmission
+    if (rejected && rejected.nativeSessionId === row.native_session_id
+      && rejected.clientCorrelationId === correlationId && !row.active_native_turn_id) {
+      if (!await this.repository.recordNonSubmission(id, requestId, 'turn_submission', rejected.result)) return
+      await this.complete(id, requestId, row.cancel_requested ? { outcome: 'canceled' } : rejected.result,
+        undefined, !row.cancel_requested)
+      return
+    }
     const receipt = history.nativeSubmission
     const messageIdentity = receipt?.kind === 'message' && receipt.nativeSessionId === runtime.session.nativeSessionId && receipt.clientCorrelationId === correlationId
     if (runtime.session.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !history.nativeTurnId && !messageIdentity

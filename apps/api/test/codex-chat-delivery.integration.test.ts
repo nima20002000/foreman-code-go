@@ -190,6 +190,70 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     services.agentChat = agentChat
   }
 
+  for (const kind of ['agent', 'operator'] as const) {
+    it(`${kind} persists a late prompt rejection before failed cleanup and settles it after service restart`, async () => {
+      const ports = filePorts()
+      let cleanupFails = true
+      const files: CodexChatFiles = {
+        prepare: async ({ session, signal }) => prepareCodexFileTurn({
+          ownerPrincipalId: 'owner-a', scope: fileScope, nativeSessionId: session.nativeSessionId,
+          admissionId: 'input-admission', executionHostId: 'execution-host-a', projectMode: 'read', allowMutation: false,
+          allowedTools: ['files.list', 'files.read'], expiresAt: new Date(Date.now() + 60_000), attachments: [sourceRef],
+        }, { ...ports.dependencies, files: ports.files, host: { ...ports.host, close: async () => {
+          if (cleanupFails) throw new Error('Host closure is unconfirmed.')
+          await ports.host.close()
+        } } }, signal),
+      }
+      if (kind === 'agent') agentFiles = files
+      else operatorFiles = files
+      const id = kind === 'agent'
+        ? (await sendAgent({ ...request('late', null), content: 'late-reject' })).state.conversation!.id
+        : await createOperator()
+      if (kind === 'operator') await sendOperator(id, 'late', 'late-reject')
+      try {
+        const rejected = await until(async () => {
+          if (kind === 'agent') await agentChat.recover()
+          else await operatorChat.reconcileActive()
+          const row = kind === 'agent' ? await repository.get(id) : await messages.active(id)
+          return row && nativeNonSubmission(row.record, 'late') || undefined
+        })
+        assert.equal(rejected.operation, 'turn_submission')
+        assert.equal(rejected.result.error?.code, 'CODEX_TURN_START_REJECTED')
+        const row = kind === 'agent' ? await repository.get(id) : await messages.active(id)
+        assert.equal(row!.active_request_id, 'late')
+        assert.equal(row!.active_native_turn_id, null)
+        assert.equal((await native.wire('turn/start')).length, 1)
+      } finally { cleanupFails = false }
+      if (kind === 'agent') {
+        await agentChat.shutdown()
+        restartAgentService()
+      } else {
+        await operatorChat.shutdown()
+        operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
+          resolver, native.directory, authority)
+        services.operatorChat = operatorChat
+      }
+      await until(async () => {
+        if (kind === 'agent') {
+          await agentChat.recover()
+          return (await repository.turn(id, 'late'))?.delivery === 'failed' || undefined
+        }
+        await operatorChat.reconcileActive()
+        return (await readOperator(id)).turnState === 'error' || undefined
+      })
+      assert(ports.events.includes('host:close'))
+      assert.equal((await native.wire('turn/start')).length, 1)
+      if (kind === 'agent') {
+        await sendAgent(request('retry', id))
+        await until(async () => (await repository.turn(id, 'retry'))?.delivery === 'completed' || undefined)
+      } else {
+        await sendOperator(id, 'retry')
+        await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
+      }
+      assert.equal((await native.wire('turn/start')).length, 2)
+    })
+  }
+
   it('Operator retires actual OpenCode MCP preflight failure and retries after confirmed cleanup', async () => {
     openCodeServer = new FixtureServer()
     const harness = openCodeConfiguration()

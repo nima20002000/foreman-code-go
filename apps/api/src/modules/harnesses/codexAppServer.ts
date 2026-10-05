@@ -179,6 +179,7 @@ interface Runtime extends TurnSnapshot {
   cancellation: { turnId: string; promise: Promise<boolean> } | undefined
   interactions: Map<string, WaitingRequest>
   resolvedRequests: Map<string, ResolvedRequest>
+  rejectedStarts: Map<string, ExecutionResult>
   events: NativeHarnessEvent[]
   eventSizes: number[]
   eventBytes: number
@@ -896,7 +897,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
         }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
           if (runtime.starting !== starting || runtime.disposed) return
-          if (error) this.restoreRejectedStart(runtime, starting)
+          if (error instanceof CodexRpcError && !error.uncertain) this.rejectStartedTurn(runtime, starting)
+          else if (error) runtime.phase = 'uncertain'
           else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
             runtime.phase = 'uncertain'
             this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
@@ -909,7 +911,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
             if (!rejected) {
               runtime.phase = 'uncertain'
               this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
-            } else this.restoreRejectedStart(runtime, starting)
+            } else this.rejectStartedTurn(runtime, starting)
           }
           throw error
         })
@@ -1244,6 +1246,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     return this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
+      const rejected = runtime.rejectedStarts.get(correlationId)
+      if (rejected) return { ...await this.history(session), correlationId,
+        nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
+          result: structuredClone(rejected) } }
       const restarted = runtime.closed
       if (runtime.closed) await this.restart(runtime, signal)
       const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
@@ -1735,7 +1741,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       effectiveSandbox: prepared.effectiveSandbox ? structuredClone(prepared.effectiveSandbox) : undefined, fileRequests: new Map(),
       activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       finalAnswerId: undefined, lastAgentMessageId: undefined,
-      interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
+      interactions: new Map(), resolvedRequests: new Map(), rejectedStarts: new Map(),
+      events: [], eventSizes: [], eventBytes: 0, sequence: 0,
       seenNotifications: new Set(), wake: new Set(), closed: false, disposed: false,
     }
   }
@@ -1852,6 +1859,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       await candidate.transport.close().catch(() => undefined)
       throw error
     }
+  }
+
+  private rejectStartedTurn(runtime: Runtime, starting: StartingTurn): void {
+    if (runtime.starting !== starting || starting.acknowledgedTurnId || runtime.activeTurnId) return
+    runtime.rejectedStarts.set(starting.correlationId, { outcome: 'failed', error: {
+      code: 'CODEX_TURN_START_REJECTED', message: 'Codex rejected this message before starting a turn.', retryable: true,
+    } })
+    this.restoreRejectedStart(runtime, starting)
   }
 
   private restoreRejectedStart(runtime: Runtime, starting: StartingTurn): void {
