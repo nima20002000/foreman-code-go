@@ -293,6 +293,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const appendNativeEvents = runs.appendNativeEvents.bind(runs)
       runs.appendNativeEvents = async (...args) => {
         const began = performance.now()
+        let committed = false
         const pendingKeys = args[0].map(({ event }) => {
           const key = `${event.executionId}:${event.connectionId ?? ''}:${event.sequence}`
           pendingNativeEvents.set(key, { executionId: event.executionId, type: event.type,
@@ -300,7 +301,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           return key
         })
         evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
-        try { return await appendNativeEvents(...args) }
+        try {
+          const result = await appendNativeEvents(...args)
+          committed = true
+          return result
+        }
         finally {
           for (const key of pendingKeys) pendingNativeEvents.delete(key)
           evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
@@ -312,6 +317,12 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           stats.frames += args[0].length
           stats.totalMs += elapsedMs
           stats.maxMs = Math.max(stats.maxMs, elapsedMs)
+          const publications = (evidence.nativeBatchPublications ??= []) as unknown[]
+          if (publications.length === 128) publications.shift()
+          const completedAt = new Date().toISOString()
+          publications.push({ executionId: args[0][0]?.event.executionId, frames: args[0].length,
+            firstOccurredAt: args[0][0]?.event.occurredAt, lastOccurredAt: args[0].at(-1)?.event.occurredAt,
+            completedAt, elapsedMs, committed })
         }
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
