@@ -363,6 +363,7 @@ export function createClaudeSdkRunner(input: {
       if (disposed) throw new Error('Claude runner disposed during query startup')
       // The Query itself owns close(), unlike a wrapping async generator's blocked return().
       if (!query.getContextUsage) delete session.getContextUsage
+      if (!query.setPermissionMode) delete session.setPermissionMode
       const iterator = query[Symbol.asyncIterator]()
       pump = (async () => {
         try {

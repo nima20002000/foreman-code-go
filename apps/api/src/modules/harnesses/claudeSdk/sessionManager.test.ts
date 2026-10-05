@@ -778,6 +778,7 @@ it('rejects an oversized fresh budget before the first model input', async () =>
   const events = drain(f.manager.startInitialTurn(start, { prompt: 'task', clientCorrelationId: 'operator:one',
     onSessionObserved: async () => {} }))
   await expect(events).rejects.toThrow('context capacity')
+  await expect(events).rejects.toMatchObject({ certainty: 'definite', deliveryState: 'not-delivered' })
   expect(f.offers).not.toHaveBeenCalled()
   await f.manager.dispose!()
 })

@@ -2,7 +2,7 @@ import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { z } from 'zod'
 import { SessionPreferencesSchema } from '@graphql/contracts'
-import { claudeContextSnapshot, claudeSessionEnvironment, claudeContextProfiles } from './sessionControls.js'
+import { claudeContextSnapshot, claudeSessionEnvironment, claudeContextProfiles, ClaudePreferenceError } from './sessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionPreferences } from '@graphql/contracts'
 import { claudeNativeEvent } from './nativeEvents.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
@@ -347,17 +347,17 @@ export function createClaudeNativeSessionManager(options: {
       throw new HarnessExecutionError('CLAUDE_SETTINGS_BUSY', 'Wait for the turn and its approvals before resuming settings.')
     }
     if (preferences.autoCompactTokens !== null && runtime.modelCapacity === undefined) {
-      throw new HarnessExecutionError('CLAUDE_MODEL_CAPACITY_UNKNOWN', 'Native model capacity could not be inspected.')
+      throw new ClaudePreferenceError('CLAUDE_MODEL_CAPACITY_UNKNOWN', 'Native model capacity could not be inspected.')
     }
     const profiles = claudeContextProfiles(runtime.models ?? [], String(options.sdkOptions.model ?? ''),
       runtime.defaultModelCapacity ?? null)
     const profile = profiles.find(entry => entry.id === preferences.contextProfile)
     if (preferences.contextProfile !== null && !profile) {
-      throw new HarnessExecutionError('CLAUDE_CONTEXT_PROFILE_INVALID', 'Choose a context profile offered by this model and account.')
+      throw new ClaudePreferenceError('CLAUDE_CONTEXT_PROFILE_INVALID', 'Choose a context profile offered by this model and account.')
     }
     const capacity = profile?.capacity ?? runtime.defaultModelCapacity
     if (preferences.autoCompactTokens !== null && capacity !== undefined && preferences.autoCompactTokens > capacity) {
-      throw new HarnessExecutionError('CLAUDE_BUDGET_TOO_LARGE', 'The automatic budget exceeds this model’s context capacity.')
+      throw new ClaudePreferenceError('CLAUDE_BUDGET_TOO_LARGE', `The automatic budget exceeds this model’s ${capacity.toLocaleString()}-token context capacity.`)
     }
     runtime.controlPending = true
     runtime.replacingForResume = true
@@ -556,8 +556,11 @@ export function createClaudeNativeSessionManager(options: {
       if (initial) {
         runtime.active = initial.turn
         if (initial.turn.input.sessionMode) {
-          if (!runtime.sdk.setPermissionMode) throw new HarnessExecutionError('CLAUDE_PLAN_UNAVAILABLE', 'The owned SDK mode control is unavailable.')
-          await runtime.sdk.setPermissionMode(initial.turn.input.sessionMode === 'plan' ? 'plan' : 'default')
+          if (runtime.sdk.setPermissionMode) {
+            await runtime.sdk.setPermissionMode(initial.turn.input.sessionMode === 'plan' ? 'plan' : 'default')
+          } else if (initial.turn.input.sessionMode === 'plan') {
+            throw new ClaudePreferenceError('CLAUDE_PLAN_UNAVAILABLE', 'The owned SDK mode control is unavailable.')
+          }
           await initial.turn.input.onSettingsApplied?.()
         }
         await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)

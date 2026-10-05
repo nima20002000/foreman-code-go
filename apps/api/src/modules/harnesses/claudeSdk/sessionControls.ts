@@ -2,6 +2,11 @@ import type { ContextSnapshot, SessionPreferences } from '@graphql/contracts'
 import { SessionPreferencesSchema } from '@graphql/contracts'
 import { HarnessExecutionError } from '../errors.js'
 
+export class ClaudePreferenceError extends HarnessExecutionError {
+  readonly certainty = 'definite'
+  readonly deliveryState = 'not-delivered'
+}
+
 export function claudeSessionEnvironment(source: NodeJS.ProcessEnv, raw: SessionPreferences): NodeJS.ProcessEnv {
   const preferences = SessionPreferencesSchema.parse(raw)
   const env = { ...source }
