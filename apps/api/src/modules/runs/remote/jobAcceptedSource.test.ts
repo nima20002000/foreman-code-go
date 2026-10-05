@@ -1,3 +1,9 @@
+import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
+import { verificationFixture } from '../../../../test/helpers/jobVerificationFixture.js'
+import { VerificationJobExecutionSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
+import { createVerificationProfile } from '../../jobs/verificationProfiles.js'
+import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
+import { readAcceptedJobSource } from './jobAcceptedSource.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -37,7 +43,8 @@ function fixture() {
     originIdentityHash: `sha256:${'a'.repeat(64)}`, manifest, approvedAt: execution.createdAt, availability: 'retained' }
   const intent: RemoteJobDispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: binding.mainId, subject: { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id, definitionId: spec.definitionId },
     executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: spec.bindingHash, inputDigest: `sha256:${spec.specDigest}`, owner: execution.owner }
-  const state = { materializationState: 'running', missing: '', denied: false }
+  const state: { materializationState: string; missing: string; denied: boolean; profile: unknown | null }
+    = { materializationState: 'running', missing: '', denied: false, profile: null }
   const query = vi.fn(async (text: string) => {
     if (text === 'begin' || text === 'commit' || text === 'rollback') return { rows: [] }
     if (state.missing && text.includes(state.missing)) return { rows: [] }
@@ -46,7 +53,7 @@ function fixture() {
     if (text.includes('source_execution_materializations')) return { rows: [{ record: materialization, state: state.materializationState }] }
     if (text.includes('source_root_bindings')) return { rows: [{ record: root }] }
     if (text.includes('source_snapshots')) return { rows: [{ record: approved }] }
-    if (text.includes('job_runtime_profile_versions')) return { rows: [{ record: profile }] }
+    if (text.includes('job_runtime_profile_versions')) return { rows: [{ record: state.profile ?? profile }] }
     throw new Error('Unexpected source read SQL')
   })
   const sql = { query, release: vi.fn() }, pool = { connect: async () => sql } as unknown as pg.Pool
@@ -61,6 +68,27 @@ describe('authenticated original Job source producer with SQL doubles, no DB/phy
     expect(f.dispatch.requireEvidence).toHaveBeenCalledOnce(); expect(f.dispatch.require).not.toHaveBeenCalled()
     expect(f.query.mock.calls[0]![0]).toBe('begin'); expect(f.query.mock.calls.at(-1)![0]).toBe('commit'); expect(f.sql.release).toHaveBeenCalledOnce()
     expect(result).not.toHaveProperty('privateGit'); expect(result).not.toHaveProperty('qualified')
+  })
+  it('reads verification profile policy and quota without weakening immutable source checks', async () => {
+    const f = fixture()
+    const facts = verificationFixture()
+    const execution = VerificationJobExecutionSchema.parse({ ...f.execution, schemaVersion: 2,
+      acceptedSpec: { ...f.execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
+        outputs: facts.spec.outputs, verification: facts.spec.verification, profile: facts.profile,
+        reservationId: randomUUID(), lifecycle: facts.lifecycle } })
+    const profile = createVerificationProfile({
+      id: facts.profile.profileId, revision: facts.profile.profileRevision, workspaceId: execution.workspaceId,
+      name: 'Verification runtime', root: f.root, sourceCommit: execution.acceptedSpec.source.commit,
+      spec: { rootId: f.root.binding.rootId, bindingRevision: f.root.binding.bindingRevision,
+        resources: facts.resources, policy: JobVerificationPolicyRequirementsSchema.parse(jobPolicyRequirementsRecord(facts.spec.policy)),
+        suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } },
+      previous: null, now: execution.createdAt,
+    })
+    f.state.profile = profile
+    expect(await readAcceptedJobSource(f.sql, execution)).toMatchObject({ execution, root: f.root,
+      diskQuotaBytes: facts.resources.limits.diskBytes })
+    profile.spec.policy.toolchainDigest = '0'.repeat(64)
+    await expect(readAcceptedJobSource(f.sql, execution)).rejects.toMatchObject({ code: 'JOB_ACCEPTED_SOURCE_CONFLICT' })
   })
   it('denies the wrong authenticated installation before reading source metadata', async () => {
     const f = fixture(); await expect(f.bridge.resolveAcceptedSource(f.intent, { ...f.binding, workerInstallationId: randomUUID() })).rejects.toThrow('does not own')

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { readJobComputerSelection } from '../jobs/computerSelection.js'
-import { JobDefinitionSchema, isAutoJobSpec } from '@foreman-code/contracts/jobs'
+import { JobDefinitionRecordSchema, isAutoJobSpecRecord } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { SourcePreparationGetInputSchema, SourcePreparationReconcileInputSchema, SourcePreparationSchema,
   SourcePreparationClosureSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema,
@@ -40,8 +40,8 @@ export async function loadSourcePreparation(sql: GraphSqlClient, workspaceId: st
     left join source_preparation_reconciliations c on c.operation_id=j.operation_id
     where j.workspace_id=$1 and j.operation_id=$2 for share of r`, [workspaceId, operationId])).rows[0]
   if (!row) return loadWorkflowPreparation(sql, workspaceId, operationId)
-  const saved = JobDefinitionSchema.parse(row.definition)
-  const spec = isAutoJobSpec(saved.spec) ? await readJobComputerSelection(sql, saved, {
+  const saved = JobDefinitionRecordSchema.parse(row.definition)
+  const spec = isAutoJobSpecRecord(saved.spec) ? await readJobComputerSelection(sql, saved, {
     executionId: row.execution_id, attemptId: row.attempt_id, operationId,
   }) : saved.spec
   const definition = { ...saved, spec }
