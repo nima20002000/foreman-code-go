@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
-  AgentConfigurationVersionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
+  AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
   type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
 } from '@foreman-code/contracts'
 import {
@@ -392,7 +392,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     engine = activeRuntime.engine
     stopRun = () => engine!.cancel(run.id, authorizeStop)
     const startTask = engine.start(run.id)
-    if (options.control) void startTask.catch((error: unknown) => {
+    evidence.startTaskState = 'pending'
+    if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
+      evidence.startTaskState = 'rejected'
       evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
         message: nativePersistenceRedactor([]).text(error.message) }
         : { name: typeof error }
@@ -536,6 +538,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     return { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
     evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
+    evidence.failureStartTaskState = evidence.startTaskState
     if (runId && pool) {
       evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
       if (activeRuntime) {
@@ -545,10 +548,24 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
           if (!value.session) return { executionId }
           const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
+          const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
+            value.session.nativeSessionId).catch(() => undefined)
           return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
+            pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
+              nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
+            lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
+              currentTurnOrMessageId: lane.currentTurnOrMessageId },
             lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
         }))
       }
+      const requests = await pool.query<{ record: unknown }>(
+        'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
+      evidence.failureInteractions = requests?.rows.map(({ record }) => {
+        const interaction = DurableInteractionSchema.parse(record)
+        return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
+          nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
+          status: interaction.status, deliveryState: interaction.deliveryState }
+      })
       const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
       evidence.failureExecutions = rows?.rows.map((row) => {
         const execution = HarnessExecutionSchema.parse(row.record)
