@@ -65,7 +65,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
       || !sameWorkflowValue(receipt.data.connection, connection))) denied()
     resident = receipt.success && receipt.data.native !== undefined
-    if (input.action === 'start' || input.action !== 'read' && !resident) denied()
+    if (input.action === 'start' || !['read', 'stop'].includes(input.action) && !resident) denied()
   }
   // Cleanup observes and cancels the admitted owner even when it can no longer launch.
   if (!cleanup) {

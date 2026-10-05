@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeHarnessEvent } from '@graphql/contracts'
-import { DEVICE_APPLICATION_JSON_BYTES } from '@graphql/contracts/device-application'
-import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
-import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
+import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeHarnessEvent } from '@foreman-code/contracts'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { remoteEntryClosureDigest, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
-import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
+import { RemoteNativeSessionManager, type RemoteNativeTransport } from './nativeManagerProxy.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -48,7 +49,8 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   const status = { status: 'known' as const, receipt }
   const cursors: Array<number | undefined> = []
   const observeOriginalSource = vi.fn(async () => {})
-  const request = vi.fn(async (method: string, raw: unknown) => {
+  const observedReceipts: Array<ReturnType<typeof RemoteOperationReceiptSchema.parse>> = []
+  const request = vi.fn<RemoteNativeTransport['request']>(async (method, raw) => {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     if (method === 'prepare') return { session, status }
     if (method === 'start-turn') return status
@@ -60,13 +62,13 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
     return reply
   })
   const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
-    transport: { request }, observeReceipt: async () => {}, observeOriginalSource,
+    transport: { request }, observeReceipt: async value => { observedReceipts.push(value) }, observeOriginalSource,
     controlFor: async () => { throw new Error('No native control requested') },
   })
   const start = { correlationId: 'execution:execution', request: { executionId: 'execution', runId: 'run',
     workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', runtimeDirectory: '/runtime',
     configuration, input: {} } }
-  return { proxy, start, request, cursors, observeOriginalSource }
+  return { proxy, start, request, cursors, observeOriginalSource, receipt, observedReceipts }
 }
 
 function terminal(events: NativeHarnessEvent[]): NativeHistory {
@@ -78,6 +80,31 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it.each(['entry', 'non-entry'] as const)('retains a closed %s receipt when preparation has no session acknowledgment', async kind => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const { native: _native, turnInput: _input, ...original } = f.receipt
+    const launchId = randomUUID()
+    const entryClosure = { intent: original.intent, connection: original.connection, owner: 'execution:execution',
+      initialLaunchId: launchId, launches: [{ owner: 'execution:execution', launchId,
+        bootId: original.connection.bootId, lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }] }
+    const closed = RemoteOperationReceiptSchema.parse({ ...original,
+      phase: 'confirmed_terminal', stopFence: true, turnEntryAttempted: false, entryAttempted: kind === 'entry',
+      terminal: kind === 'entry' ? { kind: 'cancelled', entryClosure,
+        closureEvidenceDigest: remoteEntryClosureDigest(entryClosure) }
+        : { kind: 'not_started', closureEvidenceDigest: remoteNonEntryClosureDigest(original.intent) } })
+    f.request.mockImplementation(async method => {
+      if (method !== 'prepare') throw new Error('Closure does not create another native operation')
+      return { status: { status: 'known', receipt: closed } }
+    })
+    await expect(f.proxy.createSession(f.start)).rejects.toMatchObject({
+      result: { error: { code: 'REMOTE_PREPARATION_CLOSED' } },
+    })
+    expect(f.observedReceipts).toEqual([closed])
+    expect(f.observeOriginalSource).not.toHaveBeenCalled()
+    await expect(f.proxy.dispose()).resolves.toBeUndefined()
+    expect(f.request).toHaveBeenCalledTimes(1)
+  })
+
   it('reports a gap when a delayed consumer falls behind the retained window, before yielding its newer events', async () => {
     let history: NativeHistory = { events: [event(0)], pendingInteractions: [], firstRetainedSequence: 0,
       nextSequence: 1 }

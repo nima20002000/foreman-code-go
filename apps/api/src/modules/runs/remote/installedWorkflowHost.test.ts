@@ -689,6 +689,11 @@ describe('installed worker cold recovery', () => {
         expect(receipt.native).toBeUndefined()
         expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)
         expect(receipt.terminal?.entryClosure?.launches).toEqual([{ ...f.launch, lifecycle: 'closed', closureEvidence: 'linux_boot_changed' }])
+        const prepare = await host.extensions[0]!.handle!({ method: 'prepare', intent: f.intent,
+          placement: f.placement, request: f.request, executionPlacement: f.nativePlacement }, f.context)
+        expect(prepare.payload).toEqual({ status: payload })
+        expect((await host.extensions[0]!.handle!({ method: 'pending', intent: f.intent,
+          placement: f.placement }, f.context)).payload).toBeNull()
       }
     } finally { await host.close() }
     const restarted = await f.startHost()

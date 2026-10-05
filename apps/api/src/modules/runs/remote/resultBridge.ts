@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@foreman-code/contracts/remote-execution'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
 export interface RemoteCommitAuthority {
   intent: DispatchIntent
@@ -33,21 +34,7 @@ export class VerifiedRemoteEvidence {
     const receipt = RemoteOperationReceiptSchema.parse(raw)
     return port.transaction(receipt.intent.operationId, async transaction => {
       const authority = await transaction.authority(receipt.intent.operationId)
-      const reason = !authority ? 'unknown_operation'
-        : !authority.grantIsLive ? 'revoked_grant'
-        : !sameRegisteredWorker(receipt.connection, authenticatedConnection) ? 'unauthenticated_connection'
-        : !isDeepStrictEqual(receipt.connection, authority.originalConnection) || receipt.workerIncarnationId !== authority.originalIncarnationId ? 'wrong_original_execution'
-        : !isDeepStrictEqual(receipt.intent, authority.intent) ? 'stale_binding_or_owner'
-        : authority.placement.hostRef.kind !== 'device' || authority.placement.hostRef.deviceId !== receipt.connection.deviceId
-          || authority.placement.bindingHash !== receipt.intent.bindingHash
-          || authority.placement.registration?.workerInstallationId !== receipt.connection.workerInstallationId
-          || authority.placement.registration?.keyRevision !== receipt.connection.keyRevision
-          || authority.placement.registration?.authorizationRevision !== receipt.connection.authorizationRevision ? 'wrong_placement'
-        : authority.native !== null && !sameOriginalNative(authority.native, receipt.native) ? 'conflicting_native'
-        : authority.terminal !== null && !isDeepStrictEqual(receipt.terminal, authority.terminal) ? 'conflicting_terminal'
-        : receipt.sequence <= authority.lastSequence ? 'stale_sequence'
-        : receipt.phase === 'confirmed_terminal' && (!receipt.terminal || (receipt.terminal.kind !== 'not_started' && !receipt.native)) ? 'missing_native_closure'
-        : null
+      const reason = rejectionReason(receipt, authenticatedConnection, authority)
       if (reason) {
         // An identical committed terminal report converges without another publication.
         if (reason === 'stale_sequence' && authority?.lastReceipt && isDeepStrictEqual(receipt, authority.lastReceipt)) { await transaction.retain?.(new VerifiedRemoteEvidence(structuredClone(receipt), authority)); return 'duplicate' as const }
@@ -61,6 +48,33 @@ export class VerifiedRemoteEvidence {
       return 'accepted' as const
     })
   }
+}
+
+function rejectionReason(receipt: RemoteOperationReceipt, authenticated: DeviceConnectionIdentity,
+  authority: RemoteCommitAuthority | null): string | null {
+  if (!authority) return 'unknown_operation'
+  if (!authority.grantIsLive) return 'revoked_grant'
+  if (!sameRegisteredWorker(receipt.connection, authenticated)) return 'unauthenticated_connection'
+  if (!isDeepStrictEqual(receipt.connection, authority.originalConnection)
+    || receipt.workerIncarnationId !== authority.originalIncarnationId) return 'wrong_original_execution'
+  if (!isDeepStrictEqual(receipt.intent, authority.intent)) return 'stale_binding_or_owner'
+  const placement = authority.placement
+  if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== receipt.connection.deviceId
+    || placement.bindingHash !== receipt.intent.bindingHash
+    || placement.registration?.workerInstallationId !== receipt.connection.workerInstallationId
+    || placement.registration?.keyRevision !== receipt.connection.keyRevision
+    || placement.registration?.authorizationRevision !== receipt.connection.authorizationRevision) return 'wrong_placement'
+  if (authority.native !== null && !sameOriginalNative(authority.native, receipt.native)) return 'conflicting_native'
+  if (authority.terminal !== null && !isDeepStrictEqual(receipt.terminal, authority.terminal)) return 'conflicting_terminal'
+  const entryClosed = hasPositiveRemoteEntryClosure(receipt)
+  const notStarted = hasPositiveRemoteNonEntryClosure(receipt)
+  if (receipt.terminal?.entryClosure && !entryClosed) return 'invalid_entry_closure'
+  if (receipt.terminal?.kind === 'not_started' && !notStarted) return 'non_entry_not_proven'
+  if (receipt.phase === 'confirmed_terminal' && (!receipt.terminal || !receipt.native && !entryClosed && !notStarted)) {
+    return 'missing_native_closure'
+  }
+  if (receipt.sequence <= authority.lastSequence) return 'stale_sequence'
+  return null
 }
 
 function sameRegisteredWorker(a: DeviceConnectionIdentity, b: DeviceConnectionIdentity) {

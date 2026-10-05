@@ -15,6 +15,25 @@ import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import { remoteNonEntryClosureDigest } from '@graphql/contracts/remote-execution-entry-closure-node'
 import { randomUUID } from 'node:crypto'
 
+async function closedEntryReply(frame: RemoteExecutionRpcRequest, journal: RemoteOperationJournal) {
+  const status = await journal.status(frame.intent.operationId)
+  if (status.status !== 'known' || !status.receipt.terminal || status.receipt.native) {
+    throw new Error('Original sessionless entry closure is unavailable')
+  }
+  if (frame.method === 'prepare' || frame.method === 'reattach') return { payload: { status } }
+  if (frame.method === 'control-delivery') {
+    return { payload: { phase: await journal.controlDelivery(frame.command) ?? 'unknown', status } }
+  }
+  if (frame.method === 'history' || frame.method === 'reconcile-response') {
+    const history: NativeHistory = { events: [], pendingInteractions: [] }
+    const metadata = frame.method === 'history' ? frame.metadata : undefined
+    const afterSequence = frame.method === 'history' ? frame.afterSequence : undefined
+    return { payload: { ...pageNativeHistory(history, afterSequence, metadata), status } }
+  }
+  if (frame.method === 'pending') return { payload: null }
+  return { payload: status }
+}
+
 export async function recoverInstalledWorkflowReply(input: {
   frame: RemoteExecutionRpcRequest
   binding: Readonly<DeviceSessionBinding>
@@ -87,7 +106,8 @@ export async function recoverInstalledWorkflowReply(input: {
         else await journal.revokeFence(frame.intent.operationId)
         await journal.terminal(frame.intent.operationId, { kind: 'not_started',
           closureEvidenceDigest: remoteNonEntryClosureDigest(receipt.intent) })
-        return { payload: await journal.status(frame.intent.operationId) }
+        input.assertCurrent()
+        return closedEntryReply(frame, journal)
       }
       if (frame.method === 'status') return { payload: state }
       return undefined
@@ -96,7 +116,8 @@ export async function recoverInstalledWorkflowReply(input: {
     if (!capture) {
       if (frame.method === 'control') await journal.control(frame.command)
       await input.recovery.closePendingEntry(receipt, journal, input.signal)
-      return { payload: await journal.status(frame.intent.operationId) }
+      input.assertCurrent()
+      return closedEntryReply(frame, journal)
     }
     receipt = await journal.acknowledgeStart(frame.intent.operationId, capture.native)
   }
@@ -163,7 +184,7 @@ export async function recoverInstalledWorkflowReply(input: {
   if (frame.method === 'history' || frame.method === 'reconcile-response') {
     return { payload: { ...(historyReply ?? pageNativeHistory(history)), status } }
   }
-  if (frame.method === 'pending') return { payload: { status } }
+  if (frame.method === 'pending') return { payload: null }
   if (frame.method === 'prepare' || frame.method === 'reattach') {
     if (frame.request.executionId !== frame.intent.executionId || frame.request.runId !== frame.intent.runId
       || frame.request.workflowNodeId !== frame.intent.nodeId

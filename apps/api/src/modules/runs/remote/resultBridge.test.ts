@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
+import { remoteEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 const digest = 'a'.repeat(64)
 const mainId = randomUUID(), deviceId = randomUUID()
 const connection = { mainId, deviceId, workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
@@ -34,4 +35,36 @@ describe('authoritative remote result bridge', () => {
     expect(await VerifiedRemoteEvidence.commit(report, authenticated, port)).toBe('rejected'); expect(state.accepts).toBe(0); expect(state.rejects).toHaveLength(1)
   })
   it('accepts a main-owner recovery only after explicit original execution reconciliation', async () => { const { authority, port } = fixture(); const recovered = { ...receipt, intent: { ...receipt.intent, owner: { grantId: 'renewed', epoch: '2' } } }; expect(await VerifiedRemoteEvidence.commit(recovered, connection, port)).toBe('rejected'); authority.intent = recovered.intent; expect(await VerifiedRemoteEvidence.commit(recovered, connection, port)).toBe('accepted') })
+
+  it('accepts positive registry closure before session acknowledgment without inventing a native result', async () => {
+    const f = fixture()
+    const launchId = randomUUID()
+    const entryClosure = { intent: receipt.intent, connection, owner: 'execution:execution', initialLaunchId: launchId,
+      launches: [{ owner: 'execution:execution', launchId, bootId: connection.bootId,
+        lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }] }
+    const { native: _native, terminal: _terminal, ...beforeEntry } = receipt
+    const report: RemoteOperationReceipt = { ...beforeEntry, turnEntryAttempted: false, stopFence: true,
+      terminal: { kind: 'cancelled', entryClosure, closureEvidenceDigest: remoteEntryClosureDigest(entryClosure) } }
+    expect(await VerifiedRemoteEvidence.commit(report, { ...connection, connectionGeneration: 2 }, f.port)).toBe('accepted')
+    expect(f.authority.lastReceipt?.native).toBeUndefined()
+    expect(f.authority.lastReceipt?.terminal?.result).toBeUndefined()
+    expect(await VerifiedRemoteEvidence.commit(report, connection, f.port)).toBe('duplicate')
+    expect(f.state.accepts).toBe(1)
+  })
+
+  it.each(['turn-entered', 'result', 'digest'] as const)('rejects %s from sessionless entry closure', async defect => {
+    const f = fixture()
+    const launchId = randomUUID()
+    const entryClosure = { intent: receipt.intent, connection, owner: 'execution:execution', initialLaunchId: launchId,
+      launches: [{ owner: 'execution:execution', launchId, bootId: connection.bootId,
+        lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }] }
+    const { native: _native, terminal: _terminal, ...beforeEntry } = receipt
+    const report: RemoteOperationReceipt = { ...beforeEntry, turnEntryAttempted: defect === 'turn-entered', stopFence: true,
+      terminal: { kind: 'cancelled', entryClosure, closureEvidenceDigest: remoteEntryClosureDigest(entryClosure),
+        ...(defect === 'result' ? { result: { outcome: 'succeeded' as const, output: { text: 'invented' } } } : {}) } }
+    if (defect === 'digest') report.terminal!.closureEvidenceDigest = 'b'.repeat(64)
+    expect(await VerifiedRemoteEvidence.commit(report, connection, f.port)).toBe('rejected')
+    expect(f.state.accepts).toBe(0)
+    expect(f.state.rejects).toEqual(['invalid_entry_closure'])
+  })
 })

@@ -135,6 +135,8 @@ describe('authenticated original execution reconnection', () => {
     expect(f.pins).not.toHaveBeenCalled()
     await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    f.state.cleanup = true
+    await expect(f.authorize('stop', replacement)).resolves.toBeUndefined()
     f.state.grant = false
     await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })

@@ -9,6 +9,7 @@ import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNa
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { RemoteOperationReceiptSchema, RemoteApplicationAccessSchema, remoteActiveNative, type RemoteReviewerRequest,
   type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import type { ReviewJob } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
@@ -128,8 +129,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const applicationAccess = token ? { kind: 'scoped-worker-mcp', token, executionId: this.intent.executionId, agentId: this.options.configuration.agentId, operationId: this.intent.operationId, attemptId: this.intent.attemptId, bindingHash: this.intent.bindingHash } : undefined
     if (input.request.executionId !== this.intent.executionId || input.correlationId !== `execution:${this.intent.executionId}`) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
-    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request, ...(applicationAccess ? { applicationAccess } : {}) }, signal))
-    await this.status(value.status)
+    const value = z.object({ session: NativeSessionReferenceSchema.optional(), status: StatusSchema }).strict()
+      .parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement,
+        request: input.request, ...(applicationAccess ? { applicationAccess } : {}) }, signal))
+    const receipt = await this.status(value.status)
+    if (!value.session) {
+      if (hasPositiveRemoteEntryClosure(receipt) || hasPositiveRemoteNonEntryClosure(receipt)) {
+        throw new HarnessExecutionError('REMOTE_PREPARATION_CLOSED', 'Execution setup stopped on the connected computer.')
+      }
+      throw new Error('Original remote session acknowledgment is unavailable')
+    }
     if (this.receipt?.native?.sessionId !== value.session.nativeSessionId || value.session.harness !== this.harness) throw new Error('Original remote session recovery required')
     this.session = structuredClone(value.session)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'session_created', session: value.session })
