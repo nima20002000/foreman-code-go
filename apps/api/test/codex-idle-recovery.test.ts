@@ -110,7 +110,9 @@ describe('Codex idle lifecycle with a populated recovery owner', () => {
     const f = await ownedFixture()
     try {
       const source = input(f.directory)
-      source.environment!.variables.HRT_F14_ADMIN_DATABASE_URL = 'controller-database-sentinel'
+      source.environment = { ...source.environment!, variables: {
+        ...source.environment!.variables, HRT_F14_ADMIN_DATABASE_URL: 'controller-database-sentinel',
+      } }
       await assert.rejects(f.manager.createSession(source), error => errorCode(error) === 'CODEX_ENVIRONMENT_INVALID')
       assert.equal((await calls(f.directory)).filter(entry =>
         Array.isArray(entry.cli) && entry.cli[0] === 'app-server').length, 0)
