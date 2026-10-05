@@ -9,6 +9,7 @@ import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { OpenCodeVaultIsolation } from '../src/modules/harnesses/opencodeFiles/isolation.js'
+import { OpenCodeConversationStorage } from '../src/modules/harnesses/opencodeFiles/conversationStorage.js'
 import { sha256 } from '../src/modules/harnesses/opencodeFiles/attachments.js'
 
 async function execute(isolation: OpenCodeVaultIsolation, directory: string, source: string, args: string[]) {
@@ -84,6 +85,52 @@ it('rejects a vault reached through a symlink before creating the native namespa
     await symlink(vault, alias)
     await assert.rejects(new OpenCodeVaultIsolation(alias).launch({ binary: process.execPath,
       args: ['--version'], workingDirectory: directory, environment: process.env }, AbortSignal.timeout(10_000)))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it('masks shared native storage through symlinked XDG directories and their physical targets', async () => {
+  const directory = await mkdtemp(join(homedir(), '.opencode-linked-storage-'))
+  try {
+    const vault = join(directory, 'vault')
+    await new FileByteStorage(vault, MAX_FILE_BYTES).initialize()
+    const environment: NodeJS.ProcessEnv = {}
+    const paths: Array<{ alias: string; target: string }> = []
+    for (const name of ['data', 'cache', 'state']) {
+      const target = join(directory, `shared-${name}`)
+      const alias = join(directory, `.${name}`)
+      await mkdir(join(target, 'opencode'), { recursive: true, mode: 0o700 })
+      await writeFile(join(target, 'opencode', 'original.txt'), 'shared private bytes')
+      await symlink(target, alias, 'dir')
+      environment[`XDG_${name.toUpperCase()}_HOME`] = alias
+      paths.push({ alias, target })
+    }
+    const storage = new OpenCodeConversationStorage(join(directory, 'native'), randomUUID())
+    const hidden = await storage.prepare(environment)
+    const script = `
+      const fs = require('node:fs')
+      const assert = require('node:assert/strict')
+      const [paths, owned] = process.argv.slice(1)
+      for (const { alias, target } of JSON.parse(paths)) {
+        for (const root of [alias, target]) {
+          assert.deepEqual(fs.readdirSync(root + '/opencode'), [])
+          assert.throws(() => fs.readFileSync(root + '/opencode/original.txt'), { code: 'ENOENT' })
+          assert.throws(() => fs.writeFileSync(root + '/opencode/new.txt', 'tampered'), { code: 'EROFS' })
+        }
+      }
+      fs.writeFileSync(owned + '/cache/own.txt', 'conversation cache')
+      console.log('linked shared storage isolated')
+    `
+    const isolation = new OpenCodeVaultIsolation(vault, undefined, {
+      root: storage.root, owned: storage.owned, database: storage.database, hidden,
+    })
+    const stdout = await execute(isolation, directory, script, [JSON.stringify(paths), storage.owned])
+    assert.match(stdout, /linked shared storage isolated/)
+    assert.equal(await readFile(join(storage.owned, 'cache', 'own.txt'), 'utf8'), 'conversation cache')
+    for (const { target } of paths) {
+      assert.equal(await readFile(join(target, 'opencode', 'original.txt'), 'utf8'), 'shared private bytes')
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

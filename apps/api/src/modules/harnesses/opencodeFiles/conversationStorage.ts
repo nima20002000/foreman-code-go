@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { copyFile, lstat, open, readdir } from 'node:fs/promises'
+import { copyFile, lstat, open, readdir, realpath } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -55,10 +55,12 @@ export class OpenCodeConversationStorage {
     const existing = new Map<string, boolean>()
     for (const path of hidden) {
       try {
-        const stat = await lstat(path)
+        // XDG directories can be aliases; mask their targets so neither spelling exposes shared data.
+        const canonical = await realpath(path)
+        const stat = await lstat(canonical)
         checkFileCondition(!stat.isSymbolicLink(), 'FILE_SOURCE_ISOLATION_REQUIRED',
           'Native storage paths must be canonical.')
-        existing.set(path, stat.isDirectory())
+        existing.set(canonical, stat.isDirectory())
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
