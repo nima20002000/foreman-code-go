@@ -430,6 +430,44 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     assert.equal((await native.wire('turn/start')).length, 1)
   })
 
+  it('Agent retains non-submission across restart when recovered creation settlement fails', async () => {
+    await native.flag('late-thread-start')
+    await database.pool.query(`create function fail_chat_settlement() returns trigger language plpgsql as $$
+      begin
+        if old.active_request_id='late' and new.active_request_id is null then
+          raise exception 'Settlement persistence fault';
+        end if;
+        return new;
+      end $$`)
+    await database.pool.query(`create trigger fail_chat_settlement before update on operator_conversations
+      for each row execute function fail_chat_settlement()`)
+    const admitted = await sendAgent(request('late', null))
+    const id = admitted.state.conversation!.id
+    const bound = await until(async () => {
+      await agentChat.recover()
+      const row = await repository.get(id)
+      return row?.native_session_id && nativeNonSubmission(row.record, 'late') ? row : undefined
+    })
+    assert.equal(bound.active_request_id, 'late')
+    assert.equal(bound.record.nativeNonSubmission?.operation, 'turn_submission')
+    assert.equal((await native.wire('turn/start')).length, 0)
+    await agentChat.shutdown()
+    restartAgentService()
+    await database.pool.query('drop trigger fail_chat_settlement on operator_conversations')
+    await until(async () => {
+      await agentChat.recover()
+      return (await repository.turn(id, 'late'))?.delivery === 'failed' || undefined
+    })
+    assert.equal((await native.wire('thread/read')).length, 0)
+    assert.equal((await native.wire('thread/start')).length, 1)
+    await native.unflag('late-thread-start')
+    await sendAgent(request('retry', id))
+    await until(async () => (await repository.turn(id, 'retry'))?.delivery === 'completed' || undefined)
+    assert.equal((await repository.get(id))!.native_session_id, bound.native_session_id)
+    assert.equal((await native.wire('thread/start')).length, 1)
+    assert.equal((await native.wire('turn/start')).length, 1)
+  })
+
   it('Agent idle-exit failure is retryable and resumes the stored session without another creation', async () => {
     const admitted = await sendAgent(request('first', null))
     const id = admitted.state.conversation!.id
@@ -475,12 +513,14 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       ['late', 'another-configuration', 'codex'],
       ['late', row.agent_configuration_version_id, 'opencode'],
     ] as const) {
-      await assert.rejects(repository.bindCreatedSession(id, requestId, configurationId, { ...session, harness }),
+      await assert.rejects(repository.bindCreatedSession(id, requestId, configurationId, { ...session, harness },
+        { outcome: 'failed' }),
         { code: 'AGENT_CHAT_SESSION_CONFLICT' })
       assert.deepEqual(await repository.get(id), row)
     }
     await database.pool.query('update operator_conversations set active_native_turn_id=$2 where id=$1', [id, 'prior-turn'])
-    await assert.rejects(repository.bindCreatedSession(id, 'late', row.agent_configuration_version_id, session),
+    await assert.rejects(repository.bindCreatedSession(id, 'late', row.agent_configuration_version_id, session,
+      { outcome: 'failed' }),
       { code: 'AGENT_CHAT_SESSION_CONFLICT' })
     assert.equal((await repository.get(id))!.native_session_id, null)
     assert.equal((await native.wire('turn/start')).length, 0)

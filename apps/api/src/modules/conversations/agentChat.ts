@@ -1188,11 +1188,10 @@ export class AgentChatService {
     this.lifetime.signal.throwIfAborted()
     if (this.runtimes.get(row.id) !== runtime || runtime.retiring || runtime.disposal) return false
     runtime.session = session
-    await this.repository.bindCreatedSession(row.id, requestId, row.agent_configuration_version_id, session)
-    if (row.record.origin.kind === 'run_execution') await this.repository.markStartupDelivered(row.id)
+    const result = failure(new Error('The original session was recovered before the message was sent. Send the message again.'))
+    await this.repository.bindCreatedSession(row.id, requestId, row.agent_configuration_version_id, session, result)
     const current = await this.repository.get(row.id)
-    await this.settle(row.id, requestId, current?.cancel_requested ? { outcome: 'canceled' }
-      : failure(new Error('The original session was recovered before the message was sent. Send the message again.')))
+    await this.settle(row.id, requestId, current?.cancel_requested ? { outcome: 'canceled' } : result)
     return true
   }
 

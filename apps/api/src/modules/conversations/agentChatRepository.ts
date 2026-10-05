@@ -396,13 +396,20 @@ export class PostgresAgentChatRepository {
       where id=$1 and kind='agent' and (native_session_id is null or native_session_id=$3)`, [id, providerVersion, nativeSessionId])
     if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session binding changed.', 409)
   }
-  async bindCreatedSession(id: string, requestId: string, configurationId: string, session: NativeSessionReference): Promise<void> {
+  async bindCreatedSession(id: string, requestId: string, configurationId: string, session: NativeSessionReference,
+    unsentResult: ExecutionResult): Promise<void> {
+    const nonSubmission: NativeNonSubmission = { requestId, operation: 'turn_submission',
+      result: ExecutionResultSchema.parse(unsentResult) }
+    if (unsentResult.outcome === 'succeeded') throw new Error('The recovered creation has no submitted prompt.')
     const bound = await this.pool.query(`update operator_conversations
-      set provider_version=$4,native_session_id=$5,revision=revision+1,updated_at=now()
+      set provider_version=$4,native_session_id=$5,record=record || jsonb_build_object('nativeNonSubmission',$7::jsonb)
+        || case when record->'origin'->>'kind'='run_execution' then '{"startupDelivered":true}'::jsonb else '{}'::jsonb end,
+        revision=revision+1,updated_at=now()
       where id=$1 and kind='agent' and active_request_id=$2 and agent_configuration_version_id=$3
         and record->'sessionCreation'->>'requestId'=$2 and native_session_id is null and harness=$6
         and active_native_turn_id is null and (provider_version is null or provider_version=$4)`,
-    [id, requestId, configurationId, session.providerVersion, session.nativeSessionId, session.harness])
+    [id, requestId, configurationId, session.providerVersion, session.nativeSessionId, session.harness,
+      JSON.stringify(nonSubmission)])
     if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session creation owner changed.', 409)
   }
   async markStartupDelivered(id: string): Promise<void> {
