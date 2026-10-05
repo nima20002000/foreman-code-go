@@ -41,7 +41,7 @@ async function turn(manager: NativeHarnessSessionManager, session: NativeSession
   const history = await manager.reconcile(session, correlation)
   expect(history.terminalResult?.outcome,
     nativeFailureSummary({ failureExecutions: [{ result: history.terminalResult }] }, [])).toBe('succeeded')
-  return JSON.stringify(history.terminalResult?.output ?? '')
+  return { correlationId: correlation, history, text: JSON.stringify(history.terminalResult?.output ?? '') }
 }
 
 describe.skipIf(!enabled)('real native Agent chat fork', () => {
@@ -69,15 +69,19 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
       try {
         if (harness === 'opencode') await factories.qualifyConfiguration(config.harness, directory)
         const sourceSession = await source.createSession(start(config, directory, 'source', false))
-        expect(await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')).toMatch(/ok/i)
-        const before = (await source.history(sourceSession)).events.length
+        const sourceTurn = await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')
+        expect(sourceTurn.text).toMatch(/ok/i)
+        expect(sourceTurn.history.nativeTurnId).toBeTruthy()
         const sourceBefore = await readNativeSource(sourceSession, directory, config.agentId)
         const fork = await forker.forkSession!(sourceSession, start(config, directory, 'fork', true))
         expect(fork.nativeSessionId).not.toBe(sourceSession.nativeSessionId)
-        expect(await turn(forker, fork, 'fork', 'What codeword did I ask you to remember? One word.')).toMatch(/kiwi/i)
-        // The source session is not written by the fork or the fork's turn.
-        expect((await source.history(sourceSession)).events.length).toBe(before)
-        // Fresh storage observers on BOTH sides: same event counts cannot hide changed content/IDs.
+        const forkTurn = await turn(forker, fork, 'fork', 'What codeword did I ask you to remember? One word.')
+        expect(forkTurn.text).toMatch(/kiwi/i)
+        const unchanged = await source.reconcile(sourceSession, sourceTurn.correlationId)
+        expect(unchanged.nativeTurnId).toBe(sourceTurn.history.nativeTurnId)
+        expect(unchanged.nativeMessageId).toBe(sourceTurn.history.nativeMessageId)
+        expect(unchanged.terminalResult).toEqual(sourceTurn.history.terminalResult)
+        // Compare full persisted records; resident diagnostic events may arrive after completion.
         expect(await readNativeSource(sourceSession, directory, config.agentId)).toBe(sourceBefore)
       } catch (error) {
         const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
