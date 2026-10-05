@@ -18,6 +18,16 @@ export function nativeAcceptanceConfiguration(environment) {
   }
 }
 
+export function nativeAcceptanceFiles(args) {
+  if (args.length === 0) return ['test/eng03-c-native.acceptance.test.ts']
+  const [option, ...files] = args
+  if (option !== '--files' || files.length === 0 || files.some((file) =>
+    !/^test\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.acceptance\.test\.ts$/.test(file))) {
+    throw new Error('Use --files followed by explicit API acceptance test paths.')
+  }
+  return [...new Set(files)]
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
   if (configured) requireLoopbackTestDatabase(configured)
   const server = adminDatabaseUrl(configured)
@@ -53,6 +63,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 }
 
 async function main() {
+  const files = nativeAcceptanceFiles(process.argv.slice(2))
   const configuration = nativeAcceptanceConfiguration(process.env)
   const opencode = configuration.opencodeBinary ?? execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
@@ -67,7 +78,7 @@ async function main() {
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
           'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-          'vitest', 'run', 'test/eng03-c-native.acceptance.test.ts', '--no-file-parallelism',
+          'vitest', 'run', ...files, '--no-file-parallelism',
         ], { cwd: root, env: environment, stdio: 'inherit' })
         child.once('error', reject)
         child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))
