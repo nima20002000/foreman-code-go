@@ -29,6 +29,11 @@ import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 async function fixture(readOnly: boolean) {
   const db = await agent3Database()
   const app = Fastify({ logger: false })
+  let detach: (() => Promise<void>) | undefined
+  onTestFinished(async () => {
+    try { await detach?.() }
+    finally { try { await app.close() } finally { await db.close() } }
+  })
   const config: ApiConfig = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
     database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
       connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
@@ -97,14 +102,14 @@ async function fixture(readOnly: boolean) {
     }, recorded.connection, signal) } })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'Worker file caller', version: '1.0.0' })
-  await workerFiles.server.instance.connect(serverTransport)
-  await client.connect(clientTransport)
-  onTestFinished(async () => {
+  detach = async () => {
     lifetime.abort()
     lease.close()
-    try { await workerFiles.close(); await client.close(); await mainFiles.close() }
-    finally { await app.close(); await db.close() }
-  })
+    try { await workerFiles.close() }
+    finally { try { await client.close() } finally { await mainFiles.close() } }
+  }
+  await workerFiles.server.instance.connect(serverTransport)
+  await client.connect(clientTransport)
   const scope = { kind: 'temporary' as const, chat: { kind: 'operator' as const, conversationId: conversation.id } }
   const target = { kind: 'operator' as const, conversationId: conversation.id }
   const bytes = Buffer.from('Worker attachment contents')
