@@ -177,7 +177,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
-    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
+    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)
@@ -221,7 +221,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     evidence.effectiveHarnesses = configurations.map((item) => {
       if (item.harness.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
       return { agentId: item.agentId, harness: item.harness.harness,
-      model: item.harness.model, ...(item.harness.harness === 'codex' ? { sandbox: item.harness.sandbox,
+      model: item.harness.model, ...(item.harness.harness === 'codex' ? { reasoningEffort: item.harness.reasoningEffort,
+        sandbox: item.harness.sandbox,
         approvalPolicy: item.harness.advanced?.approvalPolicy,
         approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }
     })
