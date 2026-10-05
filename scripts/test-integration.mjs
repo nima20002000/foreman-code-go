@@ -217,9 +217,6 @@ export function integrationEnvironment(environment, slot) {
 function options(argv) {
   const startAt = process.env.GRAPHQL_INTEGRATION_START_AT || null
   const failedFrom = process.env.GRAPHQL_INTEGRATION_FAILED_LOG || null
-  if (argv[0] === '--files' && argv.length > 1 && !startAt && !failedFrom) {
-    return { startAt: null, failedFrom: null, files: argv.slice(1) }
-  }
   if (!argv.length) {
     if (startAt && failedFrom) throw new Error('Choose either a resume cursor or a failed-file log')
     return { startAt, failedFrom, files: null }
