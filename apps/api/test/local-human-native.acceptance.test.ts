@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, it } from 'vitest'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { signalTree, spawnOwnedStdioProcess } from '../src/modules/harnesses/process.js'
-import { inheritedAgentEnvironment } from '../src/modules/harnesses/secrets.js'
+import { inheritedAgentEnvironment, redactSecretText } from '../src/modules/harnesses/secrets.js'
 import { nativeHttpIsolation, type NativeHttpIsolationInput } from './helpers/nativeHttpIsolation.js'
 
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1' || process.env.RUN_ENG03_C_NATIVE_TESTS === '1'
@@ -68,6 +68,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
       const { script, report } = await installProbe(input)
       let launchError: Error | undefined
       let diagnostics = ''
+      let transcript = ''
       const owned = spawnOwnedStdioProcess({
         binary: harnessBinaries(process.env).codexBinary,
         args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check',
@@ -80,14 +81,21 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         recovery: input.recovery,
         onError: error => { launchError = error },
       })
-      owned.child.stdout.resume()
+      owned.child.stdout.on('data', chunk => { transcript = (transcript + String(chunk)).slice(-4_000) })
       owned.child.stderr.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4_000) })
       const deadline = setTimeout(() => { void owned.close() }, 150_000)
       try {
         const outcome = await owned.closed
         if (launchError) throw launchError
-        if (outcome.exitCode !== 0) throw new Error(`Contained Codex exited before probe completion: ${diagnostics}`)
-        return { exitCode: outcome.exitCode, stdout: await readFile(report, 'utf8'), stderr: diagnostics }
+        const safeDiagnostics = redactSecretText(`${diagnostics}\n${transcript}`, [input.token])
+        if (outcome.exitCode !== 0) throw new Error(`Contained Codex exited before probe completion: ${safeDiagnostics}`)
+        let stdout: string
+        try { stdout = await readFile(report, 'utf8') }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          throw new Error(`Contained Codex did not complete its MCP startup probe: ${safeDiagnostics}`)
+        }
+        return { exitCode: outcome.exitCode, stdout, stderr: safeDiagnostics }
       } finally {
         clearTimeout(deadline)
         await owned.close()
