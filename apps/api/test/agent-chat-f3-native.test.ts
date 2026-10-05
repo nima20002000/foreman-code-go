@@ -33,10 +33,10 @@ function scopedCodexEntry(enabled = true) {
   const entry = appLauncherConnection()
   return { name: APP_MCP_SERVER_NAME, enabled, transport: { type: 'stdio', command: entry.executable, args: entry.arguments, env_vars: entry.environmentVariables } }
 }
-function scopedCodexCommand(args: readonly string[]) {
+function scopedCodexCommand(args: readonly string[], entry = scopedCodexEntry()) {
   if (args[1] === 'get' && args[2] !== APP_MCP_SERVER_NAME) return { exitCode: 1, stdout: '',
     stderr: `Error: No MCP server named '${args[2]}' found.` }
-  return { exitCode: 0, stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }
+  return { exitCode: 0, stdout: JSON.stringify(args[1] === 'list' ? [entry] : entry), stderr: '' }
 }
 function code(expected: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === expected
@@ -87,8 +87,7 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     })
   }
   it('A-R01: disabled Codex entry is credential-free while non-chat scoped validation remains mandatory', async () => {
-    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry(false)] : scopedCodexEntry(false)), stderr: '' }))
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args, scopedCodexEntry(false)))
     const { manager } = codex(), input = codexInput()
     const prepared = await manager['prepareInput'](input)
     assert.equal(prepared.scopedCredentialVariable, undefined); assert.equal(prepared.input.environment, undefined)
