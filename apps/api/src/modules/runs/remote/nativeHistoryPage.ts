@@ -31,7 +31,8 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
     metadata = pageJsonContinuation(fields, metadataRequest)
     value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
-      ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }) }
+      ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }),
+      ...(history.gap === undefined ? {} : { gap: history.gap }) }
     bytes = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(JSON.stringify(metadata))
     if (bytes > limit) throw new HarnessExecutionError('NATIVE_HISTORY_TOO_LARGE', 'Native history identifiers exceed the page limit.')
   }
