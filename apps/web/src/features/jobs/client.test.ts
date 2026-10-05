@@ -81,7 +81,8 @@ describe('job client identity and retry boundary', () => {
     server.use(http.get(`${root}/executions/:id/logs`, ({ request }) => { seen = request; return HttpResponse.json(logPage) }))
     await jobsClient.logs(execution.workspaceId, execution.id, execution.attemptId, 0)
     expect(new URL(seen!.url).searchParams.get('limit')).toBe('50')
-    expect(seen!.credentials).toBe('same-origin')
+    expect(seen!.credentials).toBe('omit')
+    expect(seen!.headers.has('Authorization')).toBe(false)
     await expect(jobsClient.logs(execution.workspaceId, execution.id, 'attempt-b', 0)).rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
   })
   it('retains explicit forbidden status', async () => {
