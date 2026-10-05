@@ -25,6 +25,8 @@ import { DomainError } from '../errors.js'
 import { MainWorkerConversationMcp } from './mainWorkerMcp.js'
 import type { PostgresAccessService } from '../access/postgres.js'
 import type { SelectedMainMcpForward } from '../placement/workerMcpRelay.js'
+import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
+import { workerOperatorDirectory } from './workerOperatorDirectory.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -102,6 +104,21 @@ export function createProductionWorkerConversations(input: {
         conversationId: options.conversationId, configurationVersionId: configuration.id,
         configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess })
+      if (requestedBinding.owner.kind === 'operator') {
+        const rootChannel = input.endpoint().captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
+        if (!rootChannel || !isDeepStrictEqual(rootChannel.binding, channel.binding)) {
+          unavailable('The selected worker’s approved runtime root is unavailable.')
+        }
+        const reply = await rootChannel.request({ version: 1, operation: 'workspace-roots.configuration' }, { signal })
+        const roots = ApprovedRootAllowlistSchema.parse(reply.payload)
+        if (reply.bytes !== undefined || !isDeepStrictEqual(roots.hostRef, host)
+          || roots.applicationInstallationId !== selector.target.applicationInstallationId
+          || !isDeepStrictEqual(input.endpoint().captureRequest(host.deviceId, 'execution-v1')?.binding, channel.binding)) {
+          unavailable('The selected worker root or connection changed.')
+        }
+        requestedBinding.workingDirectory = workerOperatorDirectory(roots.managedRuntimeRoot, requestedBinding.owner)
+        await profiles.revalidate(profileOwner, accepted)
+      }
       const binding = original.worker_conversation_binding
         ? WorkerConversationBindingSchema.parse(original.worker_conversation_binding) : requestedBinding
       const observationBinding = { ...binding, appMcpAccess: requestedBinding.appMcpAccess }
@@ -165,6 +182,7 @@ export function createProductionWorkerConversations(input: {
         if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
       }
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
+        sourceWorkingDirectory: options.workingDirectory,
         profile: async () => {
           const installation = input.registry.pinOverride(accepted.override).installation
           let qualification: HarnessQualification | null = null
@@ -191,6 +209,10 @@ export function createProductionWorkerConversations(input: {
       return { manager, inspector: manager.inspector }
     })
     admitted.manager.setSessionControlPrincipal = principalId => { caller = principalId }
+    admitted.manager.mcpInspectionContext = async signal => {
+      const manager = await admitted.actual(signal)
+      return manager.mcpInspectionContext!(signal)
+    }
     if (configuration.harness.harness === 'claude') {
       admitted.manager.startInitialTurn = async function* (start, turn, signal) {
         const manager = await admitted.actual(signal)

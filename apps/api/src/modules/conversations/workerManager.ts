@@ -31,6 +31,7 @@ interface ManagerOptions {
   current(request: WorkerConversationRpcRequest): Promise<void>
   observeSession?(session: NativeSessionReference): Promise<void>
   profile?(): Promise<WorkerConversationProfileFacts>
+  sourceWorkingDirectory?: string
 }
 
 /** Main's existing native port targets one conversation on its selected paired worker. */
@@ -90,7 +91,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const workingDirectory = sessionStartDirectory(start)
     const roleMatches = this.options.binding.owner.kind === 'operator' ? start.kind === 'operator' : start.kind === 'agent-chat'
     if (!roleMatches || commandInputHash(configuration) !== this.options.binding.owner.configurationHash
-      || workingDirectory !== this.options.binding.workingDirectory || !start.correlationId) {
+      || workingDirectory !== (this.options.sourceWorkingDirectory ?? this.options.binding.workingDirectory) || !start.correlationId) {
       conflict('The native startup differs from its saved conversation admission.')
     }
     const owner = this.options.binding.owner
@@ -146,6 +147,9 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async inspectMcp(signal?: AbortSignal) {
     return McpDetectionSchema.parse(await this.request({ method: 'conversation.inspect-mcp', configuration: this.options.configuration }, signal))
+  }
+  async mcpInspectionContext() {
+    return { runnerId: `device:${this.options.channel.binding.deviceId}`, workingDirectory: this.options.binding.workingDirectory }
   }
   readonly inspector: NativeMcpInspector = { inspect: async input => {
     const value = WorkerMcpInspectionSchema.parse(await this.request({

@@ -63,11 +63,13 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
         reason: 'The selected Operator settings disable Foreman Code MCP. Enable that connection in Operator advanced settings before sending a new message.' }
     }
     if (!this.inspectorFor) this.invalidSetup()
-    const inspected = await this.inspectorFor(manager).inspect({ harness: manager.harness, runnerId: 'runner-local',
-      workingDirectory: this.directory, serverName: APP_MCP_SERVER_NAME, phase: 'configuration', signal })
+    const context = manager.mcpInspectionContext ? await manager.mcpInspectionContext(signal)
+      : { runnerId: 'runner-local', workingDirectory: this.directory }
+    const inspected = await this.inspectorFor(manager).inspect({ harness: manager.harness, ...context,
+      serverName: APP_MCP_SERVER_NAME, phase: 'configuration', signal })
     signal.throwIfAborted()
-    if (inspected.harness !== manager.harness || inspected.runnerId !== 'runner-local'
-      || inspected.workingDirectory !== this.directory) throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH',
+    if (inspected.harness !== manager.harness || inspected.runnerId !== context.runnerId
+      || inspected.workingDirectory !== context.workingDirectory) throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH',
       'Native MCP inspection returned another Operator launch context.', 500)
     const entry = inspected.entry
     if (!entry) return { ...result, status: 'setup_required' }

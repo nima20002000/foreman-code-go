@@ -114,3 +114,29 @@ it('carries Plan and context through the issued-request bridge without creating 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('maps the admitted Main startup directory to the actual selected worker directory', async () => {
+  const f = workerConversationFixture()
+  if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
+  const bridge = new MainWorkerConversationBridge()
+  const requests: unknown[] = []
+  const manager = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration,
+    sourceWorkingDirectory: '/main/operator', bridge, current: async () => {},
+    channel: { binding: f.connection, request: async request => {
+      requests.push(request)
+      return { payload: { receipt: { binding: f.binding, connection: f.connection,
+        revision: 1, closed: false, closing: false, session: f.session, nativeOwner: f.nativeOwner,
+        turns: [], compactions: [], desiredPreferences: null, appliedPreferences: null } } }
+    } } })
+  const start: NativeSessionStart = { kind: 'operator', configuration: f.configuration,
+    workingDirectory: '/main/operator', correlationId: 'first-message' }
+  try {
+    expect(await manager.mcpInspectionContext()).toEqual({ runnerId: `device:${f.connection.deviceId}`,
+      workingDirectory: f.binding.workingDirectory })
+    expect(await manager.createSession(start)).toEqual(f.session)
+    expect(requests).toMatchObject([{ method: 'conversation.open', binding: { workingDirectory: f.binding.workingDirectory } }])
+    await expect(manager.createSession({ ...start, workingDirectory: '/foreign/startup' }))
+      .rejects.toThrow('startup differs')
+    expect(requests).toHaveLength(1)
+  } finally { await manager.dispose(); bridge.close() }
+})
