@@ -18,6 +18,7 @@ import {
   JobNetworkPolicySchema, JobResourceRequestSchema, JobVerificationApprovalConfigInputSchema,
   JobVerificationApprovalConfigSchema, JobVerificationPolicyRequirementsSchema, JobVerificationProfileIdentitySchema,
 } from './jobVerificationPolicy.js'
+import { SourceProjectQuotaSlotSchema } from './sourceMaterialization.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt } from './jobVerificationSeed.js'
 
@@ -86,12 +87,25 @@ const ToolIdentity = z.object({
 /** Version 3 belongs to verification; saved build fingerprints retain their original version and evidence. */
 export const JobVerificationRuntimeFingerprintSchema = z.object({
   ...ProvisionedJobRuntimeFingerprintSchema.shape,
+export const JobVerificationQuotaPoolSchema = z.object({
+  queryExecutable: z.string().startsWith('/').max(2048), queryBinarySha256: DeviceDigestSchema,
+  blockDevice: z.string().startsWith('/dev/').max(2048),
+  volumeCapacityInodes: DeviceSafeIntegerSchema.positive(),
+  slots: z.array(SourceProjectQuotaSlotSchema).min(1).max(64),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.slots.map(slot => slot.namespace)).size !== value.slots.length
+    || new Set(value.slots.map(slot => slot.projectId)).size !== value.slots.length) {
+    context.addIssue({ code: 'custom', message: 'Quota slots require distinct namespaces and project identities.' })
+  }
+})
+export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSchema>
   schemaVersion: z.literal(3),
   workspaceLayout: z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT),
   network: JobNetworkPolicySchema,
   resources: JobResourceRequestSchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
   tools: z.array(ToolIdentity).max(16),
+  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   seedReceiptSha256: DeviceDigestSchema,
   sourceCommit: JobVerificationPrivateGitSchema.shape.sourceCommit.optional(),
 }).strict().superRefine((value, context) => {
@@ -103,6 +117,20 @@ export const JobVerificationRuntimeFingerprintSchema = z.object({
   }
   if (new Set(value.tools.map(tool => tool.kind)).size !== value.tools.length) {
     context.addIssue({ code: 'custom', message: 'Tool identities must be unique.' })
+  if (value.quotaPool) {
+    const slots = value.quotaPool.slots
+    if (slots.some(slot => slot.projectId === value.quota.controlProjectId
+      || slot.filesystem.device !== value.root.binding.filesystem.device
+      || slot.filesystem.mountId !== value.root.binding.filesystem.mountId
+      || slot.hardLimitBytes !== value.resources.limits.diskBytes
+      || slot.hardInodes !== value.resources.mutableInodes)
+      || slots.reduce((bytes, slot) => bytes + slot.hardLimitBytes, value.quota.controlHardLimitBytes)
+        > Math.min(value.quota.volumeCapacityBytes, value.deviceLimits.diskBytes)
+      || slots.reduce((inodes, slot) => inodes + slot.hardInodes, value.quota.controlHardInodes)
+        > value.quotaPool.volumeCapacityInodes) {
+      context.addIssue({ code: 'custom', message: 'Independent Job quotas and control storage must fit the installed volume.' })
+    }
+  }
   }
 })
 
@@ -316,6 +344,7 @@ export const InstalledJobRuntimeDescriptorRecordSchema = z.union([
   JobVerificationInstalledRuntimeDescriptorSchema,
 ])
 export const JobRuntimeNativeAdmissionRecordSchema = z.union([
+  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema,
 ])
 export type JobRuntimeNativeAdmissionRecord = z.infer<typeof JobRuntimeNativeAdmissionRecordSchema>
