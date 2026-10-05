@@ -668,6 +668,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)
     const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(override.structuredContent)
+    await f.jobs.wakeQueue()
     const overrideTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, overrideAdmission.admission.ticket.id)
     expect(overrideTicket).toMatchObject({ placement: overrideInput.placementOverride,
       placementOverride: overrideInput.placementOverride, definition })

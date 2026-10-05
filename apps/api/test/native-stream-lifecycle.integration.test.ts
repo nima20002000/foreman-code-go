@@ -207,15 +207,25 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     const runId = accepted.run.id
     const scope = { ...f.f.scope, runId }
     let task: Promise<void> | undefined
+    let phase = 'waiting for both providers to pause'
+    const progress = setTimeout(() => {
+      console.info('Native stream progress', {
+        phase, publishedFrames, dispatchFailures: operator.dispatchErrors.length,
+      })
+    }, 30_000)
     try {
       await entered.promise
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
-      await initialFramesPublished.promise
+      task = f.engine.start(runId)
+      phase = 'waiting for the initial publication'
+      await Promise.race([initialFramesPublished.promise, task.then(() => {
+        throw new Error('The streaming Run finished before its paused providers were released.')
+      })])
       const streaming = await f.db.pool.query<{ count: number }>(
         `select count(*)::int as count from harness_native_events n join harness_executions e on e.id=n.execution_id
          where e.run_id=$1 and n.record->>'type'='native.notification'`, [runId])
       expect(streaming.rows[0]?.count).toBe(64)
-      task = f.engine.start(runId)
+      phase = 'reading the original Start replay'
       const replay = await graphRpc(operator.app, operator.writer.token, 'tools/call', {
         name: 'run_start', arguments: operator.input,
       })
@@ -225,8 +235,10 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
       await f.engine.reconcile()
       expect(f.engine.start(runId)).toBe(task)
+      phase = 'draining the remaining output'
       release.resolve()
       await task
+      phase = 'reading the stored frames and graph sources'
       expect((await f.runs.get(runId))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
       expect(batches.every((count) => count > 0 && count <= 16)).toBe(true)
@@ -247,6 +259,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(sources.rows[0]?.count).toBe(512)
       expect(publicationMs).toBeLessThan(10_000)
       expect(await f.runs.hasPendingCleanup(runId)).toBe(false)
+      phase = 'comparing graph readbacks'
       await (await graphParity(f.db.pool, scope)).compare()
       const read = await graphRpc(operator.app, operator.reader.token, 'tools/call', { name: 'run_get',
         arguments: { workspaceId: scope.workspaceId, runId } })
@@ -259,6 +272,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(operator.dispatchErrors).toEqual([])
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
     } finally {
+      clearTimeout(progress)
       release.resolve()
       if (task) await task.catch(() => undefined)
     }
