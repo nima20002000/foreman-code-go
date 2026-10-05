@@ -28,19 +28,21 @@ async function endpoint(f: Fixture, service = f.service) {
     void reply.code(status).send({ error: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })
   })
   registerFileToolsMcp(app, service)
-  await app.ready()
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
   async function rpc(method: string, params: unknown, token = f.token) {
-    const response = await app.inject({ method: 'POST', url: FILE_TOOLS_MCP_PATH,
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method, params } })
-    const line = response.body.split('\n').find((value) => value.startsWith('data: '))
-    const result = JSON.parse(line ? line.slice(6) : response.body) as {
+    const response = await fetch(new URL(FILE_TOOLS_MCP_PATH, address), { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })
+    const body = await response.text()
+    const line = body.split('\n').find((value) => value.startsWith('data: '))
+    const result = JSON.parse(line ? line.slice(6) : body) as {
       result?: { tools?: { name: string }[]; structuredContent?: unknown; isError?: boolean; content?: { text: string }[] }
       error?: unknown
     }
-    return { status: response.statusCode, body: result }
+    return { status: response.status, body: result }
   }
-  return { app, rpc }
+  return { app, rpc, address }
 }
 
 describe('FIL-05 authenticated file tools over FIL-03', () => {
@@ -48,18 +50,22 @@ describe('FIL-05 authenticated file tools over FIL-03', () => {
     const f = await fileToolFixture()
     const token = await f.sessions.issueForAcceptedSession(f.context,
       new Date(f.clock().getTime() + 60_000), 'opencode')
-    const { app, rpc } = await endpoint(f)
-    const mountId = randomUUID(), headers = { host: 'localhost', authorization: `Bearer ${token}`,
-      accept: 'application/json, text/event-stream' }
-    const call = (id: string) => app.inject({ method: 'POST', url: `${FILE_TOOLS_MCP_PATH}/opencode/${id}`,
-      headers, payload: { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} } })
+    const { app, rpc, address } = await endpoint(f)
+    const mountId = randomUUID(), headers = { authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream', 'content-type': 'application/json' }
+    const call = async (id: string) => {
+      const response = await fetch(new URL(`${FILE_TOOLS_MCP_PATH}/opencode/${id}`, address), { method: 'POST',
+        headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
+      await response.text()
+      return response
+    }
     try {
       expect((await rpc('tools/list', {}, token)).status).toBe(401)
-      expect((await call(mountId)).statusCode).toBe(401)
+      expect((await call(mountId)).status).toBe(401)
       const unmount = mountOpenCodeFileMcp(app, mountId, f.service)
-      expect((await call(mountId)).statusCode).toBe(200)
+      expect((await call(mountId)).status).toBe(200)
       unmount()
-      expect((await call(mountId)).statusCode).toBe(401)
+      expect((await call(mountId)).status).toBe(401)
     } finally { await app.close() }
   })
   it('routes permitted reference list/read through the read-only resolver', async () => {
