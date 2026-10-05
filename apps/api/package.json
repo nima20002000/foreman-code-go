@@ -10,7 +10,7 @@
     "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0",
     "test": "node ../../scripts/heavy-job.mjs -- vitest run --maxWorkers=4 --exclude '**/*.integration.test.ts' --exclude '**/*.acceptance.test.ts'",
     "test:integration": "node ../../scripts/heavy-job.mjs --timeout-ms 9000000 -- vitest run .integration.test.ts --no-file-parallelism",
-    "test:acceptance": "node ../../scripts/heavy-job.mjs -- sh -c \"RUN_ENG03_C_NATIVE_TESTS=1 vitest run test/eng03-c-native.acceptance.test.ts\"",
+    "test:acceptance": "node ../../scripts/heavy-job.mjs -- sh -c \"RUN_ENG03_C_NATIVE_TESTS=1 vitest run test/eng03-c-native.acceptance.test.ts test/local-human-native.acceptance.test.ts\"",
     "credential": "node --import tsx src/cli/operatorCredentials.ts",
     "harness:check": "node --import tsx src/cli/harnessCompatibility.ts",
     "qualify:harness": "node ../../scripts/qualify-harness.mjs",

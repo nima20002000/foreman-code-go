@@ -44,13 +44,13 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * registration are retained. Only provider transport and filesystem identity
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
-  options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+  options: { databaseUrl?: string; acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
     approvalNodeIds?: string[]; insertRun?: boolean; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
-  const db = await agent3Database()
+  const db = await agent3Database(options.databaseUrl)
   const engines: LangGraphWorkflowEngine[] = []
   try {
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
