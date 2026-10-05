@@ -317,7 +317,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     if (blocked('agent_chat:cancel') || !state?.conversation || state.turns.find((turn) => turn.requestId === turnRequestId)?.delivery !== 'queued') return
     runCommand(() => ({ kind: 'cancel', conversationId: state.conversation!.id, requestId: `agent-chat-cancel-${crypto.randomUUID()}`, turnRequestId }))
   }
-  const respond = (optionId: string, response?: Extract<AgentChatCommand, { kind: 'respond' }>['response']) => {
+  const respond = (optionId: string, response?: Extract<Command, { kind: 'respond' }>['response']) => {
     if (blocked('agent_chat:respond') || !state?.conversation || !approvalReplyAvailable(state)
       || !state.pendingInteraction?.responseOptions.some((option) => option.optionId === optionId)) return
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
