@@ -3,7 +3,7 @@ import { isDeepStrictEqual as same } from 'node:util'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type NativeSessionReference } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
 import { TransferContextSchema, type TransferContext } from '@foreman-code/contracts/byte-transfer'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedWorkflowArtifactPublication, MainArtifactContext } from '../../files/distributed/publication.js'
 import type { FileToolContext } from '../../files/tools/types.js'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
@@ -18,7 +18,7 @@ import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { RepeatNativeEvidence } from '../repeatNativeRepository.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import type { RunOwnership } from '../ownership.js'
-import { codexChatFileTools } from '../../harnesses/codexFiles/declarations.js'
+import { workflowArtifactFilePolicy } from '../../harnesses/workflowArtifactPolicy.js'
 import type { PostgresArtifactPublicationAuthority } from './nativeArtifactAuthority.js'
 import { DomainError } from '../../errors.js'
 
@@ -40,7 +40,7 @@ interface Admission {
   proofId: string
   sourceDigest: string
   session: NativeSessionReference
-  attempt: AcceptedArtifactPublication['attempt']
+  attempt: AcceptedWorkflowArtifactPublication['attempt']
   agentConfigurationVersionId: string
   workingDirectory: string
   runtimeDirectory: string
@@ -56,10 +56,10 @@ export class WorkflowNativeFileContextAdmission {
   constructor(private readonly mainId: string, private readonly ports: WorkflowNativeFileContextPorts) {}
   /** Later captures read the first durable admission. Their proof never replaces its original source. */
   async resolveOrAdmitLocked(sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord,
-    rawTransfer: TransferContext): Promise<AcceptedArtifactPublication> {
+    rawTransfer: TransferContext | MainArtifactContext): Promise<AcceptedWorkflowArtifactPublication> {
     assertGraphTransaction(sql)
     try {
-      const capture = this.ports.captures.read(evidence), transferContext = TransferContextSchema.parse(rawTransfer)
+      const capture = this.ports.captures.read(evidence), location = 'kind' in rawTransfer ? rawTransfer : TransferContextSchema.parse(rawTransfer)
       if (!capture.lane?.providerId || !['event', 'history'].includes(capture.source.type)
         || capture.source.type === 'history' && (capture.source.history.terminalTurn !== undefined
           || capture.source.history.nativeTurnId !== undefined && capture.source.history.nativeTurnId !== capture.lane.providerId)
@@ -76,7 +76,7 @@ export class WorkflowNativeFileContextAdmission {
         "select id,record from operator_conversations where agent_key=$1 and kind='agent' and deleted_at is null for share", [key])).rows
       if (rows.length === 0) {
         if (capture.source.type === 'event' && capture.source.event.type !== 'turn.started') return denied()
-        return await this.admitLocked(sql, evidence, proof, transferContext)
+        return await this.admitLocked(sql, evidence, proof, location)
       }
       if (rows.length !== 1) return conflict()
       const conversation = rows[0]!, admission = conversation.record.workflowFileContext
@@ -91,7 +91,8 @@ export class WorkflowNativeFileContextAdmission {
         || admission.attempt.nodeId !== intent.nodeId || admission.attempt.attemptId !== intent.attemptId
         || admission.attempt.placementHash !== intent.bindingHash || admission.attempt.workspaceId !== proof.scope.workspaceId
         || admission.attempt.workflowId !== proof.scope.workflowId) return conflict()
-      const accepted = { context: admission.context, attempt: ArtifactAttemptSchema.parse(admission.attempt), transferContext }
+      const accepted = { context: admission.context, attempt: ArtifactAttemptSchema.parse(admission.attempt),
+        ...('kind' in location ? { location } : { transferContext: location }) }
       const fence = await capture.owner.readOneShotFence(sql)
       const verify = async () => {
         capture.assertCurrent(); capture.owner.assertOwned()
@@ -148,12 +149,12 @@ export class WorkflowNativeFileContextAdmission {
     } catch (error) { poisonGraphTransaction(sql); throw error }
   }
   async admitLocked(sql: GraphTransactionSql, evidence: RepeatNativeEvidence, rawProof: WorkflowNativeProofRecord,
-    rawTransfer: TransferContext): Promise<AcceptedArtifactPublication> {
+    rawTransfer: TransferContext | MainArtifactContext): Promise<AcceptedWorkflowArtifactPublication> {
     assertGraphTransaction(sql)
     try {
       const proof = structuredClone(rawProof)
-      const capture = this.ports.captures.read(evidence), transferContext = TransferContextSchema.parse(rawTransfer)
-      if (capture.session.harness !== 'codex' || !capture.lane?.providerId || !capture.closureGeneration
+      const capture = this.ports.captures.read(evidence), location = 'kind' in rawTransfer ? rawTransfer : TransferContextSchema.parse(rawTransfer)
+      if (!['codex', 'opencode'].includes(capture.session.harness) || !capture.lane?.providerId || !capture.closureGeneration
         || !['event', 'history'].includes(capture.source.type)
         || capture.source.type === 'history' && (capture.source.history.terminalTurn !== undefined
           || capture.source.history.nativeTurnId !== undefined && capture.source.history.nativeTurnId !== capture.lane.providerId) || capture.owner.runId !== proof.scope.runId
@@ -202,14 +203,14 @@ export class WorkflowNativeFileContextAdmission {
       const execution = HarnessExecutionSchema.parse(row.execution), configuration = AgentConfigurationVersionSchema.parse(row.configuration)
       if (!['running', 'waiting'].includes(execution.state) || !execution.workingDirectory || !execution.runtimeDirectory
         || !same(repeatExecutionIdentity(execution), proof.execution) || execution.runId !== proof.scope.runId
-        || execution.nativeSessionId !== capture.session.nativeSessionId || configuration.harness.harness !== 'codex'
+        || execution.nativeSessionId !== capture.session.nativeSessionId || configuration.harness.harness !== capture.session.harness
         || configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId
         || configuration.workspaceId !== row.workspace_id || execution.workingDirectory !== capture.execution.workingDirectory
         || execution.runtimeDirectory !== capture.execution.runtimeDirectory || !same(execution.input, capture.execution.input)) return denied()
       const principal = await readLiveManagementPrincipal(sql, row.authorization_principal_id)
       const resource = { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: execution.runId }
       requireAuthorization(principal, 'agent_chat:read', resource)
-      const allowMutation = configuration.harness.sandbox === 'workspace-write'
+      const { allowMutation, allowedTools } = workflowArtifactFilePolicy(configuration.harness)
       if (allowMutation) requireAuthorization(principal, 'agent_chat:write', resource)
       const attempt = ArtifactAttemptSchema.parse({ workspaceId: row.workspace_id, workflowId: row.workflow_id,
         runId: execution.runId, nodeId: execution.workflowNodeId, executionId: execution.id,
@@ -219,7 +220,7 @@ export class WorkflowNativeFileContextAdmission {
       const context: FileToolContext = { ownerPrincipalId: principal.id, scope: { kind: 'temporary', chat: {
         kind: 'agent', conversationId, ...resource, executionId: execution.id, agentId: execution.agentId } },
       nativeSessionId: capture.session.nativeSessionId, turnId: capture.lane.providerId, allowMutation,
-      allowedTools: codexChatFileTools(configuration.harness) }
+      allowedTools }
       const admission: Admission = { version: 1, conversationKey: key, commandId: proof.commandId, proofId: proof.proofId,
         sourceDigest: repeatDigest(proof, 4 * 1024 * 1024), session: capture.session, attempt,
         agentConfigurationVersionId: configuration.id, workingDirectory: execution.workingDirectory,
@@ -249,7 +250,7 @@ export class WorkflowNativeFileContextAdmission {
         [conversationId, key, row.workspace_id, row.workflow_id, execution.workflowNodeId, execution.agentId, configuration.id,
           execution.runId, execution.id, capture.session.harness, capture.session.providerVersion, capture.session.nativeSessionId, JSON.stringify(conversationRecord)])
         if (conversation.rowCount !== 1) return conflict()
-        const accepted = { context, attempt, transferContext }
+        const accepted = { context, attempt, ...('kind' in location ? { location } : { transferContext: location }) }
         const caller = await this.ports.authority.authorize(accepted, sql)
         if (caller.principal.id !== principal.id || !same(caller.context, context)) return denied()
       }
@@ -272,7 +273,7 @@ export class WorkflowNativeFileContextAdmission {
         try { await verifyCapture(); await verifyContext() }
         catch (error) { poisonGraphTransaction(sql); throw error }
       })
-      return structuredClone({ context, attempt, transferContext })
+      return structuredClone({ context, attempt, ...('kind' in location ? { location } : { transferContext: location }) })
     } catch (error) { poisonGraphTransaction(sql); throw error }
   }
 }

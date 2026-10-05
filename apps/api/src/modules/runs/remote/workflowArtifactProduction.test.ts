@@ -5,7 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import type { FastifyRequest } from 'fastify'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { ArtifactAttempt } from '@foreman-code/contracts/artifact-edges'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedArtifactPublication, AcceptedWorkflowArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import { registerGraphqlMcp } from '../../../mcp/unified/transport.js'
 const ports = vi.hoisted(() => ({ receiver: vi.fn(), artifacts: vi.fn() }))
@@ -28,7 +28,8 @@ function fixture(write = false) {
       runId: 'run', executionId: 'execution', agentId: 'agent' } } } } as AcceptedArtifactPublication
   const auth = { authenticate: vi.fn(async () => principal), producer: vi.fn(async () => accepted),
     consumer: vi.fn(async () => ({ attempt, authority: { principalId: 'owner', grantId: 'grant', grantRevision: '1' } })) }
-  const receiver = { authorization: auth, reader: {}, admit: vi.fn(async () => ({ transferId: randomUUID() })), close: vi.fn() }
+  const consumerContext = vi.fn<() => Promise<AcceptedWorkflowArtifactPublication>>(async () => auth.producer())
+  const receiver = { authorization: { ...auth, consumerContext }, reader: {}, admit: vi.fn(async () => ({ transferId: randomUUID() })), close: vi.fn() }
   const artifacts = { edges: { readAccepted: vi.fn(async () => ({ original: 'edge-read' })) },
     publications: { publishAccepted: vi.fn(async () => ({ original: 'publication' })) } }
   ports.receiver.mockReturnValue(receiver); ports.artifacts.mockReturnValue(artifacts)
@@ -38,7 +39,7 @@ function fixture(write = false) {
   const registerTool = vi.fn(), server = { registerTool } as unknown as McpServer
   const call = (name: string, args: unknown = {}) => mounted.extension.call(request, principal,
     { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })
-  return { app, principal, accepted, attempt, auth, receiver, artifacts, commands, mounted, request, server, registerTool, call }
+  return { app, principal, accepted, attempt, consumerContext, auth, receiver, artifacts, commands, mounted, request, server, registerTool, call }
 }
 it.each([false, true])('discovers only actual saved read/mutation capabilities (write=%s)', async write => {
   const f = fixture(write); await f.mounted.extension.register(f.server, f.request, f.principal)
@@ -61,6 +62,17 @@ it.each(['files.admit_transferred_result', 'files.publish_transferred_result', '
   expect(await f.call(name)).toMatchObject({ result: { isError: true } })
   expect(f.commands.recordDenied).toHaveBeenCalledExactlyOnceWith(f.principal.id, 'mcp', name, `artifact:${name}`)
   expect(f.receiver.admit).not.toHaveBeenCalled(); expect(f.artifacts.publications.publishAccepted).not.toHaveBeenCalled()
+})
+it('discovers and reads Main artifact inputs without manufacturing a device publication', async () => {
+  const f = fixture()
+  f.consumerContext.mockResolvedValue({ attempt: f.attempt, context: f.accepted.context,
+    location: { kind: 'main', mainId: randomUUID() } })
+  f.auth.producer.mockRejectedValue(new DomainError('WORKFLOW_ARTIFACT_DENIED', 'Main uses local publication.', 403))
+  await f.mounted.extension.register(f.server, f.request, f.principal)
+  expect(f.registerTool.mock.calls.map(call => call[0])).toEqual(['files.read_edge_input'])
+  expect(await f.call('files.read_edge_input', { edgeId: randomUUID(), offset: 0, length: 3 }))
+    .toMatchObject({ result: { structuredContent: { original: 'edge-read' } } })
+  expect(f.artifacts.publications.publishAccepted).not.toHaveBeenCalled()
 })
 it('requires genuine consumer authority separately from the publisher context', async () => {
   const f = fixture(true); f.auth.consumer.mockRejectedValue(new DomainError('WORKFLOW_ARTIFACT_DENIED', 'consumer denied', 403))

@@ -96,6 +96,7 @@ async function fixture() {
   const authority = { resolveWorkflowContext: vi.fn(async (currentAttempt, context) => {
     void currentAttempt
     if (!state.contextAvailable) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'unit absent', 409)
+    if ('kind' in context) return { attempt: structuredClone(accepted.attempt), context: structuredClone(accepted.context), location: context }
     return { ...structuredClone(accepted), transferContext: context }
   }), authorize: vi.fn(async value => {
     if (state.ownerRevoked) throw new DomainError('AUTH_REVOKED', 'unit owner revoked', 401)
@@ -115,6 +116,27 @@ async function fixture() {
   return { root, placement, intent, attempt, accepted, worker, row, state, access, authority, fence, endpoint,
     receiver, create, bytes, declaration, send, append, frame }
 }
+it('authenticates a Main artifact consumer without a device channel and rechecks the same grant', async () => {
+  const t = await fixture()
+  const { bindingHash: previousHash, ...pins } = t.placement
+  const placement = freezePlacement({ ...pins, hostRef: { kind: 'main', mainId: t.placement.mainId }, registration: null })
+  expect(placement.bindingHash).not.toBe(previousHash)
+  const intent = deriveDispatch(placement, { executionId: t.intent.executionId, attemptId: t.intent.attemptId,
+    operationId: t.intent.operationId, occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1,
+    inputDigest: t.intent.inputDigest, owner: t.intent.owner })
+  t.attempt.placementHash = placement.bindingHash
+  vi.mocked(readAcceptedPlacement).mockResolvedValue(placement)
+  vi.mocked(readDispatchIntent).mockResolvedValue(intent)
+  vi.mocked(readReconciledDispatchIntent).mockResolvedValue(intent)
+  t.state.current = undefined
+  const context = await t.receiver.authorization.consumerContext(request())
+  expect(context).toMatchObject({ location: { kind: 'main', mainId: placement.mainId }, attempt: t.attempt })
+  expect(t.endpoint.currentBinding).not.toHaveBeenCalled()
+  expect(await t.receiver.authorization.consumer(request())).toEqual({ attempt: t.attempt,
+    authority: { principalId: 'original-run-owner', grantId: intent.owner.grantId, grantRevision: intent.owner.epoch } })
+  t.state.grantLive = false
+  await expect(t.receiver.authorization.consumer(request())).rejects.toMatchObject({ code: 'FILE_EDGE_DENIED' })
+})
 function isSame(a: unknown, b: unknown) { return JSON.stringify(a) === JSON.stringify(b) }
 
 describe('accepted workflow artifact receiver', () => {

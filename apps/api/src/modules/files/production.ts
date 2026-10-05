@@ -1,3 +1,4 @@
+import { MainArtifactPublications, PostgresMainPublicationLedger } from './distributed/mainPublication.js'
 import { CanonicalNativeArtifactResults } from './distributed/nativeResults.js'
 import { DistributedArtifactPublicationService, type ArtifactPublicationAuthority, type VerifiedArtifactReader } from './distributed/publication.js'
 import { PostgresDistributedPublicationLedger } from './distributed/publicationLedger.js'
@@ -70,10 +71,12 @@ export function createProductionDistributedArtifacts(input: { pool: pg.Pool; fil
   mainId: string; attempts: AcceptedArtifactAttemptFence; authority: ArtifactPublicationAuthority; transfers: VerifiedArtifactReader }) {
   if (!productionStores.has(input.files)) throw new DomainError('NATIVE_ARTIFACT_STORE_UNAVAILABLE', 'The original production file store is required.', 503)
   const ledger = new PostgresDistributedPublicationLedger(input.pool)
-  const results = new CanonicalNativeArtifactResults(input.files, ledger, input.authority)
+  const mainPublications = new MainArtifactPublications(input.files, new PostgresMainPublicationLedger(input.pool), input.authority)
+  const results = new CanonicalNativeArtifactResults(input.files, ledger, input.authority, () => new Date(), mainPublications)
   const edges = new ArtifactEdgeService(new PostgresArtifactEdgeRepository(input.pool), input.files.repository, input.files.bytes,
     new PostgresArtifactEdgeAuthorization(input.attempts))
   return {
+    mainPublications,
     publications: new DistributedArtifactPublicationService(input.files, ledger, input.transfers, input.authority),
     results, edges,
     outputs: new NativeArtifactOutputs(results, new PostgresNativeArtifactOutputRepository(input.pool, input.mainId), input.authority, edges),

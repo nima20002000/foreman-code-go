@@ -1,4 +1,5 @@
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
+import type { MainArtifactContext } from '../../files/distributed/publication.js'
 import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import type { RepeatNativeEvidence } from '../repeatNativeRepository.js'
@@ -7,12 +8,12 @@ import { WorkflowNativeFileContextAdmission, type WorkflowNativeFileContextPorts
 
 /** Called only after the original proof is stored, on that same open G1. */
 export function createProductionWorkflowFileContexts(mainId: string, ports: WorkflowNativeFileContextPorts & {
-  transferContext(capture: WorkflowNativeCapture): TransferContext | undefined
+  transferContext(capture: WorkflowNativeCapture): TransferContext | MainArtifactContext | undefined
 }) {
   const admission = new WorkflowNativeFileContextAdmission(mainId, ports)
   return async (sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord): Promise<void> => {
     const capture = ports.captures.read(evidence)
-    if (capture.session.harness !== 'codex' || !capture.lane?.providerId
+    if (!['codex', 'opencode'].includes(capture.session.harness) || !capture.lane?.providerId
       || !['running', 'waiting'].includes(capture.execution.state)
       || capture.source.type !== 'event' && capture.source.type !== 'history'
       || capture.source.type === 'event' && capture.source.event.type !== 'turn.started'

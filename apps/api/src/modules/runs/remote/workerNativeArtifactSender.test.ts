@@ -26,7 +26,7 @@ import type { CodexNativeOutputQualificationInput, CodexNativeOutputTurnPin } fr
 import { ArtifactEdgeService } from '../../files/distributed/edges.js'
 import { registerDistributedArtifacts } from '../../files/distributed/adapters.js'
 import { CanonicalNativeArtifactResults } from '../../files/distributed/nativeResults.js'
-import { NativeArtifactOutputs, type NativeArtifactOutput } from './nativeArtifactOutputs.js'
+import { NativeArtifactOutputs, type WorkflowNativeArtifactOutput } from './nativeArtifactOutputs.js'
 import { DomainError } from '../../errors.js'
 import { createInstalledNativeOutputs } from './installedNativeOutput.js'
 import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
@@ -148,7 +148,7 @@ async function installedProducer(t: Awaited<ReturnType<typeof fixture>>) {
       bindingRevision: t.rootBinding.rootBindingRevision } } } as InstalledWorkflowNativeOutputContext['materialization'],
     assertCurrent: vi.fn(async () => {}),
     // Recorded native qualification/closure boundaries only; no native process is claimed by this fixture.
-    qualifyNativeOutput: vi.fn(async () => {}), closeNativeOutputWriters: vi.fn(async () => {}),
+    qualifyNativeOutput: vi.fn(async () => {}), qualifyOpenCodeNativeOutput: vi.fn(async () => {}), qualifyBufferedCodexNativeOutput: vi.fn(async () => {}), closeNativeOutputWriters: vi.fn(async () => {}),
     applicationAccess: () => ({ kind: 'scoped-worker-mcp', token: t.token, agentId,
       executionId: t.intent.executionId, attemptId: t.intent.attemptId, operationId: t.intent.operationId,
       bindingHash: t.intent.bindingHash }),
@@ -297,7 +297,7 @@ describe('original worker-native artifact sender', () => {
     expect(t.f.repository.allocations.size).toBe(1)
     expect(producer.publications.read(result)).toMatchObject({ output: { kind: 'published-artifacts', result },
       artifactDigests: [hash(t.body)] })
-    const outputs = new Map<string, NativeArtifactOutput>()
+    const outputs = new Map<string, WorkflowNativeArtifactOutput>()
     const native = new NativeArtifactOutputs(new CanonicalNativeArtifactResults(t.files, {
       read: async (_owner, id) => t.links.get(id), linkPublication: async () => { throw new Error('Read only') },
     }, t.authority, t.f.clock), {

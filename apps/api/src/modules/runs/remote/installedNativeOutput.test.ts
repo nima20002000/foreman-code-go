@@ -91,7 +91,8 @@ describe('installed native common composition, no native qualification', () => {
     const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
     if (f.scope.chat.kind !== 'agent') throw new Error('fixture')
     vi.mocked(f.ports.authorize).mockResolvedValue({ ...f.scope, chat: { ...f.scope.chat, executionId: 'foreign' } })
-    await expect(bridge.activate(f.pin, f.signal)).rejects.toThrow()
+    await bridge.activate(f.pin, f.signal)
+    await expect(bridge.dispatch(f.command(), f.callback(), f.signal)).rejects.toThrow()
     expect(f.reserve).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([])
   })
   it('carries each original callback through authority awaits without a latest-call slot', async () => {
@@ -104,13 +105,14 @@ describe('installed native common composition, no native qualification', () => {
     expect(await readdir(f.root)).toEqual([])
     expect((await bridge.dispatch(f.command(), f.callback(), f.signal)).operation).toBe('create')
   })
-  it('drains an in-flight activation after withdrawal before completing close', async () => {
+  it('drains in-flight registry admission after withdrawal before completing close', async () => {
     const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
     let release!: () => void, entered!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     const started = new Promise<void>(resolve => { entered = resolve })
     vi.mocked(f.ports.authorize).mockImplementationOnce(async () => { entered(); await gate; return f.scope })
-    const opening = bridge.activate(f.pin, f.signal)
+    await bridge.activate(f.pin, f.signal)
+    const opening = bridge.dispatch(f.command(), f.callback(), f.signal)
     const rejected = expect(opening).rejects.toThrow()
     await started
     let closed = false

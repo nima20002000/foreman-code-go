@@ -17,7 +17,7 @@ import { DistributedArtifactPublicationService, type AcceptedArtifactPublication
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import { NativeArtifactOutputs, type NativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
+import { NativeArtifactOutputs, type WorkflowNativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
 import { WorkflowArtifactResultAdoption, type VerifiedWorkflowArtifactSource } from './workflowArtifactResultAdoption.js'
 
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex')
@@ -85,7 +85,7 @@ async function fixture(keys = ['report']) {
   const publisher = new DistributedArtifactPublicationService(files, ledger, transfers, authority, f.clock)
   const publish = (commandId = publicationCommand) => publisher.publishAccepted(accepted, receipt.transferId,
     { commandId, artifactId: randomUUID(), scope: f.scope, filename: 'report.md', mediaType: 'text/markdown' })
-  const records = new Map<string, NativeArtifactOutput>()
+  const records = new Map<string, WorkflowNativeArtifactOutput>()
   const repository = { read: async (_producer: unknown, key: string) => records.get(key),
     bind: vi.fn<NativeArtifactOutputRepository['bind']>(async (record, authorize) => {
       await authorize({ query: async () => ({ rows: [], rowCount: 0, command: '', oid: 0, fields: [] }) })

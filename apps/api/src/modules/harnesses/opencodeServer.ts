@@ -1,3 +1,6 @@
+import { openCodeArtifactMutationAllowed } from './workflowArtifactPolicy.js'
+import { openOpenCodeNativeOutputTurn } from './opencodeNativeOutput.js'
+import type { OpenCodeNativeOutputs } from './workflowNativeOutput.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
@@ -27,7 +30,8 @@ import {
 import { HarnessExecutionError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
 import { openCodeOptions } from './operatorOptions.js'
-import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
+import { endpointMatches } from './nativeMcpEndpoint.js'
+import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import {
   boundedMapSet, boundedSetAdd, configurationPermissionRules, digest, eventSessionId, failure,
@@ -84,6 +88,7 @@ interface OwnedTurn {
   nativeMessageId?: string
   reconciliationEvents?: readonly NativeHarnessEvent[]
   /** The native turn owns file inputs/tools across observer detach and retry. */
+  nativeOutput?: Awaited<ReturnType<typeof openOpenCodeNativeOutputTurn>>
   files?: OpenCodeManagedFileTurn
   fileIdentity?: string
 }
@@ -112,6 +117,7 @@ interface MessagePage { messages: OpenCodeMessage[]; nextCursor?: string }
 
 export interface OpenCodeNativeSessionManagerOptions {
   /** Authenticated durable chat admission + execution-host capabilities only. */
+  nativeOutputs?: OpenCodeNativeOutputs
   chatFiles?: OpenCodeChatFiles
   responseJournal?: NativeResponseJournal
   /** Injected beneath the real manager for deterministic transport replay. */
@@ -412,6 +418,34 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             turn.promptHash = turnDigest(prompt ?? '', state.instructions, turn.fileIdentity)
           }
         }
+        if (!turn.nativeOutput && this.options.nativeOutputs) {
+          const agents = await this.json('/agent', state.directory, signal)
+          const selected = Array.isArray(agents) ? agents.find(agent => object(agent).name === state.configuration.nativeAgent) : undefined
+          if (!selected || !Array.isArray(object(selected).permission)) throw new HarnessExecutionError(
+            'OPENCODE_NATIVE_OUTPUT_DENIED', 'The selected native Agent did not report its output permissions.')
+          const nativeRules = configurationPermissionRules(object(selected).permission)
+          if (this.options.appMcpAccess !== 'scoped' || !openCodeArtifactMutationAllowed(state.configuration, nativeRules) || !onSubmitted) {
+            throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_DENIED', 'Native outputs require a writable scoped workflow turn.')
+          }
+          const owned = turn
+          const generation = this.generation
+          const pin = { session: structuredClone(session), connectionId: state.connectionId,
+            runtimeGeneration: generation, nativeTurnId: messageID, assertCurrent: () => {
+              if (this.sessions.get(session.nativeSessionId) !== state || state.turn !== owned
+                || this.generation !== generation || this.options.server.residentGeneration !== generation
+                || !owned.submitted || owned.terminalResult || this.lifetime.signal.aborted) {
+                throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_CLOSED', 'The original native output turn closed.')
+              }
+            } }
+          const preparation = { configuration: state.configuration, providerVersion: session.providerVersion,
+            directory: state.directory, session: structuredClone(session), clientCorrelationId: correlationId,
+            connectionId: state.connectionId, runtimeGeneration: generation }
+          await this.options.nativeOutputs.assertQualified(preparation, signal)
+          const bridge = await this.options.nativeOutputs.prepare(preparation, signal)
+          turn.nativeOutput = await openOpenCodeNativeOutputTurn({ bridge, pin, server: this.options.server,
+            directory: state.directory, signal: this.lifetime.signal,
+            rememberCredential: token => { this.knownSecrets.add(token) } })
+        }
         responseGeneration = this.generation
         response = await this.openEvents(state.directory, signal, false)
         const [providerID, ...model] = state.configuration.model.split('/')
@@ -436,6 +470,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           }, signal)
           nativeAcknowledged = true
           await onSubmitted?.(messageID)
+          await turn.nativeOutput?.activate()
           await turn.files?.bridge.acknowledge(signal)
         } catch (error) {
           // A file/listener/adoption failure AFTER native acceptance is not a
@@ -545,9 +580,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async finishFiles(turn: OwnedTurn, evidence: 'terminal' | 'definite_rejection'): Promise<void> {
-    if (!turn.files) return
-    await turn.files.finish(evidence, AbortSignal.timeout(10_000))
-    delete turn.files
+    if (turn.nativeOutput) {
+      await turn.nativeOutput.close()
+      delete turn.nativeOutput
+    }
+    if (turn.files) {
+      await turn.files.finish(evidence, AbortSignal.timeout(10_000))
+      delete turn.files
+    }
   }
 
   async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery,
@@ -1221,11 +1261,34 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       if (this.sessions.size === 1) {
         await this.disposeUnusedServer()
+        await state.turn?.nativeOutput?.close({ processClosed: true })
+        if (state.turn) delete state.turn.nativeOutput
         await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000))
-      } else if (state.turn?.files) await this.finishFiles(state.turn, 'terminal')
+      } else if (state.turn?.files || state.turn?.nativeOutput) await this.finishFiles(state.turn, 'terminal')
       if (restart) this.restartClosures.set(session.nativeSessionId, structuredClone(session))
       this.sessions.delete(session.nativeSessionId)
     })
+  }
+
+  originalSessionLifetime(session: NativeSessionReference, source: NativeSessionStart) {
+    if (source.kind === 'operator') return undefined
+    const state = this.sessions.get(session.nativeSessionId)
+    const generation = this.generation
+    const fingerprint = this.options.server.credentialEnvironmentFingerprint
+    if (!state || !isDeepStrictEqual(source.request.configuration.harness, state.configuration)
+      || source.request.workingDirectory !== state.directory || session.harness !== 'opencode'
+      || session.providerVersion !== this.options.server.expectedVersion
+      || this.options.server.residentGeneration !== generation
+      || source.environment && childEnvironmentFingerprint(source.environment) !== fingerprint) return undefined
+    const assertCurrent = () => {
+      if (this.sessions.get(session.nativeSessionId) !== state || this.generation !== generation
+        || this.options.server.residentGeneration !== generation
+        || this.options.server.credentialEnvironmentFingerprint !== fingerprint || this.lifetime.signal.aborted) {
+        throw new HarnessExecutionError('OPENCODE_ORIGINAL_SESSION_UNAVAILABLE', 'The original OpenCode session changed.')
+      }
+    }
+    assertCurrent()
+    return { assertCurrent }
   }
 
   dispose(): Promise<void> {
@@ -1236,10 +1299,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     // failed native-process stop. A shutdown failure must not leave live tools.
     const revoking = Promise.allSettled([...this.sessions.values()].flatMap((state) =>
       state.turn?.files ? [state.turn.files.bridge.revoke()] : []))
+    const outputClosing = Promise.allSettled([...this.sessions.values()].flatMap(state =>
+      state.turn?.nativeOutput ? [state.turn.nativeOutput.close({ processClosed: true })] : []))
     const stopping = this.options.server.dispose()
     void stopping.catch(() => undefined)
     const attempt = this.exclusive(async () => {
-      const revoked = await revoking
+      const revoked = [...await revoking, ...await outputClosing]
       const errors: unknown[] = revoked.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
       try { await stopping } catch (error) {
         errors.push(error)

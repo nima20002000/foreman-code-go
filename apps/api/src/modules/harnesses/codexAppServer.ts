@@ -544,7 +544,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         // turn and its durable ACK, never the credentialed text-mode process.
         ...(this.chatFiles || prepared.input.kind === 'operator'
           ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
-          : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+          : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion, this.nativeOutputs) } : {}),
       }, signal, (value, error) => {
         void (async () => {
           if (error) {
@@ -1484,10 +1484,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
     if (this.nativeOutputs) {
-      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
-        throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
+      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox === 'read-only'
+        || harnessConfiguration.sandbox === 'danger-full-access' && this.nativeOutputs.storageKind !== 'buffer') {
+        throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require an original writable workflow, scoped App MCP and compatible output storage.')
       }
-      codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion)
+      codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion, this.nativeOutputs)
       await this.nativeOutputs.assertQualified(this.nativeOutputQualification(harnessConfiguration, qualified, workingDirectory, scopedEnvironment.TMPDIR), signal)
       signal.throwIfAborted()
     }
@@ -1613,6 +1614,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       cwd: String(response.cwd), writableRoots: stringArray(sandbox.writableRoots) ?? [],
       networkAccess: sandbox.networkAccess === true, excludeTmpdirEnvVar: sandbox.excludeTmpdirEnvVar === true,
       excludeSlashTmp: sandbox.excludeSlashTmp === true, tmpdir: prepared.environment.TMPDIR,
+    }
+    if (value.sandbox === 'danger-full-access' && this.nativeOutputs?.storageKind === 'buffer') {
+      prepared.effectiveSandbox = { cwd: String(response.cwd), writableRoots: ['/'], networkAccess: true,
+        excludeTmpdirEnvVar: false, excludeSlashTmp: false, tmpdir: prepared.environment.TMPDIR }
     }
     return thread
   }

@@ -1,3 +1,4 @@
+import type { WorkflowArtifactContextAuthority } from './nativeArtifactAuthority.js'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -23,7 +24,7 @@ export interface WorkflowPhysicalArtifactsPort {
   assertAdopted(sql: GraphTransactionSql, readout: RemoteWorkflowPhysicalReadout, binding: Readonly<DeviceSessionBinding>): Promise<void>
 }
 interface Ports {
-  authority: Pick<PostgresArtifactPublicationAuthority, 'resolveWorkflowContext' | 'authorize' | 'assertSourceLive'>
+  authority: WorkflowArtifactContextAuthority & Pick<PostgresArtifactPublicationAuthority, 'assertSourceLive'>
   files: Pick<PostgresFileRepository, 'read'>
 }
 const unavailable = (): never => { throw new DomainError('REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE',
@@ -63,6 +64,7 @@ export class PostgresWorkflowPhysicalArtifacts implements WorkflowPhysicalArtifa
       const attempt = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
         nodeId: node.id, executionId: intent.executionId, attemptId: intent.attemptId, placementHash: intent.bindingHash })
       const accepted = await this.ports.authority.resolveWorkflowContext(attempt, transferContextForBinding(binding), sql)
+      if ('location' in accepted) return unavailable()
       const caller = await this.ports.authority.authorize(accepted, sql)
       if (caller.context.nativeSessionId !== receipt.native.sessionId || caller.context.turnId !== receipt.native.turnId
         || !caller.context.allowedTools.includes('files.list') || !same(accepted.attempt, attempt)) return unavailable()

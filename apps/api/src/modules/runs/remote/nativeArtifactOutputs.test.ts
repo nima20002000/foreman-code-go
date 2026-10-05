@@ -14,7 +14,7 @@ import { CanonicalNativeArtifactResults } from '../../files/distributed/nativeRe
 import { DistributedArtifactPublicationService, type AcceptedArtifactPublication, type ArtifactPublicationAuthority } from '../../files/distributed/publication.js'
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import { DomainError } from '../../errors.js'
-import { NativeArtifactOutputs, type NativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
+import { NativeArtifactOutputs, type WorkflowNativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
 
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
 const roots: string[] = []
@@ -48,7 +48,7 @@ async function fixture() {
   const commands = [randomUUID(), randomUUID()]
   const publish = (commandId = commands[0]!) => publisher.publishAccepted(accepted, receipt.transferId,
     { commandId, artifactId: randomUUID(), scope: f.scope, filename: 'native.md', mediaType: 'text/markdown' })
-  const records = new Map<string, NativeArtifactOutput>()
+  const records = new Map<string, WorkflowNativeArtifactOutput>()
   const key = (producer: ArtifactAttempt, output: string) => JSON.stringify([producer.executionId, producer.attemptId, output])
   const repository: NativeArtifactOutputRepository = { read: async (producer, output) => records.get(key(producer, output)),
     bind: async (record, authorize) => {

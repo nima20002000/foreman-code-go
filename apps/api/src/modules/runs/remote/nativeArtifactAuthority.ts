@@ -7,7 +7,8 @@ import { WorkerMcpRelayRequestSchema, type WorkerMcpRelayRequest, type WorkerNat
 import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@foreman-code/contracts/worker-native-output'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@foreman-code/contracts/byte-transfer'
-import type { ArtifactPublicationAuthority, AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { ArtifactPublicationAuthority, AcceptedArtifactPublication, AcceptedMainArtifactPublication,
+  AcceptedWorkflowArtifactPublication, MainArtifactContext } from '../../files/distributed/publication.js'
 import type { AcceptedArtifactAttemptFence } from '../../files/distributed/authorization.js'
 import { bindingIdentity, isMutation } from '../../files/tools/context.js'
 import type { AuthorizedFileCaller, FileToolContext } from '../../files/tools/types.js'
@@ -22,8 +23,16 @@ import { assertDeviceHostInstallation } from '../../devices/hostAuthorization.js
 import { withExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { readNativeArtifactOutput } from './nativeArtifactOutputPostgres.js'
 import { fileScopeIdentity } from '../../files/requests.js'
-import { codexChatFileTools } from '../../harnesses/codexFiles/declarations.js'
+import { workflowArtifactFilePolicy } from '../../harnesses/workflowArtifactPolicy.js'
+import { repeatDigest } from '../repeatResolution.js'
+import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { DomainError } from '../../errors.js'
+
+export interface WorkflowArtifactContextAuthority {
+  resolveWorkflowContext(attempt: ArtifactAttempt, location: TransferContext | MainArtifactContext,
+    query?: FileQuery): Promise<AcceptedWorkflowArtifactPublication>
+  authorize: ArtifactPublicationAuthority['authorize']
+}
 
 export interface NativeArtifactAuthorityPorts {
   locations: ExecutionRunAuthorityPort
@@ -71,6 +80,37 @@ async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPor
 /** Current grants plus original DB-native evidence. No provider IO or credential issuance. */
 export class PostgresArtifactPublicationAuthority implements ArtifactPublicationAuthority {
   constructor(private readonly mainId: string, private readonly pool: pg.Pool, private readonly ports: NativeArtifactAuthorityPorts) {}
+  async authorizeMainNativeOutputDeclarations(attempt: ArtifactAttempt, sql: FileQuery): Promise<void> {
+    const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql, { purpose: 'resident' })
+    if (current.placement.hostRef.kind !== 'main' || current.placement.payload.kind !== 'agent'
+      || !current.placement.payload.artifactOutputs || current.stopped
+      || !['starting', 'running', 'waiting'].includes(current.execution.state)
+      || !workflowArtifactFilePolicy(current.configuration.harness).allowMutation) return denied()
+    requireAuthorization(current.principal, 'agent_chat:write', {
+      workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, runId: attempt.runId })
+    const cleanup = await sql.query('select 1 from run_cleanup_intents where run_id=$1 and pending for share', [attempt.runId])
+    if (cleanup.rowCount !== 0) return denied()
+  }
+  async authorizeMainNativeOutput(attempt: ArtifactAttempt, nativeSessionId: string, turnId: string,
+    operation: keyof typeof WORKER_NATIVE_OUTPUT_FILE_OPERATIONS, sql: FileQuery): Promise<AcceptedMainArtifactPublication> {
+    await this.authorizeMainNativeOutputDeclarations(attempt, sql)
+    const accepted = await this.resolveWorkflowContext(attempt, { kind: 'main', mainId: this.mainId }, sql)
+    const caller = await this.authorize(accepted, sql)
+    if (caller.context.nativeSessionId !== nativeSessionId || caller.context.turnId !== turnId
+      || !caller.context.allowMutation || !caller.context.allowedTools.includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[operation])) {
+      return denied()
+    }
+    const active = await sql.query(`select 1 from execution_native_closures c join native_session_lanes l
+      on l.native_session_id=$2 where c.execution_id=$1 and c.closed_at is null and c.detached_at is null
+      and c.expected_reference->>'nativeSessionId'=$2 and l.record->>'currentTurnOrMessageId'=$3
+      and l.record->>'correlationId'=$4 and (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for share of c,l`,
+    [attempt.executionId, nativeSessionId, turnId, `execution:${attempt.executionId}`])
+    if (active.rowCount !== 1) return denied()
+    await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values($1,'mcp',$2,$3,'succeeded',$4::jsonb)`, [caller.principal.id, `native_output.authorize.${operation}`,
+      `execution:${attempt.executionId}`, JSON.stringify({ nativeSessionId, turnId, attemptId: attempt.attemptId })])
+    return accepted
+  }
   private async nativeOutputAttempt(input: WorkerMcpRelayRequest, connection: DeviceConnectionIdentity, sql: FileQuery) {
     // W07 owns and fences the authenticated epoch. Dispatch SQL stores the
     // original seven-field identity, so compare that exact projection here.
@@ -120,7 +160,12 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     const row = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share',
       [input.intent.operationId])).rows[0]
     const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
-    if (!receipt || !isDeepStrictEqual(receipt.intent, input.intent) || !isDeepStrictEqual(receipt.connection, current.identity)
+    if (!receipt || !receipt.native?.turnId) {
+      if (receipt && (receipt.stopFence || receipt.terminal
+        || receipt.native && receipt.native.sessionId !== input.nativeSessionId)) return denied()
+      throw new DomainError('NATIVE_ARTIFACT_CONTEXT_PENDING', 'Main is admitting the original native turn.', 409)
+    }
+    if (!isDeepStrictEqual(receipt.intent, input.intent) || !isDeepStrictEqual(receipt.connection, current.identity)
       || receipt.stopFence || !['start_acknowledged', 'running'].includes(receipt.phase)
       || receipt.native?.sessionId !== input.nativeSessionId || receipt.native.turnId !== input.turnId) return denied()
   }
@@ -132,8 +177,9 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     const current = await this.nativeOutputAttempt(input, connection, sql)
     const harness = current.configuration.harness
     const outputOperations = ['create', 'append', 'seal', 'publish'] as const
-    if (harness.harness !== 'codex' || harness.sandbox !== 'workspace-write'
-      || outputOperations.some(operation => !codexChatFileTools(harness).includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[operation]))) return denied()
+    const policy = workflowArtifactFilePolicy(harness)
+    if (!policy.allowMutation
+      || outputOperations.some(operation => !policy.allowedTools.includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[operation]))) return denied()
     requireAuthorization(current.principal, 'agent_chat:write', { workspaceId: current.configuration.workspaceId,
       workflowId: current.attempt.workflowId, runId: input.intent.runId })
     await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
@@ -142,39 +188,62 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
         bindingHash: input.intent.bindingHash, agentConfigurationVersionId: current.configuration.id, outputOperations })])
     return { agentConfigurationVersionId: current.configuration.id, outputOperations: [...outputOperations] }
   }
-  authorize(accepted: AcceptedArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller> {
+  authorize(accepted: AcceptedWorkflowArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller> {
     return query ? this.locked(accepted, query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(sql => this.locked(accepted, sql)))
   }
   /** Resolves an already admitted workflow conversation. It never creates a chat or forks a native session. */
-  resolveWorkflowContext(attempt: ArtifactAttempt, transferContext: TransferContext, query?: FileQuery): Promise<AcceptedArtifactPublication> {
-    const resolve = async (sql: FileQuery): Promise<AcceptedArtifactPublication> => {
+  resolveWorkflowContext(attempt: ArtifactAttempt, location: TransferContext,
+    query?: FileQuery): Promise<AcceptedArtifactPublication>
+  resolveWorkflowContext(attempt: ArtifactAttempt, location: MainArtifactContext,
+    query?: FileQuery): Promise<AcceptedMainArtifactPublication>
+  resolveWorkflowContext(attempt: ArtifactAttempt, location: TransferContext | MainArtifactContext,
+    query?: FileQuery): Promise<AcceptedWorkflowArtifactPublication>
+  resolveWorkflowContext(attempt: ArtifactAttempt, location: TransferContext | MainArtifactContext,
+    query?: FileQuery): Promise<AcceptedWorkflowArtifactPublication> {
+    const resolve = async (sql: FileQuery): Promise<AcceptedWorkflowArtifactPublication> => {
       const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql, { purpose: 'resident' })
-      if (current.configuration.harness.harness !== 'codex' || !current.execution.nativeSessionId) return denied()
-      const conversation = await sql.query<{ id: string }>(`select id from operator_conversations where kind='agent' and deleted_at is null
-        and workspace_id=$1 and workflow_id=$2 and agent_id=$3 and origin_run_id=$4 and origin_execution_id=$5
-        and native_session_id=$6 and agent_configuration_version_id=$7 and harness='codex'
-        and record #>> '{origin,sourceNativeSessionId}'=$6
-        and record->>'workingDirectory'=$8 and record->>'runtimeDirectory'=$9 for share`,
-      [attempt.workspaceId, attempt.workflowId, current.execution.agentId, attempt.runId, attempt.executionId,
-        current.execution.nativeSessionId, current.configuration.id, current.execution.workingDirectory, current.execution.runtimeDirectory])
+      if (!['codex', 'opencode'].includes(current.configuration.harness.harness)
+        || !current.execution.nativeSessionId) return denied()
+      const conversation = await sql.query<{ id: string; record: { workflowFileContext?: { context: FileToolContext } } }>(
+        `select id,record from operator_conversations where kind='agent' and deleted_at is null
+          and workspace_id=$1 and workflow_id=$2 and agent_id=$3 and origin_run_id=$4 and origin_execution_id=$5
+          and native_session_id=$6 and agent_configuration_version_id=$7 and harness=$10
+          and record #>> '{origin,sourceNativeSessionId}'=$6
+          and record->>'workingDirectory'=$8 and record->>'runtimeDirectory'=$9 for share`,
+        [attempt.workspaceId, attempt.workflowId, current.execution.agentId, attempt.runId, attempt.executionId,
+          current.execution.nativeSessionId, current.configuration.id, current.execution.workingDirectory,
+          current.execution.runtimeDirectory, current.configuration.harness.harness])
+      let context = conversation.rows[0]?.record?.workflowFileContext?.context
+      if (conversation.rowCount === 0 && !current.stopped
+        && ['starting', 'running', 'waiting'].includes(current.execution.state)) {
+        throw new DomainError('NATIVE_ARTIFACT_CONTEXT_PENDING', 'Main is admitting the original native turn.', 409)
+      }
       if (conversation.rowCount !== 1) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE',
-        'The original workflow session has no exact admitted file conversation.', 409)
-      const row = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share', [current.intent.operationId])).rows[0]
-      const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
-      if (!receipt?.native?.turnId) return denied()
-      const context: FileToolContext = { ownerPrincipalId: current.principal.id,
-        scope: { kind: 'temporary', chat: { kind: 'agent', conversationId: conversation.rows[0]!.id,
-          workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, agentId: current.execution.agentId,
-          runId: attempt.runId, executionId: attempt.executionId } },
-        nativeSessionId: current.execution.nativeSessionId, turnId: receipt.native.turnId,
-        allowMutation: current.configuration.harness.sandbox === 'workspace-write', allowedTools: codexChatFileTools(current.configuration.harness) }
-      const accepted = { attempt: structuredClone(attempt), transferContext: structuredClone(transferContext), context }
+        'The original workflow session has no admitted file conversation.', 409)
+      if (!('kind' in location)) {
+        const row = (await sql.query<{ receipt: unknown }>(
+          'select receipt from remote_execution_receipts where operation_id=$1 for share',
+          [current.intent.operationId])).rows[0]
+        const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
+        if (!receipt?.native?.turnId) return denied()
+        const policy = workflowArtifactFilePolicy(current.configuration.harness)
+        context = { ownerPrincipalId: current.principal.id,
+          scope: { kind: 'temporary', chat: { kind: 'agent', conversationId: conversation.rows[0]!.id,
+            workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, agentId: current.execution.agentId,
+            runId: attempt.runId, executionId: attempt.executionId } },
+          nativeSessionId: current.execution.nativeSessionId, turnId: receipt.native.turnId, ...policy }
+      }
+      if (!context) return denied()
+      const accepted = { attempt: structuredClone(attempt), context: structuredClone(context),
+        ...('kind' in location ? { location: structuredClone(location) } : { transferContext: structuredClone(location) }) }
       await this.locked(accepted, sql)
       return accepted
     }
-    return query ? resolve(query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(resolve))
+    return query ? resolve(query)
+      : withExclusiveGraphConnection(this.pool, connection => connection.transaction(resolve))
   }
-  private async locked(accepted: AcceptedArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
+  private async locked(accepted: AcceptedWorkflowArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
+    if ('location' in accepted) return this.lockedMain(accepted, sql)
     const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql, { purpose: 'resident' })
     const { context, transferContext: transfer } = accepted, scope = context.scope.chat
     if (current.placement.hostRef.kind !== 'device' || !current.placement.registration || scope.kind !== 'agent'
@@ -223,12 +292,57 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
       if (message.rowCount !== 1) return denied()
     }
     const harness = current.configuration.harness
-    const canWrite = harness.harness === 'opencode' ? harness.nativeAgent !== 'plan' : harness.sandbox === 'workspace-write'
+    const policy = workflowArtifactFilePolicy(harness)
+    const canWrite = policy.allowMutation
     if (context.allowMutation && !canWrite || context.allowedTools.some(tool => isMutation(tool) && (!context.allowMutation || !canWrite))
-      || harness.harness === 'codex' && context.allowedTools.some(tool => !codexChatFileTools(harness).includes(tool))) return denied()
+      || context.allowedTools.some(tool => !policy.allowedTools.includes(tool))) return denied()
     if (context.allowMutation) requireAuthorization(principal, 'agent_chat:write', {
       workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
     return { context: structuredClone(context), principal, binding: bindingIdentity(context) }
+  }
+  private async lockedMain(accepted: AcceptedMainArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
+    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql, { purpose: 'resident' })
+    const context = accepted.context
+    const scope = context.scope.chat
+    if (accepted.location.mainId !== this.mainId || current.placement.hostRef.kind !== 'main'
+      || current.placement.hostRef.mainId !== this.mainId || scope.kind !== 'agent'
+      || scope.workspaceId !== accepted.attempt.workspaceId || scope.workflowId !== accepted.attempt.workflowId
+      || scope.runId !== accepted.attempt.runId || scope.executionId !== accepted.attempt.executionId
+      || scope.agentId !== current.execution.agentId || context.nativeSessionId !== current.execution.nativeSessionId
+      || !context.turnId || context.nativeMessageId) return denied()
+    const row = (await sql.query<{ record: { workflowFileContext?: { context: FileToolContext;
+      proofId: string; sourceDigest: string; session: unknown; attempt: unknown } } }>(
+      `select record from operator_conversations where id=$1 and kind='agent' and deleted_at is null
+        and workspace_id=$2 and workflow_id=$3 and agent_id=$4 and origin_run_id=$5 and origin_execution_id=$6
+        and native_session_id=$7 and agent_configuration_version_id=$8 and harness=$9
+        and record #>> '{origin,sourceNativeSessionId}'=$7
+        and record->>'workingDirectory'=$10 and record->>'runtimeDirectory'=$11 for share`,
+      [scope.conversationId, scope.workspaceId, scope.workflowId, scope.agentId, scope.runId, scope.executionId,
+        context.nativeSessionId, current.configuration.id, current.configuration.harness.harness,
+        current.execution.workingDirectory, current.execution.runtimeDirectory])).rows[0]
+    const admission = row?.record.workflowFileContext
+    if (!admission || !isDeepStrictEqual(admission.context, context)
+      || !isDeepStrictEqual(admission.attempt, accepted.attempt)) return denied()
+    const session = (await sql.query<{ reference: unknown }>(
+      'select reference from execution_native_sessions where execution_id=$1 for share', [accepted.attempt.executionId])).rows[0]
+    if (!session || !isDeepStrictEqual(session.reference, admission.session)) return denied()
+    const proof = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
+      'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
+      [admission.proofId, accepted.attempt.runId, accepted.attempt.executionId])).rows[0]
+    if (!proof || proof.source_digest !== admission.sourceDigest
+      || repeatDigest(proof.record, 4 * 1024 * 1024) !== admission.sourceDigest
+      || proof.record.session.nativeSessionId !== context.nativeSessionId
+      || proof.record.lane?.providerId !== context.turnId) return denied()
+    const principal = await readLiveManagementPrincipal(sql, context.ownerPrincipalId)
+    requireAuthorization(principal, 'agent_chat:read', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
+    if (principal.id !== current.principal.id) return denied()
+    const policy = workflowArtifactFilePolicy(current.configuration.harness)
+    if (context.allowMutation && !policy.allowMutation
+      || context.allowedTools.some(tool => !policy.allowedTools.includes(tool))) return denied()
+    if (context.allowMutation) requireAuthorization(principal, 'agent_chat:write', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
+    return { principal, context: structuredClone(context), binding: bindingIdentity(context) }
   }
   async assertSourceLive(accepted: AcceptedArtifactPublication, raw: VerifiedTransferReceipt, query: FileQuery): Promise<void> {
     await this.locked(accepted, query)

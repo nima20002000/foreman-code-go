@@ -3,12 +3,12 @@ import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/con
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
 import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { parseWorkflowArtifactResult, type WorkflowArtifactResultV1 } from '@foreman-code/contracts/workflow-artifact-result'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedWorkflowArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import { assertOriginalWorkflowTerminal } from '../../interactions/workflowTerminalSource.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import type { NativeArtifactOutputs, NativeArtifactOutput } from './nativeArtifactOutputs.js'
+import type { NativeArtifactOutputs, WorkflowNativeArtifactOutput } from './nativeArtifactOutputs.js'
 
 export interface VerifiedWorkflowArtifactSource {
   version: WorkflowVersionV3
@@ -22,11 +22,11 @@ export interface VerifiedWorkflowArtifactSource {
 export interface WorkflowArtifactResultSourcePort {
   /** Main-only genuine producer: retained original proof/capture/physical source,
    * exact Run version and original attempt/placement. Never worker proof JSON. */
-  readVerified(accepted: AcceptedArtifactPublication): Promise<VerifiedWorkflowArtifactSource>
+  readVerified(accepted: AcceptedWorkflowArtifactPublication): Promise<VerifiedWorkflowArtifactSource>
 }
 export type WorkflowArtifactAdoptionOutcome =
   | { status: 'unavailable'; reason: 'not_declared' }
-  | { status: 'adopted'; outputs: NativeArtifactOutput[] }
+  | { status: 'adopted'; outputs: WorkflowNativeArtifactOutput[] }
 
 const conflict = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_CONFLICT',
   'The original artifact result differs from the saved workflow or accepted native execution.', 409) }
@@ -39,7 +39,7 @@ export class WorkflowArtifactResultAdoption {
   constructor(private readonly source: WorkflowArtifactResultSourcePort,
     private readonly outputs: Pick<NativeArtifactOutputs, 'acceptOutput'>) {}
 
-  async adoptOriginalOutputs(raw: AcceptedArtifactPublication): Promise<WorkflowArtifactAdoptionOutcome> {
+  async adoptOriginalOutputs(raw: AcceptedWorkflowArtifactPublication): Promise<WorkflowArtifactAdoptionOutcome> {
     const accepted = structuredClone(raw)
     accepted.attempt = ArtifactAttemptSchema.parse(accepted.attempt)
     const original = await this.source.readVerified(structuredClone(accepted))
@@ -77,7 +77,7 @@ export class WorkflowArtifactResultAdoption {
       // Parser details can contain model text. Surface a stable domain error.
       throw new DomainError('WORKFLOW_ARTIFACT_RESULT_INVALID', 'The original native result does not satisfy its saved artifact output contract.', 409)
     }
-    const adopted: NativeArtifactOutput[] = []
+    const adopted: WorkflowNativeArtifactOutput[] = []
     for (const mapping of mappings) {
       await original.assertCurrent()
       const output = await this.outputs.acceptOutput(accepted, mapping.outputKey, mapping.commandId)

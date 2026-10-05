@@ -6,7 +6,7 @@ import type { AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
-import { readDispatchIntent } from '../../placement/persistence.js'
+import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { bindingIdentity } from '../../files/tools/context.js'
 import type { FileToolContext } from '../../files/tools/types.js'
@@ -17,7 +17,7 @@ import { NativeArtifactOutputSchema } from './nativeArtifactOutputs.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { createWorkflowArtifactOutputsGate } from './workflowArtifactAcceptance.js'
 
-vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: vi.fn() }))
+vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: vi.fn(), readAcceptedPlacement: vi.fn() }))
 vi.mock('./persistence.js', () => ({ readReconciledDispatchIntent: vi.fn() }))
 vi.mock('../../run-graph/repeatReceipts.js', () => ({
   assertRepeatCanonicalReceiptLocked: vi.fn(async () => {}), requireRepeatCanonicalReceiptBeforeCommit: vi.fn(),
@@ -99,6 +99,7 @@ function fixture() {
     if (state.revoked) throw new Error('AUTH_REVOKED')
     return { principal: { id: 'owner' }, context, binding: bindingIdentity(context) } as Awaited<ReturnType<import('./nativeArtifactAuthority.js').PostgresArtifactPublicationAuthority['authorize']>>
   }) }
+  vi.mocked(readAcceptedPlacement).mockResolvedValue(placement)
   vi.mocked(readDispatchIntent).mockResolvedValue(intent); vi.mocked(readReconciledDispatchIntent).mockResolvedValue(intent)
   const gate = createWorkflowArtifactOutputsGate(mainId, authority)
   const check = (after = async () => {}) => connection.transaction(async sql => { await gate(sql, run, f.version, execution); await after() })

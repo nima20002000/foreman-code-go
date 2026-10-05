@@ -47,7 +47,7 @@ export function mountProductionWorkflowArtifacts(input: Parameters<typeof create
     return accepted
   }
   const consumer = async (request: FastifyRequest) => {
-    const caller = await receiver.authorization.consumer(request), accepted = await receiver.authorization.producer(request)
+    const caller = await receiver.authorization.consumer(request), accepted = await receiver.authorization.consumerContext(request)
     if (!isDeepStrictEqual(caller.attempt, accepted.attempt) || !accepted.context.allowedTools.includes('files.read')) throw denied()
     return caller
   }
@@ -90,15 +90,20 @@ export function mountProductionWorkflowArtifacts(input: Parameters<typeof create
   const extension: WorkerArtifactMcpExtension = {
     async register(server, request, principal) {
       if (principal.audience !== 'worker') return
+      const readable = await receiver.authorization.consumerContext(request).catch(async error => {
+        if (!denial(error)) throw error
+        await audit(request, 'workflow_artifact_discovery', principal); return undefined
+      })
+      if (readable?.context.allowedTools.includes('files.read')) {
+        try { await permission(request, names[2]); actions.registerInputTool(server, request) }
+        catch (error) { if (!denial(error)) throw error; await audit(request, 'workflow_artifact_discovery', principal) }
+      }
+      if (readable && 'location' in readable) return
       const accepted = await receiver.authorization.producer(request).catch(async error => {
         if (!denial(error)) throw error
         await audit(request, 'workflow_artifact_discovery', principal); return undefined
       })
       if (!accepted) return
-      if (accepted.context.allowedTools.includes('files.read')) {
-        try { await permission(request, names[2]); actions.registerInputTool(server, request) }
-        catch (error) { if (!denial(error)) throw error; await audit(request, 'workflow_artifact_discovery', principal) }
-      }
       if (accepted.context.allowMutation && accepted.context.allowedTools.includes('files.publish_result')) {
         registerTransferTool(server, request); actions.registerPublicationTool(server, request)
       }

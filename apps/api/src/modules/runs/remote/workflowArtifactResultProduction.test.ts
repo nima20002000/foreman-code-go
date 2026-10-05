@@ -113,13 +113,22 @@ it('admits a declared installed Codex producer and leaves physical/output qualif
   f.snapshot.version.definition.nodes[0]!.artifactOutputs = undefined as never
   await f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run'))
 })
-it.each(['local', 'read-only', 'full-access', 'harness', 'configuration', 'declaration', 'missing-placement'] as const)(
+it.each(['main-codex', 'main-codex-full-access', 'device-codex-full-access', 'main-opencode', 'device-opencode'] as const)(
+  'admits the saved %s producer without changing its security configuration', async kind => {
+    const f = fixture()
+    if (kind.startsWith('main')) f.placement.hostRef.kind = 'main'
+    if (kind.endsWith('full-access')) f.snapshot.configurations[0]!.harness.sandbox = 'danger-full-access'
+    if (kind.endsWith('opencode')) f.snapshot.configurations[0]!.harness = {
+      harness: 'opencode', nativeAgent: 'build', model: 'provider/model', variant: '', thinking: false, autoApprove: false,
+    } as never
+    const before = structuredClone(f.snapshot.configurations)
+    await f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run'))
+    expect(f.snapshot.configurations).toEqual(before)
+  })
+it.each(['read-only', 'configuration', 'declaration', 'missing-placement'] as const)(
   'keeps unsupported %s artifact launches fenced before any publication', async kind => {
     const f = fixture()
-    if (kind === 'local') f.placement.hostRef.kind = 'main'
     if (kind === 'read-only') f.snapshot.configurations[0]!.harness.sandbox = 'read-only'
-    if (kind === 'full-access') f.snapshot.configurations[0]!.harness.sandbox = 'danger-full-access'
-    if (kind === 'harness') f.snapshot.configurations[0]!.harness.harness = 'opencode'
     if (kind === 'configuration') f.placement.payload.agentConfigurationVersionId = 'replacement'
     if (kind === 'declaration') f.placement.payload.artifactOutputs = { version: 1, outputKeys: ['other'] }
     if (kind === 'missing-placement') reads.placement.mockResolvedValue(undefined)

@@ -66,53 +66,58 @@ export function createInstalledNativeOutputs(ports: InstalledNativeOutputProvide
         await ports.assertCurrent(effectSignal)
         pin.assertCurrent(); effectSignal?.throwIfAborted()
       }
+      const openRegistry = (effectSignal: AbortSignal) => {
+        if (opening) return opening
+        opening = (async () => {
+          if (!pin || stopped) throw unavailable()
+          const activationSignal = bounded(effectSignal)
+          await current(activationSignal)
+          scope = TemporaryFileScopeSchema.parse(await ports.authorize(pin!, 'create', activationSignal))
+          if (scope.chat.kind !== 'agent' || scope.chat.runId !== artifactBinding.intent.runId
+            || scope.chat.executionId !== artifactBinding.intent.executionId) throw unavailable()
+          await current(activationSignal)
+          const storageInput = ports.storage(input, pin!)
+          if (!isDeepStrictEqual(storageInput.owner.intent, artifactBinding.intent)
+            || !isDeepStrictEqual(storageInput.owner.session, pin!.session)
+            || storageInput.owner.nativeTurnId !== pin!.nativeTurnId
+            || storageInput.owner.runtimeGeneration !== pin!.runtimeGeneration) throw unavailable()
+          assertNativeOutputRootExcluded(storageInput.rootDirectory, [input.effectiveSandbox.cwd,
+            ...input.effectiveSandbox.writableRoots, ...(!input.effectiveSandbox.excludeTmpdirEnvVar && input.effectiveSandbox.tmpdir ? [input.effectiveSandbox.tmpdir] : []),
+            ...(!input.effectiveSandbox.excludeSlashTmp ? ['/tmp'] : [])])
+          const storage = await createInstalledNativeOutputStorage(storageInput)
+          await current(activationSignal)
+          registry = await WorkerNativeOutputRegistry.open({ configuration: input.configuration, scope,
+            callback: { assertCurrent: current }, storage,
+            authority: { assertCurrent: async (operation, checkSignal) => {
+              await current(checkSignal)
+              const returned = TemporaryFileScopeSchema.parse(await ports.authorize(pin!, operation, checkSignal))
+              if (!isDeepStrictEqual(returned, scope)) throw unavailable()
+              await current(checkSignal)
+            } },
+            publisher: { publish: async (publication, callback, publicationSignal) => {
+              if (!sender) throw unavailable()
+              return sender.publish(publication, callback, publicationSignal)
+            } },
+          })
+          sender = new WorkerNativeArtifactSender(artifactBinding, registry, ports.artifacts.main,
+            ports.artifacts.receiver, ports.artifacts.connection)
+          await current(activationSignal)
+        })()
+        void opening.catch(() => { if (!registry) opening = undefined })
+        return opening
+      }
       return {
-        activate: (original, effectSignal) => {
-          if (opening) return Promise.reject(unavailable())
-          opening = (async () => {
-            if (stopped || pin || registry || !original.nativeTurnId
-              || !isDeepStrictEqual(original.session, input.session)
-              || original.connectionId !== input.connectionId || original.runtimeGeneration !== input.runtimeGeneration) throw unavailable()
-            const assertCurrent = original.assertCurrent.bind(original)
-            pin = Object.freeze({ ...structuredClone({ session: original.session, connectionId: original.connectionId,
-              runtimeGeneration: original.runtimeGeneration, nativeTurnId: original.nativeTurnId }), assertCurrent })
-            const activationSignal = bounded(effectSignal)
-            await current(activationSignal)
-            scope = TemporaryFileScopeSchema.parse(await ports.authorize(pin, 'create', activationSignal))
-            if (scope.chat.kind !== 'agent' || scope.chat.runId !== artifactBinding.intent.runId
-              || scope.chat.executionId !== artifactBinding.intent.executionId) throw unavailable()
-            await current(activationSignal)
-            const storageInput = ports.storage(input, pin)
-            if (!isDeepStrictEqual(storageInput.owner.intent, artifactBinding.intent)
-              || !isDeepStrictEqual(storageInput.owner.session, pin.session)
-              || storageInput.owner.nativeTurnId !== pin.nativeTurnId
-              || storageInput.owner.runtimeGeneration !== pin.runtimeGeneration) throw unavailable()
-            assertNativeOutputRootExcluded(storageInput.rootDirectory, [input.effectiveSandbox.cwd,
-              ...input.effectiveSandbox.writableRoots, ...(!input.effectiveSandbox.excludeTmpdirEnvVar && input.effectiveSandbox.tmpdir ? [input.effectiveSandbox.tmpdir] : []),
-              ...(!input.effectiveSandbox.excludeSlashTmp ? ['/tmp'] : [])])
-            const storage = await createInstalledNativeOutputStorage(storageInput)
-            await current(activationSignal)
-            registry = await WorkerNativeOutputRegistry.open({ configuration: input.configuration, scope,
-              callback: { assertCurrent: current }, storage,
-              authority: { assertCurrent: async (operation, checkSignal) => {
-                await current(checkSignal)
-                const returned = TemporaryFileScopeSchema.parse(await ports.authorize(pin!, operation, checkSignal))
-                if (!isDeepStrictEqual(returned, scope)) throw unavailable()
-                await current(checkSignal)
-              } },
-              publisher: { publish: async (publication, callback, publicationSignal) => {
-                if (!sender) throw unavailable()
-                return sender.publish(publication, callback, publicationSignal)
-              } },
-            })
-            sender = new WorkerNativeArtifactSender(artifactBinding, registry, ports.artifacts.main,
-              ports.artifacts.receiver, ports.artifacts.connection)
-            await current(activationSignal)
-          })()
-          return opening
+        activate: async (original, effectSignal) => {
+          if (stopped || pin || registry || !original.nativeTurnId
+            || !isDeepStrictEqual(original.session, input.session)
+            || original.connectionId !== input.connectionId || original.runtimeGeneration !== input.runtimeGeneration) throw unavailable()
+          const assertCurrent = original.assertCurrent.bind(original)
+          pin = Object.freeze({ ...structuredClone({ session: original.session, connectionId: original.connectionId,
+            runtimeGeneration: original.runtimeGeneration, nativeTurnId: original.nativeTurnId }), assertCurrent })
+          await current(bounded(effectSignal))
         },
         dispatch: async (command, original: CodexNativeOutputCallback, effectSignal) => {
-          if (!registry || !pin || original.connectionId !== pin.connectionId
+          if (!pin || original.connectionId !== pin.connectionId
             || original.runtimeGeneration !== pin.runtimeGeneration || original.nativeTurnId !== pin.nativeTurnId
             || !isDeepStrictEqual(original.session, pin.session) || !original.callId.trim()) throw unavailable()
           const callbackCheck = original.assertCurrent.bind(original)
@@ -121,7 +126,9 @@ export function createInstalledNativeOutputs(ports: InstalledNativeOutputProvide
             callbackCheck(); await current(checkSignal); callbackCheck()
           } })
           await callback.assertCurrent(callSignal)
-          const reply = await registry.dispatch(command, callback, callSignal)
+          await openRegistry(callSignal)
+          await callback.assertCurrent(callSignal)
+          const reply = await registry!.dispatch(command, callback, callSignal)
           await callback.assertCurrent(callSignal)
           return reply
         },

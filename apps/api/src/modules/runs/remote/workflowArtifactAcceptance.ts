@@ -1,3 +1,4 @@
+import type { WorkflowArtifactContextAuthority } from './nativeArtifactAuthority.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -7,12 +8,11 @@ import { parseWorkflowArtifactResult, workflowArtifactDigestsByOutputKey } from 
 import type { AcceptedWorkflowRunV3, WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../../errors.js'
 import { assertOriginalWorkflowTerminal } from '../../interactions/workflowTerminalSource.js'
-import { readDispatchIntent } from '../../placement/persistence.js'
+import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import type { PostgresArtifactPublicationAuthority } from './nativeArtifactAuthority.js'
 import { assertNativeArtifactOutputLive, readNativeArtifactOutput } from './nativeArtifactOutputPostgres.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 
@@ -25,7 +25,7 @@ const conflict = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_OUTPUTS
  * completed outside G1. No process, transfer, credential, publication or output
  * is created here; replay resamples the same durable facts and current grants. */
 export function createWorkflowArtifactOutputsGate(mainId: string,
-  authority: Pick<PostgresArtifactPublicationAuthority, 'resolveWorkflowContext' | 'authorize'>) {
+  authority: WorkflowArtifactContextAuthority) {
   const verify = async (sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     version: WorkflowVersionV3, supplied: HarnessExecution) => {
     const execution = HarnessExecutionSchema.parse(supplied)
@@ -65,34 +65,54 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
       mappings = (node.choice ? parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice)
         : parseWorkflowArtifactResult(execution.result, node.artifactOutputs)).artifactOutputs.outputs
     } catch { return conflict() }
-    const receiptRow = (await sql.query<{ receipt: unknown }>(
-      'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
-    if (!receiptRow) return pending()
-    const remote = RemoteOperationReceiptSchema.parse(receiptRow.receipt)
-    const native = remote.native
-    if (!same(remote.intent, intent) || !same(remote.terminal?.result, execution.result)
-      || !native?.turnId || native.sessionId !== execution.nativeSessionId) return conflict()
-    if (rows.some(({ record }) => record.lane?.providerId !== native.turnId)) return conflict()
+    const placement = await readAcceptedPlacement(sql, run.id, node.id)
+    if (!placement) return conflict()
+    let remote: ReturnType<typeof RemoteOperationReceiptSchema.parse> | undefined
+    let turnId: string | undefined
+    if (placement.hostRef.kind === 'device') {
+      const receiptRow = (await sql.query<{ receipt: unknown }>(
+        'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+      if (!receiptRow) return pending()
+      remote = RemoteOperationReceiptSchema.parse(receiptRow.receipt)
+      const native = remote.native
+      if (!same(remote.intent, intent) || !same(remote.terminal?.result, execution.result)
+        || !native?.turnId || native.sessionId !== execution.nativeSessionId) return conflict()
+      turnId = native.turnId
+    } else {
+      const first = rows[0]!.record
+      const closure = (await sql.query<{ expected_reference: unknown; closed: boolean }>(
+        `select expected_reference,closed_at is not null as closed from execution_native_closures
+          where execution_id=$1 and generation=$2 for share`, [execution.id, first.closureGeneration])).rows[0]
+      if (!closure || !same(closure.expected_reference, first.session)) return conflict()
+      turnId = first.lane?.providerId
+    }
+    if (!turnId || rows.some(({ record }) => record.lane?.providerId !== turnId)) return conflict()
     let accepted: Awaited<ReturnType<typeof authority.resolveWorkflowContext>> | undefined
     const digests: { outputKey: string; sha256: string }[] = []
     for (const mapping of mappings) {
       const output = await readNativeArtifactOutput(sql, mainId, producer, mapping.outputKey)
       if (!output) return pending()
       if (output.commandId !== mapping.commandId || output.nativeIdentity.nativeSessionId !== execution.nativeSessionId
-        || output.nativeIdentity.turnId !== native.turnId) return conflict()
+        || output.nativeIdentity.turnId !== turnId) return conflict()
       await assertNativeArtifactOutputLive(sql, mainId, output)
       if (!accepted) {
-        const transfer = output.transferReceipt.intent
-        accepted = await authority.resolveWorkflowContext(producer, TransferContextSchema.parse({ mainId: transfer.mainId,
-          deviceId: transfer.deviceId, workerInstallationId: transfer.workerInstallationId, keyRevision: transfer.keyRevision,
-          authorizationRevision: transfer.authorizationRevision, bootId: transfer.bootId, connectionEpoch: transfer.connectionEpoch }), sql)
+        if ('mainPublication' in output) {
+          if (placement.hostRef.kind !== 'main') return conflict()
+          accepted = await authority.resolveWorkflowContext(producer, { kind: 'main', mainId }, sql)
+        } else {
+          if (placement.hostRef.kind !== 'device') return conflict()
+          const transfer = output.transferReceipt.intent
+          accepted = await authority.resolveWorkflowContext(producer, TransferContextSchema.parse({ mainId: transfer.mainId,
+            deviceId: transfer.deviceId, workerInstallationId: transfer.workerInstallationId, keyRevision: transfer.keyRevision,
+            authorizationRevision: transfer.authorizationRevision, bootId: transfer.bootId, connectionEpoch: transfer.connectionEpoch }), sql)
+        }
       }
       const caller = await authority.authorize(accepted, sql)
       if (caller.principal.id !== output.publication.ownerPrincipalId || caller.binding !== output.publication.binding
         || !same(caller.context, accepted.context)) return conflict()
       digests.push({ outputKey: mapping.outputKey, sha256: output.pins.sha256 })
     }
-    if (!same(remote.terminal?.artifactDigests, workflowArtifactDigestsByOutputKey(digests))) return conflict()
+    if (remote && !same(remote.terminal?.artifactDigests, workflowArtifactDigestsByOutputKey(digests))) return conflict()
   }
   return async function assertWorkflowArtifactOutputsLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     version: WorkflowVersionV3, execution: HarnessExecution): Promise<void> {

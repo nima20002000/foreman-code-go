@@ -1,3 +1,4 @@
+import type { WorkflowArtifactContextAuthority } from './nativeArtifactAuthority.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
@@ -15,22 +16,22 @@ import { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { BYTE_TRANSFER_NAMESPACE, createEndpointTransferReceiver, transferContextForBinding, type AcceptedTransferAuthority, type TransferOperation } from '../../byte-transfer/carrier.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import type { DistributedArtifactEndpointAuthorization } from '../../files/distributed/adapters.js'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedArtifactPublication, AcceptedWorkflowArtifactPublication } from '../../files/distributed/publication.js'
 import { readDispatchIntent, readAcceptedPlacement } from '../../placement/persistence.js'
 import { readReconciledDispatchIntent } from './persistence.js'
-import type { PostgresArtifactPublicationAuthority, PostgresAcceptedArtifactAttemptFence } from './nativeArtifactAuthority.js'
+import type { PostgresAcceptedArtifactAttemptFence } from './nativeArtifactAuthority.js'
 import { DomainError } from '../../errors.js'
 
 const OPERATION = 'remote.artifact-transfer.admit'
 const denied = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_DENIED', 'The original workflow worker lease or artifact binding is unavailable.', 403) }
 type Endpoint = Pick<DeviceEndpoint, 'currentBinding'>
-type Authority = Pick<PostgresArtifactPublicationAuthority, 'resolveWorkflowContext' | 'authorize'>
+type Authority = WorkflowArtifactContextAuthority
 type Fence = Pick<PostgresAcceptedArtifactAttemptFence, 'assertCurrent'>
 interface Caller {
   worker: ManagementPrincipal
   attempt: ArtifactAttempt
   authority: ArtifactAuthority
-  binding: Readonly<DeviceSessionBinding>
+  binding: Readonly<DeviceSessionBinding> | null
   intent: NonNullable<Awaited<ReturnType<typeof readDispatchIntent>>>
   placement: NonNullable<Awaited<ReturnType<typeof readAcceptedPlacement>>>
 }
@@ -66,26 +67,34 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
     const placement = intent && await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
     if (!intent || !placement || intent.mainId !== this.mainId || intent.executionId !== row.execution_id || intent.runId !== row.run_id
       || placement.mainId !== this.mainId || placement.runId !== row.run_id || placement.nodeId !== intent.nodeId
-      || placement.bindingHash !== intent.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentId !== row.agent_id
-      || placement.hostRef.kind !== 'device' || !placement.registration) return denied()
-    const observed = this.endpoint.currentBinding(placement.hostRef.deviceId, BYTE_TRANSFER_NAMESPACE)
-    const binding = observed && structuredClone(observed)
-    if (!binding || binding.mainId !== this.mainId || binding.deviceId !== placement.hostRef.deviceId
-      || binding.workerInstallationId !== placement.registration.workerInstallationId || binding.keyRevision !== placement.registration.keyRevision
-      || binding.authorizationRevision !== placement.registration.authorizationRevision) return denied()
+      || placement.bindingHash !== intent.bindingHash || placement.payload.kind !== 'agent'
+      || placement.payload.agentId !== row.agent_id) return denied()
     const attempt = ArtifactAttemptSchema.parse({ workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: row.run_id,
       nodeId: intent.nodeId, executionId: row.execution_id, attemptId: intent.attemptId, placementHash: intent.bindingHash })
     const authority = { principalId: row.authorization_principal_id, grantId: intent.owner.grantId, grantRevision: intent.owner.epoch }
     await this.fence.assertCurrent(attempt, authority, sql)
     if (worker.revokedAt || Date.parse(worker.expiresAt) <= Date.now()) return denied()
+    if (placement.hostRef.kind === 'main') {
+      if (placement.hostRef.mainId !== this.mainId) return denied()
+      return { worker, attempt, authority, binding: null, intent, placement }
+    }
+    if (!placement.registration) return denied()
+    const observed = this.endpoint.currentBinding(placement.hostRef.deviceId, BYTE_TRANSFER_NAMESPACE)
+    const binding = observed && structuredClone(observed)
+    if (!binding || binding.mainId !== this.mainId || binding.deviceId !== placement.hostRef.deviceId
+      || binding.workerInstallationId !== placement.registration.workerInstallationId || binding.keyRevision !== placement.registration.keyRevision
+      || binding.authorizationRevision !== placement.registration.authorizationRevision) return denied()
     this.assertConnection(binding)
     return { worker, attempt, authority, binding: structuredClone(binding), intent, placement }
   }
-  assertConnection(binding: Readonly<DeviceSessionBinding>): void {
+  assertConnection(binding: Readonly<DeviceSessionBinding> | null): void {
+    if (!binding) return
     if (!isDeepStrictEqual(this.endpoint.currentBinding(binding.deviceId, BYTE_TRANSFER_NAMESPACE), binding)) return denied()
   }
   async publication(sql: pg.PoolClient, caller: Caller): Promise<AcceptedArtifactPublication> {
+    if (!caller.binding) return denied()
     const accepted = await this.publications.resolveWorkflowContext(caller.attempt, transferContextForBinding(caller.binding), sql)
+    if ('location' in accepted) return denied()
     const authorized = await this.publications.authorize(accepted, sql)
     if (!isDeepStrictEqual(accepted.attempt, caller.attempt) || authorized.principal.id !== caller.authority.principalId
       || !isDeepStrictEqual(authorized.context, accepted.context)) return denied()
@@ -97,6 +106,19 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
     return this.transaction(async sql => {
       const caller = await this.locked(sql, worker)
       return { attempt: caller.attempt, authority: caller.authority }
+    })
+  }
+  async consumerContext(request: FastifyRequest): Promise<AcceptedWorkflowArtifactPublication> {
+    const worker = await this.authenticate(request)
+    return this.transaction(async sql => {
+      const caller = await this.locked(sql, worker)
+      if (caller.binding) return this.publication(sql, caller)
+      const accepted = await this.publications.resolveWorkflowContext(caller.attempt,
+        { kind: 'main', mainId: this.mainId }, sql)
+      const authorized = await this.publications.authorize(accepted, sql)
+      if (authorized.principal.id !== caller.authority.principalId
+        || !authorized.context.allowedTools.includes('files.read')) return denied()
+      return accepted
     })
   }
   async producer(request: FastifyRequest) {
@@ -121,6 +143,7 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
         if (!caller) return denied()
         const accepted = await this.writable(sql, caller), root = caller.placement.source
         if (!('kind' in root) || root.kind !== 'pending') return denied()
+        if (!caller.binding) return denied()
         const intent = TransferIntentSchema.parse({ version: 1, ...transferContextForBinding(caller.binding), transferId: randomUUID(),
           operationId: caller.intent.operationId, executionId: caller.attempt.executionId, attemptId: caller.attempt.attemptId,
           placementHash: caller.attempt.placementHash, rootId: root.rootId, rootBindingRevision: root.bindingRevision,
@@ -131,7 +154,8 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
         return { workerPrincipalId: worker.id, accepted, declaration: structuredClone(declaration), intent }
       } })
     // Coordinator rechecks live authority on retry; return only its original intent.
-    await this.authorize(result.value.intent, transferContextForBinding(caller!.binding), 'start')
+    if (!caller?.binding) return denied()
+    await this.authorize(result.value.intent, transferContextForBinding(caller.binding), 'start')
     return result.value.intent
   }
   private async writable(sql: pg.PoolClient, caller: Caller) {
@@ -174,7 +198,7 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
         agentId: allocation.accepted.context.scope.chat.kind === 'agent' ? allocation.accepted.context.scope.chat.agentId : undefined,
         grants: [], expiresAt: intent.expiresAt, revokedAt: null })
       const caller = await this.authorization.locked(sql, snapshot), accepted = await this.writable(sql, caller), root = caller.placement.source
-      if (!isDeepStrictEqual(transferContextForBinding(caller.binding), context) || !isDeepStrictEqual(accepted.attempt, allocation.accepted.attempt)
+      if (!caller.binding || !isDeepStrictEqual(transferContextForBinding(caller.binding), context) || !isDeepStrictEqual(accepted.attempt, allocation.accepted.attempt)
         || !isDeepStrictEqual(accepted.context, allocation.accepted.context) || intent.operationId !== caller.intent.operationId
         || intent.executionId !== caller.attempt.executionId || intent.attemptId !== caller.attempt.attemptId || intent.placementHash !== caller.attempt.placementHash
         || intent.direction !== 'to-main' || intent.byteClass !== 'artifact' || !('kind' in root) || root.kind !== 'pending'

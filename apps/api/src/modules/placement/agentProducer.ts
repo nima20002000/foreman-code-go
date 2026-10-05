@@ -48,7 +48,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
-      if (!nodes.some(node => node.placement)) return undefined
+      if (!nodes.some(node => node.placement || node.artifactOutputs)) return undefined
       const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
         resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
           locationRevision: input.expectedLocationRevision, roots: this.roots, installations: this.registry.installations })

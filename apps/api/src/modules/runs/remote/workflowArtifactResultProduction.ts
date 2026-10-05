@@ -1,6 +1,8 @@
+import type { WorkflowArtifactContextAuthority } from './nativeArtifactAuthority.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
-import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedWorkflowArtifactPublication, MainArtifactContext } from '../../files/distributed/publication.js'
+import { workflowArtifactFilePolicy } from '../../harnesses/workflowArtifactPolicy.js'
 import { DomainError } from '../../errors.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../../interactions/workflowNativeCapture.js'
 import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
@@ -12,13 +14,12 @@ import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { RepeatNativeEvidence } from '../repeatNativeRepository.js'
 import type { RunOwnership } from '../ownership.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import type { PostgresArtifactPublicationAuthority } from './nativeArtifactAuthority.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import type { WorkflowArtifactResultSourcePort } from './workflowArtifactResultAdoption.js'
 
 export interface WorkflowArtifactTerminalPorts {
   artifactTerminalContext(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture,
-    proof: WorkflowNativeProofRecord): Promise<TransferContext>
+    proof: WorkflowNativeProofRecord): Promise<TransferContext | MainArtifactContext>
   assertArtifactTerminal(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture,
     proof: WorkflowNativeProofRecord): Promise<void>
   assertAdoptedArtifacts(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture): Promise<void>
@@ -27,7 +28,7 @@ interface Retained {
   sql: GraphTransactionSql
   capture: WorkflowNativeCapture
   proof: WorkflowNativeProofRecord
-  accepted: AcceptedArtifactPublication
+  accepted: AcceptedWorkflowArtifactPublication
 }
 const unavailable = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
   'The committed original native terminal and its accepted artifact context are unavailable.', 409) }
@@ -37,7 +38,7 @@ const unavailable = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_SOUR
 export function createProductionWorkflowArtifactResultSource(ports: {
   captures: WorkflowNativeVerificationPort
   physical: WorkflowArtifactTerminalPorts
-  authority: Pick<PostgresArtifactPublicationAuthority, 'resolveWorkflowContext' | 'authorize'>
+  authority: WorkflowArtifactContextAuthority
 }) {
   const originals = new WeakMap<RepeatNativeEvidence, Retained>()
   const executions = new Map<string, Retained>()
@@ -90,12 +91,12 @@ export function createProductionWorkflowArtifactResultSource(ports: {
       if (!node || node.kind === 'job' || !node.artifactOutputs) return
       const placement = await readAcceptedPlacement(sql, runId, node.id)
       const configuration = snapshot.configurations.find(item => item.id === stored.execution.agentConfigurationVersionId)
-      if (!placement || placement.hostRef.kind !== 'device' || placement.payload.kind !== 'agent'
+      if (!placement || placement.payload.kind !== 'agent'
         || placement.payload.agentConfigurationVersionId !== configuration?.id
         || !same(placement.payload.artifactOutputs, node.artifactOutputs)
-        || configuration?.harness.harness !== 'codex' || configuration.harness.sandbox !== 'workspace-write') {
+        || !configuration || !workflowArtifactFilePolicy(configuration.harness).allowMutation) {
         throw new DomainError('WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE',
-          'Saved artifact outputs require an installed Codex computer with authorized workspace-write output tools.', 409)
+          'Saved artifact outputs require a qualified native harness with authorized output tools.', 409)
       }
     },
     async retainOriginalLocked(sql: GraphTransactionSql, evidence: RepeatNativeEvidence, raw: WorkflowNativeProofRecord): Promise<void> {
@@ -121,7 +122,7 @@ export function createProductionWorkflowArtifactResultSource(ports: {
       originals.set(evidence, entry)
       executions.set(capture.execution.id, entry)
     },
-    acceptedAfterCommit(evidence: RepeatNativeEvidence): AcceptedArtifactPublication | undefined {
+    acceptedAfterCommit(evidence: RepeatNativeEvidence): AcceptedWorkflowArtifactPublication | undefined {
       const entry = originals.get(evidence)
       if (!entry) return undefined
       if (!didGraphTransactionCommit(entry.sql)) return unavailable()

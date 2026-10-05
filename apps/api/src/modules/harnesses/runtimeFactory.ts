@@ -20,6 +20,7 @@ import { codexMcpInspectorAdapter } from './codexMcpInspectorAdapter.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
 import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from './opencodeTransport.js'
+import type { OpenCodeNativeOutputs } from './workflowNativeOutput.js'
 import type { OpenCodeChatFiles } from './opencodeFiles/chat.js'
 import { openCodeMcpInspectorAdapter } from './opencodeMcpInspectorAdapter.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
@@ -40,7 +41,7 @@ interface AllocationContext {
 }
 export type NativeHarnessAllocation = AllocationContext & (
   | { harness: 'codex'; chatFiles?: CodexChatFiles; nativeOutputs?: CodexNativeOutputs }
-  | { harness: 'opencode'; advancedConfiguration?: OpenCodeAdvancedConfiguration
+  | { harness: 'opencode'; nativeOutputs?: OpenCodeNativeOutputs; advancedConfiguration?: OpenCodeAdvancedConfiguration
     chatFiles?: (server: OpenCodeServerController) => OpenCodeChatFiles }
 )
 export type NativeHarnessAllocationResult =
@@ -241,6 +242,9 @@ export class NativeHarnessFactories {
       this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {
+      if (input.nativeOutputs && (input.role !== 'workflow' || input.appMcpAccess !== 'scoped')) {
+        throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native outputs require the scoped workflow allocation.', 403)
+      }
       const options: ManagedOpenCodeServerOptions = {
         binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
@@ -260,6 +264,7 @@ export class NativeHarnessFactories {
         ...(this.config.responseJournal ? { responseJournal: this.config.responseJournal } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.chatFiles ? { chatFiles: input.chatFiles(server) } : {}),
+        ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
         ...(this.infrastructure.openCodeClient ? { clientFactory: this.infrastructure.openCodeClient } : {}),
       })
       result = { harness: 'opencode', manager, inspector: openCodeMcpInspectorAdapter(manager) }

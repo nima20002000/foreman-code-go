@@ -5,6 +5,7 @@ import type { NativeHarnessFactories, NativeHarnessAllocation, HarnessRuntimeRol
 import type { ProductionHarnessRegistry } from './productionRegistry.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { AcceptedHarnessProfileAdmission, AcceptedProfileSelector } from './instanceSettings/acceptedProfile.js'
+import type { WorkflowNativeOutputs } from './workflowNativeOutput.js'
 import type { ClaudeProfileOwner } from './claudeSdk/production.js'
 
 /** Exact selected profiles never fall through to unselected local defaults.
@@ -22,6 +23,7 @@ export function productionSelectedProfileManager(input: {
   recovery: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
   credentialEnvironmentVariable?: string
+  nativeOutputs?: WorkflowNativeOutputs
   files?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['chatFiles']
   openCodeFiles?: Extract<NativeHarnessAllocation, { harness: 'opencode' }>['chatFiles']
 }) {
@@ -39,8 +41,8 @@ export function productionSelectedProfileManager(input: {
       ownerAgentId: input.ownerAgentId, processRecovery: input.recovery, appMcpAccess: input.appMcpAccess,
       ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
       revalidateSelection: (effectSignal?: AbortSignal) => input.profiles.revalidate({ ...owner, admissionSignal: effectSignal ?? signal }, accepted) }
-    return input.configuration.harness === 'codex' ? { ...common, harness: 'codex', ...(input.files ? { chatFiles: input.files } : {}) }
-      : { ...common, harness: 'opencode', ...(input.configuration.advanced ? { advancedConfiguration: input.configuration.advanced } : {}),
+    return input.configuration.harness === 'codex' ? { ...common, harness: 'codex', ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs.codex } : {}), ...(input.files ? { chatFiles: input.files } : {}) }
+      : { ...common, harness: 'opencode', ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs.opencode } : {}), ...(input.configuration.advanced ? { advancedConfiguration: input.configuration.advanced } : {}),
         ...(input.openCodeFiles ? { chatFiles: input.openCodeFiles } : {}) }
   })
 }

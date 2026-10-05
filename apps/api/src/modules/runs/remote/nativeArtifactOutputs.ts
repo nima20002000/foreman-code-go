@@ -3,8 +3,9 @@ import { z } from 'zod'
 import { ArtifactAttemptSchema, ArtifactEdgeBindingSchema, type ArtifactAttempt, type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
 import { AgentFilePublishInputSchema, FileScopeSchema } from '@foreman-code/contracts/files'
 import { VerifiedTransferReceiptSchema } from '@foreman-code/contracts/byte-transfer'
-import type { AcceptedArtifactPublication, ArtifactPublicationAuthority } from '../../files/distributed/publication.js'
+import type { AcceptedArtifactPublication, AcceptedMainArtifactPublication, AcceptedWorkflowArtifactPublication, ArtifactPublicationAuthority } from '../../files/distributed/publication.js'
 import type { CanonicalNativeArtifactResults, CanonicalNativeArtifactResult } from '../../files/distributed/nativeResults.js'
+import { MainArtifactPublicationSchema, type CanonicalMainArtifactResult } from '../../files/distributed/mainPublication.js'
 import type { ArtifactEdgeService } from '../../files/distributed/edges.js'
 import type { FileQuery } from '../../files/repository.js'
 import { fileScopeIdentity } from '../../files/requests.js'
@@ -19,28 +20,43 @@ export const NativeArtifactOutputSchema = z.object({
   scope: FileScopeSchema, transferReceipt: VerifiedTransferReceiptSchema,
 }).strict()
 export type NativeArtifactOutput = z.infer<typeof NativeArtifactOutputSchema>
+export const MainNativeArtifactOutputSchema = NativeArtifactOutputSchema.omit({ transferReceipt: true })
+  .extend({ mainPublication: MainArtifactPublicationSchema }).strict()
+export type MainNativeArtifactOutput = z.infer<typeof MainNativeArtifactOutputSchema>
+export const WorkflowNativeArtifactOutputSchema = z.union([NativeArtifactOutputSchema, MainNativeArtifactOutputSchema])
+export type WorkflowNativeArtifactOutput = z.infer<typeof WorkflowNativeArtifactOutputSchema>
 export interface NativeArtifactOutputRepository {
   /** Atomic first binding; a conflicting command, native identity or pin must fail. */
-  bind(record: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput>
-  read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined>
+  bind(record: WorkflowNativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<WorkflowNativeArtifactOutput>
+  read(producer: ArtifactAttempt, outputKey: string): Promise<WorkflowNativeArtifactOutput | undefined>
 }
 export type AcceptedNativeArtifactEdge = Omit<ArtifactEdgeBinding, 'version' | 'publication' | 'pins' | 'scope'>
 const conflict = (): never => { throw new DomainError('NATIVE_ARTIFACT_OUTPUT_CONFLICT', 'The original native output binding differs from this accepted attempt.', 409) }
-function nativeIdentity(accepted: AcceptedArtifactPublication) {
+function nativeIdentity(accepted: AcceptedWorkflowArtifactPublication) {
   const { nativeSessionId, turnId, nativeMessageId, messageId } = accepted.context
   return { nativeSessionId, ...(turnId ? { turnId } : {}), ...(nativeMessageId ? { nativeMessageId } : {}), ...(messageId ? { messageId } : {}) }
 }
 /** Main-only adoption. No output discovery, latest-revision selection, publication
  * allocation or native completion is inferred from a worker response. */
 export class NativeArtifactOutputs {
-  constructor(private readonly results: Pick<CanonicalNativeArtifactResults, 'readAccepted'>,
+  constructor(private readonly results: Pick<CanonicalNativeArtifactResults, 'readWorkflowAccepted'>,
     private readonly outputs: NativeArtifactOutputRepository, private readonly authority: ArtifactPublicationAuthority,
     private readonly edges: Pick<ArtifactEdgeService, 'pinAccepted'>) {}
-  private record(accepted: AcceptedArtifactPublication, outputKey: string, commandId: string, result: CanonicalNativeArtifactResult) {
+  private record(accepted: AcceptedWorkflowArtifactPublication, outputKey: string, commandId: string,
+    result: CanonicalNativeArtifactResult | CanonicalMainArtifactResult) {
     if (!isDeepStrictEqual(result.attempt, accepted.attempt) || !isDeepStrictEqual(result.nativeIdentity, nativeIdentity(accepted))
       || result.value.file.fileId !== result.pins.fileId || result.value.revision.revisionId !== result.pins.revisionId
       || result.value.revision.sha256 !== result.pins.sha256 || result.value.revision.byteSize !== result.pins.byteSize
       || fileScopeIdentity(result.value.file.scope) !== fileScopeIdentity(accepted.context.scope)) return conflict()
+    if ('mainPublication' in result) {
+      if (!('location' in accepted) || result.mainPublication.mainId !== accepted.location.mainId
+        || !isDeepStrictEqual(result.mainPublication.attempt, accepted.attempt)
+        || result.mainPublication.sha256 !== result.pins.sha256 || result.mainPublication.byteSize !== result.pins.byteSize) return conflict()
+      return MainNativeArtifactOutputSchema.parse({ version: 1, producer: result.attempt, outputKey, commandId,
+        nativeIdentity: result.nativeIdentity, publication: result.publication, pins: result.pins,
+        scope: result.value.file.scope, mainPublication: result.mainPublication })
+    }
+    if ('location' in accepted) return conflict()
     const receipt = result.transferReceipt
     if (receipt.intent.executionId !== accepted.attempt.executionId || receipt.intent.attemptId !== accepted.attempt.attemptId
       || receipt.intent.placementHash !== accepted.attempt.placementHash || receipt.sha256 !== result.pins.sha256
@@ -49,31 +65,37 @@ export class NativeArtifactOutputs {
       nativeIdentity: result.nativeIdentity, publication: result.publication, pins: result.pins,
       scope: result.value.file.scope, transferReceipt: receipt })
   }
-  private async authorize(accepted: AcceptedArtifactPublication, record: NativeArtifactOutput, query?: FileQuery) {
+  private async authorize(accepted: AcceptedWorkflowArtifactPublication, record: WorkflowNativeArtifactOutput, query?: FileQuery) {
     const caller = await this.authority.authorize(accepted, query)
     if (caller.principal.id !== record.publication.ownerPrincipalId || caller.binding !== record.publication.binding
       || !caller.context.allowedTools.includes('files.list') || !isDeepStrictEqual(nativeIdentity({ ...accepted, context: caller.context }), record.nativeIdentity)
       || fileScopeIdentity(caller.context.scope) !== fileScopeIdentity(record.scope)) return conflict()
   }
-  async acceptOutput(accepted: AcceptedArtifactPublication, outputKey: string, commandId: string): Promise<NativeArtifactOutput> {
-    const record = this.record(accepted, outputKey, commandId, await this.results.readAccepted(accepted, commandId))
+  acceptOutput(accepted: AcceptedArtifactPublication, outputKey: string, commandId: string): Promise<NativeArtifactOutput>
+  acceptOutput(accepted: AcceptedMainArtifactPublication, outputKey: string, commandId: string): Promise<MainNativeArtifactOutput>
+  acceptOutput(accepted: AcceptedWorkflowArtifactPublication, outputKey: string, commandId: string): Promise<WorkflowNativeArtifactOutput>
+  async acceptOutput(accepted: AcceptedWorkflowArtifactPublication, outputKey: string, commandId: string): Promise<WorkflowNativeArtifactOutput> {
+    const record = this.record(accepted, outputKey, commandId, await this.results.readWorkflowAccepted(accepted, commandId))
     const bound = await this.outputs.bind(record, query => this.authorize(accepted, record, query))
     if (!isDeepStrictEqual(bound, record)) return conflict()
     return structuredClone(bound)
   }
-  async readOutput(accepted: AcceptedArtifactPublication, outputKey: string): Promise<NativeArtifactOutput> {
+  readOutput(accepted: AcceptedArtifactPublication, outputKey: string): Promise<NativeArtifactOutput>
+  readOutput(accepted: AcceptedMainArtifactPublication, outputKey: string): Promise<MainNativeArtifactOutput>
+  readOutput(accepted: AcceptedWorkflowArtifactPublication, outputKey: string): Promise<WorkflowNativeArtifactOutput>
+  async readOutput(accepted: AcceptedWorkflowArtifactPublication, outputKey: string): Promise<WorkflowNativeArtifactOutput> {
     const producer = ArtifactAttemptSchema.parse(accepted.attempt)
     outputKey = ArtifactEdgeBindingSchema.shape.outputKey.parse(outputKey)
     const raw = await this.outputs.read(producer, outputKey)
     if (!raw) throw new DomainError('NATIVE_ARTIFACT_OUTPUT_PENDING', 'The original native output has not been bound.', 409)
-    const original = NativeArtifactOutputSchema.parse(raw)
+    const original = WorkflowNativeArtifactOutputSchema.parse(raw)
     if (!isDeepStrictEqual(original.producer, producer) || original.outputKey !== outputKey) return conflict()
-    const current = this.record(accepted, outputKey, original.commandId, await this.results.readAccepted(accepted, original.commandId))
+    const current = this.record(accepted, outputKey, original.commandId, await this.results.readWorkflowAccepted(accepted, original.commandId))
     if (!isDeepStrictEqual(current, original)) return conflict()
     await this.authorize(accepted, original)
     return structuredClone(original)
   }
-  async pinEdge(accepted: AcceptedArtifactPublication, edge: AcceptedNativeArtifactEdge): Promise<ArtifactEdgeBinding> {
+  async pinEdge(accepted: AcceptedWorkflowArtifactPublication, edge: AcceptedNativeArtifactEdge): Promise<ArtifactEdgeBinding> {
     if (!isDeepStrictEqual(edge.producer, accepted.attempt)) return conflict()
     const original = await this.readOutput(accepted, edge.outputKey)
     return this.edges.pinAccepted(ArtifactEdgeBindingSchema.parse({ ...edge, version: 1,

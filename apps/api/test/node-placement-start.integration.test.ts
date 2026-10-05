@@ -136,6 +136,35 @@ async function advanceMainSourceBinding(f: Fixture) {
 }
 
 describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
+  it('persists implicit Main placement for an artifact producer through authenticated MCP and denies a reader', async () => {
+    const f = await fixture()
+    try {
+      const node = agentWorkflowNode(f.saveInput.graph.nodes[0])
+      node.artifactOutputs = { version: 1, outputKeys: ['report'] }
+      f.saveInput.graph.nodes = [node]
+      f.saveInput.graph.edges = []
+      const saved = await f.save('mcp')
+      expect(agentWorkflowNode(saved.version.definition.nodes[0]).placement).toBeUndefined()
+      const input = startInput(f, saved)
+      const accepted = await f.start('mcp', input)
+      const result = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
+        workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id, nodeId: node.id,
+      } })
+      expect(result.isError).not.toBe(true)
+      const read = RunPlacementGetResultSchema.parse(result.structuredContent)
+      if (read.readback.evidence !== 'accepted') throw new Error('Accepted Main placement required')
+      expect(read.readback.placement.hostRef).toEqual(f.placement.local.hostRef)
+      expect(read.readback.placement.payload).toMatchObject({ kind: 'agent', artifactOutputs: node.artifactOutputs })
+      expect((await f.base.db.pool.query('select record from run_node_placements where run_id=$1 and node_id=$2',
+        [accepted.run.id, node.id])).rows[0]?.record).toEqual(read.readback.placement)
+      const reader = await f.base.access.issue({ name: 'Artifact workflow reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['runs:read'],
+          scope: { workspaceIds: [input.workspaceId], workflowIds: [input.workflowId] } }] })
+      const denied = await f.connect(reader.token)
+      expect(toolError(await denied.callTool({ name: 'run_start', arguments: { ...input, commandId: randomUUID() } })))
+        .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    } finally { await f.close() }
+  })
   it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async via => {
     const f = await fixture()
     let stage = 'save'

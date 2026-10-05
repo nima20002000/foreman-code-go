@@ -16,8 +16,15 @@ export interface AcceptedArtifactPublication {
   attempt: ArtifactAttempt
   transferContext: TransferContext
 }
+export interface MainArtifactContext { kind: 'main'; mainId: string }
+export interface AcceptedMainArtifactPublication {
+  context: FileToolContext
+  attempt: ArtifactAttempt
+  location: MainArtifactContext
+}
+export type AcceptedWorkflowArtifactPublication = AcceptedArtifactPublication | AcceptedMainArtifactPublication
 export interface ArtifactPublicationAuthority {
-  authorize(accepted: AcceptedArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller>
+  authorize(accepted: AcceptedWorkflowArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller>
   assertSourceLive(accepted: AcceptedArtifactPublication, receipt: VerifiedTransferReceipt, query: FileQuery): Promise<void>
 }
 export interface VerifiedArtifactReader {

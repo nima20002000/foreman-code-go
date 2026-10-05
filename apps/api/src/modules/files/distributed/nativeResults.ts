@@ -7,7 +7,8 @@ import type { TemporaryFileService } from '../service.js'
 import { digest, targetOf } from '../tools/context.js'
 import { fileScopeIdentity } from '../requests.js'
 import { DomainError } from '../../errors.js'
-import type { AcceptedArtifactPublication, ArtifactPublicationAuthority } from './publication.js'
+import type { AcceptedArtifactPublication, AcceptedWorkflowArtifactPublication, ArtifactPublicationAuthority } from './publication.js'
+import type { MainArtifactPublications, CanonicalMainArtifactResult } from './mainPublication.js'
 import type { DistributedPublicationLedger } from './publicationLedger.js'
 
 export interface CanonicalNativeArtifactResult {
@@ -23,8 +24,17 @@ export interface CanonicalNativeArtifactResult {
  * persisted command; worker paths, text output and transfer completion are not results. */
 export class CanonicalNativeArtifactResults {
   constructor(private readonly files: TemporaryFileService, private readonly ledger: DistributedPublicationLedger,
-    private readonly authority: ArtifactPublicationAuthority, private readonly clock: () => Date = () => new Date()) {}
+    private readonly authority: ArtifactPublicationAuthority, private readonly clock: () => Date = () => new Date(),
+    private readonly main?: Pick<MainArtifactPublications, 'readAccepted'>) {}
 
+  async readWorkflowAccepted(accepted: AcceptedWorkflowArtifactPublication,
+    commandId: string): Promise<CanonicalNativeArtifactResult | CanonicalMainArtifactResult> {
+    if ('location' in accepted) {
+      if (!this.main) throw new DomainError('FILE_PUBLICATION_PENDING', 'Main output publication is unavailable.', 409)
+      return this.main.readAccepted(accepted, commandId)
+    }
+    return this.readAccepted(accepted, commandId)
+  }
   async readAccepted(accepted: AcceptedArtifactPublication, commandId: string): Promise<CanonicalNativeArtifactResult> {
     const attempt = ArtifactAttemptSchema.parse(accepted.attempt)
     accepted = { ...accepted, attempt }

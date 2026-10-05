@@ -1,3 +1,8 @@
+import type { WorkflowNativeCapture } from './modules/interactions/workflowNativeCapture.js'
+import { createMainWorkflowNativeOutputs } from './modules/runs/remote/mainWorkflowNativeOutputs.js'
+import { NativeOutputMemoryBudget } from './modules/runs/remote/bufferedNativeOutput.js'
+import { createMainWorkflowArtifactTerminals } from './modules/runs/remote/mainWorkflowArtifacts.js'
+import { createWorkerNativeOutputAuthorizationPort } from './modules/placement/workerMcpRelay.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
@@ -378,6 +383,8 @@ export function buildProductionApp(
   const workflowCapture = createWorkflowNativeCaptureChannel()
   const reviewCapture = createReviewNativeCaptureChannel()
   let admitWorkflowFileContext: ReturnType<typeof createProductionWorkflowFileContexts> | undefined
+  let workflowArtifactAuthority: PostgresArtifactPublicationAuthority | undefined
+  const mainOutputBudget = new NativeOutputMemoryBudget()
   let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
   let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
@@ -651,6 +658,18 @@ export function buildProductionApp(
           ? placement.hostRef.mainId : placement.registration!.workerInstallationId,
         harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
     }
+    const artifactBinding = remoteWorkflow.binding(context.executionId)
+    const nativeOutputs = placement?.payload.kind === 'agent' && placement.payload.artifactOutputs && artifactBinding
+      ? createMainWorkflowNativeOutputs({ intent: artifactBinding.intent, context, getOwner, budget: mainOutputBudget,
+        authority: () => {
+          if (!workflowArtifactAuthority) throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'Output authority is unavailable.', 503)
+          return workflowArtifactAuthority
+        },
+        publications: () => {
+          if (!workflowArtifacts) throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'Output publication is unavailable.', 503)
+          return workflowArtifacts.artifacts.mainPublications
+        },
+      }) : undefined
     if (configuration.harness === 'claude') {
       requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
@@ -681,7 +700,8 @@ export function buildProductionApp(
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
           ...(context.purpose ? { purpose: context.purpose } : {}) },
-        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId, recovery, appMcpAccess: 'scoped' })
+        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId, recovery, appMcpAccess: 'scoped',
+        ...(nativeOutputs ? { nativeOutputs } : {}) })
       launchScopes.set(manager, recovery)
       return manager
     }
@@ -692,8 +712,8 @@ export function buildProductionApp(
       configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
         enabled: true, configuration },
       processRecovery: recovery, appMcpAccess: 'scoped',
-      ...(configuration.harness === 'codex' ? { harness: 'codex' as const }
-        : { harness: 'opencode' as const, ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}) }),
+      ...(configuration.harness === 'codex' ? { harness: 'codex' as const, ...(nativeOutputs ? { nativeOutputs: nativeOutputs.codex } : {}) }
+        : { harness: 'opencode' as const, ...(nativeOutputs ? { nativeOutputs: nativeOutputs.opencode } : {}), ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}) }),
     })
     launchScopes.set(manager, recovery)
     return manager
@@ -1335,13 +1355,37 @@ export function buildProductionApp(
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
+      workflowArtifactAuthority = artifactAuthority
+      const nativeOutputAuthorization = createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (request, connection, sql) => {
+        const run = (await sql.query<{ workspace_id: string; workflow_id: string }>(
+          'select workspace_id,workflow_id from runs where id=$1 for share', [request.intent.runId])).rows[0]
+        if (!run) throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original workflow scope is unavailable.', 403)
+        const binding = deviceRuntime.currentBinding(connection.deviceId)
+        if (!binding || binding.mainId !== connection.mainId || binding.bootId !== connection.bootId
+          || binding.workerInstallationId !== connection.workerInstallationId
+          || binding.keyRevision !== connection.keyRevision || binding.authorizationRevision !== connection.authorizationRevision
+          || binding.connectionGeneration !== connection.connectionGeneration) throw new DomainError(
+          'NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The native output channel changed.', 403)
+        return artifactAuthority.resolveWorkflowContext({ workspaceId: run.workspace_id, workflowId: run.workflow_id,
+          runId: request.intent.runId, nodeId: request.intent.nodeId, executionId: request.intent.executionId,
+          attemptId: request.intent.attemptId, placementHash: request.intent.bindingHash },
+        transferContextForBinding(binding), sql)
+      })
       mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app),
-        infrastructure?.nativeOutputAuthorization?.(artifactAuthority))
+        infrastructure?.nativeOutputAuthorization?.(artifactAuthority) ?? nativeOutputAuthorization)
       artifactOutputsGate = createWorkflowArtifactOutputsGate(machine.installationId, artifactAuthority)
+      const mainArtifacts = createMainWorkflowArtifactTerminals(machine.installationId)
+      const onMain = (capture: WorkflowNativeCapture) => remoteWorkflow.binding(capture.execution.id)?.placement.hostRef.kind === 'main'
       artifactResultSource = createProductionWorkflowArtifactResultSource({ captures: workflowCapture.verify,
-        physical: remoteWorkflow, authority: artifactAuthority })
+        physical: {
+          artifactTerminalContext: (...args) => (onMain(args[2]) ? mainArtifacts : remoteWorkflow).artifactTerminalContext(...args),
+          assertArtifactTerminal: (...args) => (onMain(args[2]) ? mainArtifacts : remoteWorkflow).assertArtifactTerminal(...args),
+          assertAdoptedArtifacts: (...args) => (onMain(args[2]) ? mainArtifacts : remoteWorkflow).assertAdoptedArtifacts(...args),
+        }, authority: artifactAuthority })
       admitWorkflowFileContext = createProductionWorkflowFileContexts(machine.installationId, { captures: workflowCapture.verify,
-        assertPhysical: remoteWorkflow.assertPhysical, authority: artifactAuthority, transferContext: remoteWorkflow.fileTransferContext })
+        assertPhysical: remoteWorkflow.assertPhysical, authority: artifactAuthority,
+        transferContext: capture => onMain(capture) ? { kind: 'main', mainId: machine.installationId }
+          : remoteWorkflow.fileTransferContext(capture) })
       artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
         fence: new PostgresAcceptedArtifactAttemptFence(machine.installationId, artifactPorts) }
       mountArtifacts()

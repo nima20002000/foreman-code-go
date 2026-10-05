@@ -88,6 +88,20 @@ function fixture() {
   return { mainId, placement, intent, execution, attempt, accepted, state, sql, ports, authority, fence, declarationsRequest }
 }
 describe('original accepted artifact authority', () => {
+  it.each(['codex', 'opencode'] as const)('authorizes declared Main %s outputs with the original grants', async harness => {
+    const t = fixture()
+    vi.mocked(readAcceptedPlacement).mockResolvedValue({ ...t.placement,
+      hostRef: { kind: 'main', mainId: t.mainId }, registration: null })
+    vi.mocked(assertDeviceHostInstallation).mockResolvedValue(null)
+    if (harness === 'opencode') t.state.configuration.harness = {
+      ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'build',
+    }
+    await t.authority.authorizeMainNativeOutputDeclarations(t.attempt, t.sql)
+    expect(t.state.queries.some(query => query.text.includes('remote_dispatch_origins'))).toBe(false)
+    t.state.writeAllowed = false
+    await expect(t.authority.authorizeMainNativeOutputDeclarations(t.attempt, t.sql))
+      .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+  })
   it('accepts the actual authenticated W07 frame while preserving original connection identity', async () => {
     const t = fixture(), frame = { ...t.state.receipt.connection, connectionEpoch: randomUUID() }
     expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, frame, t.sql)).toMatchObject({ agentConfigurationVersionId: 'configuration' })
@@ -165,7 +179,7 @@ describe('original accepted artifact authority', () => {
   })
   it.each([0, 2])('reports missing/ambiguous persisted workflow conversation (%i) without inventing one', async count => {
     const t = fixture(); t.state.conversationCount = count
-    await expect(t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE' })
+    await expect(t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).rejects.toMatchObject({ code: count === 0 ? 'NATIVE_ARTIFACT_CONTEXT_PENDING' : 'NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE' })
   })
   it('derives read-only tools and denies write elevation from saved sandbox or revoked write grants', async () => {
     const t = fixture(); t.state.configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'read-only' }
