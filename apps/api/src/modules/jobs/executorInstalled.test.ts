@@ -12,8 +12,14 @@ import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistr
 import { identity } from '../sources/privateFilesystem.js'
 import * as privateFilesystem from '../sources/privateFilesystem.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import type { RemoteJobExecutionHost, RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
-import { createInstalledJobExecutionHost } from './executorInstalled.js'
+import { RemoteJobExecutionHost, type RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
+import { createInstalledJobExecutionPorts } from './executorInstalled.js'
+import { JobRuntimeNativeAdmissionSchema } from '@foreman-code/contracts/job-runtime'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
+import { jobRuntimeMetadataFixture } from '../../../test/helpers/jobRuntimeMetadataFixture.js'
+import { QualificationReceiptSchema } from './qualificationJournal.js'
+import { jobDigest } from './service.js'
 import * as installed from './installedRuntimeHost.js'
 import * as git from './privateGitMounts.js'
 import type { QualifiedJobProfile } from './executor.js'
@@ -32,6 +38,7 @@ async function filesystem(path: string) {
 async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string }) {
   const root = await mkdtemp(join(tmpdir(), 'hrt-installed-job-')); roots.push(root)
   const execution = jobExecution(), parent = join(root, execution.acceptedSpec.source.materializationId)
+  execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
   await mkdir(parent, { mode: 0o700 })
   for (const directory of ['tree', 'repository', 'job-heavy-jobs']) await mkdir(join(parent, directory), { mode: 0o700 })
   Object.assign(execution.acceptedSpec.target.destination, { canonicalProjectRoot: join(parent, 'tree'), canonicalCwd: join(parent, 'tree'), managedRuntimeRoot: join(root, 'runtime') })
@@ -47,15 +54,37 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
     policyRevision: spec.policy.isolationPolicyRevision, imageDigest: spec.policy.imageDigest, toolchainDigest: spec.policy.toolchainDigest,
     runtimeVersion: 'fixture', ociRuntimeVersion: 'fixture', kernelVersion: 'fixture', qualificationId: randomUUID(), rootless: true,
     cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none', cpuLimit: 1, memoryBytes: 1048576, pidsLimit: 64, diskBytes: 1048576 }
-  // Qualification is a supplied measurement double. Directory checks below use real Linux FDs.
-  const fingerprint = { bootId, root: { binding: { filesystem: { ...await filesystem(root), ...qualifiedFilesystem } } } }
-  const qualified = { candidate: { fingerprint, sourceParent: root, runtimeRoot: spec.target.destination.managedRuntimeRoot,
-    qualificationId: profile.qualificationId, approvalId: randomUUID() }, admission: { fingerprintDigest: digest },
-    result: { outcome: 'qualified', measurement: { runtime: profile, fingerprint, fingerprintDigest: digest,
-      qualificationId: profile.qualificationId, expiresAt: new Date(Date.now() + 60000).toISOString(), approvalId: '' } } }
-  qualified.result.measurement.approvalId = qualified.candidate.approvalId
+  // Qualification is a schema-validated boundary double; directory checks use real Linux FDs.
+  const base = buildComputerFixture(spec.target.mainId, execution.workspaceId).candidate.profile
+  const savedRoot = SourceRootRecordSchema.parse({ ...base.root,
+    source: { approvedSourceId: spec.source.approvedSourceId, snapshotId: spec.source.snapshotId,
+      manifestDigest: spec.source.manifestDigest },
+    selection: { hostRef: spec.target.hostRef, rootPolicyId: spec.target.destination.rootPolicyId,
+      rootPolicyRevision: spec.target.destination.rootPolicyRevision, locationRevision: spec.target.destination.locationRevision },
+    registration: null, binding: { ...base.root.binding, deviceId: null, workerInstallationId: null,
+      canonicalPath: root, snapshotId: spec.source.snapshotId, manifestDigest: spec.source.manifestDigest,
+      filesystem: { ...await filesystem(root), ...qualifiedFilesystem } } })
+  const metadata = jobRuntimeMetadataFixture({ ...base, id: spec.policy.isolationPolicyId,
+    root: savedRoot, policy: spec.policy, limits: { cpuLimit: profile.cpuLimit, memoryBytes: profile.memoryBytes,
+      pidsLimit: profile.pidsLimit, diskBytes: profile.diskBytes } }, bootId)
+  const measurement = metadata.profile.measurement!
+  const fingerprint = metadata.fingerprint
+  const admission = JobRuntimeNativeAdmissionSchema.parse({ schemaVersion: 1, kind: 'job-runtime-qualification',
+    approvalId: measurement.approvalId, qualificationId: measurement.qualificationId, operationId: randomUUID(),
+    workspaceId: execution.workspaceId, profileId: metadata.profile.id, profileRevision: metadata.profile.revision,
+    fingerprintDigest: jobDigest(fingerprint), leaseId: randomUUID(), runCommandId: 'qualify', runPrincipalId: 'runner',
+    approvedByPrincipalId: 'owner', hostRef: fingerprint.hostRef, registration: fingerprint.registration,
+    mainInstallationId: fingerprint.mainInstallationId, bootId, connection: null,
+    admittedAt: measurement.checkedAt, expiresAt: measurement.expiresAt })
+  const qualified = QualificationReceiptSchema.parse({ admission,
+    candidate: { fingerprint, sourceParent: root, runtimeRoot: spec.target.destination.managedRuntimeRoot,
+      qualificationId: admission.qualificationId, approvalId: admission.approvalId, operationId: admission.operationId,
+      findmntBinary: metadata.descriptor.findmntExecutable, findmntBinarySha256: metadata.descriptor.findmntBinarySha256,
+      backingFile: metadata.descriptor.backingFile, backingBytes: profile.diskBytes,
+      controllerEnvironment: metadata.descriptor.controllerEnvironment, spoolBytes: 131072, ttlSeconds: 3600 },
+    result: { outcome: 'qualified', measurement }, sequence: 1, phase: 'closed', launches: [], container: null })
   const journal = await RemoteOperationJournal.open(join(root, 'journal'), { initializeNewInstallation: true }); journals.push(journal)
-  vi.spyOn(journal, 'qualifiedJobRuntime').mockResolvedValue(qualified as unknown as Awaited<ReturnType<RemoteOperationJournal['qualifiedJobRuntime']>>)
+  vi.spyOn(journal, 'qualifiedJobRuntime').mockResolvedValue(qualified)
   const inspect = vi.spyOn(installed, 'inspectInstalledJobRuntimeCandidate').mockResolvedValue(undefined)
   const verify = vi.spyOn(git, 'verifyJobGitMounts').mockResolvedValue(undefined)
   const intent: RemoteJobDispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: spec.target.mainId,
@@ -68,11 +97,11 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
     privateGit: true, diskQuotaBytes: 1024, gitMounts: mounts }
   const inputs = { prepare: vi.fn(async () => { throw new Error('Stop after source verification') }) }
   const registry = { reserveLaunch: vi.fn(() => { throw new Error('No OCI entry expected') }) }
-  const host = createInstalledJobExecutionHost({ journal, connection, incarnationId: randomUUID(), registry: registry as unknown as NativeProcessRegistry,
+  const ports = createInstalledJobExecutionPorts({ journal, connection, incarnationId: randomUUID(), registry: registry as unknown as NativeProcessRegistry,
     configuration: null, source: { verify: vi.fn(async () => source) }, inputs, authorize: vi.fn(async () => {}),
-    appendLog: vi.fn(), observeReceipt: vi.fn(), collectOutputs: vi.fn() }); hosts.push(host)
+    appendLog: vi.fn(), observeReceipt: vi.fn(), collectOutputs: vi.fn() })
+  const host = new RemoteJobExecutionHost(ports); hosts.push(host)
   await journal.jobAccept(intent, execution, connection, randomUUID())
-  const ports = Reflect.get(host, 'ports') as RemoteJobExecutionHostPorts
   if (typeof ports.supervisor !== 'function') throw new Error('Installed supervisor factory missing')
   await ports.supervisor(execution)
   const check = (signal = new AbortController().signal) => ports.source.verify(structuredClone(spec), signal)
