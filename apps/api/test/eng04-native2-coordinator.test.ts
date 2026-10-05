@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { HarnessExecutionRequestSchema } from '@foreman-code/contracts'
+import { HarnessExecutionRequestSchema, ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 import { DomainError } from '../src/modules/errors.js'
 import { native2Fixture } from './eng04-native2-fixtures.js'
 import { nativeEventBatches } from '../src/modules/interactions/nativeEventBatches.js'
@@ -184,13 +184,16 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
   }
   f.internals.resolveManager = () => ({ manager: physical as never, processState: 'needs_start',
     beginStart: () => { f.calls.push('begin-start') }, markResident: () => { f.calls.push('resident') } })
-  f.internals.prepareEnvironment = async (_context, _resolved, _signal, _purpose, enterNative) => {
-    await enterNative!()
-    const owned = f.internals.ownedSessions.get(f.get().id)!
-    owned.closureGeneration = '41'; owned.closureRegistration = Promise.resolve('41')
-    f.internals.managerCredentials.set(physical, { principalId: 'principal-native2-captured',
-      expiresAt: new Date(Date.now() + 300_000).toISOString(), environment: { variables: {} } })
-    return undefined
+  f.credentials.prepare = async (input) => {
+    assert.equal(input.executionId, f.get().id)
+    assert.equal(input.workingDirectory, f.get().workingDirectory)
+    return { credential: { principalId: 'principal-native2-captured',
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      environment: { agentId: f.get().agentId, variables: {} } },
+    detection: ScopedMcpDetectionSchema.parse({ detection: { harness: 'codex', serverName: 'graphql',
+      state: 'connected', endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', checkedAt: f.at },
+      runnerId: 'runner-native2', workingDirectory: input.workingDirectory,
+      providerVersion: f.session.providerVersion, nativeFilters: {} }) }
   }
   await f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
     owner: f.owner as never, workflowId: f.run.workflowId, graphThreadId: f.run.id, signal: new AbortController().signal })
