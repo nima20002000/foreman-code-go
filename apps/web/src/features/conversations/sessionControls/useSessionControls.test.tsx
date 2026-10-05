@@ -64,3 +64,16 @@ it('clears a recovered command draft on readback while preserving later edits', 
   expect(useConversationDraftStore.getState().drafts.chat).toBe('A later edit')
   expect(change).toHaveBeenCalledTimes(1)
 })
+
+it('reports storage failure and sends no native control without a durable identity', async () => {
+  vi.spyOn(sessionControlsApi, 'read').mockResolvedValue(initial)
+  const change = vi.spyOn(sessionControlsApi, 'change')
+  const mounted = mount()
+  await waitFor(() => expect(mounted.result.current.state).toBeDefined())
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Control storage is full') })
+  await act(async () => {
+    await expect(mounted.result.current.change({ kind: 'compact' })).rejects.toThrow('Control storage is full')
+  })
+  expect(mounted.result.current.mutation.isError).toBe(true)
+  expect(change).not.toHaveBeenCalled()
+})

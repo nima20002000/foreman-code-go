@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { ApiError } from '../../../shared/api/client'
-import { pendingControl, savePendingControl, recoverPendingControl, clearPendingControl } from './controlRequest'
+import { pendingControl, savePendingControl, recoverPendingControl, clearPendingControl, type PendingControl } from './controlRequest'
 import type { AgentChatContext } from '@graphql/contracts/agent-chat'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseSessionCommand, type SessionControlRequest } from '@graphql/contracts'
@@ -24,8 +24,10 @@ export function useSessionControls(conversationId: string | undefined, workspace
     if (query.data) recoverPendingControl(scope, query.data)
   }, [scope, query.data])
   const mutation = useMutation({ mutationKey: key, retry: false, networkMode: 'always',
-    mutationFn: async (request: SessionControlRequest) => {
+    mutationFn: async (control: PendingControl) => {
+      const request = control.request
       assertSession(generation)
+      savePendingControl(scope, control)
       if (!conversationId && !context) throw new Error('Select a conversation or workflow node first.')
       if (!navigator.onLine) throw new Error('You are offline. Your draft is kept.')
       const result = conversationId ? await sessionControlsApi.change(conversationId, request, workspaceId)
@@ -47,11 +49,10 @@ export function useSessionControls(conversationId: string | undefined, workspace
         throw new Error('Recover the previous session control before changing settings.')
       }
     }
-    const control = pending ?? { request: { ...input, requestId: crypto.randomUUID(),
+    const control = pending ? { ...pending, ...(draft && !pending.draft ? { draft } : {}) } : { request: { ...input, requestId: crypto.randomUUID(),
       expectedRevision: query.data.revision }, ...(draft ? { draft } : {}) }
-    savePendingControl(scope, control)
     try {
-      const state = await mutation.mutateAsync(control.request)
+      const state = await mutation.mutateAsync(control)
       recoverPendingControl(scope, state)
       return state
     } catch (error) {
