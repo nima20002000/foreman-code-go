@@ -129,21 +129,28 @@ describe('current device and Operator control MCP parity', () => {
   it('discovers only globally authorized concrete device/control ports and audits hidden writes', async () => {
     const f = await fixture()
     try {
-      const ownerClient = await f.connect('owner'), reader = await f.connect('reader'), scoped = await f.connect('scoped')
+      const [ownerClient, reader, scoped] = await Promise.all([
+        f.connect('owner'), f.connect('reader'), f.connect('scoped'),
+      ])
       const names = ['device_main_identity_get', 'device_setup_options_get', 'devices_list', 'device_setup_code_create', 'device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']
-      expect((await ownerClient.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
-      const capability = await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} })
+      const [ownerTools, capability, readerTools, scopedTools] = await Promise.all([
+        ownerClient.listTools(),
+        ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} }),
+        reader.listTools(),
+        scoped.listTools(),
+      ])
+      expect(ownerTools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
       expect(capability.structuredContent).toMatchObject({ tools: expect.arrayContaining(names) })
-      const readerNames = (await reader.listTools()).tools.map(tool => tool.name)
+      const readerNames = readerTools.tools.map(tool => tool.name)
       expect(readerNames).toContain('devices_list')
       for (const name of names.filter(name => !['device_main_identity_get', 'device_setup_options_get', 'devices_list'].includes(name))) expect(readerNames).not.toContain(name)
-      const scopedNames = (await scoped.listTools()).tools.map(tool => tool.name)
+      const scopedNames = scopedTools.tools.map(tool => tool.name)
       for (const name of names) expect(scopedNames).not.toContain(name)
-      for (const name of ['device_pairing_grant_create', 'device_setup_code_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']) {
+      await Promise.all(['device_pairing_grant_create', 'device_setup_code_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond'].map(async name => {
         const denied = await reader.callTool({ name, arguments: {} })
         expect(denied.isError).toBe(true)
         expect(f.audit).toHaveBeenCalledWith('reader', 'mcp', name, `mcp:${name}`)
-      }
+      }))
       expect(f.c.services.devices!.createSetupCode).not.toHaveBeenCalled(); expect(f.grant).not.toHaveBeenCalled(); expect(f.revoke).not.toHaveBeenCalled(); expect(f.cancel).not.toHaveBeenCalled(); expect(f.respond).not.toHaveBeenCalled()
       delete f.c.services.devices; delete f.c.services.operatorChat
       for (const name of ['device_revoke', 'operator_chat_cancel', 'operator_chat_respond'] as const) expect(operatorToolAvailable(f.c, name)).toBe(false)

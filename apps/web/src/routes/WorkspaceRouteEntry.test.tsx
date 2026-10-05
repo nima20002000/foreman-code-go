@@ -72,6 +72,15 @@ describe('WorkspaceRouteEntry integration', () => {
   beforeEach(() => {
     useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
     server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
+    server.use(
+      http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
+        evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
+        executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      })),
+      http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+        workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
+      })),
+    )
     // JSDOM measurements only: the real mounted Board and React Flow stay intact.
     vi.stubGlobal('ResizeObserver', class {
       constructor(private readonly notify: ResizeObserverCallback) {}

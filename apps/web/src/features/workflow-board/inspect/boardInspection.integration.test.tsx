@@ -282,7 +282,8 @@ describe('Run inspection inside the one mounted Board', () => {
     const { cache } = await mount(href(scope, { runNodeId: fixture.first.id }))
     await screen.findByText('Private Run details are unavailable.')
     await screen.findByRole('region', { name: 'Selected Run actions' })
-    await waitFor(() => expect(cache.isFetching()).toBe(0))
+    await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
+      .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
     expect(readBoardStop(scope)).toEqual(journal)
     unavailable = false
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry pinned details' }))

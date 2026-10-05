@@ -229,7 +229,12 @@ describe('shared attachment picker and real HTTP boundary', () => {
     first.resolve()
     await ready(view, 2)
     expect(view.draft.items.map((item) => item.filename)).toEqual(['first.md', 'second.md'])
-    expect(view.draft.readyRefs.map((ref) => ref.fileId)).toEqual(uploads.map((upload) => `file-${upload.requestId}`))
+    const pickerOrder = ['first.md', 'second.md'].map(filename => {
+      const upload = uploads.find(upload => upload.filename === filename)
+      expect(upload).toBeDefined()
+      return `file-${upload!.requestId}`
+    })
+    expect(view.draft.readyRefs.map((ref) => ref.fileId)).toEqual(pickerOrder)
   })
 
   it('keeps bytes-complete/finalization-pending files out of readyRefs', async () => {

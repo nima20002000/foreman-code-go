@@ -32,6 +32,13 @@ afterEach(() => {
 describe('workspace section routes', () => {
   beforeEach(() => {
     server.use(
+      http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
+        evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
+        executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      })),
+      http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+        workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
+      })),
       http.get('*/api/workspaces/:workspaceId/reference-files', () => HttpResponse.json({
         items: [], pageInfo: { nextCursor: null },
       })),
@@ -305,7 +312,7 @@ describe('workspace section routes', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     await user.click(screen.getByRole('button', { name: 'Rename workspace' }))
     await user.clear(screen.getByRole('textbox', { name: 'Workspace name' }))
-    await user.type(screen.getByRole('textbox', { name: 'Workspace name' }), 'Workspace header rename')
+    await user.paste('Workspace header rename')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
     expect(await screen.findByRole('button', { name: 'Rename workspace Workspace header rename' })).toBeVisible()
     expect(within(screen.getByRole('navigation', { name: 'Breadcrumbs' })).getByRole('link', { name: 'Go to Workspace header rename' })).toBeVisible()
