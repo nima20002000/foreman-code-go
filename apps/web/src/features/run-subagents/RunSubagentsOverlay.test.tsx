@@ -3,7 +3,7 @@ import { useLayoutEffect } from 'react'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { CODEX_SUBAGENT_CONTROL_EXPLANATION, subagentCapabilities } from '@foreman-code/contracts/subagents'
+import { subagentCapabilities } from '@foreman-code/contracts/subagents'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
@@ -67,15 +67,15 @@ describe('Run subagent overlays', () => {
     expect(completed).toHaveAttribute('data-inactive', 'true')
     expect(completed).toHaveAttribute('data-parent-id', 'node-x')
   })
-  it('opens messages, tools, clipping and lifecycle with explained disabled controls', async () => {
+  it('opens messages, tools, clipping and lifecycle while controls are unavailable', async () => {
     await mount()
     fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))
     await screen.findByText('Child answer')
     expect(screen.getByText('Shortened — the full message was 24 KB.')).toBeVisible()
     expect(screen.getByText("Only part of this subagent's conversation was captured.")).toBeVisible()
-    expect(screen.getByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeDisabled()
+    expect(screen.getByText('Controls are unavailable for this subagent right now.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Status' })).toHaveTextContent('Running')
     fireEvent.click(screen.getByRole('tab', { name: /Tool calls/ }))
     const call = screen.getByText('read_file')

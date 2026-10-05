@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CODEX_SUBAGENT_CONTROL_EXPLANATION, subagentCapabilities } from '@foreman-code/contracts/subagents'
+import { subagentCapabilities } from '@foreman-code/contracts/subagents'
 import { server } from '../../mocks/server'
 import { SubagentPanel } from './SubagentPanel'
 import { base, child, detail, message, receipt, scope, tool } from './testFixtures'
@@ -31,10 +31,14 @@ function qualified() {
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
 }
 describe('Subagent panel', () => {
-  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('shows %s history with explained disabled controls', async nativeMode => {
+  it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('sends input and interruption for qualified %s children', async nativeMode => {
     const input = vi.fn(() => HttpResponse.json(receipt()))
     const interrupt = vi.fn(() => HttpResponse.json(receipt({ operation: 'run_subagent_interrupt_v1' })))
-    const record = detail(child({ nativeMode, capabilities: subagentCapabilities(nativeMode, '0.154.0') }))
+    const capabilities = subagentCapabilities(nativeMode, '0.154.0')
+    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    capabilities.interrupt = { support: 'supported', qualification: 'passed' }
+    const record = { subagent: child({ nativeMode, capabilities }),
+      availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
     server.use(
       http.get(`${base}/:subagentId`, () => HttpResponse.json(record)),
       http.get(`${base}/:subagentId/messages`, () => HttpResponse.json({
@@ -45,17 +49,13 @@ describe('Subagent panel', () => {
     )
     mount()
     expect(await screen.findByText('Child answer')).toBeVisible()
-    expect(screen.getByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)).toBeVisible()
-    const send = screen.getByRole('button', { name: 'Send' })
-    const stop = screen.getByRole('button', { name: 'Interrupt' })
-    expect(send).toBeDisabled()
-    expect(stop).toBeDisabled()
-    expect(send).toHaveAccessibleDescription(CODEX_SUBAGENT_CONTROL_EXPLANATION)
-    expect(stop).toHaveAccessibleDescription(CODEX_SUBAGENT_CONTROL_EXPLANATION)
-    fireEvent.click(send)
-    fireEvent.click(stop)
-    expect(input).not.toHaveBeenCalled()
-    expect(interrupt).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message to subagent' }), { target: { value: 'Follow up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText('Message delivered to the subagent.')
+    expect(input).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }))
+    await screen.findByText('Interrupt delivered to the subagent.')
+    expect(interrupt).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('tab', { name: /Tool calls/ }))
     expect(await screen.findByText('read_file')).toBeVisible()
   })
@@ -195,7 +195,7 @@ describe('Subagent panel', () => {
   it('closes on backdrop clicks but keeps clicks and drags from inside open', async () => {
     const { close } = mount()
     const dialog = screen.getByRole('dialog')
-    await screen.findByText(CODEX_SUBAGENT_CONTROL_EXPLANATION)
+    await screen.findByText('Controls are unavailable for this subagent right now.')
     const inside = screen.getByRole('tab', { name: /Messages/ })
     fireEvent.pointerDown(inside); fireEvent.click(dialog)
     expect(close).not.toHaveBeenCalled()

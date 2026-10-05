@@ -15,33 +15,36 @@ This document describes the PR 57 continuation. Native observations, transport f
 
 | Provider and mode | Repository evidence | Production limit |
 | --- | --- | --- |
-| Codex multi-agent v2 | Package pin and installed CLI 0.154.0; existing exact-parent history adapter | Individual input, interruption and execution resume are unsupported. History stays readable. |
-| Codex legacy collab | Capability records are version/mode specific | Individual input, interruption and execution resume are unsupported. History stays readable. |
+| Codex multi-agent v2 | Qualified installation schemas expose thread-addressed start, steer, interrupt and resume | Active input and interruption require a captured child turn. Idle continuation preserves the child settings. All controls require the resident admitted owner. |
+| Codex legacy collab | Uses the same thread and turn control methods | The same child ancestry, operation qualification and permission checks apply. |
 | Claude Agent | SDK pinned at 0.3.284; existing owned-profile child-history reader | Direct child input is unsupported. No session-wide interrupt is substituted for exact task interruption. Live CLI identity and child operations still require qualification. |
 | OpenCode task | SDK and transport baseline 1.18.31; existing subagent capability observations name server 1.18.33 | The new idle-input adapter does not qualify either version. The cloud build diagnostic reports the OpenCode CLI unavailable. Active input and child interruption stay unavailable. |
 
-The SDK package version is not proof of the running server's version. Existing capability records retain `qualification: unverified`; installing an adapter must not change that. A live acceptance run must capture the exact native version, mode, installation/profile identity and operation evidence before any gate can pass.
+The SDK package version is not proof of the running server's version. Persisted capability observations remain `qualification: unverified`. Reads expose qualified Codex controls only from the live admitted manager and its measured protocol schemas. Saved flags cannot confer a controller or bypass ownership checks. Transport fixtures exercise those schemas but do not qualify an installed provider.
 
-## Codex child-control errors
+## Codex child controls
 
-The pinned Codex 0.154.0 child-history adapter does not supply individual child
-controls. Its `turn/start`, `turn/steer` and `turn/interrupt` parent-session
-operations are not substitutes for child controls. Production never resolves a
-Codex child controller, including for legacy collab children. List and detail
-reads report both control actions unavailable with
-`blockedReason: CODEX_SUBAGENT_CONTROL_UNSUPPORTED`, and normalize stale saved
-control flags without altering child identity, revision or history.
+The pinned 0.154.0 protocol exposes `TurnSteerParams` with `threadId` and
+`expectedTurnId`, and `TurnInterruptParams` with `threadId` and `turnId`.
+`TurnStartParams` accepts a target `threadId` and `clientUserMessageId`;
+`ThreadResumeParams` accepts a target `threadId`. These definitions are tracked
+in the unchanged upstream schema bundle used by transport regression tests.
 
-After the existing authorization and child-scope checks, HTTP
-`POST /api/management/workspaces/:workspaceId/runs/:runId/subagents/:subagentId/input`
-and `/interrupt` return HTTP 409 with `error.code` set to
-`CODEX_SUBAGENT_CONTROL_UNSUPPORTED`. Operator MCP `run_subagent_input_v1` and
-`run_subagent_interrupt_v1` return `isError: true` with the same error code.
-These refusals create no command receipt and dispatch no native operation.
-Callers without the required grants still receive the existing access denial.
-The Run child panel shows disabled Send and Interrupt buttons with the
-explanation that history remains readable. Other providers retain their
-existing qualification, ownership and command-retry gates.
+The controller addresses the child's native thread on the admitted parent's
+resident transport. Before sending, it reads the child's source and each
+ancestor until the admitted root, checks the immediate parent, and checks the
+latest child turn. Resume and continuation omit configuration overrides so the
+child retains its sandbox, model and instructions. No parent turn is sent or
+interrupted. Native callbacks remain subject to the existing permission policy.
+
+HTTP and Operator MCP use the same command service, scoped grants, revision
+checks, persisted receipts and audit records. Retries read the existing receipt.
+Input recovery matches `userMessage.clientId`, independently of the native item
+ID; interruption recovery requires the addressed turn's interrupted status.
+Uncertain native outcomes do not cause another submission. Main recovery keeps
+that receipt while a resident manager supplies native readback. The UI exposes
+Send and Interrupt only when the corresponding operation is qualified and
+currently available to the caller.
 
 ## Remaining acceptance gates
 
