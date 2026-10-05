@@ -27,8 +27,15 @@ export class PostgresClaudeCallbackJournal implements ClaudeCallbackJournal {
   async write(key: string, record: ClaudeCallbackRecord): Promise<void> {
     const saved = await this.database.query(`insert into claude_callback_receipts(owner_key,callback_key,input_hash,record)
       values($1,$2,$3,$4::jsonb) on conflict(owner_key,callback_key) do update set record=excluded.record
+        || jsonb_build_object('acknowledged',
+          (claude_callback_receipts.record->>'acknowledged')::boolean or (excluded.record->>'acknowledged')::boolean,
+          'retired',coalesce((claude_callback_receipts.record->>'retired')::boolean,false)
+            or coalesce((excluded.record->>'retired')::boolean,false))
       where claude_callback_receipts.input_hash=excluded.input_hash
-        and claude_callback_receipts.record->'identity'=excluded.record->'identity' returning callback_key`,
+        and claude_callback_receipts.record->'identity'=excluded.record->'identity'
+        and claude_callback_receipts.record->>'state'=excluded.record->>'state'
+        and (claude_callback_receipts.record->>'selectedOptionId') is not distinct from (excluded.record->>'selectedOptionId')
+      returning callback_key`,
     [this.owner, key, record.inputHash, JSON.stringify(record)])
     if (saved.rowCount !== 1) throw new HarnessExecutionError('CLAUDE_CALLBACK_CONFLICT',
       'The callback identity was reused with different input.')

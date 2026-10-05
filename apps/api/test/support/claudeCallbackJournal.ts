@@ -11,7 +11,8 @@ export function memoryClaudeCallbackJournal(): ClaudeCallbackJournal {
       if (previous && (previous.inputHash !== record.inputHash || !isDeepStrictEqual(previous.identity, record.identity))) {
         throw new Error('Callback identity conflict')
       }
-      rows.set(key, structuredClone(record))
+      rows.set(key, { ...structuredClone(record), acknowledged: previous?.acknowledged === true || record.acknowledged,
+        retired: previous?.retired === true || record.retired === true })
     },
     async forTool(identity) {
       const matches = [...rows.values()].filter(record => record.identity.nativeSessionId === identity.nativeSessionId

@@ -106,10 +106,16 @@ export class ClaudeInteractionBridge {
         ? record.selectedOptionId === 'deny' || record.selectedOptionId === 'cancel'
         : record.selectedOptionId === 'allow_once')) {
       record.acknowledged = true
-      await this.authority.callbackJournal.write(commandInputHash(record.identity), record)
+      const key = commandInputHash(record.identity)
+      this.consumed.set(key, record)
+      this.unsaved.add(key)
+      await this.authority.callbackJournal.write(key, record)
+      this.unsaved.delete(key)
+      this.trimConsumed()
     }
   }
   async deliveryEvidence(session: NativeSessionReference): Promise<NativeResponseDeliveryEvidence[]> {
+    await this.persistCallbacks()
     const records = await this.authority.callbackJournal.acknowledged(session.nativeSessionId)
     const pending: ClaudeCallbackRecord[] = []
     for (const record of records) {
@@ -330,11 +336,7 @@ export class ClaudeInteractionBridge {
       this.requests.delete(key)
       await this.authority.callbackJournal.write(key, record)
       this.unsaved.delete(key)
-      while (this.consumed.size > 256) {
-        const oldest = [...this.consumed.keys()].find(candidate => !this.unsaved.has(candidate))
-        if (!oldest) break
-        this.consumed.delete(oldest)
-      }
+      this.trimConsumed()
     }
     const promise = decision.then(async value => { await retire(value); return value }, async error => {
       await retire()
@@ -349,11 +351,24 @@ export class ClaudeInteractionBridge {
     return promise
   }
 
-  private async retireSettled(): Promise<void> {
+  private trimConsumed(): void {
+    while (this.consumed.size > 256) {
+      const oldest = [...this.consumed.keys()].find(candidate => !this.unsaved.has(candidate))
+      if (!oldest) break
+      this.consumed.delete(oldest)
+    }
+  }
+
+  private async persistCallbacks(): Promise<void> {
     for (const key of this.unsaved) {
       await this.authority.callbackJournal.write(key, this.consumed.get(key)!)
       this.unsaved.delete(key)
     }
+    this.trimConsumed()
+  }
+
+  private async retireSettled(): Promise<void> {
+    await this.persistCallbacks()
     if (!this.authority.deliveryPersisted) return
     for (const [key, record] of this.consumed) {
       if (!record.acknowledged || !record.selectedOptionId

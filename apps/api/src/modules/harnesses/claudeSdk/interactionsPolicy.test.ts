@@ -102,29 +102,55 @@ it('retires persisted delivery records and still refuses old callbacks with chan
   } finally { f.bridge.close() }
 }, 30_000)
 
-it('recovers evicted callback identities and late acknowledgments from storage after bridge replacement', async () => {
+it.each(['submitted', 'uncertain'] as const)('recovers evicted %s callbacks from storage after bridge replacement', async state => {
   const f = fixture()
   const lookup = vi.spyOn(f.callbackJournal, 'forTool')
   try {
     for (let index = 0; index < 300; index++) {
       const callback = { ...identity, toolUseId: `uncertain-tool-${index}`, nativeRequestId: `uncertain-control-${index}` }
-      const decision = f.bridge.canUseTool(callback, tool, { index }, new AbortController().signal)
+      const controller = new AbortController()
+      const decision = f.bridge.canUseTool(callback, tool, { index }, controller.signal)
       await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
-      await f.bridge.respond(session, callback.nativeRequestId, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
-      expect((await decision).behavior).toBe('allow')
+      if (state === 'uncertain') controller.abort()
+      else await f.bridge.respond(session, callback.nativeRequestId, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
+      expect((await decision).behavior).toBe(state === 'uncertain' ? 'deny' : 'allow')
     }
     const first = { ...identity, toolUseId: 'uncertain-tool-0', nativeRequestId: 'uncertain-control-0' }
     await f.bridge.observeToolResult(first, tool, 'executed')
     expect(lookup).toHaveBeenCalledWith(first)
-    expect(await f.bridge.deliveryEvidence(session)).toMatchObject([{ nativeRequestId: first.nativeRequestId }])
+    const evidence = await f.bridge.deliveryEvidence(session)
+    expect(evidence).toHaveLength(state === 'submitted' ? 1 : 0)
+    if (state === 'submitted') expect(evidence[0]?.nativeRequestId).toBe(first.nativeRequestId)
     f.bridge.close()
     const restored = fixture(configuration, f.callbackJournal)
     try {
       expect((await restored.bridge.canUseTool(first, tool, { index: 0 }, new AbortController().signal)).behavior).toBe('deny')
       await expect(restored.bridge.canUseTool(first, tool, { index: 1 }, new AbortController().signal))
         .rejects.toThrow('different input')
-      expect(await restored.bridge.deliveryEvidence(session)).toMatchObject([{ nativeRequestId: first.nativeRequestId }])
+      expect(await restored.bridge.deliveryEvidence(session)).toEqual(evidence)
       expect(restored.bridge.pendingInteractions(session)).toEqual([])
+      const next = { ...identity, toolUseId: 'later-tool', nativeRequestId: 'later-control' }
+      const decision = restored.bridge.canUseTool(next, tool, { index: 300 }, new AbortController().signal)
+      await vi.waitFor(() => expect(restored.bridge.pendingInteractions(session)).toHaveLength(1))
+      await restored.bridge.respond(session, next.nativeRequestId, restored.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
+      expect((await decision).behavior).toBe('allow')
     } finally { restored.bridge.close() }
   } finally { lookup.mockRestore(); f.bridge.close() }
 }, 30_000)
+
+it('retries acknowledgment storage without resending a completed native permission decision', async () => {
+  const f = fixture()
+  try {
+    const decision = f.bridge.canUseTool(identity, tool, {}, new AbortController().signal)
+    await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+    await f.bridge.respond(session, identity.nativeRequestId!, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
+    expect((await decision).behavior).toBe('allow')
+    const failure = vi.spyOn(f.callbackJournal, 'write').mockRejectedValueOnce(new Error('Acknowledgment save lost'))
+    await expect(f.bridge.observeToolResult(identity, tool, 'executed')).rejects.toThrow('Acknowledgment save lost')
+    failure.mockRestore()
+    expect(await f.bridge.deliveryEvidence(session)).toMatchObject([{ nativeRequestId: identity.nativeRequestId,
+      nativeIdentity: { nativeMessageId: identity.nativeMessageId, generation: identity.generation } }])
+    expect(f.bridge.pendingInteractions(session)).toEqual([])
+    expect((await f.bridge.canUseTool(identity, tool, {}, new AbortController().signal)).behavior).toBe('deny')
+  } finally { f.bridge.close() }
+})
