@@ -108,7 +108,7 @@ export class CodexStdioTransport {
     try {
       await this.request('initialize', {
         clientInfo: { name: 'foreman-code', title: 'Foreman Code', version: '0.1.0' },
-        capabilities: { experimentalApi: true },
+        capabilities: { experimentalApi: true, extensions: { 'openai/form': {} } },
       }, signal)
       await this.write({ method: 'initialized' })
     } catch (error) {

@@ -54,7 +54,7 @@ it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists re
     const input = br1002Response(interaction)
     const url = `/api/management/interactions/${interaction.id}/respond`
     expect((await readonly.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(false)
-    await expect(readonly.callTool({ name: 'interaction_respond', arguments: input })).rejects.toThrow()
+    expect((await readonly.callTool({ name: 'interaction_respond', arguments: input })).isError).toBe(true)
     expect((await wrongScope.callTool({ name: 'interaction_respond', arguments: input })).isError).toBe(true)
     expect((await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${reader.token}` },
       payload: input })).statusCode).toBe(403)
@@ -80,7 +80,7 @@ it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists re
     expect(http.statusCode).toBe(200)
     expect(http.json().interaction).toEqual(persisted)
     const audit = (await f.db.pool.query(`select source from management_audit
-      where principal_id=$1 and action='interaction_respond' order by id`, [writer.principal.id])).rows
+      where principal_id=$1 and action='interaction_respond' order by sequence`, [writer.principal.id])).rows
     expect(audit.some((row) => row.source === 'mcp')).toBe(true)
     expect(f.counts().responses).toBe(1)
 

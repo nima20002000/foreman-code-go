@@ -12,6 +12,7 @@ describe('Foreman Code MCP tools per Agent', () => {
     expect(effectiveGraphqlTools('coder', ['context_get'], { add: ['interaction_get'], remove: ['context_get'] })).toEqual(['interaction_get'])
     expect(effectiveGraphqlTools('coder', [], { add: ['interaction_respond'], remove: [] })).toEqual([])
     expect(effectiveGraphqlTools('orchestrator', [], { add: ['interaction_respond'], remove: [] })).toEqual(['interaction_respond'])
+    expect(graphqlToolRoles('interaction_respond')).toEqual(['operator', 'orchestrator'])
   })
 
   it('accepts only known Agent tools, without overlap', () => {

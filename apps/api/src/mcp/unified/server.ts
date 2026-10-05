@@ -8,6 +8,7 @@ import type { AppInteractionService } from '../../modules/interactions/app.js'
 import { registerAppTools } from '../app/server.js'
 import { registerOperatorTools } from '../operator/server.js'
 import type { OperatorServices } from '../operator/types.js'
+import { operatorToolAvailable } from '../operator/availability.js'
 import { toolFailure } from '../shared/results.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
 
@@ -66,7 +67,15 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
   const name = call.data.params.name
   const allowed = toolRoles(name)
   const enabled = !context.tools || context.tools.includes(name)
-  if (allowed.includes(context.role) && enabled) return undefined
+  if (allowed.includes(context.role) && enabled) {
+    if (context.role === 'operator' && name === 'interaction_respond' && context.operator?.interactions
+      && !operatorToolAvailable({ principal: context.principal, services: context.operator }, name)) {
+      await context.operator.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+      return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ACCESS_DENIED',
+        'Responding to interactions requires read and respond grants.', 403)) }
+    }
+    return undefined
+  }
   const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
   if (!catalog.some((tool) => tool.name === name)) return undefined
   await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)

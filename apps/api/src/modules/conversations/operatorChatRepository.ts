@@ -27,6 +27,7 @@ import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
+import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -100,7 +101,7 @@ export function nativeCorrelation(conversationId: string, requestId: string): st
   return `operator:${conversationId}:${requestId}`
 }
 function conversation(row: ConversationRow): Conversation {
-  return ConversationSchema.parse({ ...ConversationSchema.parse(row.record), updatedAt: row.updated_at.toISOString() })
+  return ConversationSchema.parse({ ...publicOperatorConversation(row.record), updatedAt: row.updated_at.toISOString() })
 }
 
 /** SQL transitions are fenced by the accepted request, even under a delayed native response. */
@@ -474,7 +475,7 @@ export class PostgresOperatorConversationRepository {
           }
           validate?.(accepted)
           row.operator_configuration_version_id = accepted.id
-          row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: accepted.id }
+          row.record = { ...OperatorConversationRecordSchema.parse(row.record), operatorConfigurationVersionId: accepted.id }
           await client.query('update operator_conversations set operator_configuration_version_id=$2 where id=$1', [id, accepted.id])
           harness = undefined // Retry the immutable receipt, never reinterpret its controls.
         }
@@ -490,7 +491,7 @@ export class PostgresOperatorConversationRepository {
               native_session_id=case when harness=$3 then native_session_id else null end,
               provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,next.harness.harness])
             row.operator_configuration_version_id = next.id
-            row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
+            row.record = { ...OperatorConversationRecordSchema.parse(row.record), operatorConfigurationVersionId: next.id }
           }
         }
         // Receipt-only replay above does not require still-live bytes. A fresh admission or
@@ -505,8 +506,8 @@ export class PostgresOperatorConversationRepository {
             values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, id, input.content, input.requestId, JSON.stringify(withMessageAttachmentRefs(message, input.attachments))])
         }
         await client.query('update operator_conversation_turns set retryable=false,result=null where conversation_id=$1 and request_id=$2', [id, input.requestId])
-        const title = ConversationSchema.parse(row.record).title
-        const record = title === 'New conversation' ? { ...ConversationSchema.parse(row.record), title: input.content.replace(/\s+/g, ' ').slice(0, 72) } : row.record
+        const title = OperatorConversationRecordSchema.parse(row.record).title
+        const record = title === 'New conversation' ? { ...OperatorConversationRecordSchema.parse(row.record), title: input.content.replace(/\s+/g, ' ').slice(0, 72) } : row.record
         await client.query(`update operator_conversation_turns set message_id=(select id from operator_conversation_messages
           where conversation_id=$1 and client_request_id=$2),started_at=coalesce(started_at,now()) where conversation_id=$1 and request_id=$2`, [id, input.requestId])
         await client.query(`update operator_conversations set active_request_id=$2,active_native_turn_id=null,

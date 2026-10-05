@@ -1,5 +1,6 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
+import { publicOperatorConversation } from './operatorConversationRecord.js'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
@@ -17,7 +18,7 @@ import { access, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
-  CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
+  CodexSessionCompatibilitySchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
 } from '@foreman-code/contracts'
@@ -372,7 +373,7 @@ export class OperatorChatService {
       // a retryable receipt. A missing receipt is not evidence of non-delivery.
       return this.control(receiptId, () => this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true))
     }
-    if (ConversationSchema.parse(row.record).status === 'archived') {
+    if (publicOperatorConversation(row.record).status === 'archived') {
       throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
     }
     const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
@@ -612,16 +613,18 @@ export class OperatorChatService {
           // A callback is native evidence even when saving its identity fails.
           // No subsequent definite error can make this prompt safe to replay.
           submitted = true
-          const cancelRequested = await this.control(id, async () => {
-            if (!await this.repository.submitted(id, input.requestId, nativeTurnId,
-              { nativeSessionId: runtime.session!.nativeSessionId, principalId: row.owner_principal_id })) throw new Error('Native turn ownership was lost.')
-            if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
-            const current = await this.repository.active(id)
-            textStream?.flush()
-            this.events.publish(id, 'state', { requestId: input.requestId, activeRequestId: input.requestId,
-              revision: Number(current?.revision), turnState: current?.cancel_requested ? 'canceling' : 'active' })
-            return Boolean(current && current.active_request_id === input.requestId && current.cancel_requested)
-          })
+          // Reconciliation may own control() while the original callback is retried.
+          // The repository fences this SQL write by its saved request, session and owner.
+          if (!await this.repository.submitted(id, input.requestId, nativeTurnId,
+            { nativeSessionId: runtime.session!.nativeSessionId, principalId: row.owner_principal_id })) {
+            throw new Error('Native turn ownership was lost.')
+          }
+          if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
+          const current = await this.repository.active(id)
+          textStream?.flush()
+          this.events.publish(id, 'state', { requestId: input.requestId, activeRequestId: input.requestId,
+            revision: Number(current?.revision), turnState: current?.cancel_requested ? 'canceling' : 'active' })
+          const cancelRequested = Boolean(current && current.active_request_id === input.requestId && current.cancel_requested)
           if (cancelRequested) {
             // OpenCode invokes this callback under its native lifecycle lock.
             // Persist identity before acknowledging submission, but NEVER await

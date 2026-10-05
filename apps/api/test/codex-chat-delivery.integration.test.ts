@@ -25,6 +25,8 @@ import { agentMessage, calls, emit, state, until } from './fixtures/codex-test-h
 import { prepareCodexFileTurn } from '../src/modules/harnesses/codexFiles/index.js'
 import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
 import { nativeNonSubmission } from '../src/modules/conversations/nativeNonSubmission.js'
+import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { FixtureServer, configuration as openCodeConfiguration, advanced as openCodeAdvanced } from './opencode-fixtures.js'
 
@@ -129,6 +131,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined },
       checkpoints: { ping: async () => undefined } }, operator: { access,
       services } })
+    registerOperatorChatRoutes(app, operatorChat)
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'codex-delivery', version: '1' })
@@ -192,6 +195,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
 
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} persists a late prompt rejection before failed cleanup and settles it after service restart`, async () => {
+      await native.flag('late-reject-turn-start')
       const ports = filePorts()
       let cleanupFails = true
       const files: CodexChatFiles = {
@@ -243,6 +247,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       })
       assert(ports.events.includes('host:close'))
       assert.equal((await native.wire('turn/start')).length, 1)
+      await native.unflag('late-reject-turn-start')
       if (kind === 'agent') {
         await sendAgent(request('retry', id))
         await until(async () => (await repository.turn(id, 'retry'))?.delivery === 'completed' || undefined)
@@ -258,6 +263,10 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     openCodeServer = new FixtureServer()
     const harness = openCodeConfiguration()
     harness.advanced = { ...openCodeAdvanced(), mcp: { ...openCodeAdvanced().mcp, serverEnabled: { missing: true } } }
+    const defaults = new PostgresFoundationSettingsRepository(database.pool)
+    const before = await defaults.getAgentDefaults()
+    await defaults.updateAgentDefaults({ ...before.value,
+      operator: { ...before.value.operator, harness } }, before.revision)
     const id = await createOperator()
     const refused = await writer.callTool({ name: 'operator_chat_send', arguments: {
       conversationId: id, request: { requestId: 'opencode-preflight', content: 'A user message',
@@ -583,13 +592,13 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       ['late', row.agent_configuration_version_id, 'opencode'],
     ] as const) {
       await assert.rejects(repository.bindCreatedSession(id, requestId, configurationId, { ...session, harness },
-        { outcome: 'failed' }),
+        { outcome: 'failed', error: { code: 'FIXTURE_NATIVE_REJECTION', message: 'Native creation was rejected.', retryable: true } }),
         { code: 'AGENT_CHAT_SESSION_CONFLICT' })
       assert.deepEqual(await repository.get(id), row)
     }
     await database.pool.query('update operator_conversations set active_native_turn_id=$2 where id=$1', [id, 'prior-turn'])
     await assert.rejects(repository.bindCreatedSession(id, 'late', row.agent_configuration_version_id, session,
-      { outcome: 'failed' }),
+      { outcome: 'failed', error: { code: 'FIXTURE_NATIVE_REJECTION', message: 'Native creation was rejected.', retryable: true } }),
       { code: 'AGENT_CHAT_SESSION_CONFLICT' })
     assert.equal((await repository.get(id))!.native_session_id, null)
     assert.equal((await native.wire('turn/start')).length, 0)
@@ -820,6 +829,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       await app.close()
       app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined },
         checkpoints: { ping: async () => undefined } }, operator: { access, services } })
+      registerOperatorChatRoutes(app, operatorChat)
       const origin = await app.listen({ host: '127.0.0.1', port: 0 })
       const restarted = new Client({ name: 'restarted-input-response', version: '1' })
       clients.push(restarted)

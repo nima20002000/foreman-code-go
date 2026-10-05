@@ -45,7 +45,7 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
         ? { answer: { answers: ['Entered answer'] } } : { count: 2 }
       const input = { interactionId: interaction.id, expectedRevision: interaction.revision,
         optionId: interaction.responseOptions[0]!.optionId, response }
-      await expect(readonly.callTool({ name: 'interaction_respond', arguments: input })).rejects.toThrow()
+      expect((await readonly.callTool({ name: 'interaction_respond', arguments: input })).isError).toBe(true)
       const url = `/api/management/interactions/${interaction.id}/respond`
       expect((await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${reader.token}` },
         payload: input })).statusCode).toBe(403)

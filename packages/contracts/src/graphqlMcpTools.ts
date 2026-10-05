@@ -14,7 +14,7 @@ export const GRAPHQL_AGENT_TOOLS = {
   context_get: { label: "Read run context", description: "Its own identity, role, scope and enabled tools.", roles: ["orchestrator", "coder"] },
   interaction_list: { label: "List interactions", description: "Approval requests in its run.", roles: ["operator", "orchestrator", "coder"] },
   interaction_get: { label: "Read an interaction", description: "One approval request and its options.", roles: ["operator", "orchestrator", "coder"] },
-  interaction_respond: { label: "Respond to approvals", description: "Answer approval requests it reviews.", roles: ["orchestrator"] },
+  interaction_respond: { label: "Respond to approvals", description: "Answer user-handled approvals as Operator or assigned approvals as Orchestrator, with scoped response grants.", roles: ["operator", "orchestrator"] },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */

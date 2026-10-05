@@ -2,15 +2,15 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { ExecutionResultSchema, type ExecutionResult } from '@graphql/contracts'
 
-const NonSubmissionSchema = z.object({
+export const NativeNonSubmissionSchema = z.object({
   requestId: z.string(),
   operation: z.enum(['session_creation', 'turn_submission']),
   result: ExecutionResultSchema,
 })
-export type NativeNonSubmission = z.infer<typeof NonSubmissionSchema>
+export type NativeNonSubmission = z.infer<typeof NativeNonSubmissionSchema>
 
 export function nativeNonSubmission(record: unknown, requestId: string): NativeNonSubmission | undefined {
-  const parsed = z.object({ nativeNonSubmission: NonSubmissionSchema }).safeParse(record)
+  const parsed = z.object({ nativeNonSubmission: NativeNonSubmissionSchema }).safeParse(record)
   if (parsed.success && parsed.data.nativeNonSubmission.requestId === requestId) {
     return parsed.data.nativeNonSubmission
   }
@@ -20,7 +20,7 @@ export function nativeNonSubmission(record: unknown, requestId: string): NativeN
 /** Persist non-submission before cleanup, which can fail or outlive this process. */
 export async function recordNativeNonSubmission(pool: pg.Pool, id: string, requestId: string,
   operation: NativeNonSubmission['operation'], result: ExecutionResult): Promise<boolean> {
-  const record = NonSubmissionSchema.parse({ requestId, operation, result })
+  const record = NativeNonSubmissionSchema.parse({ requestId, operation, result })
   if (result.outcome === 'succeeded') throw new Error('Non-submission cannot have a successful native result.')
   const updated = await pool.query(`update operator_conversations c
     set record=c.record || jsonb_build_object('nativeNonSubmission',$3::jsonb),
