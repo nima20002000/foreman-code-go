@@ -1,6 +1,7 @@
 import type { WorkflowArtifactContextAuthority } from './nativeArtifactAuthority.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
 import { TransferContextSchema } from '@foreman-code/contracts/byte-transfer'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
@@ -51,7 +52,7 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
         || proof.scope.workflowId !== run.workflowId || proof.scope.workflowVersionId !== version.id
         || proof.inputDigest !== intent.inputDigest || !same(proof.execution, repeatExecutionIdentity(execution))
         || proof.session.nativeSessionId !== execution.nativeSessionId || !proof.lane || !proof.closureGeneration
-        || proof.commandId !== `execution:${execution.id}` || source_digest !== repeatDigest(proof, 4 * 1024 * 1024)
+        || proof.commandId !== `execution:${execution.id}` || source_digest !== repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT)
         || !same(proof.original.history.terminalTurn?.result, execution.result)) return conflict()
       assertRepeatExecution(version, proof.scope, proof.ref, execution)
       assertOriginalWorkflowTerminal(execution, proof.session, proof.original.history)

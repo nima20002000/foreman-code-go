@@ -21,6 +21,39 @@ const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: di
 const stop: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: 'operation', attemptId: 'attempt', executionId: 'execution', bindingHash: digest, owner: intent.owner, action: { kind: 'stop' } }
 async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal); return { path, journal } }
 describe('durable remote ownership', () => {
+  it('recovers a journal-sized reviewer result with both history copies after restart', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.reserveTurn(intent.operationId, { correlationId: 'execution:execution', promptDigest: digest })
+    await journal.acknowledgeTurn(intent.operationId, native.turnId)
+    await journal.markRunning(intent.operationId)
+    await journal.retainReviewer(intent.operationId, { agentId: 'reviewer', expiresAt: '2099-01-01T00:00:00.000Z' },
+      { events: [], pendingInteractions: [], terminalTurn: { correlationId: 'execution:execution',
+        providerId: native.turnId, result: { outcome: 'succeeded' } } })
+    const assignment = { jobId: 'review-job', interactionId: 'interaction', reviewerAgentId: 'reviewer',
+      correlationId: 'review:review-job', session: { harness: 'codex' as const,
+        providerVersion: 'fixture', nativeSessionId: native.sessionId } }
+    await journal.reserveReviewTurn(intent.operationId, assignment, digest, -1)
+    await journal.enterReviewTurn(intent.operationId, assignment.correlationId)
+    await journal.acknowledgeReviewTurn(intent.operationId, assignment.correlationId, 'review-turn')
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
+    const history = { events: [], pendingInteractions: [], nativeTurnId: 'review-turn',
+      correlationId: assignment.correlationId, terminalResult: result,
+      terminalTurn: { correlationId: assignment.correlationId, providerId: 'review-turn', result } }
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(3 * 1024 * 1024)
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeGreaterThan(4 * 1024 * 1024)
+    const settled = await journal.settleReviewTurn(intent.operationId, history)
+    expect(settled.reviewTurns?.at(-1)?.result).toBeUndefined()
+    await journal.close()
+    const restored = await RemoteOperationJournal.open(path)
+    journals.push(restored)
+    expect(await restored.reviewResult(intent.operationId, assignment.correlationId)).toEqual(result)
+    expect(await restored.reviewHistory(intent.operationId, assignment.correlationId)).toEqual(history)
+    expect((await restored.reserveReviewTurn(intent.operationId, assignment, digest, -1)).reserved).toBe(false)
+  })
+
   it('archives repeated settled review results and recovers every result without a lifetime turn cutoff', async () => {
     const { path, journal } = await setup()
     await journal.accept(intent, connection, randomUUID())

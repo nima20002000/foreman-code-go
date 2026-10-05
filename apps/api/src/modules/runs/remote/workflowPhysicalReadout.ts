@@ -8,8 +8,10 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { RemoteWorkflowPhysicalReadoutSchema, RemoteWorkflowPhysicalReadoutTransferSchema,
-  RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
-import { DEVICE_HISTORY_PAGE_BYTES, type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
+  RemoteWorkflowPhysicalAckSchema, REMOTE_PHYSICAL_CONTINUATION_LIMIT, REMOTE_NATIVE_SOURCE_LIMIT,
+  type RemoteResultDictionary, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { DEVICE_HISTORY_PAGE_BYTES, DEVICE_JSON_CONTINUATION_LIMIT,
+  type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
 import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
@@ -20,22 +22,28 @@ import { sourcePath } from '../../sources/manifest.js'
 import { sourceCwdAttestationDigest } from '../../sources/workingDirectory.js'
 import { RuntimeLeafAttestationSchema,assertRuntimeLeafPath } from './runtimeLeaf.js'
 import type { NativeHistory } from '../../harnesses/port.js'
+import { encodeResultCopies, decodeResultCopies, physicalResultPaths, historyResultPaths } from './executionResultCodec.js'
 
 const unavailable = (): never => { throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original installed native source and physical observations are unavailable.', 409) }
+const physicalRetentionLimit = DEVICE_JSON_CONTINUATION_LIMIT * 4
 export function pagePhysicalReadout(readout: RemoteWorkflowPhysicalReadout, metadata?: DeviceJsonContinuationRequest) {
   if (!metadata && Buffer.byteLength(JSON.stringify(readout)) <= DEVICE_HISTORY_PAGE_BYTES) return readout
-  return { kind: 'json-continuation' as const, metadata: pageJsonContinuation(readout, metadata) }
+  const dictionary = encodeResultCopies(readout, physicalResultPaths(readout))
+  return { kind: 'result-continuation' as const, metadata: pageJsonContinuation(dictionary, metadata,
+    { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT }) }
 }
 export async function readPhysicalReadout(raw: unknown,
   read: (metadata: DeviceJsonContinuationRequest) => Promise<unknown>, signal?: AbortSignal) {
   const transfer = RemoteWorkflowPhysicalReadoutTransferSchema.parse(raw)
   if (!('kind' in transfer)) return transfer
+  const kind = transfer.kind
+  const options = kind === 'result-continuation' ? { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT } : {}
   const value = await readJsonContinuation(transfer.metadata, async metadata => {
     const next = RemoteWorkflowPhysicalReadoutTransferSchema.parse(await read(metadata))
-    if (!('kind' in next)) throw new Error('Physical readout continuation changed')
+    if (!('kind' in next) || next.kind !== kind) throw new Error('Physical readout continuation changed')
     return next.metadata
-  }, signal)
-  return RemoteWorkflowPhysicalReadoutSchema.parse(value)
+  }, signal, options)
+  return RemoteWorkflowPhysicalReadoutSchema.parse(kind === 'result-continuation' ? decodeResultCopies(value) : value)
 }
 export function hasNativeClosure(observation: NativeLaunchObservation): boolean {
   return observation.lifecycle === 'closed' && (observation.closureEvidence === 'cgroup_v2_empty'
@@ -47,7 +55,7 @@ function freezeTree<T>(value:T):T {
   return value
 }
 export function remoteWorkflowSourceDigest(source: WorkflowOriginalNativeSource): string {
-  return createHash('sha256').update(canonicalGraphJson(source, 4 * 1024 * 1024)).digest('hex')
+  return createHash('sha256').update(canonicalGraphJson(source, REMOTE_NATIVE_SOURCE_LIMIT)).digest('hex')
 }
 export function remoteWorkflowNativeHistory(value:NonNullable<RemoteWorkflowPhysicalReadout['history']>):NativeHistory {
   return {events:value.events,pendingInteractions:value.pendingInteractions,
@@ -147,6 +155,7 @@ interface Retained {
   readout: RemoteWorkflowPhysicalReadout
   expiresAt: number
   bytes: number
+  resultDigests: readonly string[]
   aliases: readonly {key:string;source:WorkflowOriginalNativeSource}[]
   assertOwnerCurrent(): Promise<void>
   assertCurrent(): Promise<void>
@@ -159,11 +168,27 @@ export class InstalledWorkflowPhysicalReadouts {
   private readonly originals = new Map<string, Map<string, Retained>>()
   private readonly events=new Map<string,Map<string,{retained:Retained;source:WorkflowOriginalNativeSource}>>()
   private byteSize = 0
+  private readonly results = new Map<string, {
+    value: RemoteResultDictionary['results'][number]
+    bytes: number
+    references: number
+  }>()
   private key(sequence: number, sourceDigest: string) { return `${sequence}:${sourceDigest}` }
+  private release(retained: Retained) {
+    this.byteSize -= retained.bytes
+    for (const digest of retained.resultDigests) {
+      const result = this.results.get(digest)!
+      result.references--
+      if (result.references === 0) {
+        this.byteSize -= result.bytes
+        this.results.delete(digest)
+      }
+    }
+  }
   private purgeExpired() {
     for (const [operation, entries] of this.originals) {
       for (const [key, retained] of entries) if (retained.expiresAt <= Date.now()) {
-        entries.delete(key);this.byteSize-=retained.bytes
+        entries.delete(key);this.release(retained)
         for(const alias of retained.aliases)if(this.events.get(operation)?.get(alias.key)?.retained===retained)this.events.get(operation)?.delete(alias.key)
       }
       if (!entries.size) this.originals.delete(operation)
@@ -172,18 +197,32 @@ export class InstalledWorkflowPhysicalReadouts {
   }
   purge(operationId: string) {
     const entries = this.originals.get(operationId)
-    if (entries) for (const retained of entries.values()) this.byteSize -= retained.bytes
+    if (entries) for (const retained of entries.values()) this.release(retained)
     this.originals.delete(operationId)
     this.events.delete(operationId)
   }
-  clear() { this.originals.clear();this.events.clear(); this.byteSize = 0 }
+  clear() { this.originals.clear();this.events.clear();this.results.clear(); this.byteSize = 0 }
   remember(input: { readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; source: WorkflowOriginalNativeSource;
     leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null }): void {
     this.purgeExpired()
-    const readout = freezeTree(RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)), receipt = readout.receipt
+    const parsed = RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)
+    canonicalGraphJson(input.source, REMOTE_NATIVE_SOURCE_LIMIT)
+    const paths = physicalResultPaths(parsed, ['readout'])
+    if (input.source.type === 'history') paths.push(...historyResultPaths(['source', 'history']))
+    const dictionary = encodeResultCopies({ readout: parsed, source: input.source, placement: input.placement }, paths)
+    const payloads = dictionary.results.map(value => {
+      const serialized = canonicalGraphJson(value, DEVICE_JSON_CONTINUATION_LIMIT)
+      const digest = createHash('sha256').update(serialized).digest('hex')
+      return { digest, value: this.results.get(digest)?.value ?? value, bytes: Buffer.byteLength(serialized) }
+    })
+    dictionary.results = payloads.map(payload => payload.value)
+    const decoded = decodeResultCopies(dictionary) as {
+      readout: RemoteWorkflowPhysicalReadout; source: WorkflowOriginalNativeSource; placement: AcceptedNodePlacement
+    }
+    const readout = freezeTree(RemoteWorkflowPhysicalReadoutSchema.parse(decoded.readout)), receipt = readout.receipt
     if (!receipt.native || readout.session.nativeSessionId !== receipt.native.sessionId) return unavailable()
-    const source = freezeTree(JSON.parse(canonicalGraphJson(input.source, 4 * 1024 * 1024)) as WorkflowOriginalNativeSource)
-    const placement=freezeTree(structuredClone(input.placement))
+    const source = freezeTree(decoded.source)
+    const placement=freezeTree(decoded.placement)
     const expiresAt = Math.min(Date.parse(readout.expiresAt),Date.parse(input.leaseExpiresAt), Date.now() + 60_000)
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return unavailable()
     const key = this.key(receipt.sequence, remoteWorkflowSourceDigest(source)), entries = this.originals.get(receipt.intent.operationId) ?? new Map<string, Retained>()
@@ -198,10 +237,28 @@ export class InstalledWorkflowPhysicalReadouts {
       const source:WorkflowOriginalNativeSource=freezeTree({type:'event',event:{...event,executionId:receipt.intent.executionId}})
       return {key:this.key(receipt.sequence,remoteWorkflowSourceDigest(source)),source}
     }):[]
-    const bytes = Buffer.byteLength(canonicalGraphJson({ readout, source, placement,aliases }, 4 * 1024 * 1024))
-    const nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
-    if ((!previous && entries.size >= 128) || nextByteSize > 8 * 1024 * 1024) throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
-    const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,
+    const resultDigests = payloads.map(payload => payload.digest)
+    const bytes = Buffer.byteLength(canonicalGraphJson({ ...dictionary, results: resultDigests, aliases },
+      REMOTE_PHYSICAL_CONTINUATION_LIMIT))
+    let nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
+    const changes = new Set([...(previous?.resultDigests ?? []), ...resultDigests])
+    for (const digest of changes) {
+      const original = this.results.get(digest)
+      const references = (original?.references ?? 0) - (previous?.resultDigests.includes(digest) ? 1 : 0)
+        + (resultDigests.includes(digest) ? 1 : 0)
+      if (original && references === 0) nextByteSize -= original.bytes
+      if (!original && references > 0) nextByteSize += payloads.find(payload => payload.digest === digest)!.bytes
+    }
+    if ((!previous && entries.size >= 128) || nextByteSize > physicalRetentionLimit) {
+      throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
+    }
+    if (previous) this.release(previous)
+    for (const payload of payloads) {
+      const original = this.results.get(payload.digest)
+      if (original) original.references++
+      else this.results.set(payload.digest, { value: freezeTree(payload.value), bytes: payload.bytes, references: 1 })
+    }
+    const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,resultDigests,
       assertOwnerCurrent: input.assertOwnerCurrent, assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
     entries.set(key,retained)
     this.originals.set(receipt.intent.operationId, entries); this.byteSize = nextByteSize
@@ -236,7 +293,7 @@ export class InstalledWorkflowPhysicalReadouts {
       // ACK only retires in-memory observations; physical checks still gate reads.
       try {await retained.assertOwnerCurrent()}catch(error){this.purge(input.intent.operationId);throw error}
       if(direct) {
-        entries!.delete(key);this.byteSize-=retained.bytes
+        entries!.delete(key);this.release(retained)
         for(const alias of retained.aliases)if(this.events.get(input.intent.operationId)?.get(alias.key)?.retained===retained)this.events.get(input.intent.operationId)?.delete(alias.key)
       } else this.events.get(input.intent.operationId)?.delete(key)
       if(!entries?.size)this.originals.delete(input.intent.operationId)

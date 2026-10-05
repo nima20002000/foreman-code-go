@@ -7,6 +7,9 @@ import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, withAdvancedDefaults, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
+import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeHistory } from '../../harnesses/port.js'
 import * as installedQualification from '../../harnesses/installedCodexQualification.js'
@@ -57,7 +60,7 @@ import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,
-  assertOriginalPhysicalDirectories, pagePhysicalReadout } from './workflowPhysicalReadout.js'
+  assertOriginalPhysicalDirectories, pagePhysicalReadout, readPhysicalReadout } from './workflowPhysicalReadout.js'
 import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifetime } from './workflowPhysicalVerification.js'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
@@ -1657,6 +1660,161 @@ async function physicalFixture(relativeCwd='') {
     entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs}
 }
 describe('original physical source selectors and Main SQL consumer',()=>{
+  it('transfers distinct large workflow and reviewer results with a bounded physical dictionary', async () => {
+    const f = await physicalFixture()
+    const workflowResult = { outcome: 'succeeded' as const, output: { text: 'w'.repeat(3 * 1024 * 1024) } }
+    const reviewerResult = { outcome: 'succeeded' as const, output: { text: 'r'.repeat(3 * 1024 * 1024) } }
+    await f.journal.retainReviewer(f.intent.operationId, { agentId: 'reviewer',
+      expiresAt: '2099-01-01T00:00:00.000Z' }, { ...f.source.history,
+      terminalTurn: { correlationId: f.source.history.correlationId, providerId: 'original-turn', result: workflowResult } })
+    const assignment = { jobId: 'large-review', interactionId: 'interaction', reviewerAgentId: 'reviewer',
+      correlationId: 'review:large-review', session: f.session }
+    await f.journal.reserveReviewTurn(f.intent.operationId, assignment, 'a'.repeat(64), -1)
+    await f.journal.enterReviewTurn(f.intent.operationId, assignment.correlationId)
+    await f.journal.acknowledgeReviewTurn(f.intent.operationId, assignment.correlationId, 'review-turn')
+    const history = { ...f.source.history, correlationId: assignment.correlationId, nativeTurnId: 'review-turn',
+      terminalResult: reviewerResult, terminalTurn: { correlationId: assignment.correlationId,
+        providerId: 'review-turn', result: reviewerResult } }
+    await f.journal.settleReviewTurn(f.intent.operationId, history)
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Original reviewer receipt missing')
+    f.readout.receipt = status.receipt
+    f.readout.history = history
+    f.source.history = history
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const observation = { readout: f.readout, placement: f.placement,
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+      observe: () => f.captured.launch, closure: () => null }
+    try {
+      readouts.remember({ ...observation, source: { type: 'boundary' } })
+      readouts.remember({ ...observation, source: f.source })
+      const selector = { intent: f.intent, placement: f.placement, receiptSequence: status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest(f.source) }
+      const selected = await readouts.read(selector)
+      const first = pagePhysicalReadout(selected)
+      if (!('kind' in first)) throw new Error('Large physical dictionary needs bounded transfer')
+      expect(first.metadata.byteSize).toBeGreaterThan(4 * 1024 * 1024)
+      expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      const reconstructed = await readPhysicalReadout(first, async metadata =>
+        pagePhysicalReadout(await readouts.read(selector), metadata))
+      expect(reconstructed).toEqual(selected)
+      expect(reconstructed.receipt.retainedReviewer?.result).toEqual(workflowResult)
+      expect(reconstructed.history?.terminalResult).toEqual(reviewerResult)
+      expect((await readouts.ack(selector)).status).toBe('retired')
+      readouts.purge(f.intent.operationId)
+      readouts.remember({ ...observation, source: f.source })
+      expect((await readouts.read(selector)).history).toEqual(history)
+    } finally {
+      readouts.clear()
+      await f.sqlConnection.close()
+    }
+  }, 30_000)
+
+  it('retains and verifies a journal-sized terminal result across physical carrier continuations', async () => {
+    const f = await physicalFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
+    const history = { ...f.source.history, terminalResult: result, terminalTurn: {
+      correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } }
+    const closed = { ...f.captured.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+    await f.journal.terminal(f.intent.operationId, { kind: 'completed', result,
+      resultDigest: commandInputHash(result).slice('sha256:'.length),
+      closureEvidenceDigest: commandInputHash({ intent: f.intent, native: f.readout.receipt.native,
+        launch: f.captured.launch, physicalOwnerClosed: true }).slice('sha256:'.length) })
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Original terminal receipt missing')
+    f.source.history = history
+    f.readout.receipt = status.receipt
+    f.readout.history = history
+    f.readout.observation = closed
+    f.readout.closure = { ownerClosed: true, launch: closed }
+    f.readout.output = { kind: 'text-only', result }
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(3 * 1024 * 1024)
+    expect(Buffer.byteLength(JSON.stringify(f.readout))).toBeGreaterThan(4 * 1024 * 1024)
+    const expectedDigest = createHash('sha256')
+      .update(canonicalGraphJson(f.source, REMOTE_NATIVE_SOURCE_LIMIT)).digest('hex')
+    expect(remoteWorkflowSourceDigest(f.source)).toBe(expectedDigest)
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const observation = { readout: f.readout, placement: f.placement,
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+      observe: () => closed, closure: () => closed }
+    readouts.remember({ ...observation, source: { type: 'boundary' } })
+    readouts.remember({ ...observation, source: f.source })
+    class Socket extends EventEmitter {
+      bufferedAmount = 0
+      peer?: Socket
+      closed = false
+      maxFrameBytes = 0
+      send(text: string) {
+        this.maxFrameBytes = Math.max(this.maxFrameBytes, Buffer.byteLength(text))
+        queueMicrotask(() => {
+          if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
+        })
+      }
+      close() {
+        if (this.closed) return
+        this.closed = true
+        this.emit('close')
+        this.peer?.close()
+      }
+    }
+    const rawMain = new Socket()
+    const rawWorker = new Socket()
+    rawMain.peer = rawWorker
+    rawWorker.peer = rawMain
+    const mainSocket = adaptDeviceSocket(rawMain)
+    const workerSocket = adaptDeviceSocket(rawWorker)
+    const client: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'client',
+      maxJsonBytes: DEVICE_APPLICATION_JSON_BYTES, maxBinaryBytes: 0 }
+    let pages = 0
+    const server: DeviceExtensionRegistration = { ...client, role: 'server', handle: async raw => {
+      const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+      if (frame.method !== 'physical-readout') throw new Error('Only original physical observation is requested')
+      pages++
+      const payload = pagePhysicalReadout(await readouts.read(frame), frame.metadata)
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      return { payload }
+    } }
+    const extensions = negotiateDeviceExtensions(extensionDescriptors([client]), extensionDescriptors([server]))
+    const parent = new AbortController()
+    const main = new DeviceApplicationChannel({ side: 'main', binding: f.context.binding, socket: mainSocket,
+      signal: parent.signal, extensions, registrations: [client] })
+    const worker = new DeviceApplicationChannel({ side: 'worker', binding: f.context.binding, socket: workerSocket,
+      signal: parent.signal, extensions, registrations: [server] })
+    const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
+      worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+    for (const task of tasks) void task.catch(() => {})
+    f.request.mockImplementation(payload => main.request('execution-v1', payload))
+    try {
+      const original = await f.bind()
+      expect(original.source).toEqual(f.source)
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      const selector = { intent: f.intent, placement: f.placement, receiptSequence: status.receipt.sequence,
+        sourceDigest: expectedDigest }
+      const selected = await readouts.read(selector)
+      const raw = pagePhysicalReadout(selected)
+      const reconstructed = await readPhysicalReadout(raw, async metadata =>
+        pagePhysicalReadout(await readouts.read(selector), metadata))
+      expect(reconstructed).toEqual(selected)
+      expect(pages).toBeGreaterThan(1)
+      expect(rawWorker.maxFrameBytes).toBeLessThanOrEqual(16_384)
+      expect(rawMain.closed).toBe(false)
+      await expect(readouts.read({ ...selector, sourceDigest: 'f'.repeat(64) }))
+        .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+      expect((await readouts.ack(selector)).status).toBe('retired')
+      readouts.purge(f.intent.operationId)
+      readouts.remember({ ...observation, source: f.source })
+      expect((await readouts.read(selector)).history).toEqual(history)
+      expect(await f.journal.status(f.intent.operationId)).toEqual(status)
+    } finally {
+      parent.abort()
+      main.close()
+      worker.close()
+      await Promise.allSettled(tasks)
+      readouts.clear()
+      await f.sqlConnection.close()
+    }
+  }, 30_000)
+
   it.each(['closed', 'live', 'wrong owner', 'different closure'] as const)(
     'admits reboot readback only for original boot closure: %s', async state => {
       const f = await physicalFixture()
@@ -1867,7 +2025,8 @@ it('bounds the global original-source byte window and frees it only through expl
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
   let accepted=0
   for(let index=0;index<128;index++) {
-    const history={...f.source.history,nextSequence:index,terminalResult:{outcome:'succeeded' as const,output:{text:'x'.repeat(800_000)}}}
+    const history={...f.source.history,nextSequence:index,terminalResult:{outcome:'succeeded' as const,
+      output:{text:`${index}:${'x'.repeat(800_000)}`}}}
     try {
       readouts.remember({readout:{...f.readout,history},placement:f.placement,source:{type:'history',history},leaseExpiresAt:'2099-01-01T00:00:00.000Z',
         assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})

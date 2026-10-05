@@ -6,7 +6,9 @@ import { z } from 'zod'
 import { remoteActiveNative, RemoteReviewerAssignmentSchema, RemoteReviewerTurnSchema,
   type RemoteReviewerAssignment } from '@foreman-code/contracts/remote-execution'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteNativeHistorySchema, REMOTE_NATIVE_SOURCE_LIMIT,
+  REMOTE_PHYSICAL_CONTINUATION_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
+import { encodeResultCopies, decodeResultCopies, historyResultPaths } from './executionResultCodec.js'
 import { remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
@@ -146,9 +148,11 @@ export class RemoteOperationJournal {
   private async archiveReviewResult(operationId: string, turn: z.infer<typeof RemoteReviewerTurnSchema>, history?: NativeHistory) {
     if (!turn.result) throw new Error('Settled review result required')
     const resultDigest = hash(canonicalGraphJson(turn.result, journalByteLimit))
-    if (history) turn.historyDigest = hash(canonicalGraphJson(history, journalByteLimit))
+    if (history) turn.historyDigest = hash(canonicalGraphJson(history, REMOTE_NATIVE_SOURCE_LIMIT))
+    const archived = { operationId, turn: { ...turn, resultDigest }, ...(history ? { history } : {}) }
+    const dictionary = encodeResultCopies(archived, [['turn', 'result'], ...historyResultPaths(['history'])])
     await this.writeSnapshot(this.reviewPath(operationId, turn.assignment.correlationId),
-      JSON.stringify({ operationId, turn: { ...turn, resultDigest }, ...(history ? { history } : {}) }))
+      canonicalGraphJson(dictionary, REMOTE_PHYSICAL_CONTINUATION_LIMIT))
     await this.writeSnapshot(this.reviewJobPath(operationId, turn.assignment.jobId),
       JSON.stringify({ operationId, correlationId: turn.assignment.correlationId, jobId: turn.assignment.jobId }))
     turn.resultDigest = resultDigest
@@ -176,10 +180,10 @@ export class RemoteOperationJournal {
   private async readArchivedReview(receipt: RemoteOperationReceipt, correlationId: string) {
     const path = this.reviewPath(receipt.intent.operationId, correlationId)
     try {
-      if ((await stat(path)).size > journalByteLimit) throw new Error('Review archive byte limit reached')
+      if ((await stat(path)).size > REMOTE_PHYSICAL_CONTINUATION_LIMIT) throw new Error('Review archive byte limit reached')
       const archived = z.object({ operationId: z.string(), turn: RemoteReviewerTurnSchema,
         history: RemoteNativeHistorySchema.optional() }).strict()
-        .parse(JSON.parse(await readFile(path, 'utf8')))
+        .parse(decodeResultCopies(JSON.parse(await readFile(path, 'utf8'))))
       const turn = archived.turn
       if (archived.operationId !== receipt.intent.operationId || !turn.settled || !turn.result
         || turn.assignment.correlationId !== correlationId
@@ -188,7 +192,7 @@ export class RemoteOperationJournal {
         || hash(canonicalGraphJson(turn.result, journalByteLimit)) !== turn.resultDigest)
         throw new Error('Review archive changed: recovery required')
       if (turn.historyDigest && (!archived.history
-        || hash(canonicalGraphJson(archived.history, journalByteLimit)) !== turn.historyDigest
+        || hash(canonicalGraphJson(archived.history, REMOTE_NATIVE_SOURCE_LIMIT)) !== turn.historyDigest
         || archived.history.terminalTurn?.correlationId !== correlationId
         || archived.history.terminalTurn.providerId !== turn.providerId
         || !same(archived.history.terminalTurn.result, turn.result)))

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type NativeSessionReference } from '@foreman-code/contracts'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
 import { TransferContextSchema, type TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { AcceptedWorkflowArtifactPublication, MainArtifactContext } from '../../files/distributed/publication.js'
@@ -123,7 +124,7 @@ export class WorkflowNativeFileContextAdmission {
           'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
           [admission.proofId, intent.runId, intent.executionId])).rows[0]
         if (!stored || stored.record.proofId !== admission.proofId || stored.source_digest !== admission.sourceDigest
-          || repeatDigest(stored.record, 4 * 1024 * 1024) !== admission.sourceDigest
+          || repeatDigest(stored.record, REMOTE_NATIVE_SOURCE_LIMIT) !== admission.sourceDigest
           || !same(stored.record.scope, proof.scope) || !same(stored.record.ref, proof.ref)
           || !same(stored.record.execution, proof.execution) || !same(stored.record.session, admission.session)
           || stored.record.commandId !== admission.commandId || stored.record.inputDigest !== intent.inputDigest
@@ -168,7 +169,7 @@ export class WorkflowNativeFileContextAdmission {
         const row = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
           'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
           [proof.proofId, proof.scope.runId, capture.execution.id])).rows[0]
-        if (!row || !same(row.record, proof) || row.source_digest !== repeatDigest(proof, 4 * 1024 * 1024)) return denied()
+        if (!row || !same(row.record, proof) || row.source_digest !== repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT)) return denied()
         const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(
           `select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
             from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update`, [capture.execution.id])).rows[0]
@@ -222,7 +223,7 @@ export class WorkflowNativeFileContextAdmission {
       nativeSessionId: capture.session.nativeSessionId, turnId: capture.lane.providerId, allowMutation,
       allowedTools }
       const admission: Admission = { version: 1, conversationKey: key, commandId: proof.commandId, proofId: proof.proofId,
-        sourceDigest: repeatDigest(proof, 4 * 1024 * 1024), session: capture.session, attempt,
+        sourceDigest: repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT), session: capture.session, attempt,
         agentConfigurationVersionId: configuration.id, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, context }
       const target = JSON.stringify([this.mainId, execution.id, intent.attemptId, context.nativeSessionId, context.turnId])

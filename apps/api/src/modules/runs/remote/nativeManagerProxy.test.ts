@@ -218,4 +218,19 @@ describe('remote native history streaming', () => {
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
     expect(f.request.mock.calls.filter(([, raw]) => 'metadata' in (raw as object)).length).toBeGreaterThan(1)
   })
+  it('reconstructs duplicate near-three-MiB results through the proxy without another native turn', async () => {
+    const history = terminal([event(0)])
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
+    history.terminalResult = result
+    history.terminalTurn!.result = result
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    expect((await stream.next()).value).toEqual(event(0))
+    expect((await stream.next()).done).toBe(true)
+    const recovered = await f.proxy.reconcile(session, f.start.correlationId)
+    expect(recovered.terminalResult).toEqual(result)
+    expect(recovered.terminalTurn?.result).toEqual(result)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
 })

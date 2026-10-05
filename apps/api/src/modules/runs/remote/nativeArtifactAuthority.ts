@@ -6,6 +6,7 @@ import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@
 import { WorkerMcpRelayRequestSchema, type WorkerMcpRelayRequest, type WorkerNativeOutputDeclarationsPolicy } from '@foreman-code/contracts/worker-mcp-relay'
 import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@foreman-code/contracts/worker-native-output'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { ArtifactPublicationAuthority, AcceptedArtifactPublication, AcceptedMainArtifactPublication,
   AcceptedWorkflowArtifactPublication, MainArtifactContext } from '../../files/distributed/publication.js'
@@ -330,7 +331,7 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
       'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
       [admission.proofId, accepted.attempt.runId, accepted.attempt.executionId])).rows[0]
     if (!proof || proof.source_digest !== admission.sourceDigest
-      || repeatDigest(proof.record, 4 * 1024 * 1024) !== admission.sourceDigest
+      || repeatDigest(proof.record, REMOTE_NATIVE_SOURCE_LIMIT) !== admission.sourceDigest
       || proof.record.session.nativeSessionId !== context.nativeSessionId
       || proof.record.lane?.providerId !== context.turnId) return denied()
     const principal = await readLiveManagementPrincipal(sql, context.ownerPrincipalId)

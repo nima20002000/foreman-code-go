@@ -2,6 +2,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
 import { isDeepStrictEqual } from 'node:util'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -273,7 +274,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         terminals.set(capture,retained)
         actual.terminalCapture=capture
         requireRepeatCanonicalReceiptBeforeCommit(sql,{scope:proof.scope,evidence:{sourceKind:'native_event',sourceId:proof.proofId,sourceRevision:'1'},
-          sourceDigest:repeatDigest(proof,4*1024*1024),effect:null})
+          sourceDigest:repeatDigest(proof,REMOTE_NATIVE_SOURCE_LIMIT),effect:null})
         beforeGraphCommit(sql,()=>assertTerminal(sql,owner,capture,retained,false))
         return transferContextForBinding(actual.binding)
       }catch(error){poisonGraphTransaction(sql);throw error}
@@ -312,7 +313,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const row=(await sql.query<{record:WorkflowNativeProofRecord;source_digest:string}>(
         'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
         [proof.proofId,proof.scope.runId,captured.execution.id])).rows[0]
-      if(!row||!same(row.record,proof)||row.source_digest!==repeatDigest(proof,4*1024*1024))return unavailable('terminal_proof')
+      if(!row||!same(row.record,proof)||row.source_digest!==repeatDigest(proof,REMOTE_NATIVE_SOURCE_LIMIT))return unavailable('terminal_proof')
       await assertBound(sql,owner,retained.original,true)
       if(committed){
         const execution=(await sql.query<{record:unknown}>('select record from harness_executions where id=$1 and run_id=$2 for share',
@@ -441,7 +442,8 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       // Publication is acknowledged only after this exact original was retained
       // by the existing canonical writer AND its owning transaction committed.
       const proofs=await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
-        where execution_id=$1 and run_id=$2 and record->'original'=$3::jsonb limit 1`, [intent.executionId,intent.runId,canonicalGraphJson(original.source,4*1024*1024)])
+        where execution_id=$1 and run_id=$2 and record->'original'=$3::jsonb limit 1`,
+        [intent.executionId,intent.runId,canonicalGraphJson(original.source,REMOTE_NATIVE_SOURCE_LIMIT)])
       if(proofs.rows.some(row=>row.record.execution.executionId===intent.executionId&&same(row.record.session,readout.session)
         &&same(row.record.original,original.source)))capture.publications.add(sql)
       if (lifetime.review) {
@@ -460,7 +462,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
         const events=await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs
           where execution_id=$1 and run_id=$2 and record->'original'=any($3::jsonb[])`,
-          [intent.executionId,intent.runId,sources.map(source=>canonicalGraphJson(source,4*1024*1024))])
+          [intent.executionId,intent.runId,sources.map(source=>canonicalGraphJson(source,REMOTE_NATIVE_SOURCE_LIMIT))])
         if(sources.every(source=>events.rows.some(row=>same(row.original,source)))&&capture.publications.has(sql))capture.replyPublications.add(sql)
       }
       check()

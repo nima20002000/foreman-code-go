@@ -8,7 +8,22 @@ import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, Sou
 import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
-import { DeviceHistoryGapSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
+import { DeviceHistoryGapSchema, DeviceJsonContinuationSchema, DEVICE_JSON_CONTINUATION_LIMIT } from './deviceApplication.js'
+
+export const REMOTE_PHYSICAL_CONTINUATION_LIMIT = DEVICE_JSON_CONTINUATION_LIMIT * 3
+/** A history repeats its journal-sized result in both terminal fields. */
+export const REMOTE_NATIVE_SOURCE_LIMIT = DEVICE_JSON_CONTINUATION_LIMIT * 3
+export const RemoteResultDictionarySchema = z.object({
+  kind: z.literal('execution-result-dictionary'), data: z.record(z.string(), z.unknown()),
+  results: z.array(z.lazy(() => ExecutionResultSchema)).max(64),
+  locations: z.array(z.object({ path: z.array(z.union([z.string().min(1).max(64),
+    z.number().int().nonnegative()])).min(1).max(8),
+    index: z.number().int().nonnegative().max(63) }).strict()).max(128),
+}).strict()
+export type RemoteResultDictionary = z.infer<typeof RemoteResultDictionarySchema>
+export const RemotePhysicalJsonContinuationSchema = DeviceJsonContinuationSchema.extend({
+  byteSize: z.number().int().safe().positive().max(REMOTE_PHYSICAL_CONTINUATION_LIMIT),
+})
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -71,6 +86,7 @@ export type RemoteWorkflowPhysicalReadout = z.infer<typeof RemoteWorkflowPhysica
 export const RemoteWorkflowPhysicalReadoutTransferSchema = z.union([
   RemoteWorkflowPhysicalReadoutSchema,
   z.object({ kind: z.literal('json-continuation'), metadata: DeviceJsonContinuationSchema }).strict(),
+  z.object({ kind: z.literal('result-continuation'), metadata: RemotePhysicalJsonContinuationSchema }).strict(),
 ])
 /** Cleanup acknowledgment, never evidence of native execution or success. */
 export const RemoteWorkflowPhysicalAckSchema=z.object({version:z.literal(1),operationId:z.string().min(1),

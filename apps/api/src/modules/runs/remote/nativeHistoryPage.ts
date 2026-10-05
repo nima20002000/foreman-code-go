@@ -4,6 +4,7 @@ import type { NativeHarnessEvent } from '@graphql/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { pageJsonContinuation } from './jsonContinuation.js'
+import { encodeResultCopies, historyResultPaths } from './executionResultCodec.js'
 
 const historySource = Symbol('original native history page')
 export function nativeHistoryPageSource(reply: unknown): NativeHistory | undefined {
@@ -28,7 +29,7 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   let metadata: DeviceHistoryPage['metadata']
   if (bytes > limit || metadataRequest) {
     const { events: _events, firstRetainedSequence: _first, nextSequence: _next, gap: _gap, ...fields } = history
-    metadata = pageJsonContinuation(fields, metadataRequest)
+    metadata = pageJsonContinuation(encodeResultCopies(fields, historyResultPaths()), metadataRequest)
     value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
       ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }),

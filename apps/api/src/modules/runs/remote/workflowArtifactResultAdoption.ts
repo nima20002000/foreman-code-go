@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
 import { WorkflowVersionV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { parseWorkflowArtifactResult, type WorkflowArtifactResultV1 } from '@foreman-code/contracts/workflow-artifact-result'
@@ -51,7 +52,7 @@ export class WorkflowArtifactResultAdoption {
     const { proof } = snapshot
     const version = WorkflowVersionV3Schema.parse(snapshot.version), execution = HarnessExecutionSchema.parse(snapshot.execution)
     assertRepeatExecution(version, proof.scope, proof.ref, execution)
-    if (snapshot.sourceDigest !== repeatDigest(proof, 4 * 1024 * 1024)
+    if (snapshot.sourceDigest !== repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT)
       || proof.scope.workspaceId !== accepted.attempt.workspaceId || proof.scope.workflowId !== accepted.attempt.workflowId
       || proof.scope.runId !== accepted.attempt.runId || proof.ref.nodeId !== accepted.attempt.nodeId
       || execution.id !== accepted.attempt.executionId || !isDeepStrictEqual(proof.execution, repeatExecutionIdentity(execution))

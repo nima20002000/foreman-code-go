@@ -15,6 +15,7 @@ import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, 
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
+import { decodeResultCopies } from './executionResultCodec.js'
 
 export interface RemoteNativeTransport {
   request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn'
@@ -81,7 +82,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
         throw new Error('Remote history metadata owner changed')
       return continuation.page.metadata
     }, signal)
-    value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...fields as object })
+    value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...decodeResultCopies(fields) as object })
     return value
   }
   private async status(raw: unknown, intent = this.intent) {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import { canonicalGraphJson, sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -23,7 +24,8 @@ export interface RemoteNativePhysicalVerification {
    * is not physical proof; an absent verifier cannot authorize publication. */
   assertOriginal(sql: GraphTransactionSql, owner: RunOwnership, original: VerifiedRemoteOriginalSource): Promise<void>
 }
-const digest = (source: WorkflowOriginalNativeSource) => createHash('sha256').update(canonicalGraphJson(source, 4 * 1024 * 1024)).digest('hex')
+const digest = (source: WorkflowOriginalNativeSource) => createHash('sha256')
+  .update(canonicalGraphJson(source, REMOTE_NATIVE_SOURCE_LIMIT)).digest('hex')
 const conflict = (): never => { throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'Native source must originate in the configured authenticated remote producer.', 409) }
 
 /** Paired private producer/capture/verifier, analogous to the existing private
@@ -42,7 +44,7 @@ export function createRemoteNativeSourceChannel(): {
     observe(verified, source, assertOriginalProducer) {
       if (!(verified instanceof VerifiedRemoteEvidence) || !verified.receipt.native) return conflict()
       assertOriginalProducer()
-      const copy = JSON.parse(canonicalGraphJson(source, 4 * 1024 * 1024)) as WorkflowOriginalNativeSource
+      const copy = JSON.parse(canonicalGraphJson(source, REMOTE_NATIVE_SOURCE_LIMIT)) as WorkflowOriginalNativeSource
       const id = verified.receipt.intent.executionId, key = digest(copy), native = verified.receipt.native
       const correlation = copy.type === 'history' ? copy.history.correlationId : undefined
       const review = verified.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlation)

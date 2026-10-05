@@ -4,6 +4,7 @@ import type { NativeHarnessEvent } from '@graphql/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { readJsonContinuation } from './jsonContinuation.js'
+import { decodeResultCopies } from './executionResultCodec.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -90,8 +91,22 @@ describe('byte-bounded native history pages', () => {
       expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThan(DEVICE_HISTORY_PAGE_BYTES)
       return next.page.metadata!
     })
-    expect(recovered).toMatchObject({ terminalResult: result, terminalTurn: history.terminalTurn })
-    expect(() => pageNativeHistory({ ...history, terminalResult: { outcome: 'failed' } }, 0,
+    expect(decodeResultCopies(recovered)).toMatchObject({ terminalResult: result, terminalTurn: history.terminalTurn })
+    expect(() => pageNativeHistory({ ...history, terminalResult: { outcome: 'failed',
+      error: { code: 'failed', message: 'Original result changed', retryable: false } } }, 0,
       { digest: first.page.metadata!.digest, offset: 65_536 })).toThrow('continuation changed')
+  })
+
+  it('hydrates both terminal result copies when the original journal payload is near three MiB', async () => {
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
+    const history: NativeHistory = { events: [], pendingInteractions: [], terminalResult: result,
+      terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result } }
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(3 * 1024 * 1024)
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeGreaterThan(4 * 1024 * 1024)
+    const first = pageNativeHistory(history)
+    const fields = await readJsonContinuation(first.page.metadata!, async metadata =>
+      pageNativeHistory(history, first.page.nextAfterSequence, metadata).page.metadata!)
+    expect(decodeResultCopies(fields)).toEqual({ pendingInteractions: [], terminalResult: result,
+      terminalTurn: history.terminalTurn })
   })
 })
