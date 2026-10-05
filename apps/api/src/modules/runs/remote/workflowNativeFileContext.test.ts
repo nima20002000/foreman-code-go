@@ -81,7 +81,8 @@ function fixture() {
     else if (text.includes('from workflow_native_proofs')) rows = state.proofAvailable ? [{ record: persistedProof, source_digest: repeatDigest(persistedProof) }] : []
     else if (text.includes('from execution_native_closures')) rows = [{ generation: '1', expected_reference: session, closed: !state.closureLive }]
     else if (text.includes('from native_session_lanes')) rows = [{ owner_agent_id: execution.agentId, harness: session.harness, native_session_id: session.nativeSessionId,
-      token: state.laneLive ? lease.fence.token : 'replacement', generation: '1', correlation: proof.commandId, provider_id: lease.providerId, held: true }]
+      token: state.laneLive ? lease.fence.token : 'replacement', generation: String(lease.previous.connectionGeneration),
+      correlation: proof.commandId, provider_id: lease.providerId, held: true }]
     else if (text.includes('from harness_executions e join runs')) rows = [{ execution, configuration, workspace_id: 'workspace', workflow_id: 'workflow',
       workflow_version_id: 'version', authorization_principal_id: 'run-owner', execution_state: state.runState, stopped: state.stopped }]
     else if (text.includes('from management_principals')) rows = [{ id: args[0], name: 'Original Run owner', audience: 'operator',
@@ -131,6 +132,34 @@ function fixture() {
     freshConnection: () => new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, owner.assertOwned) }
 }
 describe('genuine original workflow file-context admission', () => {
+  it.each(['reacquired', 'reconnected'])('reads an admitted context with a %s writer lease for the same turn', async kind => {
+    const t = fixture()
+    const original = await t.connection.transaction(sql =>
+      t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))
+    const receipt = structuredClone(t.state.receipt)
+    const proof = structuredClone(t.persistedProof)
+    t.captureInput.lease!.fence.token = 'reacquired-lease'
+    if (kind === 'reconnected') t.captureInput.lease!.previous.connectionGeneration++
+    const evidence = t.channel.capture.capture(t.captureInput)
+
+    const accepted = await t.freshConnection().transaction(sql =>
+      t.helper.resolveOrAdmitLocked(sql, evidence, proof, t.transfer))
+
+    expect(accepted).toEqual(original)
+    expect(t.persistedProof).toEqual(proof)
+    expect(t.state.receipt).toEqual(receipt)
+    expect(t.state.audits).toBe(1)
+  })
+  it.each(['id', 'providerId'] as const)('rejects replay with a different original lane %s', async field => {
+    const t = fixture()
+    await t.admit()
+    const proof = structuredClone(t.proof)
+    proof.lane![field] = 'different-original'
+    await expect(t.freshConnection().transaction(sql =>
+      t.helper.resolveOrAdmitLocked(sql, t.evidence, proof, t.transfer)))
+      .rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_DENIED' })
+    expect(t.state.audits).toBe(1)
+  })
   it('durably reads the first admission across two starts, later events, history and a reconstructed helper', async () => {
     const t = fixture(), original = await t.connection.transaction(sql => t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))
     const receipt = structuredClone(t.state.receipt), conversation = structuredClone(t.state.conversation)

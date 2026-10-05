@@ -61,12 +61,14 @@ export class WorkflowNativeFileContextAdmission {
     assertGraphTransaction(sql)
     try {
       const capture = this.ports.captures.read(evidence), location = 'kind' in rawTransfer ? rawTransfer : TransferContextSchema.parse(rawTransfer)
+      // The proof retains its first lease; verify the current lease against the live lane below.
       if (!capture.lane?.providerId || !['event', 'history'].includes(capture.source.type)
         || capture.source.type === 'history' && (capture.source.history.terminalTurn !== undefined
           || capture.source.history.nativeTurnId !== undefined && capture.source.history.nativeTurnId !== capture.lane.providerId)
         || capture.owner.runId !== proof.scope.runId || proof.scope.executionSemanticsVersion !== 3
         || proof.commandId !== `execution:${capture.execution.id}` || !same(proof.execution, repeatExecutionIdentity(capture.execution))
-        || !same(proof.session, capture.session) || !same(proof.original, capture.source) || !same(proof.lane, capture.lane)) return denied()
+        || !same(proof.session, capture.session) || !same(proof.original, capture.source)
+        || proof.lane?.id !== capture.lane.id || proof.lane.providerId !== capture.lane.providerId) return denied()
       const original = await readDispatchIntent(sql, capture.execution.id)
       const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
       if (!intent || intent.mainId !== this.mainId || intent.runId !== proof.scope.runId || intent.nodeId !== proof.ref.nodeId
