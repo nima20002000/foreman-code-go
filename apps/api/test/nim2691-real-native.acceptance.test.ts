@@ -16,14 +16,8 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName,
-  installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
-import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
-import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
@@ -32,6 +26,7 @@ import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -77,32 +72,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const runtimeRoot = join(directory, 'runtime')
       await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
-      await installAppLauncher()
-      const binaries = harnessBinaries(process.env)
-      const codexConnections = await new CodexMcpConnections(binaries.codexBinary, projectPath)
-        .read(AbortSignal.timeout(30_000))
-      const codexServerName = appMcpServerName(codexConnections.effective)
-      const codexTokenName = appLauncherTokenName('codex', record(codexConnections.effective[codexServerName]))
-        ?? APP_MCP_TOKEN
-      await mkdir(join(projectPath, '.codex'))
-      await writeFile(join(projectPath, '.codex', 'config.toml'), [
-        `[mcp_servers.${codexServerName}]`,
-        `command = ${JSON.stringify(process.execPath)}`,
-        `args = [${JSON.stringify(appLauncherPath())}]`,
-        `env_vars = [${JSON.stringify(codexTokenName)}]`,
-        '',
-      ].join('\n'), { mode: 0o600 })
-      if (scenario.providers.some((provider) => provider === 'opencode')) {
-        const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
-          .read(AbortSignal.timeout(30_000))
-        const openCodeServerName = appMcpServerName(openCodeConnections.effective)
-        // OpenCode merges environment maps across layers; reuse the installed credential reference.
-        const openCodeTokenName = openCodeConnections.credentialReferences?.[openCodeServerName] ?? APP_MCP_TOKEN
-        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { [openCodeServerName]: {
-          type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
-          environment: { [openCodeTokenName]: `{env:${openCodeTokenName}}` },
-        } } }), { mode: 0o600 })
-      }
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
@@ -162,6 +131,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
+        await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
+          codex: config.harnesses.codexBinary,
+          opencode: config.harnesses.openCodeBinary,
+        }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
         const production = buildProductionApp(config, database, checkpoints, false)
         const startupErrors: Array<{ code: string; detail?: string }> = []
         const start = production.engine.start.bind(production.engine)
