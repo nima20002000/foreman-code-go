@@ -7,6 +7,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import type { ApiConfig } from '../src/config.js'
@@ -78,7 +79,9 @@ async function fixture(readOnly: boolean) {
   const mainFiles = createMainWorkerClaudeFiles({ pool: db.pool, binding: domain,
     service: () => service, allowMutation: !readOnly })
   const bridge = new MainWorkerConversationBridge()
-  const binding = { ...recorded.binding, owner: { ...recorded.binding.owner, conversationId: conversation.id } }
+  const binding = { ...recorded.binding, owner: { kind: 'operator' as const, conversationId: conversation.id,
+    operatorId: selected.operator.id, configurationVersionId: selected.configuration.id,
+    configurationHash: commandInputHash(selected.configuration) } }
   const source: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding, session,
     prompt: 'Read the attached document.', correlationId }
   const lease = bridge.capture({ request: source, channel: { binding: recorded.connection,
