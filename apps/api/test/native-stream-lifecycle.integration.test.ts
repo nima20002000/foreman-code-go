@@ -174,10 +174,14 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     const streamingSessions = new Set<string>()
     const original = f.provider.startTurn.bind(f.provider)
     const batches: number[] = []
+    const initialFramesPublished = deferred()
+    let publishedFrames = 0
     const append = f.runs.appendNativeEvents.bind(f.runs)
     vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (...args) => {
       batches.push(args[0].length)
-      return append(...args)
+      await append(...args)
+      publishedFrames += args[0].filter(({ event }) => event.type === 'native.notification').length
+      if (publishedFrames === 64) initialFramesPublished.resolve()
     })
     vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
       const execution = await f.runs.getExecution(session.nativeSessionId.slice('native-'.length))
@@ -215,12 +219,11 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     try {
       await entered.promise
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
-      await expect.poll(async () => {
-        const streaming = await f.db.pool.query<{ count: number }>(
-          `select count(*)::int as count from harness_native_events n join harness_executions e on e.id=n.execution_id
-           where e.run_id=$1 and n.record->>'type'='native.notification'`, [runId])
-        return streaming.rows[0]?.count
-      }).toBe(64)
+      await initialFramesPublished.promise
+      const streaming = await f.db.pool.query<{ count: number }>(
+        `select count(*)::int as count from harness_native_events n join harness_executions e on e.id=n.execution_id
+         where e.run_id=$1 and n.record->>'type'='native.notification'`, [runId])
+      expect(streaming.rows[0]?.count).toBe(64)
       task = f.engine.start(runId)
       const replay = await graphRpc(operator.app, operator.writer.token, 'tools/call', {
         name: 'run_start', arguments: operator.input,

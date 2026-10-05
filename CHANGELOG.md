@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2026-10-05
+
+### Added
+
+- Canonical FOREMAN_CODE environment settings with supported legacy GRAPHQL aliases, preserved process/file precedence, and explicit conflict diagnostics.
+- Fresh foreman-code MCP entries with recognition of existing graphql connections and human-reviewed configuration migration.
+- Rename compatibility and rollback documentation for existing installations.
+
+### Changed
+
+- Product, dashboard, desktop and companion branding to Foreman Code, and first-party private packages and build consumers to @foreman-code.
+- MCP discovery, setup and generated agent instructions to Foreman Code MCP while retaining public operations, grants and serialized contracts.
+- Local production installation settings and packaged runtime consumers to the canonical names while retaining service, storage, database and pairing identities.
+
+### Fixed
+
+- Preserve old startup commands, managed launchers, scoped native credentials and worker artifact packaging after the rename.
+- Reject conflicting old/new installation targets and installer-setting overrides without modifying operator-owned configuration.
+- Retain native qualification diagnostics through test cleanup while preserving the full qualification gate.
+
+### Security
+
+- Remove production database passwords and ambient application secrets under both prefixes before native execution; retain existing permission and qualification checks.
+
 ## [0.0.8] - 2026-10-05
 
 ### Added
