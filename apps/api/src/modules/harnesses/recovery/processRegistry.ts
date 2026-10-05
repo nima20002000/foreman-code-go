@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
@@ -6,7 +7,7 @@ import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../../../infrastructure/logger.js'
-import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
+import { bootIdentity, identityAlive, processIdentity, sessionAlive, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved, killCgroup, retireCgroup,
   type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
@@ -101,14 +102,40 @@ async function stopGuardian(launch: LaunchRecord, birth: BirthRecord, signal?: A
 
 type ClosureEvidence = 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty' | 'cgroup_v2_removed'
 
-function observeCgroupClosure(launch: LaunchRecord, birth: BirthRecord): ClosureEvidence | undefined {
+function removedCgroupClosed(directory: string, launch: LaunchRecord, birth: BirthRecord): boolean {
+  if (!birth.containment || identityAlive(launch.parent) || identityAlive(birth.guardian)
+    || sessionAlive(birth.guardian.session) || !cgroupRemoved(birth.containment)) return false
+  const provider = readRecord(join(directory, 'provider.json'))
+  const exit = readRecord(join(directory, 'provider-exit.json'))
+  if (provider === undefined) return exit === undefined
+  const processRecord = recordObject(provider)
+  if (processRecord.format !== 1 || processRecord.id !== launch.id || processRecord.owner !== launch.owner
+    || processRecord.boot !== launch.boot || !isDeepStrictEqual(processRecord.guardian, birth.guardian)) return false
+  if (processRecord.provider !== undefined) {
+    const native = recordObject(processRecord.provider)
+    if (!Number.isSafeInteger(native.pid) || Number(native.pid) <= 1
+      || typeof native.startTicks !== 'string' || !/^\d+$/.test(native.startTicks)
+      || identityAlive({ pid: Number(native.pid), startTicks: native.startTicks })) return false
+  }
+  // A service-wide kill can prevent receipt publication; qualified kernel removal still proves closure.
+  if (exit === undefined) return true
+  const result = recordObject(exit)
+  if (result.format !== 1 || result.id !== launch.id || result.owner !== launch.owner
+    || result.boot !== launch.boot || !isDeepStrictEqual(processRecord.provider, result.provider)) return false
+  const normalExit = Number.isInteger(result.code) && Number(result.code) >= 0 && Number(result.code) <= 255
+    && result.signal === null
+  const signaledExit = result.code === null && typeof result.signal === 'string'
+    && Object.hasOwn(constants.signals, result.signal)
+  return normalExit || signaledExit
+}
+
+function observeCgroupClosure(directory: string, launch: LaunchRecord, birth: BirthRecord): ClosureEvidence | undefined {
   if (!birth.containment) return undefined
   try {
     if (!cgroupPopulated(birth.containment)) return 'cgroup_v2_empty'
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT'
-      || identityAlive(launch.parent) || identityAlive(birth.guardian)
-      || !cgroupRemoved(birth.containment)) throw error
+      || !removedCgroupClosed(directory, launch, birth)) throw error
     return 'cgroup_v2_removed'
   }
   return undefined
@@ -355,7 +382,7 @@ export class NativeProcessRegistry {
         }
       } else {
         const birth = birthRecord(rawBirth, launch)
-        const evidence = observeCgroupClosure(launch, birth)
+        const evidence = observeCgroupClosure(directory, launch, birth)
         if (evidence) { confirmClosed(directory, launch, evidence); return }
         if (birth.containment && !forced && (Date.now() >= forceAt || !identityAlive(birth.guardian))) {
           killCgroup(birth.containment)
@@ -397,7 +424,7 @@ function assertOwnerIdle(directory: string, owner: string): void {
     }
     const rawBirth = readRecord(join(previous, 'birth.json'))
     if (rawBirth !== undefined) {
-      const evidence = observeCgroupClosure(intent, birthRecord(rawBirth, intent))
+      const evidence = observeCgroupClosure(previous, intent, birthRecord(rawBirth, intent))
       if (evidence) { confirmClosed(previous, intent, evidence); continue }
     } else {
       const rawDispatch = readRecord(join(previous, 'dispatched.json'))

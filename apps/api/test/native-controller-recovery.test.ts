@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 
-const host = vi.hoisted(() => ({ livePid: 0, sessionLive: false, fullHierarchy: true, device: 77n }))
+const host = vi.hoisted(() => ({ livePid: 0, sessionLive: false, fullHierarchy: true, device: 77n,
+  cgroupDescriptors: new Set<number>(), overlay: '' }))
 vi.mock('../src/modules/harnesses/recovery/linuxIdentity.js', () => ({
   bootIdentity: () => '22222222-2222-4222-8222-222222222222',
   processIdentity: (pid: number) => ({ pid, startTicks: '100', group: pid, session: pid, state: 'S' }),
@@ -16,16 +17,27 @@ vi.mock('node:fs', async original => {
   return { ...actual,
     readFileSync: new Proxy(actual.readFileSync, { apply(read, receiver, args) {
       if (args[0] === '/proc/self/mountinfo') {
-        return `1 0 0:1 ${host.fullHierarchy ? '/' : '/subtree'} /sys/fs/cgroup rw - cgroup2 cgroup rw\n`
+        const hierarchy = `1 0 0:1 ${host.fullHierarchy ? '/' : '/subtree'} /sys/fs/cgroup rw - cgroup2 cgroup rw\n`
+        return hierarchy + (host.overlay ? `2 1 0:2 / ${host.overlay} rw - cgroup2 cgroup rw\n` : '')
       }
       return Reflect.apply(read, receiver, args)
     } }),
-    statfsSync: new Proxy(actual.statfsSync, { apply(read, receiver, args) {
-      if (args[0] === '/sys/fs/cgroup') return { type: 0x63677270 }
+    openSync: new Proxy(actual.openSync, { apply(open, receiver, args) {
+      const fd = Reflect.apply(open, receiver, args)
+      if (args[0] === '/sys/fs/cgroup') host.cgroupDescriptors.add(fd)
+      return fd
+    } }),
+    closeSync: new Proxy(actual.closeSync, { apply(close, receiver, args) {
+      host.cgroupDescriptors.delete(args[0])
+      return Reflect.apply(close, receiver, args)
+    } }),
+    fstatSync: new Proxy(actual.fstatSync, { apply(read, receiver, args) {
+      if (host.cgroupDescriptors.has(args[0])) return { dev: host.device }
       return Reflect.apply(read, receiver, args)
     } }),
-    statSync: new Proxy(actual.statSync, { apply(read, receiver, args) {
-      if (args[0] === '/sys/fs/cgroup') return { dev: host.device }
+    statfsSync: new Proxy(actual.statfsSync, { apply(read, receiver, args) {
+      const match = /^\/proc\/self\/fd\/(\d+)$/.exec(String(args[0]))
+      if (match && host.cgroupDescriptors.has(Number(match[1]))) return { type: 0x63677270 }
       return Reflect.apply(read, receiver, args)
     } }),
   }
@@ -41,6 +53,7 @@ afterEach(() => {
   host.sessionLive = false
   host.fullHierarchy = true
   host.device = 77n
+  host.overlay = ''
 })
 
 function fixture() {
@@ -68,8 +81,8 @@ it('closes an exited controller after systemd removes its cgroup, with the recor
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).resolves.toBeUndefined()
 })
 
-it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live', 'missing-exit',
-  'wrong-provider', 'partial-cgroup-mount', 'changed-cgroup-device', 'invalid-exit'] as const)(
+it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live',
+  'wrong-provider', 'partial-cgroup-mount', 'changed-cgroup-device', 'over-mounted-boundary', 'invalid-exit'] as const)(
 'keeps ownership unresolved when the cgroup is absent and %s', async failure => {
   const f = fixture()
   if (failure === 'parent-live') host.livePid = f.launch.parent.pid
@@ -78,11 +91,22 @@ it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live', 'missi
   if (failure === 'session-live') host.sessionLive = true
   if (failure === 'partial-cgroup-mount') host.fullHierarchy = false
   if (failure === 'changed-cgroup-device') host.device = 78n
-  if (failure === 'missing-exit') unlinkSync(join(f.directory, 'provider-exit.json'))
+  if (failure === 'over-mounted-boundary') host.overlay = `/sys/fs/cgroup/graphql-native-${f.scope.launchId}`
   if (failure === 'wrong-provider') {
     writeRecord(join(f.directory, 'provider-exit.json'), { ...f.exit, provider: { ...f.provider, startTicks: '103' } })
   }
   if (failure === 'invalid-exit') writeRecord(join(f.directory, 'provider-exit.json'), { ...f.exit, code: 256 })
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('confirms a killed native tree without an exit receipt only after qualified kernel removal', async () => {
+  const f = fixture()
+  unlinkSync(join(f.directory, 'provider-exit.json'))
+  host.fullHierarchy = false
+  await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).rejects.toMatchObject({ code: 'ENOENT' })
+  host.fullHierarchy = true
+  await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).resolves.toBeUndefined()
+  expect(await f.registry.closeOwner(f.scope.owner)).toBe(true)
+  await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).resolves.toBeUndefined()
 })
