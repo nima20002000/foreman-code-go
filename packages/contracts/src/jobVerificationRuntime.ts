@@ -85,8 +85,6 @@ const ToolIdentity = z.object({
   binarySha256: DeviceDigestSchema,
 }).strict()
 /** Version 3 belongs to verification; saved build fingerprints retain their original version and evidence. */
-export const JobVerificationRuntimeFingerprintSchema = z.object({
-  ...ProvisionedJobRuntimeFingerprintSchema.shape,
 export const JobVerificationQuotaPoolSchema = z.object({
   queryExecutable: z.string().startsWith('/').max(2048), queryBinarySha256: DeviceDigestSchema,
   blockDevice: z.string().startsWith('/dev/').max(2048),
@@ -99,13 +97,15 @@ export const JobVerificationQuotaPoolSchema = z.object({
   }
 })
 export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSchema>
+export const JobVerificationRuntimeFingerprintSchema = z.object({
+  ...ProvisionedJobRuntimeFingerprintSchema.shape,
   schemaVersion: z.literal(3),
   workspaceLayout: z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT),
   network: JobNetworkPolicySchema,
   resources: JobResourceRequestSchema,
+  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   approvalConfig: JobVerificationApprovalConfigSchema,
   tools: z.array(ToolIdentity).max(16),
-  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   seedReceiptSha256: DeviceDigestSchema,
   sourceCommit: JobVerificationPrivateGitSchema.shape.sourceCommit.optional(),
 }).strict().superRefine((value, context) => {
@@ -115,8 +115,6 @@ export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSc
   if (!baseline.success || JSON.stringify(value.limits) !== JSON.stringify(value.resources.limits)) {
     context.addIssue({ code: 'custom', message: 'Verification retains enforced build geometry and its measured reservation.' })
   }
-  if (new Set(value.tools.map(tool => tool.kind)).size !== value.tools.length) {
-    context.addIssue({ code: 'custom', message: 'Tool identities must be unique.' })
   if (value.quotaPool) {
     const slots = value.quotaPool.slots
     if (slots.some(slot => slot.projectId === value.quota.controlProjectId
@@ -131,6 +129,8 @@ export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSc
       context.addIssue({ code: 'custom', message: 'Independent Job quotas and control storage must fit the installed volume.' })
     }
   }
+  if (new Set(value.tools.map(tool => tool.kind)).size !== value.tools.length) {
+    context.addIssue({ code: 'custom', message: 'Tool identities must be unique.' })
   }
 })
 
@@ -331,6 +331,7 @@ export type JobQualificationCandidateRecord = z.infer<typeof JobQualificationCan
 
 export const JobVerificationInstalledRuntimeDescriptorSchema = ProvisionedInstalledJobRuntimeDescriptorSchema.safeExtend({
   resources: JobResourceRequestSchema,
+  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   network: JobNetworkPolicySchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
 }).strict()
@@ -344,7 +345,6 @@ export const InstalledJobRuntimeDescriptorRecordSchema = z.union([
   JobVerificationInstalledRuntimeDescriptorSchema,
 ])
 export const JobRuntimeNativeAdmissionRecordSchema = z.union([
-  quotaPool: JobVerificationQuotaPoolSchema.optional(),
   JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema,
 ])
 export type JobRuntimeNativeAdmissionRecord = z.infer<typeof JobRuntimeNativeAdmissionRecordSchema>
