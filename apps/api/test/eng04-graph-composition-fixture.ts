@@ -131,7 +131,10 @@ export async function graphRpc(app: FastifyInstance, token: string, method: stri
     ? text.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n') : text)
   return { status: response.status, ...message }
 }
-export function graphRpcValue(result: RpcResult | undefined): unknown {
+export function graphRpcValue(result: {
+  structuredContent?: unknown
+  content?: readonly { type: string; text?: string | undefined }[] | undefined
+} | undefined): unknown {
   if (result?.structuredContent !== undefined) return result.structuredContent
   const text = result?.content?.find((item) => item.type === 'text')?.text
   return text === undefined ? undefined : JSON.parse(text)
