@@ -3,46 +3,32 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { type PendingNativeInteraction } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
+import { codexNativeAcceptanceFixture } from './helpers/codexNativeAcceptanceFixture.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
 const binary = process.env.CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
 function outputText(output: unknown): string { return isObject(output) && typeof output.text === 'string' ? output.text : '' }
-function request(directory: string): HarnessExecutionRequest {
-  return {
-    executionId: 'nim2598-live-execution', runId: 'nim2598-live-run', workspaceId: 'nim2598-live-workspace',
-    workflowNodeId: 'nim2598-live-node', workingDirectory: directory, runtimeDirectory: directory, input: {},
-    configuration: {
-      id: 'nim2598-live-configuration', workspaceId: 'nim2598-live-workspace', agentId: 'nim2598-live-agent', version: 1,
-      prompt: { system: 'Follow explicit shell instructions by using the native shell tool; never simulate tool results.' },
-      assignedSkills: [], harness: {
-        harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
-        advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
-      },
-      contentHash: 'sha256:nim2598-live', createdAt: new Date().toISOString(),
-    },
-  }
-}
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
 describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualified Codex app-server acceptance', () => {
   it('selects and runs the installed Codex model at medium effort', async () => {
     const manager = new CodexAppServerSessionManager(binary)
-    const directory = await mkdtemp(join(tmpdir(), 'codex-dynamic-model-'))
+    const fixture = await codexNativeAcceptanceFixture()
     const signal = AbortSignal.timeout(120_000)
     try {
-      const options = await manager.discoverModels(directory, signal)
+      const options = await manager.discoverModels(fixture.workingDirectory, signal)
       assert.equal(options.providerVersion, process.env.CODEX_EXPECTED_LIVE_VERSION ?? 'codex-cli 0.160.0')
       const model = options.models.find(row => row.id === (process.env.CODEX_MODEL ?? 'gpt-6-luna'))
       assert(model)
       assert(model.reasoningEfforts.includes('medium'))
-      const session = await manager.createSession({ request: request(directory) }, signal)
+      const session = await manager.createSession(fixture.input, signal)
       for await (const event of manager.startTurn(session, {
         prompt: 'Reply with DYNAMIC_COMPATIBLE.', clientCorrelationId: 'dynamic-model-live',
       }, signal)) void event
@@ -50,18 +36,17 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert.equal(result.terminalResult?.outcome, 'succeeded')
       assert(outputText(result.terminalResult?.output).includes('DYNAMIC_COMPATIBLE'))
     } finally {
-      await manager.dispose()
-      await rm(directory, { recursive: true, force: true })
+      try { await manager.dispose() }
+      finally { await fixture.close() }
     }
   }, 120_000)
 
   it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
-    const directory = process.cwd()
-    const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))
-    const marker = join(scratch, 'approved-command.txt')
+    const fixture = await codexNativeAcceptanceFixture()
+    const marker = join(fixture.directory, 'approved-command.txt')
     const manager = new CodexAppServerSessionManager(binary)
     const restored = new CodexAppServerSessionManager(binary)
-    const input = { request: request(directory) }
+    const input = fixture.input
     const signal = AbortSignal.timeout(230_000)
     try {
       const evidence = await manager.qualificationEvidence(signal)
@@ -122,7 +107,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       // Continued/reattached turns above cover the sole execution transport.
     } finally {
       try { await Promise.all([manager.shutdown(), restored.shutdown()]) }
-      finally { await rm(scratch, { recursive: true, force: true }) }
+      finally { await fixture.close() }
     }
   }, 240_000)
 })
