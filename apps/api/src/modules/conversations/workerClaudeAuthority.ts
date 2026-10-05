@@ -62,12 +62,15 @@ export function createWorkerClaudeAuthority(input: {
       || !('correlationId' in source) || source.correlationId !== message.clientCorrelationId) {
       throw new DomainError('CLAUDE_CALLBACK_SCOPE_DENIED', 'The message differs from its paired admission.', 409)
     }
+    const submitted = message.onMessageSubmitted
+    if (!submitted) throw new DomainError('CLAUDE_NATIVE_MESSAGE_NOT_ADMITTED',
+      'Worker input requires Main acknowledgement of the native message.', 409)
     const authority = WorkerClaudeCallbackAuthoritySchema.parse(await input.request(source,
       { phase: 'admission' }, input.signal))
     const admitted: AdmittedMessage = { request: source, authority }
     sources.set(message.clientCorrelationId, admitted)
     return { ...message, callbackAuthority: authority, onMessageSubmitted: async (submission: NativeMessageSubmission) => {
-      await message.onMessageSubmitted?.(submission)
+      await submitted(submission)
       admitted.submission = structuredClone(submission)
     } }
   }

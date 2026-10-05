@@ -38,8 +38,9 @@ function fixture() {
   const identity = { ownerPrincipalId: 'original-sender', attemptId: 'original-request',
     nativeSessionId: f.session.nativeSessionId, nativeMessageId: submission.nativeMessageId,
     clientCorrelationId: correlationId, toolUseId: 'tool-use', generation: 'original-query' }
-  const stream = manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId })[Symbol.asyncIterator]()
-  return { ...f, controls, stream, request, nativeStart, submission, source, recovery, identity }
+  const stream = manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId,
+    onMessageSubmitted: async () => {} })[Symbol.asyncIterator]()
+  return { ...f, controls, manager, stream, request, nativeStart, submission, source, recovery, identity }
 }
 
 it('reauthorizes the original callback on a replacement observer without sending native input again', async () => {
@@ -78,4 +79,15 @@ it('does not replace callback admission when the current sender is revoked', asy
     expect(await f.controls.bridge.beforeToolUse(f.identity, 'Read', {})).toEqual({})
     expect(f.request.mock.calls.at(-1)?.[0]).toEqual(f.source)
   } finally { await f.stream.return?.(); f.controls.bridge.close() }
+})
+
+it('offers no worker input without a Main native-message acknowledgement callback', async () => {
+  const f = fixture()
+  const stream = f.manager.startTurn(f.session, { prompt: 'Read only',
+    clientCorrelationId: f.submission.clientCorrelationId })[Symbol.asyncIterator]()
+  try {
+    await expect(stream.next()).rejects.toMatchObject({ code: 'CLAUDE_NATIVE_MESSAGE_NOT_ADMITTED' })
+    expect(f.nativeStart).not.toHaveBeenCalled()
+    expect(f.request).not.toHaveBeenCalled()
+  } finally { await stream.return?.(); f.controls.bridge.close() }
 })
