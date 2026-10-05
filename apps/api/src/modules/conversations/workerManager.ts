@@ -148,7 +148,9 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   async inspectMcp(signal?: AbortSignal) {
     return McpDetectionSchema.parse(await this.request({ method: 'conversation.inspect-mcp', configuration: this.options.configuration }, signal))
   }
-  async mcpInspectionContext() {
+  async mcpInspectionContext(signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    this.lifetime.signal.throwIfAborted()
     return { runnerId: `device:${this.options.channel.binding.deviceId}`, workingDirectory: this.options.binding.workingDirectory }
   }
   readonly inspector: NativeMcpInspector = { inspect: async input => {
