@@ -127,7 +127,7 @@ describe('Codex session manager child control wiring over stdio', () => {
       const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
       const lease = manager.subagentControl(child, () => {})!
       await lease.sendInput!(childControlReceipt(child, { nativeTurnId: null, nativeGeneration: lease.generation }), 'wait')
-      const turnId = (await state(f.directory, 'native-child')).turns.at(-1)!.id
+      const turnId = String((await state(f.directory, 'native-child')).turns.at(-1)!.id)
       const callbacks = {
         command: { method: 'item/commandExecution/requestApproval', params: {
           itemId: 'command', command: 'printf harmless', cwd: f.directory, availableDecisions: ['accept', 'decline'] } },

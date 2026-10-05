@@ -188,7 +188,7 @@ interface Runtime extends TurnSnapshot {
   callbackOwners: Map<string, string>
   rejectedStarts: Map<string, ExecutionResult>
   responseDecisions: Map<string, { pending: PendingNativeInteraction; option: ApprovalResponseOption;
-    nativeResponse: JsonObject }>
+    nativeResponse: JsonObject; sequence: number }>
   responseDeliveries: Map<string, NativeResponseDeliveryEvidence>
   events: NativeHarnessEvent[]
   eventSizes: number[]
@@ -1112,7 +1112,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     // Synchronous reservation prevents two competing responses from both writing.
     waiting.delivery = 'submitting'
     waiting.selectedOptionId = stored.option.optionId
-    runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse })
+    runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse,
+      sequence: runtime.sequence })
     this.record(runtime, 'interaction.submitting', { nativeRequestId, optionId: option.optionId })
     try {
       await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
@@ -2524,12 +2525,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
   private captureResponseDeliveries(runtime: Runtime): void {
     for (const [id, decision] of runtime.responseDecisions) {
-      if (runtime.responseDeliveries.has(id)) continue
       const proof = codexInputDeliveryEvidence(decision.pending, decision.option, decision.nativeResponse,
         { events: runtime.events, pendingInteractions: [] })
-      if (!proof) continue
+      if (!proof) {
+        if (decision.sequence < (runtime.events[0]?.sequence ?? runtime.sequence)) runtime.responseDecisions.delete(id)
+        continue
+      }
       this.responseJournal?.record(proof)
       runtime.responseDeliveries.set(id, proof)
+      runtime.responseDecisions.delete(id)
+      if (runtime.responseDeliveries.size > MAX_INTERACTIONS) {
+        runtime.responseDeliveries.delete(runtime.responseDeliveries.keys().next().value!)
+      }
     }
   }
   private wake(runtime: Runtime): void {
