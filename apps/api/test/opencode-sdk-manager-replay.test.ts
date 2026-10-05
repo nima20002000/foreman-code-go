@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
+import { SessionPreferencesSchema } from '@graphql/contracts'
+import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { FixtureServer, json, permission, sessionFor } from './opencode-fixtures.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
@@ -123,4 +125,20 @@ it('uses the selected SDK history/cursor methods for a root and selected answer 
     assert(calls.filter(value => value === 'messages').length >= 2)
     assert(server.calls.some(value => value.path.includes('before=opaque-page%3A')))
   } finally { await native.dispose() }
+})
+
+it('applies native default preferences through the admitted manager without a native mutation', async () => {
+  const server = new FixtureServer()
+  const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+  const { manager } = createAdmittedNativeManager('opencode', async () => ({ manager: native }))
+  try {
+    const session = await sessionFor(native)
+    const before = server.calls.length
+    const defaults = SessionPreferencesSchema.parse({})
+    await manager.applySessionPreferences!(session, defaults)
+    assert.deepEqual(manager.appliedSessionPreferences!(session), defaults)
+    assert.equal(server.calls.length, before)
+    await assert.rejects(manager.applySessionPreferences!(session, { ...defaults, autoCompact: 'off' }))
+    assert.equal(server.calls.length, before)
+  } finally { await manager.dispose!() }
 })

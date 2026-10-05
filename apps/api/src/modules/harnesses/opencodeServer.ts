@@ -14,6 +14,8 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
 import {
+  SessionPreferencesSchema,
+  type SessionPreferences,
   NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema,
   NativeSessionReferenceSchema,
@@ -376,6 +378,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       plan: { supported: plan, reason: plan ? null : 'No permitted Plan primary agent was discovered.' },
       autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
       modelCapacity, model: state.configuration.model, profileKey: digest(state.configuration) }
+  }
+
+  async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    this.requireSession(session)
+    if (!isDeepStrictEqual(SessionPreferencesSchema.parse(preferences), SessionPreferencesSchema.parse({}))) {
+      throw new HarnessExecutionError('SESSION_PREFERENCE_UNSUPPORTED', 'OpenCode uses native context defaults.')
+    }
+  }
+
+  appliedSessionPreferences(session: NativeSessionReference): SessionPreferences {
+    this.requireSession(session)
+    return SessionPreferencesSchema.parse({})
   }
 
   contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
