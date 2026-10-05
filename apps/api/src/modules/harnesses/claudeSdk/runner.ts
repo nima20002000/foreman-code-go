@@ -351,7 +351,7 @@ export function createClaudeSdkRunner(input: {
         abort.signal.throwIfAborted()
         if (!info || info.sessionId !== options.resume.nativeSessionId) throw new Error('Exact Claude session history is unavailable')
       }
-      queryOpening = Promise.resolve(client.query({ prompt: inputQueue, options: {
+      queryOpening = Promise.resolve(client.query({ prompt: inputQueue, scope: options.scope, options: {
         ...options.options, cwd: options.scope.cwd, abortController: abort,
         env: { ...(options.options.env as Record<string, string> | undefined),
           ...(process.env.HOME ? { HOME: process.env.HOME } : {}), CLAUDE_CONFIG_DIR: options.scope.profilePath },

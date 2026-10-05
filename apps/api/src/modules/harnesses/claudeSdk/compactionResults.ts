@@ -21,6 +21,11 @@ function resultLocation(session: ClaudePersistedSession, promptUuid: string) {
 export async function saveClaudeCompactionResult(session: ClaudePersistedSession, promptUuid: string,
   status: 'completed' | 'no-op' | 'failed') {
   const location = resultLocation(session, promptUuid)
+  const saved = await readClaudeCompactionResult(session, promptUuid)
+  if (saved) {
+    if (saved.status !== status) throw new Error('Claude native compaction outcome changed')
+    return
+  }
   await mkdir(location.directory, { recursive: true, mode: 0o700 })
   const temporary = join(location.directory, `${randomUUID()}.tmp`)
   const file = await open(temporary, 'wx', 0o600)

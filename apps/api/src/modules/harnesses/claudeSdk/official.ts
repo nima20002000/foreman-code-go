@@ -45,7 +45,7 @@ export function ownedClaudeSdkQueries(input: {
   let usedReservation = false
   return {
     requiresRuntimeClosure: () => unclosed.size > 0,
-    async query({ prompt, options }) {
+    async query({ prompt, options, scope }) {
       const recovery = input.recovery.launchId && !usedReservation
         ? input.recovery : registry.reserveLaunch(input.recovery.owner)
       usedReservation = true
@@ -72,7 +72,7 @@ export function ownedClaudeSdkQueries(input: {
             controller?.signal.throwIfAborted()
             spawn.signal.throwIfAborted()
             const child = spawnNativeProcess(spawn.command, spawn.args, {
-              cwd: spawn.cwd ?? String(options.cwd), env: spawn.env, recovery,
+              cwd: spawn.cwd ?? String(options.cwd), env: spawn.env, recovery, ...(scope ? { claudeSessionScope: scope } : {}),
             })
             children.add(child)
             return child
@@ -81,6 +81,7 @@ export function ownedClaudeSdkQueries(input: {
         return {
           [Symbol.asyncIterator]: () => query[Symbol.asyncIterator](),
           setPermissionMode: mode => query.setPermissionMode(mode),
+          getContextUsage: options => query.getContextUsage(options),
           interrupt: () => query.interrupt(),
           initializationResult: () => query.initializationResult(),
           mcpServerStatus: () => query.mcpServerStatus(),

@@ -511,6 +511,7 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
  */
 export function spawnNativeProcess(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
+  claudeSessionScope?: import('../claudeSdk/port.js').ClaudeSessionScope
 }): ChildProcessWithoutNullStreams {
   return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, {
     ...options, env: nativeAgentEnvironment(binary, options.cwd, options.env),
@@ -539,6 +540,7 @@ function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: str
 
 function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
+  claudeSessionScope?: import('../claudeSdk/port.js').ClaudeSessionScope
 }): ChildProcessWithoutNullStreams {
   if (!options.recovery || process.platform !== 'linux') return spawn(binary, args, {
     cwd: options.cwd, env: options.env, detached: process.platform !== 'win32',
@@ -591,7 +593,8 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
       }
     })
     dispatchAttempted = true
-    child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env }, (error) => {
+    child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env,
+      ...(options.claudeSessionScope ? { claudeSessionScope: options.claudeSessionScope } : {}) }, (error) => {
       if (error) { try { child.disconnect() } catch { /* Already disconnected. */ } }
     })
   } catch (error) {

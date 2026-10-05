@@ -1,3 +1,4 @@
+import { CLAUDE_COMPACTION_CAPTURE_SOURCE } from '../claudeSdk/nativeCompactionCapture.js'
 /**
  * A self-contained Node program. Keeping it in the compiled module avoids a
  * missing .js asset when the API runs through Vitest/tsx rather than dist/.
@@ -6,7 +7,7 @@
  */
 export const NATIVE_GUARDIAN_SOURCE = `
 const { spawn } = require('node:child_process')
-const { timingSafeEqual, randomUUID } = require('node:crypto')
+const { timingSafeEqual, randomUUID, createHash } = require('node:crypto')
 const { createServer } = require('node:net')
 const { join, dirname, resolve, parse, sep } = require('node:path')
 const fs = require('node:fs')
@@ -88,6 +89,9 @@ function contain(id, dir, owner, boot) {
   }
 }
 let containmentFd
+${CLAUDE_COMPACTION_CAPTURE_SOURCE}
+let capture
+let disconnected=false
 let stopping=false,started=false,leader=false
 function killTree() {
   // The cgroup includes detached descendants and is pinned by an open fd.
@@ -114,7 +118,11 @@ function stopAfterNativeExit() {
 }
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
-process.on('disconnect',stop)
+process.on('disconnect',()=>{
+  disconnected=true
+  if(capture?.pending())setTimeout(stop,120000).unref()
+  else stop()
+})
 process.on('uncaughtException',stop)
 process.on('unhandledRejection',stop)
 process.on('message',input=>{
@@ -169,7 +177,27 @@ process.on('message',input=>{
         birth(join(dir,'birth.json'),{...certificate,containment})
         if(stopping || !process.connected){stop();return}
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
-          detached:false,stdio:['inherit','inherit','inherit'],windowsHide:true})
+          detached:false,stdio:config.claudeSessionScope?['pipe','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
+        if(config.claudeSessionScope) {
+          capture=claudeCompactionCapture(config.claudeSessionScope,()=>{if(disconnected)stop()})
+          let stdoutClosed=false,stderrClosed=false
+          process.stdout.on('error',error=>{if(error.code==='EPIPE')stdoutClosed=true;else stop()})
+          process.stderr.on('error',error=>{if(error.code==='EPIPE')stderrClosed=true;else stop()})
+          native.stdin.on('error',stop)
+          process.stdin.on('data',chunk=>{
+            capture.consume('input',chunk)
+            if(!native.stdin.write(chunk))process.stdin.pause()
+          })
+          native.stdin.on('drain',()=>process.stdin.resume())
+          process.stdin.on('end',()=>{if(!capture.pending())native.stdin.end()})
+          native.stdout.on('data',chunk=>{
+            capture.consume('output',chunk)
+            if(!stdoutClosed && !process.stdout.write(chunk))native.stdout.pause()
+          })
+          process.stdout.on('drain',()=>native.stdout.resume())
+          native.stderr.on('data',chunk=>{if(!stderrClosed && !process.stderr.write(chunk))native.stderr.pause()})
+          process.stderr.on('drain',()=>native.stderr.resume())
+        }
         // Capture the actual CLI generation while it is still our direct child.
         // A very short-lived child may disappear before /proc capture; never guess.
         let provider

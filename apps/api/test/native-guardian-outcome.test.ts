@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { recoverPersistedClaudeCompaction } from '../src/modules/harnesses/claudeSdk/recoverCompaction.js'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
@@ -115,3 +117,54 @@ describe('exact native outcome through guardian cleanup', () => {
     }
   })
 })
+
+for (const outcome of ['no-op', 'failed'] as const) it(
+  `journals Claude ${outcome} in the native owner after API loss and before SDK consumption`, async () => {
+    const f = fixture()
+    const nativeSessionId = randomUUID()
+    const requestId = randomUUID()
+    const promptUuid = randomUUID()
+    const scope = { deviceId: 'main', profilePath: f.root, configRevision: 'profile-revision', cwd: f.root }
+    const child = spawnNativeProcess(process.execPath, ['-e', `
+      const fs=require('node:fs'),readline=require('node:readline');
+      const sessionId=process.argv[1],failed=process.argv[2]==='failed';
+      console.log(JSON.stringify({type:'system',subtype:'init',session_id:sessionId}));
+      readline.createInterface({input:process.stdin}).on('line',line=>{
+        const message=JSON.parse(line);
+        fs.appendFileSync('native-inputs.jsonl',line+'\\n');
+        const timer=setInterval(()=>{
+          if(!fs.existsSync('finish'))return;
+          clearInterval(timer);
+          console.log(JSON.stringify({type:'result',session_id:sessionId,user_message_uuid:message.uuid,
+            is_error:failed,subtype:failed?'error_during_execution':'success',result:'Nothing to compact'}));
+        },10);
+      });
+    `, nativeSessionId, outcome], { cwd: f.root, env: {}, recovery: f.recovery, claudeSessionScope: scope })
+    child.stdout.resume()
+    child.stderr.resume()
+    const pending = { requestId, nativeRequestId: promptUuid, nativeSessionId, nativeOperationId: promptUuid,
+      claudeSession: scope, status: 'uncertain' as const, message: 'API response lost', beforeTokens: 100,
+      observedAt: new Date().toISOString() }
+    const wait = async (condition: () => Promise<boolean> | boolean) => {
+      const deadline = Date.now() + 10000
+      while (!await condition()) {
+        assert(Date.now() < deadline, 'Native owner did not reach the expected state')
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+    }
+    try {
+      child.stdin.write(JSON.stringify({ type: 'user', uuid: promptUuid, message: { content: '/compact' } }) + '\n')
+      await wait(() => existsSync(join(f.root, 'native-inputs.jsonl')))
+      assert.equal((await recoverPersistedClaudeCompaction(pending)).status, 'uncertain')
+      child.stdout.destroy()
+      child.disconnect()
+      writeFileSync(join(f.root, 'finish'), '')
+      await wait(async () => (await recoverPersistedClaudeCompaction(pending)).status === outcome)
+      assert.equal(readFileSync(join(f.root, 'native-inputs.jsonl'), 'utf8').trim().split('\n').length, 1)
+      assert.equal((await recoverPersistedClaudeCompaction(pending)).nativeRequestId, promptUuid)
+    } finally {
+      await stopRecoveredChild(child)
+      assert.equal(await f.registry.closeOwner(f.owner), true)
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  }, 20000)
