@@ -300,6 +300,7 @@ export class F1Native implements NativeHarnessSessionManager {
   readonly harness: AgentHarness = 'codex'
   readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
   readonly starts: string[] = []
+  readonly modes: Array<NativeTurnInput['sessionMode']> = []
   readonly cancels: string[] = []
   readonly steers: NativeSteerInput[] = []
   readonly holds = new Map<string, ReturnType<typeof deferred>>()
@@ -312,7 +313,9 @@ export class F1Native implements NativeHarnessSessionManager {
   async attachSession(): Promise<NativeSessionReference> { throw new Error('Unused: fixture session is already resident.') }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     const requestId = input.clientCorrelationId.split(':').at(-1)!
-    this.starts.push(requestId); this.active = requestId
+    this.starts.push(requestId)
+    this.modes.push(input.sessionMode)
+    this.active = requestId
     const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: `turn-${requestId}`, events: [], pendingInteractions: [] }
     this.histories.set(input.clientCorrelationId, history)
     await input.onSubmitted?.(history.nativeTurnId!)

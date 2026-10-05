@@ -336,4 +336,5 @@ it('queues a Plan task as one new turn when the caller selected steering', async
   f.manager.finish('A')
   await f.idle()
   assert.deepEqual(f.manager.starts, ['A', 'plan-task'])
+  assert.equal(f.manager.modes.at(-1), 'plan')
 })
