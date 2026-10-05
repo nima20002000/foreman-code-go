@@ -3,7 +3,7 @@ import { CompatibilityCheckError } from './errors.js'
 
 type ObjectValue = Record<string, unknown>
 const invalid = (contract = 'protocol and settings') => new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
-  `The installed CLI does not advertise the required ${contract} contract.`)
+  `Required contract is unavailable: ${contract}.`)
 function object(value: unknown): ObjectValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid()
   return value as ObjectValue
@@ -34,7 +34,8 @@ function supportsEnum(document: ObjectValue, value: unknown, expected: readonly 
   const schema = resolve(document, value)
   const choices = Array.isArray(schema.enum) ? schema.enum : []
   if (expected.every((item) => choices.includes(item))) return
-  for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []), ...(Array.isArray(schema.oneOf) ? schema.oneOf : [])]) {
+  for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
+    ...(Array.isArray(schema.oneOf) ? schema.oneOf : []), ...(Array.isArray(schema.allOf) ? schema.allOf : [])]) {
     try { supportsEnum(document, choice, expected, depth + 1); return } catch { /* Try another declared branch. */ }
   }
   throw invalid(`enum values ${expected.join(', ')}`)
@@ -43,7 +44,8 @@ function supportsType(document: ObjectValue, value: unknown, expected: string, d
   if (depth > 40) throw invalid()
   const schema = resolve(document, value)
   if (schema.type === expected || (Array.isArray(schema.type) && schema.type.includes(expected))) return
-  for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []), ...(Array.isArray(schema.oneOf) ? schema.oneOf : [])]) {
+  for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
+    ...(Array.isArray(schema.oneOf) ? schema.oneOf : []), ...(Array.isArray(schema.allOf) ? schema.allOf : [])]) {
     try { supportsType(document, choice, expected, depth + 1); return } catch { /* Another declared branch. */ }
   }
   throw invalid(`type ${expected}`)
@@ -95,7 +97,10 @@ export function checkCodexSchema(document: ObjectValue): void {
       serviceTier: null, config: { model_reasoning_effort: 'low', web_search: 'disabled' },
     } })
     protocol.request({ id: 2, method: 'config/read', params: { includeLayers: false } })
-  } catch (error) { throw invalid(error instanceof Error ? error.message : 'protocol and settings') }
+  } catch (error) {
+    if (error instanceof CompatibilityCheckError) throw error
+    throw invalid(error instanceof Error ? error.message : 'protocol and settings')
+  }
 }
 
 function operation(document: ObjectValue, path: string, method: string): ObjectValue {
@@ -206,5 +211,8 @@ export function checkOpenCodeSchema(document: ObjectValue): void {
     const reply = properties(document, jsonSchema(document, permission.requestBody))
     fields(reply, ['reply'])
     supportsEnum(document, reply.reply, ['once', 'always', 'reject'])
-  } catch (error) { throw invalid(error instanceof Error ? error.message : 'protocol and settings') }
+  } catch (error) {
+    if (error instanceof CompatibilityCheckError) throw error
+    throw invalid(error instanceof Error ? error.message : 'protocol and settings')
+  }
 }

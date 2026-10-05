@@ -217,7 +217,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
         }
         if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
           throw new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
-            `${harness} ${installation.version} does not satisfy ${'contract' in result && typeof result.contract === 'string' ? result.contract : 'protocol/settings schema'}.`)
+            `${harness} ${installation.version}: ${'contract' in result && typeof result.contract === 'string' ? result.contract : 'Required protocol/settings contract is unavailable.'}`)
         }
         if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true
           || !('schemaSha256' in result) || typeof result.schemaSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.schemaSha256)) {

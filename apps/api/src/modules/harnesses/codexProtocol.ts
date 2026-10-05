@@ -328,8 +328,10 @@ export async function qualifyCodex(
     } catch (error) {
       signal?.throwIfAborted()
       if (error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_EXECUTABLE_CHANGED') throw error
-      const contract = error instanceof HarnessExecutionError || error instanceof CompatibilityCheckError
-        ? error.message : 'generated app-server protocol schema'
+      if (error instanceof CompatibilityCheckError) {
+        throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED', `Codex ${actual}: ${error.message}`)
+      }
+      const contract = error instanceof HarnessExecutionError ? error.message : 'generated app-server protocol schema'
       throw incompatible(contract)
     } finally {
       await rm(directory, { recursive: true, force: true })

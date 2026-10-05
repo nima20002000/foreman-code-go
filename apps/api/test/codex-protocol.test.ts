@@ -66,6 +66,29 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
     assert.throws(() => qualified.protocol.response('thread/start', response), /0.160.0.*reasoningEffort/)
   })
 
+  it('accepts a referenced sandbox union inside allOf and validates the observed policy', async () => {
+    const schema = codexSchema()
+    Object.assign(schema.definitions.v2, { SandboxPolicy: {
+      oneOf: ['readOnly', 'workspaceWrite'].map(type => ({
+        type: 'object', properties: { type: { const: type, type: 'string' } }, required: ['type'],
+      })),
+    } })
+    for (const response of [schema.definitions.v2.ThreadStartResponse, schema.definitions.v2.ThreadResumeResponse,
+      schema.definitions.v2.ThreadForkResponse]) {
+      Object.assign(response.properties, { sandbox: { allOf: [{ $ref: '#/definitions/v2/SandboxPolicy' }] } })
+    }
+    await configure(schema)
+    const qualified = await qualify()
+    const response = { thread: { id: 'thread', turns: [] }, model: 'model', modelProvider: 'openai', cwd: f.directory,
+      sandbox: { type: 'readOnly' }, approvalPolicy: 'never', approvalsReviewer: 'user',
+      reasoningEffort: 'medium', serviceTier: null }
+    assert.doesNotThrow(() => qualified.protocol.response('thread/start', response))
+    assert.throws(() => qualified.protocol.response('thread/start', { ...response, sandbox: { type: 'unknown' } }),
+      /0.160.0.*ThreadStartResponse/)
+    assert.throws(() => qualified.protocol.response('thread/start', { ...response, sandbox: 'readOnly' }),
+      /0.160.0.*ThreadStartResponse/)
+  })
+
   it('reverifies a changed binary even when its reported version is unchanged', async () => {
     await configure()
     const original = await qualify()
