@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { adminDatabaseUrl } from './test-integration.mjs'
 import { stopGroup } from './integration-process.mjs'
 
@@ -33,9 +33,11 @@ export async function withAcceptanceDatabase(run) {
 }
 
 async function runNativeAcceptance(databaseUrl) {
+  const evidenceDirectory = join(root, '.logs', 'native-acceptance', new URL(databaseUrl).pathname.slice(1))
+  console.log(`[acceptance] Native evidence: ${evidenceDirectory}`)
   const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'test:acceptance'], {
     cwd: root, stdio: 'inherit', detached: true,
-    env: { ...process.env, ENG03_A_TEST_DATABASE_URL: databaseUrl },
+    env: { ...process.env, ENG03_A_TEST_DATABASE_URL: databaseUrl, ENG03_A_EVIDENCE_DIR: evidenceDirectory },
   })
   let interrupted
   let stopping
