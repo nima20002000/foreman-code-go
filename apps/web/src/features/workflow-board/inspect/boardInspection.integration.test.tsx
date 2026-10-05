@@ -19,6 +19,7 @@ import { nextDraftKey } from '../../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspectionFixtures'
 import { useInspectionPresentation } from './presentation'
 import { executionPagesKey } from './queries'
+import { currentRunKey } from '../currentRunQuery'
 import { base as childRoute, child, detail, message, tool } from '../../run-subagents/testFixtures'
 import { clearBoardStopStorage, readBoardStop, recordBoardStopReceipt, reserveBoardStop, type BoardStopJournal } from '../stopOutbox'
 
@@ -259,12 +260,14 @@ describe('Run inspection inside the one mounted Board', () => {
     const { cache } = await mount(href(scope, { runNodeId: fixture.first.id }))
     await screen.findByRole('button', { name: 'Refresh accepted Run facts' })
     await screen.findByRole('region', { name: 'Selected Run actions' })
-    await waitFor(() => expect(cache.isFetching()).toBe(0))
+    await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
+      .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
+    expect(cache.getQueryData(currentRunKey(scope))).toMatchObject({ state: { run: { cleanupPending: true } } })
     expect(readBoardStop(scope)).toEqual(journal)
     await act(async () => {
       current.state.run.cleanupPending = false
       current.asOfSequence = '1'
-      await cache.invalidateQueries()
+      await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true })
     })
     await waitFor(() => expect(readBoardStop(scope)).toBeUndefined())
     expect(fixture.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
