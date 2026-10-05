@@ -14,7 +14,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   useEffect(() => {
     setBudget(String(state?.desired.autoCompactTokens ?? ''))
     setBudgetEdited(false)
-  }, [state?.conversationId, state?.desired.autoCompactTokens])
+  }, [state?.conversationId, state?.profileKey, state?.desired.autoCompactTokens])
   const anchor = useRef<HTMLButtonElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const restoringFocus = useRef(false)

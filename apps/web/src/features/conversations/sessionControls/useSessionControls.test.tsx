@@ -146,3 +146,23 @@ it('clears a superseded settings journal using the original completed receipt', 
   expect((await reservePendingControl(scope, { kind: 'mode', mode: 'regular' }, 3)).request.requestId)
     .not.toBe(original.request.requestId)
 })
+
+it('recovers a superseded receipt before admitting a different control', async () => {
+  let saved = initial
+  vi.spyOn(sessionControlsApi, 'read').mockImplementation(async () => saved)
+  const change = vi.spyOn(sessionControlsApi, 'change').mockRejectedValueOnce(new Error('Response lost'))
+  const first = mount()
+  await waitFor(() => expect(first.result.current.state).toBeDefined())
+  await act(async () => { await expect(first.result.current.change({ kind: 'mode', mode: 'plan' })).rejects.toThrow('Response lost') })
+  const original = change.mock.calls[0]![1]
+  first.unmount()
+  saved = { ...initial, revision: 4, lastRequestId: 'other-settings-writer' }
+  const second = mount()
+  await waitFor(() => expect(second.result.current.state?.revision).toBe(4))
+  change.mockResolvedValueOnce({ ...saved, completedRequestId: original.requestId })
+    .mockImplementationOnce(async (_id, request) => ({ ...saved, revision: 5, lastRequestId: request.requestId }))
+  await act(async () => { await second.result.current.change({ kind: 'mode', mode: 'regular' }) })
+  expect(change.mock.calls[1]![1]).toEqual(original)
+  expect(change.mock.calls[2]![1]).toMatchObject({ kind: 'mode', mode: 'regular', expectedRevision: 4 })
+  expect(pendingControl(JSON.stringify(['operator', 'chat', null]))).toBeNull()
+})

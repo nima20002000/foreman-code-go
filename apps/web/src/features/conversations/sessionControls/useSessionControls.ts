@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { ApiError } from '../../../shared/api/client'
-import { reservePendingControl, recoverPendingControl, clearPendingControl, type PendingControl } from './controlRequest'
+import { pendingControl, reservePendingControl, recoverPendingControl, clearPendingControl, type PendingControl } from './controlRequest'
 import type { AgentChatContext } from '@graphql/contracts/agent-chat'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseSessionCommand, type SessionControlRequest } from '@graphql/contracts'
@@ -29,13 +29,28 @@ export function useSessionControls(conversationId: string | undefined, workspace
     mutationFn: async ({ input, draft }: { input: Change; draft?: PendingControl['draft'] }) => {
       assertSession(generation)
       if (!query.data) throw new Error('Session controls are loading. Refresh their status before trying again.')
-      const control = await reservePendingControl(scope, input, query.data.revision, draft)
+      if (!conversationId && !context) throw new Error('Select a conversation or workflow node first.')
+      const send = (request: SessionControlRequest) => conversationId
+        ? sessionControlsApi.change(conversationId, request, workspaceId)
+        : sessionControlsApi.changeContext(context!, request, executionId)
+      let revision = query.data.revision
+      const previous = pendingControl(scope)
+      if (previous) {
+        const original = Object.fromEntries(Object.entries(previous.request)
+          .filter(([field]) => field !== 'requestId' && field !== 'expectedRevision'))
+        if (JSON.stringify(original) !== JSON.stringify(input)) {
+          const recovered = await send(previous.request)
+          assertSession(generation)
+          await recoverPendingControl(scope, recovered)
+          revision = recovered.revision
+        }
+      }
+      const control = await reservePendingControl(scope, input, revision, draft)
       const request = control.request
       if (!conversationId && !context) throw new Error('Select a conversation or workflow node first.')
       if (!navigator.onLine) throw new Error('You are offline. Your draft is kept.')
       try {
-        const result = conversationId ? await sessionControlsApi.change(conversationId, request, workspaceId)
-          : await sessionControlsApi.changeContext(context!, request, executionId)
+        const result = await send(request)
         assertSession(generation)
         await recoverPendingControl(scope, result)
         return result
