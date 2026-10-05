@@ -32,6 +32,8 @@ import { workerOperatorDirectory } from './workerOperatorDirectory.js'
 import { AgentChatDirectoryBindingSchema } from '@foreman-code/contracts/agent-chat'
 import { revalidateAgentChatDirectory } from './agentChatDirectory.js'
 import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
+import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
+import type { AgentFileToolService } from '../files/tools/service.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -65,6 +67,7 @@ export function createProductionWorkerConversations(input: {
   access: Pick<PostgresAccessService, 'authenticate'>
   mcpForward(): SelectedMainMcpForward
   files?(conversationId: string, configuration: WorkerConversationConfiguration, workingDirectory: string): PrepareWorkerFiles
+  fileService?(): AgentFileToolService
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -202,6 +205,9 @@ export function createProductionWorkerConversations(input: {
         const actual = input.endpoint().captureRequest(host.deviceId, 'execution-v1')
         if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
       }
+      const claudeFiles = configuration.harness.harness === 'claude' && input.fileService
+        ? createMainWorkerClaudeFiles({ pool: input.pool, binding: owner, service: input.fileService,
+          allowMutation: configuration.harness.sandbox !== 'read-only' }) : undefined
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
@@ -229,6 +235,10 @@ export function createProductionWorkerConversations(input: {
           })
           else await authority.validate(identity)
           effectSignal.throwIfAborted()
+          if (request.phase === 'file') {
+            if (!claudeFiles || identity.nativeTurnId !== undefined) unavailable('This native file callback is unavailable.')
+            return claudeFiles.call(request, identity)
+          }
           return { authorized: true }
         } } : {}),
         profile: async () => {
@@ -254,6 +264,10 @@ export function createProductionWorkerConversations(input: {
           [options.conversationId, JSON.stringify(binding), session.nativeSessionId, configuration.id])
           if (saved.rowCount !== 1) unavailable('The native worker owner could not be retained.')
         } })
+      if (claudeFiles) {
+        const dispose = manager.dispose.bind(manager)
+        manager.dispose = async () => { try { await dispose() } finally { await claudeFiles.close() } }
+      }
       return { manager, inspector: manager.inspector }
     })
     admitted.manager.setSessionControlPrincipal = principalId => { caller = principalId }

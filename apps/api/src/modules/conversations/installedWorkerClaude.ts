@@ -11,7 +11,7 @@ import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.j
 import { compileClaudeConfiguration } from '../harnesses/claudeSdk/configuration.js'
 import { createClaudeSdkCallbacks } from '../harnesses/claudeSdk/sdkCallbacks.js'
 import { createClaudeSdkRunner } from '../harnesses/claudeSdk/runner.js'
-import { loadOfficialClaudeSdk } from '../harnesses/claudeSdk/official.js'
+import { loadInstalledClaudeSdk, loadOfficialClaudeSdk } from '../harnesses/claudeSdk/official.js'
 import { allocateClaudeNativeHarness } from '../harnesses/claudeSdk/composition.js'
 import { claudeProductionMcpInspector } from '../harnesses/claudeSdk/productionMcpInspector.js'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../harnesses/appMcpLauncher.js'
@@ -25,6 +25,7 @@ import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
+import { createWorkerClaudeFiles } from './workerClaudeFiles.js'
 
 export async function allocateInstalledWorkerClaude(input: {
   binding: WorkerConversationBinding
@@ -107,9 +108,14 @@ export async function allocateInstalledWorkerClaude(input: {
     return loadOfficialClaudeSdk(compiled.configuration.configDirectory, recovery, binary, original.sdk.entrypoint)
   } })
   const callbacks = createClaudeSdkCallbacks({ manager: () => manager, bridge: authority.bridge })
+  const fileServer = !reader && input.purpose === 'chat' ? createWorkerClaudeFiles({
+    sdk: await loadInstalledClaudeSdk(original.sdk.entrypoint), manager: () => manager,
+    authority, allowMutation: compiled.configuration.sandbox !== 'read-only', signal: input.signal,
+  }) : undefined
   const sdkOptions: Record<string, unknown> = { ...compiled,
-    mcpServers: appAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers)
-      .filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers,
+    mcpServers: { ...(appAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers)
+      .filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
+    ...(fileServer ? { 'graphql-files': fileServer.server } : {}) },
     includePartialMessages: true, ...callbacks }
   delete sdkOptions.configuration
   delete sdkOptions.qualification
@@ -182,6 +188,7 @@ export async function allocateInstalledWorkerClaude(input: {
       if (!await input.registry.closeOwner(owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
         'The native Claude chat has not stopped.', 409)
       await mcp?.close()
+      await fileServer?.close()
     },
   }
 }

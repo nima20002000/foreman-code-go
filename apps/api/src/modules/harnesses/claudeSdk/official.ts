@@ -19,8 +19,7 @@ function assertHelperProfile(profilePath: string): void {
 }
 
 /** Loading occurs only at admitted startup, never at synchronous factory allocation. */
-export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string,
-  sdkEntrypoint?: string): Promise<ClaudeSdkClient> {
+export async function loadInstalledClaudeSdk(sdkEntrypoint?: string): Promise<typeof import('@anthropic-ai/claude-agent-sdk')> {
   const require = createRequire(import.meta.url)
   const entrypoint = sdkEntrypoint ?? require.resolve('@anthropic-ai/claude-agent-sdk')
   if (!isAbsolute(entrypoint) || entrypoint.includes('\0')) throw new Error('Claude SDK requires its qualified absolute entrypoint')
@@ -28,7 +27,12 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
   if (manifest.name !== '@anthropic-ai/claude-agent-sdk' || manifest.version !== CLAUDE_SDK_CANDIDATE_VERSION) {
     throw new Error('Installed Claude SDK differs from the exact qualification candidate')
   }
-  const sdk: typeof import('@anthropic-ai/claude-agent-sdk') = await import(pathToFileURL(entrypoint).href)
+  return import(pathToFileURL(entrypoint).href)
+}
+
+export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string,
+  sdkEntrypoint?: string): Promise<ClaudeSdkClient> {
+  const sdk = await loadInstalledClaudeSdk(sdkEntrypoint)
   return {
     sdkVersion: manifest.version,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),

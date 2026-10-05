@@ -212,6 +212,9 @@ export const WorkerClaudeCallbackIdentitySchema = z.object({
 }).strict()
 export const WorkerClaudeAuthorityRequestSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('admission') }).strict(),
+  z.object({ phase: z.literal('file'), identity: WorkerClaudeCallbackIdentitySchema,
+    operation: z.enum(['files.list', 'files.read', 'files.create_working_copy', 'files.write_working_copy',
+      'files.apply_format_edit', 'files.publish_result']), args: z.unknown() }).strict(),
   z.object({ phase: z.literal('validate'), identity: WorkerClaudeCallbackIdentitySchema }).strict(),
   z.object({ phase: z.literal('pending'), identity: WorkerClaudeCallbackIdentitySchema,
     pending: z.lazy(() => PendingNativeInteractionSchema) }).strict(),

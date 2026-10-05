@@ -17,7 +17,7 @@ function fixture() {
     session: f.session, prompt: 'Read only', correlationId, admissionId: randomUUID() }
   const submission: NativeMessageSubmission = { kind: 'message', nativeSessionId: f.session.nativeSessionId,
     nativeMessageId: 'native-message', clientCorrelationId: correlationId }
-  const request = vi.fn(async (source: WorkerConversationRpcRequest, authority: WorkerClaudeAuthorityRequest) => {
+  const request = vi.fn(async (source: WorkerConversationRpcRequest, authority: WorkerClaudeAuthorityRequest): Promise<unknown> => {
     if (!source.admissionId) throw new Error('Missing Main admission')
     return authority.phase === 'admission' ? { ownerPrincipalId: 'original-sender', attemptId: 'original-request' }
       : { authorized: true }
@@ -90,4 +90,28 @@ it('offers no worker input without a Main native-message acknowledgement callbac
     expect(f.nativeStart).not.toHaveBeenCalled()
     expect(f.request).not.toHaveBeenCalled()
   } finally { await stream.return?.(); f.controls.bridge.close() }
+})
+
+it('forwards file calls only for the acknowledged root message and original sender', async () => {
+  const f = fixture()
+  const signal = AbortSignal.timeout(1000)
+  try {
+    await expect(f.controls.file(f.identity, 'files.read', { fileId: 'file', revisionId: 'revision' }, signal))
+      .rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
+    await f.stream.next()
+    f.request.mockResolvedValueOnce({ status: 'ready', contentBase64: Buffer.from('attached').toString('base64') })
+    expect(await f.controls.file(f.identity, 'files.read', { fileId: 'file', revisionId: 'revision' }, signal))
+      .toEqual({ status: 'ready', contentBase64: Buffer.from('attached').toString('base64') })
+    expect(f.request.mock.calls.at(-1)).toEqual([f.source, { phase: 'file', identity: f.identity,
+      operation: 'files.read', args: { fileId: 'file', revisionId: 'revision' } }, signal])
+    const count = f.request.mock.calls.length
+    for (const identity of [{ ...f.identity, nativeMessageId: 'unacknowledged' },
+      { ...f.identity, ownerPrincipalId: 'other-sender' }, { ...f.identity, attemptId: 'other-request' }]) {
+      await expect(f.controls.file(identity, 'files.read', {}, signal))
+        .rejects.toMatchObject({ code: 'CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED' })
+    }
+    expect(f.request).toHaveBeenCalledTimes(count)
+  } finally { await f.stream.return?.(); f.controls.bridge.close() }
+  await expect(f.controls.file(f.identity, 'files.read', {}, signal))
+    .rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
 })

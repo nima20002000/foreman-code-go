@@ -8,6 +8,7 @@ import { ClaudeInteractionBridge } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
 import { DomainError } from '../errors.js'
+import type { FileToolOperation } from '../files/tools/types.js'
 
 interface AdmittedMessage {
   request: WorkerConversationRpcRequest
@@ -75,6 +76,21 @@ export function createWorkerClaudeAuthority(input: {
     } }
   }
   return { bridge,
+    async file(identity: ClaudeCallbackIdentity, operation: FileToolOperation, args: unknown, signal: AbortSignal) {
+      const request = sourceFor(identity)
+      const admitted = identity.clientCorrelationId && sources.get(identity.clientCorrelationId)
+      const submission = admitted && admitted.submission
+      if (!admitted || !submission || submission.nativeSessionId !== identity.nativeSessionId
+        || submission.nativeMessageId !== identity.nativeMessageId
+        || !isDeepStrictEqual(admitted.authority, {
+          ownerPrincipalId: identity.ownerPrincipalId, attemptId: identity.attemptId,
+        })) {
+        throw new DomainError('CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED',
+          'The file call requires its acknowledged native message and original sender.', 403)
+      }
+      return input.request(request, { phase: 'file', identity: WorkerClaudeCallbackIdentitySchema.parse(identity),
+        operation, args }, signal)
+    },
     async recover(source: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
       submission: NativeMessageSubmission, signal: AbortSignal) {
       signal.throwIfAborted()

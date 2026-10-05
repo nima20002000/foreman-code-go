@@ -1,9 +1,6 @@
-import type { createSdkMcpServer, tool, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
+import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import {
-  AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileReadResultSchema, AgentFileCreateWorkingCopyInputSchema,
-  AgentFileWriteWorkingCopyInputSchema, AgentFileApplyFormatEditInputSchema, AgentFilePublishInputSchema,
-} from '@foreman-code/contracts/files'
+import { AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
 import { DomainError } from '../../errors.js'
 import { ClaudeFileBridge, type ClaudeFileAdmission } from '../../harnesses/claudeSdk/files.js'
@@ -14,7 +11,8 @@ import type { FileToolOperation } from '../tools/types.js'
 import { markdownReadText } from '../tools/markdownReadText.js'
 import type { ClaudeMcpToolManifest } from '../../harnesses/claudeSdk/mcpPolicy.js'
 
-export type ClaudeFileSdk = { createSdkMcpServer: typeof createSdkMcpServer; tool: typeof tool }
+import { createClaudeFileTools, type ClaudeFileSdk } from './sdkServer.js'
+export type { ClaudeFileSdk } from './sdkServer.js'
 /** Resolves evidence captured by the native owner, never fields from tool arguments.
  * SDK 0.3.284 supplies `extra: unknown`; its installed provider-owned tool-use
  * metadata must resolve through the manager's unique observed root context.
@@ -71,30 +69,7 @@ export function createClaudeFileMcpServer(input: {
       return { isError: true, content: result.content.filter(value => value.type === 'text').map(value => ({ type: 'text', text: value.text })) }
     }
   }
-  const sdk = input.sdk
-  const definitions = [
-    sdk.tool('files.list', 'List metadata in the admitted conversation scope.',
-      { ...AgentFileListInputSchema.shape, limit: AgentFileListInputSchema.shape.limit.unwrap().optional() },
-      (args, extra) => invoke('files.list', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
-    sdk.tool('files.read', 'Read bounded bytes of exact file and revision pins. Markdown includes UTF-8 text alongside the base64 bytes.',
-      { ...AgentFileReadInputSchema.shape, offset: AgentFileReadInputSchema.shape.offset.unwrap().optional(), length: AgentFileReadInputSchema.shape.length.unwrap().optional() },
-      (args, extra) => invoke('files.read', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
-    ...(input.allowMutation ? [
-      sdk.tool('files.create_working_copy', 'Create a temporary owned artifact from authorized pinned bytes.', AgentFileCreateWorkingCopyInputSchema.shape,
-        (args, extra) => invoke('files.create_working_copy', args, extra)),
-      sdk.tool('files.write_working_copy', 'Replace bytes of an owned temporary working copy.', AgentFileWriteWorkingCopyInputSchema.shape,
-        (args, extra) => invoke('files.write_working_copy', args, extra)),
-      sdk.tool('files.apply_format_edit', 'Edit an owned temporary working copy using the shared format contract.', AgentFileApplyFormatEditInputSchema.shape,
-        (args, extra) => invoke('files.apply_format_edit', args, extra)),
-      sdk.tool('files.publish_result', 'Publish a completed temporary artifact in its originating conversation.', AgentFilePublishInputSchema.shape,
-        (args, extra) => invoke('files.publish_result', args, extra)),
-    ] : []),
-  ]
-  const server = sdk.createSdkMcpServer({ name: 'graphql-files', version: '1.0.0', tools: definitions,
-    instructions: 'File-only admitted native message tools. Scope fields assert the admitted conversation; they cannot select another owner. Permanent references are read-only.' })
-  const manifest: ClaudeMcpToolManifest = { serverName: 'graphql-files',
-    source: { kind: 'sdk', name: 'graphql-files', version: '1.0.0' },
-    tools: definitions.map(definition => definition.name) }
+  const { server, manifest } = createClaudeFileTools({ sdk: input.sdk, allowMutation: input.allowMutation, invoke })
   return { server, manifest, close: async () => {
     closed = true
     await Promise.all([...bridges].map(bridge => bridge.close()))
