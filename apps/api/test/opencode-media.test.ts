@@ -158,7 +158,9 @@ it('cancels an owned history stream while an inline image is still being read', 
   const bound = await fetch('http://opencode.invalid/session/owned/message/root?directory=%2Fisolated')
   const pending = readOpenCodeResponseText(bound, owner.signal)
   await reading
-  owner.abort()
-  await assert.rejects(pending)
+  const reason = new Error('Native history owner closed.')
+  owner.abort(reason)
+  await assert.rejects(pending, { message: reason.message })
   assert.equal(canceled, true)
+  assert.equal(response.body!.locked, false)
 })

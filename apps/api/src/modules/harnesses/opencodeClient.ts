@@ -1,7 +1,21 @@
 import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from './opencodeTransport.js'
 import { openCodeMediaStream } from './opencodeMedia.js'
 
-const historyTransfers = new WeakMap<Response, Promise<PromiseSettledResult<void>[]>>()
+interface OpenCodeHistoryTransfer {
+  source: ReadableStream<Uint8Array>
+  settled: Promise<PromiseSettledResult<void>[]>
+}
+const historyTransfers = new WeakMap<Response, OpenCodeHistoryTransfer>()
+
+async function releaseHistoryTransfer(response: Response): Promise<void> {
+  const transfer = historyTransfers.get(response)
+  if (!transfer) return
+  await transfer.settled
+  // A rejected in-flight pipe write can settle shutdown without cancelling its source.
+  // Cancelling an errored source repeats the error already reported by the reader.
+  await Promise.allSettled([transfer.source.cancel()])
+  historyTransfers.delete(response)
+}
 
 export interface OpenCodeHttpEvidence {
   readonly operation: { readonly method: string; readonly path: string }
@@ -98,7 +112,9 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
         status: response.status, statusText: response.statusText, headers,
       })
       // Response may wrap its input stream; bind cleanup to the returned response.
-      historyTransfers.set(projected, Promise.allSettled([response.body.pipeTo(media.writable, { signal: combined })]))
+      historyTransfers.set(projected, { source: response.body,
+        settled: Promise.allSettled([response.body.pipeTo(media.writable, { signal: combined })]),
+      })
       return projected
     }
     return response
@@ -120,7 +136,7 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
   const signal = ownerSignal ? AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000)
   if (signal.aborted) {
     await response.body?.cancel().catch(() => undefined)
-    await historyTransfers.get(response)
+    await releaseHistoryTransfer(response)
     signal.throwIfAborted()
   }
   if (!response.body) return ''
@@ -143,7 +159,7 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
   } finally {
     signal.removeEventListener('abort', abort)
     await reader.cancel().catch(() => undefined)
-    await historyTransfers.get(response)
+    await releaseHistoryTransfer(response)
     reader.releaseLock()
   }
 }
