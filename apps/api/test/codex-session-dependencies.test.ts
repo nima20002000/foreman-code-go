@@ -94,6 +94,7 @@ describe('Codex original placed inspection directory', () => {
         commands.push({ args, cwd })
         if (args[2] !== serverName) return { stdout: '',
           stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1 }
+        assert.deepEqual(args, ['mcp', 'get', serverName, '--json'])
         return { stdout: JSON.stringify({ name: serverName, enabled: false, transport: { type: 'stdio' } }),
           stderr: '', exitCode: 0 }
       }
