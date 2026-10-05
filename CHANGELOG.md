@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.19] - 2026-10-05
+
+### Fixed
+
+- Keep ready native output in bounded batches after scheduler pauses, avoiding fragmented database publications while preserving prompt silent-stream flushing and immediate approval and reliability events.
+- Add a deterministic scheduler-pause regression without increasing native stream test timeouts or relaxing frame-order, source-capture, lease, or Operator MCP checks.
+
 ## [0.0.18] - 2026-10-05
 
 ### Fixed
