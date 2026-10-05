@@ -376,7 +376,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     }
   }, 15_000)
 
-  for (const key of ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD']) {
+  for (const key of ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD',
+    'FOREMAN_CODE_PRODUCTION_DB_PASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD']) {
     it(`rejects ${key} reinjection on launch, credential refresh and cold resume`, async () => {
       const invalid = structuredClone(source)
       invalid.environment = {

@@ -273,15 +273,21 @@ function instructions(input: NativeSessionStart): string | null {
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
 }
+function validateEnvironmentVariables(input?: NativeSessionStart['environment']): void {
+  for (const key of Object.keys(input?.variables ?? {})) {
+    // Operator and Worker credentials use the admitted App token; the server resolves its role.
+    if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key)
+      || isDatabaseCredentialVariable(key)) {
+      throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
+    }
+  }
+}
 function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
+  validateEnvironmentVariables(input)
   const environment = inheritedAgentEnvironment()
   for (const key of scopedNames) delete environment[key]
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
-      // Operator and Worker credentials use the admitted App token; the server resolves its role.
-      if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key) || isDatabaseCredentialVariable(key)) {
-        throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
-      }
       environment[key] = value
     }
   }
@@ -1711,6 +1717,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const input = structuredClone(source)
     validateEnvironmentOwner(input)
+    validateEnvironmentVariables(input.environment)
     if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }
