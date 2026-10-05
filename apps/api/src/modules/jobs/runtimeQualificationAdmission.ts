@@ -25,7 +25,7 @@ function changed(): never { throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_
 /** Called inside the existing Main transaction, committed before native entry.
  * Its original approval row is the sole admission store. Retry reads the same
  * immutable lease and never mints replacement native authority. */
-export async function admitInstalledJobQualification(sql: JobSql, input: JobRuntimeNativeAdmissionInput, existingOnly=false): Promise<JobRuntimeNativeAdmissionRecord> {
+export async function admitInstalledJobQualification(sql: JobSql, input: JobRuntimeNativeAdmissionInput, options: { access: 'launch' | 'read'; requireExisting?: boolean } = { access: 'launch' }): Promise<JobRuntimeNativeAdmissionRecord> {
   const candidate = input.candidate
   await lockActiveWorkspace(sql,candidate.fingerprint.root.binding.workspaceId)
   const row = (await sql.query<{ record: unknown; run_command_id: string | null; run_principal_id: string | null;
@@ -74,10 +74,21 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
     bootId: fingerprint.bootId, connection: current.connection, expiresAt: approval.expiresAt }
   if (row.native_admission) {
     const saved = JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission)
-    if (canonical(saved) !== canonical({ ...context, leaseId: saved.leaseId, admittedAt: saved.admittedAt })) changed()
+    const expected = { ...context, leaseId: saved.leaseId, admittedAt: saved.admittedAt }
+    if (options.access === 'read') {
+      const { connection: savedConnection, ...savedScope } = saved
+      const { connection: currentConnection, ...currentScope } = expected
+      if (canonical(savedScope) !== canonical(currentScope)) changed()
+      if ((savedConnection === null) !== (currentConnection === null)) changed()
+      if (savedConnection && currentConnection) {
+        for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId']) {
+          if (Reflect.get(savedConnection, key) !== Reflect.get(currentConnection, key)) changed()
+        }
+      }
+    } else if (canonical(saved) !== canonical(expected)) changed()
     return saved
   }
-  if(existingOnly)changed()
+  if(options.requireExisting || options.access === 'read')changed()
   const admission = JobRuntimeNativeAdmissionRecordSchema.parse({ ...context, leaseId: randomUUID(), admittedAt: new Date().toISOString() })
   await sql.query('update job_runtime_qualification_approvals set native_admission=$2::jsonb where id=$1', [approval.id, JSON.stringify(admission)])
   return admission
@@ -85,6 +96,12 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
 
 /** Recheck the original persisted lease without ever creating one. */
 export async function assertInstalledJobQualification(sql:JobSql,input:JobRuntimeNativeAdmissionInput,admission:JobRuntimeNativeAdmissionRecord):Promise<void> {
-  const saved=await admitInstalledJobQualification(sql,input,true)
+  const saved=await admitInstalledJobQualification(sql,input,{ access: 'launch', requireExisting: true })
   if(canonical(saved)!==canonical(admission))changed()
+}
+
+export async function assertInstalledJobQualificationRead(sql: JobSql, input: JobRuntimeNativeAdmissionInput,
+  admission: JobRuntimeNativeAdmissionRecord): Promise<void> {
+  const saved = await admitInstalledJobQualification(sql, input, { access: 'read', requireExisting: true })
+  if (canonical(saved) !== canonical(admission)) changed()
 }

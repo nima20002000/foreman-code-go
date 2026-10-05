@@ -87,6 +87,17 @@ describe('CI runtime metadata authority and original qualification ownership',()
     await expect(f.service.qualify(principal,'mcp',profile.workspaceId,'original-command',approval.id)).rejects.toMatchObject({code:'JOB_RUNTIME_RECOVERY_REQUIRED'})
     expect(f.producer.run).not.toHaveBeenCalled()
   })
+  it('reconciles a retained physical operation with the same command without another launch', async () => {
+    const f = fixture({ approvalStatus: 'qualifying', runCommand: 'original-command' })
+    const reconcile = vi.fn(async () => ({ outcome: 'denied' as const, closure: 'confirmed' as const,
+      reasons: ['original interrupted diagnostic closed'] }))
+    Object.assign(f.producer, { reconcile })
+    const result = await f.service.qualify(principal, 'mcp', profile.workspaceId, 'original-command', approval.id)
+    expect(result.status).toBe('failed')
+    expect(reconcile).toHaveBeenCalledOnce()
+    expect(f.producer.run).not.toHaveBeenCalled()
+    expect(f.state.runResult).toMatchObject({ closure: 'confirmed' })
+  })
   it('rejects bearer approval at the verified browser boundary',async()=>{
     const app=Fastify(),f=fixture(),approve=vi.spyOn(f.service,'approve')
     app.addHook('preHandler',async request=>{request.operatorPrincipal=principal;request.operatorAuthentication='bearer'})

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import type pg from 'pg'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@foreman-code/contracts/job-runtime'
@@ -26,7 +27,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
   const exchange = async (profile: JobRuntimeProfileRecord, payload: unknown, signal?: AbortSignal) => {
     const target = profile.root.selection.hostRef
     const request = JobRuntimeQualificationRpcRequestRecordSchema.parse(payload)
-    if (request.operation === 'run') workerExecution.requireEnabled(target)
+    if (request.operation === 'run' || request.operation === 'start') workerExecution.requireEnabled(target)
     if (target.kind !== 'device' || !profile.root.registration) throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The real installed worker is required.', 409)
     const endpoint = input.endpoint(), captured = endpoint.captureRequest(target.deviceId, JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace)
     const check = () => {
@@ -38,7 +39,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
         throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original installed qualification connection is unavailable or changed.', 409)
     }
     check()
-    const reply = await captured!.request(JobRuntimeQualificationRpcRequestRecordSchema.parse(payload), signal ? { signal } : {})
+    const reply = await captured!.request(JobRuntimeQualificationRpcRequestRecordSchema.parse(payload), signal ? { signal, timeoutMs: 30000 } : { timeoutMs: 30000 })
     check()
     if (reply.bytes !== undefined) throw new DomainError('JOB_RUNTIME_RESPONSE_INVALID', 'Physical qualification metadata cannot contain arbitrary binary data.', 409)
     return { response: JobRuntimeQualificationRpcResponseRecordSchema.parse(reply.payload), binding: captured!.binding }
@@ -92,12 +93,34 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
         return input.local.runAdmitted(request)
       }
       await request.assertAdmission()
-      const { response, binding } = await exchange(request.profile, { version: request.nativeAdmission.schemaVersion === 3 ? 3 : request.nativeAdmission.schemaVersion, operation: 'run', admission: request.nativeAdmission, candidate: request.candidate }, request.signal)
-      await request.assertAdmission()
-      if (response.operation !== 'run' || !sameWorkflowValue(response.admission, request.nativeAdmission)
-        || !sameWorkflowValue(response.candidate, request.candidate) || !sameWorkflowValue(binding, request.nativeAdmission.connection))
-        throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'Actual worker qualification changed its original persisted admission.', 409)
-      return response.result
+      const version = request.nativeAdmission.schemaVersion
+      let operation: 'start' | 'status' = 'status'
+      let candidate = request.candidate
+      let capturedCandidate = false
+      while (Date.now() < Date.parse(request.nativeAdmission.expiresAt)) {
+        request.signal.throwIfAborted()
+        const { response } = await exchange(request.profile, { version, operation,
+          admission: request.nativeAdmission, candidate, intent: request.intent ?? 'execute' }, request.signal)
+        if ((response.operation !== 'start' && response.operation !== 'status')
+          || !sameWorkflowValue(response.admission, request.nativeAdmission)
+          || !sameWorkflowValue(response.candidate.fingerprint, request.candidate.fingerprint)
+          || capturedCandidate && !sameWorkflowValue(response.candidate, candidate)) {
+          throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'Worker qualification changed its persisted admission.', 409)
+        }
+        candidate = response.candidate
+        capturedCandidate = response.phase !== 'not_started'
+        if (response.phase === 'not_started' && request.intent === 'reconcile') {
+          return { outcome: 'denied', closure: 'unconfirmed', reasons: ['Original worker qualification receipt is missing.'] }
+        }
+        if (response.phase === 'complete' && response.result) {
+          await request.assertAdmission()
+          return response.result
+        }
+        operation = ['not_started', 'received'].includes(response.phase) ? 'start' : 'status'
+        await delay(1000, undefined, { signal: request.signal })
+      }
+      throw new DomainError('JOB_RUNTIME_APPROVAL_EXPIRED', 'The original qualification deadline expired.', 409)
+
     },
   }
   const authorize = async (admission: JobRuntimeNativeAdmissionRecord, candidate: JobQualificationCandidateRecord, context: DeviceExtensionContext) => {

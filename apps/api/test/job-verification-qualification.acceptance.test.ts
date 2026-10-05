@@ -214,6 +214,10 @@ describe('installed ordinary verification qualification through authenticated MC
       expect((executionReadback.structuredContent as { execution: unknown }).execution).toEqual(execution)
       expect((await runtime.jobs.listArtifacts(owner.principal, workspaceId, execution!.id, 'mcp')).map(output => output.path).sort())
         .toEqual(template.outputs!.map(output => output.path).sort())
+      expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)
+      const replay = await operator.callTool({ name: 'job_runtime_qualification_run', arguments: run })
+      expect(replay.isError).not.toBe(true)
+      expect((replay.structuredContent as { profile: unknown }).profile).toEqual(completed.profile)
       const restarted = createInstalledJobRuntimeHost({ identity: db.pool, configuration: location,
         reserve: async () => { throw new Error('Metadata restart cannot reserve native work.') } })
       expect(await restarted.currentMetadata(db.pool, completed.profile)).toBeNull()
@@ -221,7 +225,10 @@ describe('installed ordinary verification qualification through authenticated MC
       const restartedProfiles = createJobRuntimeProfileService({ pool: db.pool, commands,
         sources: runtime.sources, host: restarted })
       expect(await restartedProfiles.readiness(db.pool, completed.profile)).toEqual({ ready: true, reasons: [] })
+      await runtime.close()
+      runtime = undefined
       journal = await RemoteOperationJournal.open(join(db.directory, 'job-runtime-operations.json'))
+      expect(await journal.pendingQualifications()).toEqual([])
       expect((await journal.qualificationStatus(completed.approval.qualificationId))?.phase).toBe('closed')
       expect((await journal.qualificationStatus(completed.approval.qualificationId))?.result?.outcome).toBe('qualified')
     } finally {

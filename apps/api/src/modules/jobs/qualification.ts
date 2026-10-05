@@ -37,6 +37,12 @@ export interface JobQualificationRecord {
 }
 export interface QualificationNativeOwner {
   completedResult?: JobRuntimeQualificationResultRecord
+  originalResult?: JobRuntimeQualificationResultRecord
+  recoveryRequired?: boolean
+  originalContainer?: { identity: string; fingerprint: string }
+  reserveCleanupProcess?(binary: string, argv: string[]): Promise<string>
+  spawnCleanupProcess?(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
+  recordQuotaClaim?(claim: { path: string; namespace: string; device: number; inode: number }): Promise<void>
   recordResult?(result: JobRuntimeQualificationResultRecord): Promise<void>
   /** Existing admission journals the exact native launch before the physical Node spawn. */
   reserveProcess(binary: string, argv: string[]): Promise<string>
@@ -60,37 +66,53 @@ export interface JobQualificationAuthority {
 /** Compose real existing guarded process ownership with exact OCI/cgroup ownership. */
 export function createQualificationNativeOwner(candidate: JobQualificationCandidateRecord,
   native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
-    | 'completedResult' | 'recordResult'>,
+    | 'completedResult' | 'originalResult' | 'recordResult' | 'recoveryRequired' | 'originalContainer'
+    | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim'>,
   ownership: OCIContainerOwnership, authority: JobQualificationAuthority): QualificationNativeOwner {
-  let container: OwnedOCIContainer | null = null
+  let closing = false
+  const commands = { run: async (argv: string[], timeoutMs = 30000) => {
+    if (!closing) {
+      await authority.assertCurrent(candidate)
+      await assertJobRuntimeEntryContext(candidate)
+    }
+    const commandOwner = closing ? { ...composite,
+      reserveProcess: native.reserveCleanupProcess!, spawnProcess: native.spawnCleanupProcess! } : composite
+    if (closing && (!native.reserveCleanupProcess || !native.spawnCleanupProcess)) {
+      throw new Error('Original qualification cleanup authority is unavailable.')
+    }
+    return runQualificationCommand(commandOwner, candidate.fingerprint.runtimeExecutable,
+      ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs), timeoutMs)
+  } }
+  const createContainer = (identity: string, fingerprint: string) => new OwnedOCIContainer({ identity,
+    labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } },
+  commands, ownership)
+  let container = native.originalContainer
+    ? createContainer(native.originalContainer.identity, native.originalContainer.fingerprint) : null
   const composite: QualificationNativeOwner = {
-    ...(native.completedResult ? { completedResult: native.completedResult } : {}),
-    ...(native.recordResult ? { recordResult: (result: JobRuntimeQualificationResultRecord) => native.recordResult!(result) } : {}),
-    reserveProcess: (binary, argv) => native.reserveProcess(binary, argv),
-    spawnProcess: (reservation, binary, argv, options) => native.spawnProcess(reservation, binary, argv, options),
-    readNativeExit: (reservation, child, wrapper) => native.readNativeExit(reservation, child, wrapper),
-    stopProcess: reservation => native.stopProcess(reservation),
+    ...native,
     async registerContainer(identity, fingerprint) {
-      if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}` || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
+      if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`
+        || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
       await ownership.reserveContainerIntent(identity, fingerprint)
-      const commands = { run: async (argv: string[], timeoutMs = 30000) => {
-        await authority.assertCurrent(candidate); await assertJobRuntimeEntryContext(candidate)
-        return runQualificationCommand(composite, candidate.fingerprint.runtimeExecutable, ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs))
-      } }
-      container = new OwnedOCIContainer({ identity, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } }, commands, ownership)
+      container = createContainer(identity, fingerprint)
     },
     async observeContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
+      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) {
+        throw new Error('Qualification container has no original reservation.')
+      }
       await container.bind(id)
     },
     async enterContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
-      await container.bind(id); await container.entered()
+      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) {
+        throw new Error('Qualification container has no original reservation.')
+      }
+      await container.bind(id)
+      await container.entered()
     },
     async close() {
-      const closed = container ? await container.close(1000).catch(() => false) : true
-      const nativeClosed = await native.close()
-      return closed && nativeClosed
+      closing = true
+      if (container && !await container.close(1000)) return false
+      return native.close()
     },
   }
   return composite
@@ -368,6 +390,10 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
   let owner: QualificationNativeOwner
   try { owner = await authority.reserve(candidate, signal) }
   catch { return { ...record, closure: 'unconfirmed', reasons: ['admission_recovery_required'] } }
+  if (owner.recoveryRequired) {
+    const closed = await owner.close()
+    return { ...record, closure: closed ? 'confirmed' : 'unconfirmed', reasons: ['original_qualification_interrupted'] }
+  }
   const identity = `graphql-ci-qualification-${candidate.qualificationId}`
   let scratch: string | undefined
   let physicallyClosed = false

@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
-import { open, readdir, lstat, realpath, statfs } from 'node:fs/promises'
+import { open, readdir, lstat, realpath, statfs, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
@@ -112,6 +112,7 @@ export interface InstalledJobQualificationReservation {
   /** Main's persisted admission/live-scope assertion, via W07 on a device. */
   assertAdmission(admission: JobRuntimeNativeAdmissionRecord): Promise<void>
   signal: AbortSignal
+  entry?: 'launch' | 'reconcile'
 }
 /** Entire physical diagnostic stays on its original host. The carrier returns
  * measured result JSON only, never a ChildProcess or a fabricated ready flag. */
@@ -119,11 +120,17 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
   configuration: InstalledRuntimeConfigurationLocation | null
 }): Promise<JobRuntimeQualificationResult> {
   const candidate = JobQualificationCandidateRecordSchema.parse(input.candidate)
+  const prior = await input.journal.qualificationStatus(input.admission.operationId)
+  if (prior && (!same(prior.admission, input.admission) || !same(prior.candidate, candidate))) {
+    throw new Error('Original diagnostic candidate or admission changed.')
+  }
+  if (prior?.result && prior.phase === 'closed') {
+    await releaseQualificationQuotaClaims(input.journal, input.admission.operationId)
+    return prior.result
+  }
+  if (prior && prior.phase !== 'received') return reconcileInstalledJobRuntimeQualification(input)
   await input.assertAdmission(JobRuntimeNativeAdmissionRecordSchema.parse(input.admission))
   await inspectInstalledJobRuntimeCandidate({ ...input, candidate })
-  const prior = await input.journal.qualificationStatus(input.admission.operationId)
-  if (prior && (!same(prior.admission, input.admission) || !same(prior.candidate, candidate))) throw new Error('Original diagnostic candidate or admission changed.')
-  if (prior?.result) return prior.result
   const authority: JobQualificationAuthority = { ...input.authority, async reserve(original, signal) {
     if (!same(original, candidate)) throw new Error('Original diagnostic candidate changed.')
     const reserved = await reserveInstalledJobQualification({ ...input, candidate, authority: input.authority, signal })
@@ -168,8 +175,18 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     if (!approval || approval.status !== 'approved' || approval.fingerprint !== admission.fingerprintDigest || Date.parse(approval.expiresAt) <= Date.now() ||
       Date.parse(admission.expiresAt) > Date.parse(approval.expiresAt)) throw new Error('Original human qualification approval changed.')
   }
-  await assertCurrent()
-  await journal.qualificationAccept(admission, candidate)
+  const assertClosure = async () => {
+    const retained = await journal.qualificationStatus(operationId)
+    if (!retained || !same(retained.admission, admission) || !same(retained.candidate, candidate)
+      || bootIdentity() !== admission.bootId
+      || (await fingerprintQualificationPath(candidate.fingerprint.runtimeExecutable, true)).sha256
+        !== candidate.fingerprint.runtimeBinarySha256) throw new Error('Original qualification cleanup owner changed.')
+  }
+  if (input.entry === 'reconcile') await assertClosure()
+  else {
+    await assertCurrent()
+    await journal.qualificationAccept(admission, candidate)
+  }
   const original = await journal.qualificationStatus(operationId)
   if (original?.phase === 'closed' && original.result) {
     const noEntry = () => { throw new Error('Completed original qualification cannot launch native work.') }
@@ -182,20 +199,22 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
         spawnProcess: noEntry, readNativeExit: async () => noEntry(),
         stopProcess: async () => noEntry(), close: async () => true } }
   }
-  const entry = await journal.qualificationReserveEntry(operationId)
-  if (!entry.reserved) throw new Error('Original qualification already entered; reconcile without rerunning.')
+  const entry = input.entry === 'reconcile'
+    ? { reserved: false, receipt: original } : await journal.qualificationReserveEntry(operationId)
+  const recovering = !entry.reserved
+  if (recovering) await assertClosure()
   const owner = `qualification:${operationId}:${admission.leaseId}`
   const launches = new Map<string, { scope: NativeProcessRecovery; binary: string; argv: string[]; child?: ChildProcess; closed: boolean }>()
   let closed = false
   const ownership: OCIContainerOwnership = {
     scope: { subject: { kind: 'qualification', qualificationId: admission.qualificationId, profileId: admission.profileId,
       profileRevision: admission.profileRevision, operationId, fingerprint: admission.fingerprintDigest }, admission, bootId: admission.bootId },
-    assertCurrent,
+    assertCurrent, assertClosure,
     async reserveContainerIntent(identity, fingerprint) { await assertCurrent(); await journal.qualificationContainerIntent(operationId, identity, fingerprint) },
-    async bindContainer(identity, containerId) { await assertCurrent(); await journal.qualificationBindContainer(operationId, identity, containerId) },
+    async bindContainer(identity, containerId) { await assertClosure(); await journal.qualificationBindContainer(operationId, identity, containerId) },
     async launchHelpers() {
       const rows = registry.snapshot().launches.filter(row => row.owner === owner && row.lifecycle === 'active')
-      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== admission.bootId || !launches.has(row.launchId))) throw new Error('Original launcher boundary unavailable.')
+      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== admission.bootId)) throw new Error('Original launcher boundary unavailable.')
       return rows.map(row => ({ kind: 'launcher' as const, process: { ...row.guardian!, bootId: row.bootId }, boundary: row.boundary! }))
     },
     async readCertificate(containerId) {
@@ -215,10 +234,45 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     await journal.qualificationProcessClosed(operationId, id)
     launch.closed = true; return true
   }
-  return { authority, ownership, native: {
-    async recordResult(result) { await journal.qualificationResult(operationId, result) },
-    async reserveProcess(binary, argv) {
-      if (closed || ![candidate.fingerprint.runtimeExecutable, candidate.findmntBinary,
+  const cleanupLaunches = new Set<string>()
+  const native = {
+    recoveryRequired: recovering,
+    ...(original?.result ? { originalResult: original.result } : {}),
+    ...(original?.container && original.phase !== 'closed' ? { originalContainer: original.container } : {}),
+    async recordQuotaClaim(claim: { path: string; namespace: string; device: number; inode: number }) {
+      await assertClosure()
+      await journal.qualificationQuotaClaim(operationId, claim)
+    },
+    async reserveCleanupProcess(binary: string, argv: string[]) {
+      await assertClosure()
+      const receipt = (await journal.qualificationStatus(operationId))!
+      const container = receipt.container
+      const target = container?.containerId ?? container?.identity
+      const permitted = argv[0] === '--remote=false' && target && (
+        same(argv.slice(1), ['container', 'inspect', target])
+        || same(argv.slice(1), ['stop', '--time', '1', target])
+        || same(argv.slice(1), ['kill', '--signal', 'KILL', target]))
+      if (binary !== candidate.fingerprint.runtimeExecutable || !permitted) {
+        throw new Error('Only original-container inspect and stop are permitted during cleanup.')
+      }
+      for (const launch of receipt.launches.filter(value => !value.closed)) {
+        await registry.closeRegistration({ ...registry.scope(owner), launchId: launch.launchId }, launch.launchId)
+        await journal.qualificationProcessClosed(operationId, launch.launchId)
+      }
+      const scope = registry.reserveLaunch(owner)
+      if (!scope.launchId) throw new Error('Original cleanup process reservation unavailable.')
+      launches.set(scope.launchId, { scope, binary, argv: [...argv], closed: false })
+      cleanupLaunches.add(scope.launchId)
+      await journal.qualificationReserveCleanupProcess(operationId, { launchId: scope.launchId, binary, argv })
+      return scope.launchId
+    },
+    spawnCleanupProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
+      if (!cleanupLaunches.has(id)) throw new Error('Original cleanup reservation required.')
+      return spawnReserved(id, binary, argv, options)
+    },
+    async recordResult(result: JobRuntimeQualificationResult) { await journal.qualificationResult(operationId, result) },
+    async reserveProcess(binary: string, argv: string[]) {
+      if (recovering || closed || ![candidate.fingerprint.runtimeExecutable, candidate.findmntBinary,
         ...('quotaPool' in candidate.fingerprint && candidate.fingerprint.quotaPool
           ? [candidate.fingerprint.quotaPool.queryExecutable] : [])].includes(binary) || argv.some(value => typeof value !== 'string' || value.includes('\0'))) throw new Error('Installed diagnostic executable/argv changed.')
       await assertCurrent()
@@ -239,18 +293,12 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       catch (error) { await registry.abandonReservedLaunch(scope).catch(() => false); throw error }
       return scope.launchId
     },
-    spawnProcess(id, binary, argv, options) {
-      const launch = launches.get(id)
+    spawnProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
       signal.throwIfAborted()
-      if (closed || !launch || launch.child || launch.closed || launch.binary !== binary || !same(launch.argv, argv) || bootIdentity() !== admission.bootId ||
-        Date.parse(admission.expiresAt) <= Date.now() || options.shell !== false || !same(options.stdio, ['ignore', 'pipe', 'pipe']) ||
-        !same(options.env, candidate.controllerEnvironment) || !same(nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment), candidate.controllerEnvironment)) throw new Error('Original noninteractive guarded native entry changed.')
-      const child = spawnNativeProcess(binary, argv, { cwd: candidate.runtimeRoot, env: candidate.controllerEnvironment, recovery: launch.scope })
-      launch.child = child
-      child.stdin.end()
-      return child
+      if (recovering || Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Original qualification cannot launch work.')
+      return spawnReserved(id, binary, argv, options)
     },
-    async readNativeExit(id, child) {
+    async readNativeExit(id: string, child: ChildProcess) {
       const launch = launches.get(id)
       if (!launch || launch.child !== child) throw new Error('Original native exit target changed.')
       const exit = nativeProcessExit(child, { exitCode: null, exitSignal: null })
@@ -263,9 +311,97 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     async close() {
       if (closed) return true
       for (const id of launches.keys()) if (!await closeLaunch(id)) return false
-      if (launches.size && !await registry.closeOwner(owner)) return false
+      if (!await registry.closeOwner(owner)) return false
+      const receipt = (await journal.qualificationStatus(operationId))!
+      for (const launch of receipt.launches.filter(value => !value.closed)) {
+        await journal.qualificationProcessClosed(operationId, launch.launchId)
+      }
       await journal.qualificationClose(operationId)
+      await releaseQualificationQuotaClaims(journal, operationId)
       closed = true; return true
     },
-  } }
+  }
+  function spawnReserved(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
+    const launch = launches.get(id)
+    if (closed || !launch || launch.child || launch.closed || launch.binary !== binary || !same(launch.argv, argv)
+      || bootIdentity() !== admission.bootId || options.shell !== false
+      || !same(options.stdio, ['ignore', 'pipe', 'pipe'])
+      || !same(options.env, candidate.controllerEnvironment)
+      || !same(nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment), candidate.controllerEnvironment)) {
+      throw new Error('Original noninteractive guarded native entry changed.')
+    }
+    const child = spawnNativeProcess(binary, argv, { cwd: candidate.runtimeRoot, env: candidate.controllerEnvironment, recovery: launch.scope })
+    launch.child = child
+    child.stdin.end()
+    return child
+  }
+  return { authority, ownership, native }
+}
+
+export async function releaseQualificationQuotaClaims(journal: RemoteOperationJournal, operationId: string): Promise<void> {
+  const receipt = await journal.qualificationStatus(operationId)
+  if (!receipt || receipt.phase !== 'closed') throw new Error('Positive qualification closure required before quota reclamation.')
+  for (const claim of receipt.quotaClaims) {
+    const pool = receipt.candidate.fingerprint.schemaVersion === 3 ? receipt.candidate.fingerprint.quotaPool : undefined
+    const slot = pool?.slots.find(value => claim.path === join(receipt.candidate.sourceParent, `quota-${value.namespace}.claim.json`)
+      && claim.namespace === join(receipt.candidate.sourceParent, value.namespace, operationId))
+    if (!slot) throw new Error('Original qualification quota namespace changed.')
+    const file = await open(claim.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      .catch(error => { if (error.code === 'ENOENT') return null; throw error })
+    if (!file) continue
+    try {
+      const metadata = await file.stat()
+      const identity = JSON.parse(await file.readFile('utf8'))
+      if (!metadata.isFile() || metadata.nlink !== 1 || metadata.dev !== claim.device || metadata.ino !== claim.inode
+        || !same(identity, { kind: 'qualification', qualificationId: receipt.admission.qualificationId, operationId })) {
+        throw new Error('Original qualification quota claim changed.')
+      }
+      await rm(claim.namespace, { recursive: true, force: true })
+      await rm(claim.path)
+    } finally { await file.close() }
+  }
+  if (receipt.quotaClaims.length) await journal.qualificationReleaseQuotaClaims(operationId)
+}
+
+export async function reconcileInstalledJobRuntimeQualification(input: InstalledJobQualificationReservation)
+  : Promise<JobRuntimeQualificationResult> {
+  const prior = await input.journal.qualificationStatus(input.admission.operationId)
+  if (!prior || !same(prior.admission, input.admission) || !same(prior.candidate, input.candidate)) {
+    throw new Error('Original qualification reconciliation receipt required.')
+  }
+  if (prior.result && prior.phase === 'closed') {
+    await releaseQualificationQuotaClaims(input.journal, input.admission.operationId)
+    return prior.result
+  }
+  const reserved = await reserveInstalledJobQualification({ ...input, entry: 'reconcile' })
+  const owner = createQualificationNativeOwner(input.candidate, reserved.native, reserved.ownership, reserved.authority)
+  let closed = false
+  let reason = 'Qualification was interrupted before its result was retained.'
+  try { closed = await owner.close() }
+  catch (error) { reason = error instanceof Error ? error.message : reason }
+  const result: JobRuntimeQualificationResult = { outcome: 'denied',
+    closure: closed ? 'confirmed' : 'unconfirmed',
+    reasons: prior.result?.outcome === 'denied' ? prior.result.reasons : [reason.slice(0, 500)] }
+  if (closed) await input.journal.qualificationResult(input.admission.operationId, result)
+  return result
+}
+
+export async function recoverInstalledJobRuntimeQualifications(input: {
+  journal: RemoteOperationJournal; registry: NativeProcessRegistry
+  host: Pick<JobRuntimeNativeAdmissionRecord, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId'>
+}): Promise<void> {
+  for (const receipt of await input.journal.pendingQualifications()) {
+    const admission = receipt.admission
+    if (!same(admission.hostRef, input.host.hostRef)
+      || admission.registration?.workerInstallationId !== input.host.registration?.workerInstallationId
+      || admission.mainInstallationId !== input.host.mainInstallationId || admission.bootId !== input.host.bootId) {
+      throw new Error('Original qualification installation required for restart reconciliation.')
+    }
+    const unavailable = async () => { throw new Error('Restart reconciliation cannot authorize fresh qualification work.') }
+    const result = await reconcileInstalledJobRuntimeQualification({ ...input,
+      candidate: receipt.candidate, admission, host: { ...input.host, registration: admission.registration,
+        connection: admission.connection }, signal: new AbortController().signal,
+      assertAdmission: unavailable, authority: { assertCurrent: unavailable, readApproval: unavailable, reserve: unavailable } })
+    if (result.outcome === 'denied' && result.closure !== 'confirmed') throw new Error('Original qualification cleanup remains unconfirmed.')
+  }
 }

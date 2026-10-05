@@ -250,6 +250,12 @@ export class RemoteOperationJournal {
     if (!receipt) throw new Error('Unknown qualification: original-owner reconciliation required')
     return receipt
   }
+  async pendingQualifications(): Promise<QualificationReceipt[]> {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    return structuredClone(this.data.qualificationReceipts.filter(receipt => receipt.phase !== 'received'
+      && (receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length)))
+  }
   async qualificationStatus(operationId: string): Promise<QualificationReceipt | null> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
@@ -266,7 +272,7 @@ export class RemoteOperationJournal {
         value.admission.approvalId === admission.approvalId || value.admission.leaseId === admission.leaseId)) throw new Error('Original qualification identity already bound')
       if (data.qualificationReceipts.length >= 1000 || data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Qualification admission expired')
-      const receipt = QualificationReceiptSchema.parse({ admission, candidate, result: null, sequence: 1, phase: 'received', launches: [], container: null })
+      const receipt = QualificationReceiptSchema.parse({ admission, candidate, result: null, sequence: 1, phase: 'received', launches: [], container: null, quotaClaims: [] })
       data.qualificationReceipts.push(receipt); return receipt
     })
   }
@@ -275,6 +281,45 @@ export class RemoteOperationJournal {
       const receipt = this.qualificationReceipt(data, operationId)
       if (receipt.phase !== 'received' || Date.parse(receipt.admission.expiresAt) <= Date.now()) return { reserved: false, receipt }
       receipt.phase = 'native_entry_attempted'; receipt.sequence++; return { reserved: true, receipt }
+    })
+  }
+  qualificationReleaseQuotaClaims(operationId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.phase !== 'closed') throw new Error('Positive closure required before releasing quota ownership')
+      receipt.quotaClaims = []
+      receipt.sequence++
+      return receipt
+    })
+  }
+  qualificationQuotaClaim(operationId: string, claim: { path: string; namespace: string; device: number; inode: number }) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      const saved = receipt.quotaClaims.find(value => value.path === claim.path)
+      if (saved) {
+        if (!same(saved, claim)) throw new Error('Original qualification quota claim changed')
+        return receipt
+      }
+      if (receipt.phase !== 'native_entry_attempted') throw new Error('Qualification quota claim requires original entry')
+      receipt.quotaClaims.push(claim)
+      receipt.sequence++
+      return receipt
+    })
+  }
+  qualificationReserveCleanupProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      const target = receipt.container?.containerId ?? receipt.container?.identity
+      const permitted = input.binary === receipt.candidate.fingerprint.runtimeExecutable && input.argv[0] === '--remote=false'
+        && target && (same(input.argv.slice(1), ['container', 'inspect', target])
+          || same(input.argv.slice(1), ['stop', '--time', '1', target])
+          || same(input.argv.slice(1), ['kill', '--signal', 'KILL', target]))
+      if (!permitted || !['native_entry_attempted', 'uncertain'].includes(receipt.phase)
+        || receipt.launches.some(value => !value.closed || value.launchId === input.launchId)
+        || receipt.launches.length >= 512) throw new Error('Original qualification cleanup reservation unavailable')
+      receipt.launches.push({ ...input, exit: null, closed: false })
+      receipt.sequence++
+      return receipt
     })
   }
   qualificationReserveProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
@@ -342,7 +387,14 @@ export class RemoteOperationJournal {
   qualificationResult(operationId: string, raw: unknown) {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId), result = JobRuntimeQualificationResultRecordSchema.parse(raw)
-      if (receipt.result) { if (!same(receipt.result, result)) throw new Error('Original qualification result changed'); return receipt }
+      if (receipt.result) {
+        const reconciled = receipt.phase === 'closed' && receipt.result.outcome === 'denied'
+          && receipt.result.closure === 'unconfirmed' && result.outcome === 'denied' && result.closure === 'confirmed'
+          && same({ ...receipt.result, closure: 'confirmed' }, result)
+        if (reconciled) { receipt.result = result; receipt.sequence++; return receipt }
+        if (!same(receipt.result, result)) throw new Error('Original qualification result changed')
+        return receipt
+      }
       if (result.outcome === 'qualified') {
         const identity = result.measurement.schemaVersion === 2 ? result.measurement.identity : result.measurement
         if (receipt.phase !== 'closed' || receipt.container?.certificate?.lifecycle !== 'closed'

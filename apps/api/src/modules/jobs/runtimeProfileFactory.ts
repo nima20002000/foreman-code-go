@@ -17,16 +17,16 @@ import { JobRuntimeProfiles } from './runtimeProfiles.js'
 import { PostgresJobRuntimeHumanAuthority } from './runtimeHumanAuthority.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import { createPhysicalJobRuntimeProducer,type QualificationNativeOwner } from './qualification.js'
-import { admitInstalledJobQualification,assertInstalledJobQualification } from './runtimeQualificationAdmission.js'
+import { admitInstalledJobQualification,assertInstalledJobQualification,assertInstalledJobQualificationRead } from './runtimeQualificationAdmission.js'
 /** Implemented by the existing installed HRT host. No public descriptor, caller
  * readiness flag, native exit claim or second runtime registry is admitted. */
 export interface InstalledJobRuntimeHost {
   capture?(profile:JobRuntimeProfileRecord):Promise<JobRuntimeFingerprintRecord>
-  runAdmitted?(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;descriptor:ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;signal:AbortSignal}):Promise<JobRuntimeQualificationResult>
+  runAdmitted?(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;descriptor:ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;signal:AbortSignal;intent?:'execute'|'reconcile'}):Promise<JobRuntimeQualificationResult>
   descriptor(profile:JobRuntimeProfileRecord):Promise<ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>>
   currentMetadata(sql:JobSql,profile:JobRuntimeProfileRecord):Promise<JobRuntimeFingerprintRecord|null>
   currentConnection(sql:JobSql,profile:JobRuntimeProfileRecord):Promise<DeviceSessionBinding|null>
-  reserveQualification(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;operationId:string;signal:AbortSignal}):Promise<QualificationNativeOwner>
+  reserveQualification(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;operationId:string;signal:AbortSignal;intent?:'execute'|'reconcile'}):Promise<QualificationNativeOwner>
 }
 export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:PostgresCommandCoordinator;sources:PostgresSourceService;host:InstalledJobRuntimeHost;changed?: () => void}) {
   const human=new PostgresJobRuntimeHumanAuthority()
@@ -68,9 +68,11 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
           if(!fingerprint)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','Current installed runtime metadata is unavailable.',409)
           return {fingerprint,connection:await input.host.currentConnection(sql,saved)}
         }})
-      const admitNative=async(candidate:JobQualificationCandidateRecord)=>{
-        retained=await transaction(sql=>admitInstalledJobQualification(sql,context(candidate)))
-        return {nativeAdmission:retained,assertAdmission:()=>transaction(sql=>assertInstalledJobQualification(sql,context(candidate),retained!))}
+      const admitNative=async(candidate:JobQualificationCandidateRecord,intent:'execute'|'reconcile'='execute')=>{
+        retained=await transaction(sql=>admitInstalledJobQualification(sql,context(candidate),{ access: intent === 'reconcile' ? 'read' : 'launch' }))
+        return {nativeAdmission:retained,assertAdmission:()=>transaction(sql=>intent === 'reconcile'
+          ? assertInstalledJobQualificationRead(sql,context(candidate),retained!)
+          : assertInstalledJobQualification(sql,context(candidate),retained!))}
       }
       return {admitNative,operationId:approval.qualificationId,authority:{
       readApproval:async(id:string)=>{
@@ -103,39 +105,41 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     },
     admission: qualificationAuthority,
   })
+  const run = async (approval:JobRuntimeApprovalRecord,signal:AbortSignal,intent:'execute'|'reconcile'):Promise<JobRuntimeQualificationResult>=>{
+    if (approval.schemaVersion === 1 && approval.fingerprint.hostRef.kind === 'main') return localProducer.run(approval, signal)
+    if(!input.host.capture||!input.host.runAdmitted)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification carrier is unavailable.',503)
+    const profile=await immutableProfile(approval),fingerprint=await input.host.capture(profile),descriptor=await input.host.descriptor(profile)
+    if(canonical(fingerprint)!==canonical(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The installed worker fingerprint changed.',409)
+    let backingBytes: number | null = jobRuntimeProfileLimits(profile).diskBytes
+    let verification: { volumeCapacityBytes: number; profile: JobRuntimeProfileRecord; approvedAt: string | null } | undefined
+    if (fingerprint.schemaVersion === 3) {
+      const installed = JobVerificationInstalledRuntimeDescriptorSchema.parse(descriptor)
+      backingBytes = installed.backingFile === null ? null : installed.volumeCapacityBytes
+      verification = { volumeCapacityBytes: installed.volumeCapacityBytes, profile, approvedAt: approval.approvedAt }
+    }
+    const candidate = JobQualificationCandidateRecordSchema.parse({
+      approvalId: approval.id, qualificationId: approval.qualificationId, operationId: approval.qualificationId,
+      fingerprint, findmntBinary: descriptor.findmntExecutable, findmntBinarySha256: descriptor.findmntBinarySha256,
+      backingFile: descriptor.backingFile, backingBytes, ...verification,
+      controllerEnvironment: descriptor.controllerEnvironment, sourceParent: profile.root.binding.canonicalPath,
+      runtimeRoot: descriptor.runtimeRoot, spoolBytes: jobRuntimeProfilePolicy(profile).maxWorkerSpoolBytes,
+      ttlSeconds: fingerprint.schemaVersion === 3
+        ? Math.max(1, Math.floor((Date.parse(approval.expiresAt) - Date.now()) / 1000)) : 3600,
+    })
+    const authority=await qualificationAuthority(approval,profile),admitted=await authority.admitNative(candidate,intent)
+    await admitted.assertAdmission()
+    const result=await input.host.runAdmitted({approval,profile,candidate,descriptor,...admitted,signal,intent})
+    await admitted.assertAdmission()
+    return result
+    }
   const producer={...localProducer,
     capture:async(profile:JobRuntimeProfileRecord)=>{
       if (profile.schemaVersion === 1 && profile.root.selection.hostRef.kind === 'main') return localProducer.capture(profile)
       if(!input.host.capture)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification capture is unavailable.',503)
       return JobRuntimeFingerprintRecordSchema.parse(await input.host.capture(profile))
     },
-    run:async(approval:JobRuntimeApprovalRecord,signal:AbortSignal):Promise<JobRuntimeQualificationResult>=>{
-      if (approval.schemaVersion === 1 && approval.fingerprint.hostRef.kind === 'main') return localProducer.run(approval, signal)
-      if(!input.host.capture||!input.host.runAdmitted)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification carrier is unavailable.',503)
-      const profile=await immutableProfile(approval),fingerprint=await input.host.capture(profile),descriptor=await input.host.descriptor(profile)
-      if(canonical(fingerprint)!==canonical(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The installed worker fingerprint changed.',409)
-      let backingBytes: number | null = jobRuntimeProfileLimits(profile).diskBytes
-      let verification: { volumeCapacityBytes: number; profile: JobRuntimeProfileRecord; approvedAt: string | null } | undefined
-      if (fingerprint.schemaVersion === 3) {
-        const installed = JobVerificationInstalledRuntimeDescriptorSchema.parse(descriptor)
-        backingBytes = installed.backingFile === null ? null : installed.volumeCapacityBytes
-        verification = { volumeCapacityBytes: installed.volumeCapacityBytes, profile, approvedAt: approval.approvedAt }
-      }
-      const candidate = JobQualificationCandidateRecordSchema.parse({
-        approvalId: approval.id, qualificationId: approval.qualificationId, operationId: approval.qualificationId,
-        fingerprint, findmntBinary: descriptor.findmntExecutable, findmntBinarySha256: descriptor.findmntBinarySha256,
-        backingFile: descriptor.backingFile, backingBytes, ...verification,
-        controllerEnvironment: descriptor.controllerEnvironment, sourceParent: profile.root.binding.canonicalPath,
-        runtimeRoot: descriptor.runtimeRoot, spoolBytes: jobRuntimeProfilePolicy(profile).maxWorkerSpoolBytes,
-        ttlSeconds: fingerprint.schemaVersion === 3
-          ? Math.max(1, Math.floor((Date.parse(approval.expiresAt) - Date.now()) / 1000)) : 3600,
-      })
-      const authority=await qualificationAuthority(approval,profile),admitted=await authority.admitNative(candidate)
-      await admitted.assertAdmission()
-      const result=await input.host.runAdmitted({approval,profile,candidate,descriptor,...admitted,signal})
-      await admitted.assertAdmission()
-      return result
-    },
+    run: (approval: JobRuntimeApprovalRecord, signal: AbortSignal) => run(approval, signal, 'execute'),
+    reconcile: (approval: JobRuntimeApprovalRecord, signal: AbortSignal) => run(approval, signal, 'reconcile'),
     revalidate: async (sql: JobSql, profile: JobRuntimeProfileRecord) => {
       if (profile.schemaVersion === 1) return localProducer.revalidate(sql, profile)
       const measurement = profile.measurement

@@ -20,8 +20,8 @@ describe('original installed Job qualification composition, no native entry', ()
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(),
       workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://unconnected.example/device/connect',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() })
-    ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0 })
-    ports.open.mockResolvedValue({ close: ports.close } as unknown as RemoteOperationJournal)
+    ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0, drain: async () => {} })
+    ports.open.mockResolvedValue({ close: ports.close, pendingQualifications: async () => [] } as unknown as RemoteOperationJournal)
     const mounted = await createInstalledWorkerDomains({ stateDirectory: '/original-worker-state', pairing, bootId: randomUUID(),
       configuration: null, jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 },
       // This test exercises composition only; the injected host never parses or uses root authority.
@@ -46,8 +46,8 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
   ports.recover.mockImplementation(async () => { calls.push('recover') })
   ports.handle.mockImplementation(async () => { calls.push('handle'); return { status: 'unit-routed' } })
   ports.jobs.mockReturnValue({ recover: ports.recover, handle: ports.handle, shutdown: ports.shutdown })
-  ports.open.mockResolvedValue({ close: ports.close } as unknown as RemoteOperationJournal)
-  ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0 })
+  ports.open.mockResolvedValue({ close: ports.close, pendingQualifications: async () => [] } as unknown as RemoteOperationJournal)
+  ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0, drain: async () => {} })
   const mounted = await createInstalledWorkerDomains({ stateDirectory: '/original-worker-state', pairing, bootId: binding.bootId, configuration: null,
     jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 }, approvedRoots: async () => ({} as ApprovedRootAllowlist),
     connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined }), codexSuiteRevision: 'unit-suite' })
