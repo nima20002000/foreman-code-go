@@ -10,6 +10,9 @@ import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
+import { buildApp } from '../src/app.js'
+import { requirePrincipal } from '../src/modules/access/http.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 
 async function browserTables(pool: Awaited<ReturnType<typeof currentDatabase>>['pool']) {
   return (await pool.query<{ tablename: string }>(
@@ -61,7 +64,7 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
     try {
       const access = new PostgresAccessService(db.pool)
       const reader = await access.issue({ name: 'Existing browser owner with read-only MCP access', audience: 'operator',
-        grants: [{ actions: ['settings:read'], scope: { workspaceIds: ['existing-workspace'] } }],
+        grants: [{ actions: ['settings:read', 'workspaces:read'], scope: { workspaceIds: ['existing-workspace'] } }],
         expiresAt: new Date(Date.now() + 600_000) })
       await db.pool.query('drop table local_human_principal')
       await db.pool.query("delete from management_principals where id='principal-local-human'")
@@ -95,6 +98,28 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
       await applyApplicationMigrations(db.pool)
       expect(await new PostgresLocalHumanAccess(db.pool, new PostgresAccessService(db.pool)).current())
         .toEqual(reader.principal)
+      const app = buildApp({
+        readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { commands: new PostgresCommandCoordinator(db.pool) } as never }, localHuman: human,
+      })
+      app.get('/api/workspaces/:workspaceId/reference-files/permission-probe', requirePrincipal)
+      app.put('/api/settings/agents', requirePrincipal)
+      try {
+        for (const headers of [{}, { authorization: `Bearer ${reader.token}` }]) {
+          const self = await app.inject({ url: '/api/local-human', headers })
+          expect(self.statusCode, self.body).toBe(200)
+          expect(self.json().principal).toMatchObject({ id: reader.principal.id, grants: reader.principal.grants })
+          const allowed = await app.inject({
+            url: '/api/workspaces/existing-workspace/reference-files/permission-probe', headers,
+          })
+          expect(allowed.statusCode, allowed.body).toBe(200)
+          const denied = await app.inject({
+            url: '/api/workspaces/another-workspace/reference-files/permission-probe', headers,
+          })
+          expect(denied.statusCode).toBe(403)
+          expect((await app.inject({ method: 'PUT', url: '/api/settings/agents', headers })).statusCode).toBe(403)
+        }
+      } finally { await app.close() }
     } finally { await db.close() }
   })
 })

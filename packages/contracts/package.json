@@ -5,10 +5,306 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
-    "./product": { "types": "./dist/product.d.ts", "import": "./dist/product.js" },
-    "./product-environment": { "types": "./dist/productEnvironment.d.mts", "import": "./dist/productEnvironment.mjs" },
-    "./product-environment-node": { "types": "./dist/productEnvironmentNode.d.mts", "import": "./dist/productEnvironmentNode.mjs" },
     "./local-client-node": {
       "types": "./dist/localClientNode.d.ts",
       "import": "./dist/localClientNode.js"
     },
+    "./product": { "types": "./dist/product.d.ts", "import": "./dist/product.js" },
+    "./product-environment": { "types": "./dist/productEnvironment.d.mts", "import": "./dist/productEnvironment.mjs" },
+    "./product-environment-node": { "types": "./dist/productEnvironmentNode.d.mts", "import": "./dist/productEnvironmentNode.mjs" },
+    "./subagents": { "types": "./dist/subagents.d.ts", "import": "./dist/subagents.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./run-current": {
+      "types": "./dist/runCurrent.d.ts",
+      "import": "./dist/runCurrent.js"
+    },
+    "./run-history": {
+      "types": "./dist/runHistory.d.ts",
+      "import": "./dist/runHistory.js"
+    },
+    "./operator-chat": {
+      "types": "./dist/operatorChat.d.ts",
+      "import": "./dist/operatorChat.js"
+    },
+    "./agent-chat": {
+      "types": "./dist/agentChat.d.ts",
+      "import": "./dist/agentChat.js"
+    },
+    "./wave25": {
+      "types": "./dist/wave25/index.d.ts",
+      "import": "./dist/wave25/index.js"
+    },
+    "./harness-qualification": {
+      "types": "./dist/harnessQualification.d.ts",
+      "import": "./dist/harnessQualification.js"
+    },
+    "./management": {
+      "types": "./dist/management/index.d.ts",
+      "import": "./dist/management/index.js"
+    },
+    "./browser-origin": {
+      "types": "./dist/browserOrigin.d.ts",
+      "import": "./dist/browserOrigin.js"
+    },
+    "./runtime-identity-node": {
+      "types": "./dist/runtimeIdentityNode.d.ts",
+      "import": "./dist/runtimeIdentityNode.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js"
+    },
+    "./schedules": {
+      "types": "./dist/schedules.d.ts",
+      "import": "./dist/schedules.js"
+    },
+    "./run-snapshots": {
+      "types": "./dist/runSnapshots.d.ts",
+      "import": "./dist/runSnapshots.js"
+    },
+    "./selected-run-chat": {
+      "types": "./dist/selectedRunChat.d.ts",
+      "import": "./dist/selectedRunChat.js"
+    },
+    "./device-identity": {
+      "types": "./dist/deviceIdentity.d.ts",
+      "import": "./dist/deviceIdentity.js"
+    },
+    "./device-identity-node": {
+      "types": "./dist/deviceIdentityNode.d.ts",
+      "import": "./dist/deviceIdentityNode.js"
+    },
+    "./activity": {
+      "types": "./dist/activity.d.ts",
+      "import": "./dist/activity.js"
+    },
+    "./activity-text": {
+      "types": "./dist/activityText.d.ts",
+      "import": "./dist/activityText.js"
+    },
+    "./interaction-activity": {
+      "types": "./dist/interaction-activity.d.ts",
+      "import": "./dist/interaction-activity.js"
+    },
+    "./device-connection": {
+      "types": "./dist/deviceConnection.d.ts",
+      "import": "./dist/deviceConnection.js"
+    },
+    "./node-placement": {
+      "types": "./dist/nodePlacement.d.ts",
+      "import": "./dist/nodePlacement.js"
+    },
+    "./harness-registry": {
+      "types": "./dist/harnessRegistry.d.ts",
+      "import": "./dist/harnessRegistry.js"
+    },
+    "./source-materialization": {
+      "types": "./dist/sourceMaterialization.d.ts",
+      "import": "./dist/sourceMaterialization.js"
+    },
+    "./claude": {
+      "types": "./dist/claude.d.ts",
+      "import": "./dist/claude.js"
+    },
+    "./placement-readback": {
+      "types": "./dist/placementReadback.d.ts",
+      "import": "./dist/placementReadback.js"
+    },
+    "./artifact-edges": {
+      "types": "./dist/artifactEdges.d.ts",
+      "import": "./dist/artifactEdges.js"
+    },
+    "./remote-execution": {
+      "types": "./dist/remoteExecution.d.ts",
+      "import": "./dist/remoteExecution.js"
+    },
+    "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "import": "./dist/jobs.js"
+    },
+    "./device-application": {
+      "types": "./dist/deviceApplication.d.ts",
+      "import": "./dist/deviceApplication.js"
+    },
+    "./remote-job-execution": {
+      "types": "./dist/remoteJobExecution.d.ts",
+      "import": "./dist/remoteJobExecution.js"
+    },
+    "./job-artifacts": {
+      "types": "./dist/jobArtifacts.d.ts",
+      "import": "./dist/jobArtifacts.js"
+    },
+    "./job-workflow": {
+      "types": "./dist/jobWorkflow.d.ts",
+      "import": "./dist/jobWorkflow.js"
+    },
+    "./source-admission": {
+      "types": "./dist/sourceAdmission.d.ts",
+      "import": "./dist/sourceAdmission.js"
+    },
+    "./jobs-node": {
+      "types": "./dist/jobsNode.d.ts",
+      "import": "./dist/jobsNode.js"
+    },
+    "./workspace-root-policies": {
+      "types": "./dist/workspaceRootPolicies.d.ts",
+      "import": "./dist/workspaceRootPolicies.js"
+    },
+    "./workspace-bound-location": {
+      "types": "./dist/workspaceBoundLocation.d.ts",
+      "import": "./dist/workspaceBoundLocation.js"
+    },
+    "./byte-transfer": {
+      "types": "./dist/byteTransfer.d.ts",
+      "import": "./dist/byteTransfer.js"
+    },
+    "./job-output-transfer": {
+      "types": "./dist/jobOutputTransfer.d.ts",
+      "import": "./dist/jobOutputTransfer.js"
+    },
+    "./workflow-artifact-transfer": {
+      "types": "./dist/workflowArtifactTransfer.d.ts",
+      "import": "./dist/workflowArtifactTransfer.js"
+    },
+    "./workflow-artifact-transfer-node": {
+      "types": "./dist/workflowArtifactTransferNode.d.ts",
+      "import": "./dist/workflowArtifactTransferNode.js"
+    },
+    "./job-runtime": {
+      "types": "./dist/jobRuntime.d.ts",
+      "import": "./dist/jobRuntime.js"
+    },
+    "./command-identity-node": {
+      "types": "./dist/commandIdentityNode.d.ts",
+      "import": "./dist/commandIdentityNode.js"
+    },
+    "./claude-qualification": {
+      "types": "./dist/claudeQualification.d.ts",
+      "import": "./dist/claudeQualification.js"
+    },
+    "./resource-telemetry": {
+      "types": "./dist/resourceTelemetry.d.ts",
+      "import": "./dist/resourceTelemetry.js"
+    },
+    "./resource-telemetry-fixtures": {
+      "types": "./dist/resourceTelemetryFixtures.d.ts",
+      "import": "./dist/resourceTelemetryFixtures.js"
+    },
+    "./job-run-cleanup": {
+      "types": "./dist/jobRunCleanup.d.ts",
+      "import": "./dist/jobRunCleanup.js"
+    },
+    "./job-inputs": {
+      "types": "./dist/jobInputs.d.ts",
+      "import": "./dist/jobInputs.js"
+    },
+    "./job-inputs-node": {
+      "types": "./dist/jobInputsNode.d.ts",
+      "import": "./dist/jobInputsNode.js"
+    },
+    "./remote-execution-rpc": {
+      "types": "./dist/remoteExecutionRpc.d.ts",
+      "import": "./dist/remoteExecutionRpc.js"
+    },
+    "./worker-mcp-relay": {
+      "types": "./dist/workerMcpRelay.d.ts",
+      "import": "./dist/workerMcpRelay.js"
+    },
+    "./source-operations": {
+      "types": "./dist/sourceOperations.d.ts",
+      "import": "./dist/sourceOperations.js"
+    },
+    "./device-setup": {
+      "types": "./dist/deviceSetup.d.ts",
+      "import": "./dist/deviceSetup.js"
+    },
+    "./device-setup-node": {
+      "types": "./dist/deviceSetupNode.d.ts",
+      "import": "./dist/deviceSetupNode.js"
+    },
+    "./device-tls-node": {
+      "types": "./dist/deviceTlsNode.d.ts",
+      "import": "./dist/deviceTlsNode.js"
+    },
+    "./execution-authority": {
+      "types": "./dist/executionAuthority.d.ts",
+      "import": "./dist/executionAuthority.js"
+    },
+    "./remote-workflow-physical": {
+      "types": "./dist/remoteWorkflowPhysical.d.ts",
+      "import": "./dist/remoteWorkflowPhysical.js"
+    },
+    "./trusted-device-connection": {
+      "types": "./dist/trustedDeviceConnection.d.ts",
+      "import": "./dist/trustedDeviceConnection.js"
+    },
+    "./workflow-artifact-result": {
+      "types": "./dist/workflowArtifactResult.d.ts",
+      "import": "./dist/workflowArtifactResult.js"
+    },
+    "./device-provisioning": {
+      "types": "./dist/deviceProvisioning.d.ts",
+      "import": "./dist/deviceProvisioning.js"
+    },
+    "./device-resources": {
+      "types": "./dist/deviceResources.d.ts",
+      "import": "./dist/deviceResources.js"
+    },
+    "./device-provisioning-fixtures": {
+      "types": "./dist/deviceProvisioningFixtures.d.ts",
+      "import": "./dist/deviceProvisioningFixtures.js"
+    },
+    "./worker-native-output": {
+      "types": "./dist/workerNativeOutput.d.ts",
+      "import": "./dist/workerNativeOutput.js"
+    },
+    "./job-admission": {
+      "types": "./dist/jobAdmission.d.ts",
+      "import": "./dist/jobAdmission.js"
+    },
+    "./job-verification-policy": {
+      "types": "./dist/jobVerificationPolicy.d.ts",
+      "import": "./dist/jobVerificationPolicy.js"
+    },
+    "./job-verification": {
+      "types": "./dist/jobVerification.d.ts",
+      "import": "./dist/jobVerification.js"
+    },
+    "./job-verification-runtime": {
+      "types": "./dist/jobVerificationRuntime.d.ts",
+      "import": "./dist/jobVerificationRuntime.js"
+    },
+    "./job-verification-gate": {
+      "types": "./dist/jobVerificationGate.d.ts",
+      "import": "./dist/jobVerificationGate.js"
+    },
+    "./job-cancellation-recovery": {
+      "types": "./dist/jobCancellationRecovery.d.ts",
+      "import": "./dist/jobCancellationRecovery.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/heavy-job.mjs --build contracts -- tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "node ../../scripts/heavy-job.mjs -- vitest run",
+    "typecheck": "node ../../scripts/heavy-job.mjs -- tsc --noEmit",
+    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0"
+  },
+  "dependencies": {
+    "zod": "4.6.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.5.1",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.0"
+  }
+}
