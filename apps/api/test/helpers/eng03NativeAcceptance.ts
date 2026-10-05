@@ -729,7 +729,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     if (!cleanupErrors.length) await close(async () => restoreNativeMcp?.())
     const keepRuntime = Boolean(process.env.ENG03_A_KEEP_RUNTIME)
     if (!cleanupErrors.length && !keepRuntime && runId) {
-      await close(async () => checkpoints?.saver.deleteThread(runId))
+      const threadId = runId
+      await close(async () => checkpoints?.saver.deleteThread(threadId))
     }
     await close(async () => checkpoints?.close())
     await close(async () => pool?.end())
