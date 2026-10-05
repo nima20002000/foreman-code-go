@@ -389,7 +389,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // commits. Failed persistence must not authorize a Job abort or close.
       this.restartIntent = Promise.resolve().then(async () => {
         const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
-          if (this.activeOwners.get(runId) === owner) await this.requestRestartCleanup(owner)
+          if (this.activeOwners.get(runId) === owner) {
+            const { version } = await this.runs.getRepeatSnapshot(runId, owner)
+            // Freeze handoff tasks before classifying their queued reservations.
+            // These tasks do not abort Jobs, which require the cleanup fence first.
+            if (version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
+            await this.requestRestartCleanup(owner)
+          }
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
         if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')

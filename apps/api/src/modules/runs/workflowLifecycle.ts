@@ -41,13 +41,17 @@ export async function settleWorkForRestart(owner: RunOwnership): Promise<boolean
       || !['running', 'waiting'].includes(snapshot.run.executionState)) return false
     const pending = (await sql.query<{ pending: boolean }>(`select exists(
       select 1 from harness_executions e where e.run_id=$1 and (
-        e.record->>'state' is distinct from 'completed'
+        e.record->>'state' is null or e.record->>'state' not in ('completed','queued')
+        or e.record->>'state'='queued' and (not exists(select 1 from workflow_native_entries n
+          where n.execution_id=e.id and n.run_id=e.run_id and n.phase='reserved')
+          or exists(select 1 from run_graph_effects f where f.run_id=e.run_id
+            and f.effect_kind='execution.launch' and f.entity_id=e.id))
         or e.record#>>'{result,outcome}'='succeeded' and (not e.accepted or not exists(
           select 1 from run_work_results x where x.run_id=e.run_id and x.execution_id=e.id
             and x.activation_id=e.work_activation_id)))) as pending`, [owner.runId])).rows[0]
     if (pending?.pending !== false) return false
     await retainOwner(sql, owner)
-    await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'success')
+    await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'restart')
     return true
   })
 }
