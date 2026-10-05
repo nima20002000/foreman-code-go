@@ -81,7 +81,23 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     active_request_id: 'request-1', native_session_id: null as string | null, provider_version: null as string | null, cancel_requested: false, deleted_at: null, record: { status: 'open' }, payload: { ownerPrincipalId: 'sender', nativeSubmission: undefined as { kind: 'message'; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } | undefined },
     pending_interaction: null as unknown, response_delivery: 'offered' }
   let receipts: unknown[] = []
+  const callbacks = new Map<string, Record<string, unknown>>()
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes('claude_callback_receipts')) {
+      const key = JSON.stringify(values.slice(0, 2))
+      if (sql.includes('insert into')) {
+        callbacks.set(key, JSON.parse(String(values[3])) as Record<string, unknown>)
+        return { rows: [{ callback_key: values[1] }], rowCount: 1 }
+      }
+      if (sql.includes('callback_key=$2')) return { rows: callbacks.has(key) ? [{ record: callbacks.get(key) }] : [] }
+      const rows = [...callbacks.values()].filter(record => {
+        const identity = record.identity as Record<string, unknown>
+        return identity.nativeSessionId === values[1] && (sql.includes('toolUseId')
+          ? identity.nativeMessageId === values[2] && identity.generation === values[3] && identity.toolUseId === values[4]
+          : record.acknowledged === true && record.retired !== true)
+      })
+      return { rows: rows.map(record => ({ record: structuredClone(record) })) }
+    }
     if (sql.includes("payload#>>'{nativeSubmission,clientCorrelationId}'")) {
       const submitted = row.payload.nativeSubmission?.clientCorrelationId === values[1]
       return { rows: submitted ? [{ submitted: true }] : [], rowCount: submitted ? 1 : 0 }

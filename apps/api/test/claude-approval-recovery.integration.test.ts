@@ -66,7 +66,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
   }
   const reconcile = manager.reconcile.bind(manager)
   manager.reconcile = async (session, correlationId, signal) => ({ ...await reconcile(session, correlationId, signal),
-    responseDeliveries: domain.bridge.deliveryEvidence(session) })
+    responseDeliveries: await domain.bridge.deliveryEvidence(session) })
   return { manager, ready, frames, options: () => options }
 }
 
@@ -187,7 +187,16 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         expect((await permission)?.behavior).toBe(scenario === 'aborted' ? 'deny' : 'allow')
         const readReceipt = async () => (await pool.query('select result from management_command_receipts where command_id=$1', [input.commandId])).rows[0].result
         const original = await readReceipt()
-        expect(original.status).toBe(scenario === 'concurrent-poll' ? 'completed' : scenario === 'aborted' ? 'uncertain' : 'pending')
+        let expectedStatus = 'pending'
+        if (scenario === 'concurrent-poll') expectedStatus = 'completed'
+        if (scenario === 'aborted') expectedStatus = 'uncertain'
+        expect(original.status).toBe(expectedStatus)
+        const callbackRecords = (await pool.query(`select record from claude_callback_receipts
+          where record#>>'{identity,nativeRequestId}'=$1`, [input.nativeRequestId])).rows
+        expect(callbackRecords).toHaveLength(1)
+        expect(callbackRecords[0].record).toMatchObject({ identity: { nativeMessageId: message.uuid,
+          nativeRequestId: input.nativeRequestId }, inputHash: expect.any(String), toolName: 'Read' })
+        expect(callbackRecords[0].record.input).toBeUndefined()
         if (scenario === 'resident-write-loss' || scenario === 'terminal-after-response' || scenario === 'restart-after-terminal') {
           await callbacks.hooks!.PostToolUse![0]!.hooks[0]!({ ...hook, hook_event_name: 'PostToolUse', tool_response: 'read-completed' },
             'read-tool', { signal: new AbortController().signal })

@@ -10,6 +10,7 @@ import type { GraphSqlClient } from '../../run-graph/connection.js'
 import type { PostgresOperatorConversationRepository } from '../../conversations/operatorChatRepository.js'
 import type { PostgresAgentChatRepository } from '../../conversations/agentChatRepository.js'
 import { DomainError } from '../../errors.js'
+import { PostgresClaudeCallbackJournal } from './callbackJournal.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity, type ClaudeInteractionAnswer, type ClaudeInteractionAuthority } from './interactions.js'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 
@@ -34,8 +35,13 @@ function denied(code = 'CLAUDE_CALLBACK_SCOPE_DENIED'): never { throw new Domain
 /** Concrete reads of existing admissions and response receipts. No credential issuer or second request store. */
 export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuthority {
   private bridge: ClaudeInteractionBridge | undefined
+  readonly callbackJournal: PostgresClaudeCallbackJournal
   constructor(private readonly database: Database, readonly binding: ClaudeDomainBinding,
-    private readonly manager: ClaudeCurrentCallbackOwner) {}
+    private readonly manager: ClaudeCurrentCallbackOwner) {
+    const owner = binding.kind === 'workflow' ? `execution:${binding.executionId}:${binding.attempt}`
+      : `${binding.kind}:${binding.conversationId}`
+    this.callbackJournal = new PostgresClaudeCallbackJournal(database, owner)
+  }
   bind(bridge: ClaudeInteractionBridge): void { if (this.bridge) denied(); this.bridge = bridge }
 
   /** HRT calls this on the admitted turn/technical attempt before constructing SDK callbacks. */
@@ -208,7 +214,7 @@ export function createPostgresClaudeInteractionBridge(input: {
       async reconcileResponse(session: NativeSessionReference, response: { nativeRequestId: string; option: ApprovalResponseOption }, signal?: AbortSignal) {
         const observation = await bridge.observeResponse(session, response.nativeRequestId, response.option, signal)
         return { events: [], pendingInteractions: bridge.pendingInteractions(session), interactionDeliveries: [observation],
-          responseDeliveries: bridge.deliveryEvidence(session).filter(proof => proof.nativeRequestId === response.nativeRequestId) }
+          responseDeliveries: (await bridge.deliveryEvidence(session)).filter(proof => proof.nativeRequestId === response.nativeRequestId) }
       },
       stopAutomaticResponses() { bridge.close() },
     } }

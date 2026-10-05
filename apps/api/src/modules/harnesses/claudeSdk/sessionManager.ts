@@ -131,6 +131,7 @@ export function createClaudeNativeSessionManager(options: {
   supportedInteractionKinds?: readonly string[]
   pendingInteractions?: (session: NativeSessionReference) => readonly import('@graphql/contracts').PendingNativeInteraction[]
   responseDeliveries?: (session: NativeSessionReference) => NonNullable<NativeHistory['responseDeliveries']>
+    | Promise<NonNullable<NativeHistory['responseDeliveries']>>
   messageSubmitted?: (correlationId: string) => Promise<boolean>
 }): ClaudeNativeSessionManager {
   // The provider enum addition is integrated by the designated shared-contract writer.
@@ -526,7 +527,7 @@ export function createClaudeNativeSessionManager(options: {
                   result: matched.terminal },
                 events: runtime.events.filter(event => event.payload.clientCorrelationId === matched.correlationId),
                 pendingInteractions: [...(options.pendingInteractions?.(runtime.session!) ?? [])],
-                responseDeliveries: [...(options.responseDeliveries?.(runtime.session!) ?? [])],
+                responseDeliveries: [...(await options.responseDeliveries?.(runtime.session!) ?? [])],
               },
             })
           } catch (error) {

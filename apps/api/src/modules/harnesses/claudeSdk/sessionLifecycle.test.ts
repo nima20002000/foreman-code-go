@@ -9,6 +9,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
+import { memoryClaudeCallbackJournal } from '../../../../test/support/claudeCallbackJournal.js'
 import {
   claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput,
 } from './sessionManager.js'
@@ -46,6 +47,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     expect(identity.nativeSessionId).toBe(saved.nativeSessionId)
   })
   const bridge = new ClaudeInteractionBridge(configuration, {
+    callbackJournal: memoryClaudeCallbackJournal(),
     validate,
     request: async () => ({ outcome: 'allow_once' }),
     validateResponse: async identity => validate(identity),

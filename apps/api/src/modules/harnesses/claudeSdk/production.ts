@@ -102,11 +102,11 @@ export function productionClaudeManager(input: {
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const readHistory = manager.history.bind(manager)
       manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
-        responseDeliveries: domain.bridge.deliveryEvidence(session) })
+        responseDeliveries: await domain.bridge.deliveryEvidence(session) })
       const reconcile = manager.reconcile.bind(manager)
       manager.reconcile = async (session, correlationId, effectSignal) => {
         const history = await reconcile(session, correlationId, effectSignal)
-        return { ...history, responseDeliveries: domain.bridge.deliveryEvidence(session) }
+        return { ...history, responseDeliveries: await domain.bridge.deliveryEvidence(session) }
       }
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message, effectSignal) {

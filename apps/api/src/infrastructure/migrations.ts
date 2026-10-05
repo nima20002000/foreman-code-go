@@ -1,5 +1,6 @@
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
+import { claudeCallbackMigration } from './claudeCallbackMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -816,6 +817,7 @@ export const migrations = [
   compactCommandActivityMigration,
   runSubagentsMigration,
   operatorTerminalMigration,
+  claudeCallbackMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
