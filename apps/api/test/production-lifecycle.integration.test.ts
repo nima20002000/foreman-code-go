@@ -88,22 +88,22 @@ beforeEach(async () => {
   // lanes, delivery, budgets, checkpoints, HTTP and MCP use production wiring.
   vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration').mockImplementation(async (cwd) => {
     native.inspections++
-    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql', inspectionScope: 'effective_config', configured: {
+    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'foreman-code', inspectionScope: 'effective_config', configured: {
       enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp',
-      bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
+      bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
     } }
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
     const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     return reference
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession').mockImplementation(async function (this: CodexAppServerSessionManager, reference, input) {
     native.attaches++
     if (!sessions.has(reference.nativeSessionId)) throw new Error('Cannot replace a native session')
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     event(this, 'thread.attached', { threadId: reference.nativeSessionId })
     return reference
   })
@@ -177,9 +177,9 @@ beforeEach(async () => {
     if (!server) {
       server = new FixtureServer()
       server.providers = { all: [{ id: 'opencode-go', models: { 'gpt-5.6-luna': { variants: { high: {} } } } }] }
-      server.config = { mcp: { 'graphql': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
-      server.mcpCredentialReferences['graphql'] = 'GRAPHQL_MCP_TOKEN'
-      server.mcp = { 'graphql': { status: 'connected' } }
+      server.config = { mcp: { 'foreman-code': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
+      server.mcpCredentialReferences['foreman-code'] = 'FOREMAN_CODE_MCP_TOKEN'
+      server.mcp = { 'foreman-code': { status: 'connected' } }
       server.nextSessionIds.push(`ses_${input.request.executionId}`)
       const external = server
       server.onPrompt = (sessionId, body) => {
@@ -206,8 +206,8 @@ beforeEach(async () => {
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
     native.inspections++
-    return { cwd, providerVersion: '1.18.31', serverName: 'graphql', nativeStatus: 'connected', transport: 'streamable-http',
-      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
+    return { cwd, providerVersion: '1.18.31', serverName: 'foreman-code', nativeStatus: 'connected', transport: 'streamable-http',
+      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: OpenCodeNativeSessionManager, reference, input, signal) {
@@ -221,7 +221,7 @@ beforeEach(async () => {
         const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
         const interaction = (await interactions.get(interactionId))!
         if (!reviewNoDecision) {
-          const response = await mcp(server.environment!.variables.GRAPHQL_MCP_TOKEN!, {
+          const response = await mcp(server.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, {
             interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
           })
           expect(response.isError, JSON.stringify(response)).not.toBe(true)
@@ -310,8 +310,8 @@ it('answers a production User approval through the local API while excluding Ope
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.GRAPHQL_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
-  const denied = await mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)
+  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.FOREMAN_CODE_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
+  const denied = await mcp(worker.environment.variables.FOREMAN_CODE_MCP_TOKEN!, payload)
   expect(denied.isError).toBe(true)
   expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
   const headers = {}

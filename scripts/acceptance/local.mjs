@@ -216,7 +216,7 @@ async function main() {
   const appEnv = { ...safeEnv, NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(opts.apiPort),
     DATABASE_URL: databaseUrl(state, database), DATABASE_QUERY_TIMEOUT_MS: '60000',
     LANGGRAPH_CHECKPOINT_SCHEMA: 'eng07_checkpoints', HARNESS_WORKSPACE_ROOT: join(state, 'runtime'),
-    GRAPHQL_BROWSER_ORIGIN: webUrl,
+    FOREMAN_CODE_BROWSER_ORIGIN: webUrl,
     ENG07_DATABASE: database,
     ENG07_STATE: state, ENG07_OWNER: owner, ENG07_WEB_PORT: String(opts.webPort),
     ...(opts.codexModel ? { ENG07_CODEX_MODEL: opts.codexModel } : {}), TMPDIR: join(state, 'tmp') }

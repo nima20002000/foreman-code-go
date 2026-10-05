@@ -1,4 +1,4 @@
-import { ManagementActionSchema, ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { ManagementActionSchema, ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import type { PostgresAccessService } from './postgres.js'
 

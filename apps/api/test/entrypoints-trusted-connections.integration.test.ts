@@ -23,7 +23,7 @@ async function fixture() {
     grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 3_600_000) })
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: join(db.directory, 'runtime'),
     CODEX_BINARY: '/unprovisioned-test-codex', OPENCODE_BINARY: '/unprovisioned-test-opencode',
-    GRAPHQL_BROWSER_ORIGIN: origin })
+    FOREMAN_CODE_BROWSER_ORIGIN: origin })
   await db.pool.query('update local_human_principal set principal_id=$1', [owner.principal.id])
   config.workspaceStorageRoot = join(db.directory, 'workspaces')
   await mkdir(config.harnesses.workspaceRoot, { mode: 0o700 })

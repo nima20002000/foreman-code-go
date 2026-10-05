@@ -55,7 +55,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   if (configured) requireLoopbackTestDatabase(configured)
   const server = adminDatabaseUrl(configured)
   const admin = new Pool({ connectionString: server, max: 1 })
-  const name = `graphql_native_${randomUUID().replaceAll('-', '')}_test`
+  const name = `foreman_code_native_${randomUUID().replaceAll('-', '')}_test`
   const evidence = join(evidenceRoot, name)
   const record = { name, created: false, exitCode: null, removed: false }
   await mkdir(evidence, { recursive: true, mode: 0o700 })

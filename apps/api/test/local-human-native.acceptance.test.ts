@@ -15,7 +15,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
     await nativeHttpIsolation(async input => {
       const { script, report } = await installProbe(input)
       const environment = inheritedAgentEnvironment()
-      delete environment.GRAPHQL_MCP_TOKEN
+      delete environment.FOREMAN_CODE_MCP_TOKEN
       const binaries = harnessBinaries(process.env)
       const codexArguments = [
         'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
@@ -77,7 +77,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
           '-c', `mcp_servers.isolation.command=${JSON.stringify(process.execPath)}`,
           '-c', `mcp_servers.isolation.args=${JSON.stringify([script])}`, 'Reply DONE.'],
         cwd: input.directory,
-        environment: { ...inheritedAgentEnvironment(), GRAPHQL_MCP_TOKEN: input.token },
+        environment: { ...inheritedAgentEnvironment(), FOREMAN_CODE_MCP_TOKEN: input.token },
         recovery: input.recovery,
         onError: error => { launchError = error },
       })
@@ -110,7 +110,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
 async function installProbe(input: NativeHttpIsolationInput) {
   const script = join(input.directory, 'native-mcp-probe.cjs')
   const report = join(input.directory, 'native-mcp-results.json')
-  const probe = input.script.replace('process.env.GRAPHQL_MCP_TOKEN', JSON.stringify(input.token))
+  const probe = input.script.replace('process.env.FOREMAN_CODE_MCP_TOKEN', JSON.stringify(input.token))
   await writeFile(script, `
     const fs = require('node:fs');
     const readline = require('node:readline');

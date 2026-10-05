@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { CurrentWorkflowSaveResultSchema, makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { CurrentWorkflowSaveResultSchema, makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

@@ -21,8 +21,10 @@ Supported suffixes include `API_ENV_FILE`, `BROWSER_ORIGIN`, `DEV_BROWSER_ORIGIN
 `WORKER_ARTIFACT_DIRECTORY`, `HEAVY_BASE_TMPDIR`, `HEAVY_JOB_COMMON`,
 `HEAVY_JOB_TOKEN`, `INTEGRATION_START_AT`, `INTEGRATION_FAILED_LOG`,
 `INTEGRATION_SHARDS`, `INTEGRATION_IDLE_TIMEOUT_MS`, and
-`INTEGRATION_FILE_TIMEOUT_MS`. Temporary local-browser settings remain aliases
-until the separate browser-auth removal workstream removes their consumers.
+`INTEGRATION_FILE_TIMEOUT_MS`. Browser access uses the implicit local human;
+`DEV_BROWSER_ACCESS` and `DEV_OPERATOR_PRINCIPAL_ID` no longer select browser
+authority. The existing `DEV_BROWSER_ORIGIN` spelling remains supported and
+must agree with `BROWSER_ORIGIN` when both are supplied.
 The production installer accepts either database-password spelling and retains
 `GRAPHQL_PRODUCTION_DB_PASSWORD` only in its generated EnvironmentFile because
 existing database units invoke Compose with that name. Other installer-managed

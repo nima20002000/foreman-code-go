@@ -66,16 +66,16 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       await installAppLauncher()
       await mkdir(join(projectPath, '.codex'))
       await writeFile(join(projectPath, '.codex', 'config.toml'), [
-        '[mcp_servers.graphql]',
+        '[mcp_servers.foreman-code]',
         `command = ${JSON.stringify(process.execPath)}`,
         `args = [${JSON.stringify(appLauncherPath())}]`,
-        'env_vars = ["GRAPHQL_MCP_TOKEN"]',
+        'env_vars = ["FOREMAN_CODE_MCP_TOKEN"]',
         '',
       ].join('\n'), { mode: 0o600 })
       if (scenario.providers.some((provider) => provider === 'opencode')) {
-        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
+        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { 'foreman-code': {
           type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
-          environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' },
+          environment: { FOREMAN_CODE_MCP_TOKEN: '{env:FOREMAN_CODE_MCP_TOKEN}' },
         } } }), { mode: 0o600 })
       }
       const port = await taskPort()

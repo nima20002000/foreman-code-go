@@ -5,6 +5,7 @@ import type { Socket } from 'node:net'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApiErrorResponse } from './index.js'
+import { APP_MCP_TOKEN_NAMES } from './product.js'
 
 const inspectSockets = promisify(execFile)
 const loopbackAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
@@ -41,6 +42,11 @@ interface ClientProcess {
   hidden: boolean
 }
 
+function hasAppCredential(environment: readonly string[]): boolean {
+  return environment.some(value => APP_MCP_TOKEN_NAMES.some(name =>
+    value.startsWith(`${name}=`) && value.length > name.length + 1))
+}
+
 async function clientProcess(pid: number): Promise<ClientProcess> {
   if (process.platform === 'linux') {
     const [stat, executable, command, environment] = await Promise.all([
@@ -51,7 +57,7 @@ async function clientProcess(pid: number): Promise<ClientProcess> {
       parent: Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]),
       executable,
       arguments: command.split('\0'),
-      credential: environment !== undefined && /(?:^|\0)GRAPHQL_MCP_TOKEN=[^\0]+/.test(environment),
+      credential: environment !== undefined && hasAppCredential(environment.split('\0')),
       hidden: executable === undefined || environment === undefined,
     }
   }
@@ -67,7 +73,7 @@ async function clientProcess(pid: number): Promise<ClientProcess> {
   if (!fields) throw new Error('The local client process exited during inspection.')
   return {
     parent: Number(fields[1]), executable: fields[2], arguments: command.stdout.trim().split(/\s+/),
-    credential: /(?:^|\s)GRAPHQL_MCP_TOKEN=\S+/.test(command.stdout), hidden: false,
+    credential: hasAppCredential(command.stdout.split(/\s+/)), hidden: false,
   }
 }
 

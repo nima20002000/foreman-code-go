@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
+import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const apiDirectory = fileURLToPath(new URL('../apps/api/', import.meta.url))
@@ -25,15 +26,19 @@ const manifest = JSON.parse(await readFile(new URL('../apps/api/package.json', i
 const [runtime, ...args] = manifest.scripts.start.split(' ')
 assert.equal(runtime, 'node')
 assert.deepEqual(args, ['dist/server.js'], 'Production must run compiled JavaScript without a TS loader')
-const state = await mkdtemp(join(homedir(), '.graphql-production-smoke-'))
+const state = await mkdtemp(join(homedir(), '.foreman-code-production-smoke-'))
+const environment = resolveProductEnvironment(process.env)
+if (environment.FOREMAN_CODE_DEV_BROWSER_ORIGIN !== undefined) {
+  environment.FOREMAN_CODE_DEV_BROWSER_ORIGIN = origin
+}
 const child = spawn(process.execPath, args, {
   cwd: apiDirectory,
   env: {
-    ...process.env,
+    ...environment,
     NODE_OPTIONS: '',
     HOST: '127.0.0.1',
     PORT: String(port),
-    GRAPHQL_BROWSER_ORIGIN: origin,
+    FOREMAN_CODE_BROWSER_ORIGIN: origin,
     DATABASE_URL: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
       ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
     DATABASE_CONNECTION_TIMEOUT_MS: '250',
@@ -43,7 +48,7 @@ const child = spawn(process.execPath, args, {
     HARNESS_WORKSPACE_ROOT: process.env.HARNESS_WORKSPACE_ROOT ?? join(state, 'runtime'),
     WORKSPACE_STORAGE_ROOT: process.env.WORKSPACE_STORAGE_ROOT ?? join(state, 'workspaces'),
     FILE_STORAGE_ROOT: process.env.FILE_STORAGE_ROOT ?? join(state, 'files'),
-    GRAPHQL_APP_MCP_DIRECTORY: process.env.GRAPHQL_APP_MCP_DIRECTORY ?? join(state, 'mcp'),
+    FOREMAN_CODE_APP_MCP_DIRECTORY: environment.FOREMAN_CODE_APP_MCP_DIRECTORY ?? join(state, 'mcp'),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -85,7 +90,7 @@ let postgresStopped = false
 try {
   await waitForReady()
   assert.equal((await request('/health/live')).status, 200)
-  if (process.env.GRAPHQL_WEB_DIST) {
+  if (environment.FOREMAN_CODE_WEB_DIST) {
     const dashboard = await fetch(`http://127.0.0.1:${port}/workspaces`, {
       credentials: 'omit', signal: AbortSignal.timeout(2000),
     })

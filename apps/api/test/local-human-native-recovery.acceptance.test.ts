@@ -4,8 +4,8 @@ import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type PendingNativeInteraction } from '@graphql/contracts'
-import { ManagementActionSchema } from '@graphql/contracts/management'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -59,7 +59,7 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
       await repository.beginTurn(conversation.id, { requestId, content: 'Original native pending turn' }, owner.principal.id)
       const session = await manager.createSession({ kind: 'operator', correlationId, configuration,
         workingDirectory: directory, environment: { agentId: configuration.operatorId,
-          variables: { GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' } } }, signal)
+          variables: { FOREMAN_CODE_MCP_TOKEN: 'operator-cleanup-disabled' } } }, signal)
       await repository.bind(conversation.id, requestId, session.providerVersion, session.nativeSessionId)
       running = (async () => {
         for await (const event of manager.startTurn(session, {

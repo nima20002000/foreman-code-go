@@ -1,4 +1,3 @@
-import { readProductEnvironment } from '../../packages/contracts/src/productEnvironment.mjs'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'

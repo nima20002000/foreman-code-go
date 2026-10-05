@@ -3,11 +3,12 @@ import { createServer } from 'node:http'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { localHumanProxyRequest } from './localClientNode.js'
+import { APP_MCP_TOKEN_NAMES } from './product.js'
 
 const runClient = promisify(execFile)
 
 describe.skipIf(!['linux', 'darwin'].includes(process.platform))('local HTTP process separation', () => {
-  it('accepts credential-free setup HTTP and denies an independent MCP client without relying on a native cgroup', async () => {
+  it.each(APP_MCP_TOKEN_NAMES)('accepts credential-free setup HTTP and denies a %s client without a native cgroup', async tokenName => {
     const server = createServer((request, response) => {
       void localHumanProxyRequest(request, response, error => {
         response.writeHead(error ? 500 : 200, { 'content-type': 'application/json' })
@@ -23,7 +24,7 @@ describe.skipIf(!['linux', 'darwin'].includes(process.platform))('local HTTP pro
       expect(human.status).toBe(200)
       expect(await human.json()).toEqual({ ready: true })
       const setupEnvironment = { ...process.env }
-      delete setupEnvironment.GRAPHQL_MCP_TOKEN
+      for (const name of APP_MCP_TOKEN_NAMES) delete setupEnvironment[name]
       const setup = await runClient(process.execPath, ['--input-type=module', '-e', `
         const response = await fetch(${JSON.stringify(url)});
         console.log(JSON.stringify({ status: response.status, body: await response.json() }));
@@ -38,7 +39,7 @@ describe.skipIf(!['linux', 'darwin'].includes(process.platform))('local HTTP pro
         console.log(JSON.stringify(results));
       `
       const independent = await runClient(process.execPath, ['--input-type=module', '-e', script], {
-        env: { ...process.env, GRAPHQL_MCP_TOKEN: 'restricted-client-credential' }, timeout: 10_000,
+        env: { ...setupEnvironment, [tokenName]: 'restricted-client-credential' }, timeout: 10_000,
       })
       expect(JSON.parse(independent.stdout)).toEqual(Array(2).fill({ status: 403,
         body: { error: { code: 'LOCAL_HUMAN_REQUIRED', message: 'Agent processes require an application credential.' } },

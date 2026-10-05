@@ -1,4 +1,4 @@
-import { ManagementActionSchema } from '@graphql/contracts/management'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
 
 export const localHumanMigration = { version: 2026100401, sql: `
   alter table management_principals alter column token_hash drop not null;

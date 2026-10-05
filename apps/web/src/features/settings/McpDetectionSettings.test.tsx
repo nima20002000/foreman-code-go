@@ -43,7 +43,7 @@ function detection(harness: AgentHarness = 'codex', state: McpDetection['state']
     runnerId: 'runner-local', workingDirectory, providerVersion: '0.154.0', nativeFilters: {},
     detection: { harness, serverName: 'graphql', state, checkedAt,
       endpointMatches: state === 'not_detected' || state === 'check_failed' ? null : true,
-      credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' },
+      credentialEnvironmentVariable: 'FOREMAN_CODE_APP_MCP_TOKEN' },
   })
 }
 function client() {

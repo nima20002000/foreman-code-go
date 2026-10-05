@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ManagementActionSchema } from '@graphql/contracts/management'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { localHumanMigration } from '../src/infrastructure/localHumanMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { NativeProcessRecovery } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { expect } from 'vitest'
-import { localHumanProxyRequest } from '@graphql/contracts/local-client-node'
+import { localHumanProxyRequest } from '@foreman-code/contracts/local-client-node'
 import { buildApp } from '../../src/app.js'
 import { PostgresLocalHumanAccess } from '../../src/modules/access/localHuman.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
@@ -78,7 +78,7 @@ export async function nativeHttpIsolation(launch: (input: NativeHttpIsolationInp
         }
         const client = new Client({name:'native-isolation-client',version:'1'});
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', ${JSON.stringify(origin)}),
-          {authProvider:{token:async()=>process.env.GRAPHQL_MCP_TOKEN}}));
+          {authProvider:{token:async()=>process.env.FOREMAN_CODE_MCP_TOKEN}}));
         const tools = await client.listTools();
         const read = await client.callTool({name:'workflow_defaults_get',arguments:{}});
         let denied;
