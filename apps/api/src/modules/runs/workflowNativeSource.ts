@@ -1,6 +1,6 @@
 import type { WorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { repeatDigest, repeatId, repeatExecutionIdentity, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 import type { StoredRepeatExecution } from './repeatPostgres.js'

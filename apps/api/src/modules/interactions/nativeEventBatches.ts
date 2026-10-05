@@ -1,3 +1,4 @@
+import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { NATIVE_PRODUCER_REJECTION_TYPE } from '../run-graph/nativeProducerNormalization.js'
@@ -16,6 +17,8 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
     for (;;) {
       pending ??= iterator.next()
       const timer = new AbortController()
+      const finished = beginRuntimeTiming('harness', 'native.batch_read',
+        { count: batch.length, intervalMs: flushIntervalMs })
       let next: IteratorResult<NativeHarnessEvent> | undefined
       try {
         next = batch.length ? await Promise.race([
@@ -25,7 +28,7 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
       } catch (error) {
         if (batch.length) yield batch
         throw error
-      } finally { timer.abort() }
+      } finally { timer.abort(); finished() }
       if (!next) {
         yield batch
         batch = []

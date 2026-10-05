@@ -1,3 +1,4 @@
+import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -138,7 +139,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
   const scenarioBegan = performance.now()
-  const timing = { setupMs: 0, engineMs: 0, totalMs: 0 }
+  const timing = { startedAt: new Date().toISOString(), setupMs: 0, engineMs: 0, totalMs: 0 }
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
@@ -163,13 +164,20 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let mcpRoutes: AppMcpRoutes | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
-  const evidence: Record<string, unknown> = { scenario, timing, mode: 'current V3 native internal acceptance', artifactPath,
+  const runtimeTimeline: RuntimeTimingRecord[] = []
+  let droppedTimingRecords = 0
+  const captureTiming = (message: unknown) => {
+    if (runtimeTimeline.length < 100_000) runtimeTimeline.push(message as RuntimeTimingRecord)
+    else droppedTimingRecords++
+  }
+  const evidence: Record<string, unknown> = { scenario, timing, runtimeTimeline, mode: 'current V3 native internal acceptance', artifactPath,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
     models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
+  runtimeTimingChannel.subscribe(captureTiming)
   try {
     await admin.query(`create schema ${schema}`)
     const url = new URL(baseUrl)
@@ -333,27 +341,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
         if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
-        if (config.harness === 'codex') {
-          const manager = new CodexAppServerSessionManager(codexBinary, undefined, undefined,
-            registry.scope(`execution:${context.executionId}`))
-          const measure = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
-            const began = performance.now()
-            const startedAt = new Date().toISOString()
-            try { return await operation() }
-            finally {
-              const entries = (evidence.nativePreparation ??= []) as unknown[]
-              if (entries.length < 64) entries.push({ executionId: context.executionId, phase, startedAt,
-                elapsedMs: Math.round(performance.now() - began) })
-            }
-          }
-          const capabilities = manager.capabilities.bind(manager)
-          manager.capabilities = (signal) => measure('capabilities', () => capabilities(signal))
-          const inspect = manager.inspectMcpConfiguration.bind(manager)
-          manager.inspectMcpConfiguration = (cwd, signal) => measure('mcp_configuration', () => inspect(cwd, signal))
-          const create = manager.createSession.bind(manager)
-          manager.createSession = (source, signal) => measure('session_create', () => create(source, signal))
-          return manager
-        }
+        if (config.harness === 'codex') return new CodexAppServerSessionManager(codexBinary, undefined, undefined,
+          registry.scope(`execution:${context.executionId}`))
         return new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
           processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
           ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
@@ -436,11 +425,13 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     stopRun = () => engine!.cancel(run.id, authorizeStop)
     timing.setupMs = Math.round(performance.now() - scenarioBegan)
     const engineBegan = performance.now()
+    evidence.engineStartedAt = new Date().toISOString()
     const startTask = engine.start(run.id)
-    void startTask.then(
-      () => { timing.engineMs = Math.round(performance.now() - engineBegan) },
-      () => { timing.engineMs = Math.round(performance.now() - engineBegan) },
-    )
+    const recordEngineFinish = () => {
+      timing.engineMs = Math.round(performance.now() - engineBegan)
+      evidence.engineFinishedAt = new Date().toISOString()
+    }
+    void startTask.then(recordEngineFinish, recordEngineFinish)
     evidence.startTaskState = 'pending'
     if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
       evidence.startTaskState = 'rejected'
@@ -656,6 +647,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     await admin.query(`drop schema if exists ${schema} cascade`).catch(() => undefined)
     await admin.end()
     timing.totalMs = Math.round(performance.now() - scenarioBegan)
+    runtimeTimingChannel.unsubscribe(captureTiming)
+    evidence.droppedTimingRecords = droppedTimingRecords
+    evidence.finishedAt = new Date().toISOString()
     await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
     if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)

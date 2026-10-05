@@ -1,3 +1,4 @@
+import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import pg from 'pg'
 
 import { ExclusiveGraphConnection, type GraphSqlClient } from '../run-graph/connection.js'
@@ -95,6 +96,7 @@ export class RunOwnership {
   async release(): Promise<void> {
     if (this.released) return
     this.released = true
+    const finished = beginRuntimeTiming('db', 'owner.release', { runId: this.runId })
     // Closing, rather than returning this session to a pool, always releases
     // its advisory lock, including after a failed query or lost connection.
     try {
@@ -103,6 +105,7 @@ export class RunOwnership {
       await this.rawClient.end().catch(() => undefined)
       this.rawClient.removeListener('error', this.handleLoss)
       this.rawClient.removeListener('end', this.handleLoss)
+      finished()
     }
   }
 }

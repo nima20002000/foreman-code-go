@@ -1,3 +1,4 @@
+import { timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
 import type { InteractionActivityEvidence } from './activityProjection.js'
 import type { ReviewNativeCapture, ReviewNativeCapturePort, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
@@ -1203,7 +1204,9 @@ export class ApprovalExecutionCoordinator {
     await input.store.assertExecutionAdmission(execution.id)
     input.signal.throwIfAborted()
     input.owner.assertOwned()
-    return this.observeExecution({ ...input, candidate: execution, request }, { execution, created: false }, input.store)
+    return withRuntimeTimingContext({ runId: execution.runId, executionId: execution.id }, () =>
+      timeRuntimeOperation('engine', 'execution.observe', () => this.observeExecution(
+        { ...input, candidate: execution, request }, { execution, created: false }, input.store)))
   }
 
   private async observeExecution(input: ApprovalObservationInput,
@@ -1360,12 +1363,13 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!execution.nativeSessionId) {
-        const environment = await this.prepareEnvironment(context, resolved, signal, undefined, async () => {
-          await repeat.authorizeNativeSubmission(execution.id)
-          repeatLaunch = repeat.consumeLaunch(execution.id)
-          if (!repeatLaunch) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
-            'No exact committed launch permit exists. Native work was not started.', 409)
-        })
+        const environment = await timeRuntimeOperation('harness', 'native.prepare_environment', () =>
+          this.prepareEnvironment(context, resolved, signal, undefined, async () => {
+            await repeat.authorizeNativeSubmission(execution.id)
+            repeatLaunch = repeat.consumeLaunch(execution.id)
+            if (!repeatLaunch) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
+              'No exact committed launch permit exists. Native work was not started.', 409)
+        }))
         startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
@@ -1413,7 +1417,8 @@ export class ApprovalExecutionCoordinator {
               },
             }, signal)
           } else {
-            await publishObservedSession(await this.openingSession(ownedSession, manager.createSession(start, signal)))
+            await publishObservedSession(await this.openingSession(ownedSession,
+              timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal))))
             nativeEvents = manager.startTurnBatches(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
             }, signal)
@@ -1427,7 +1432,8 @@ export class ApprovalExecutionCoordinator {
               return { event: original, evidence: this.captureNative(input.owner, execution,
                 { type: 'event', event: original }, 'live', manager!.capturedLease(session!)) }
             })
-            await this.runs.appendNativeEvents(frames, input.owner, lease)
+            await timeRuntimeOperation('engine', 'native.persist_batch',
+              () => this.runs.appendNativeEvents(frames, input.owner, lease), { count: frames.length })
             const history = await manager.history(session!, signal)
             const waiting = await observePending(history, events.at(-1), lease)
             if (waiting) return waiting
@@ -1465,7 +1471,8 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         await this.budgets.assertActive(execution.id)
         const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
-          const observed = await nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal)
+          const observed = await timeRuntimeOperation('harness', 'native.reconcile',
+            () => nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal))
           const messageReceipt = observed.nativeSubmission
           const messageIdentity = messageReceipt?.kind === 'message' && messageReceipt.nativeSessionId === session!.nativeSessionId
             && messageReceipt.clientCorrelationId === `execution:${execution.id}`
@@ -1493,7 +1500,8 @@ export class ApprovalExecutionCoordinator {
           if (exactTerminal) {
             const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed',
               result: safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
-            await this.runs.updateExecution(completed, input.owner, captured)
+            await timeRuntimeOperation('engine', 'execution.accept_terminal',
+              () => this.runs.updateExecution(completed, input.owner, captured))
             // Read the first-terminal normalizer's immutable result, not a local
             // copy of unvalidated provider output. The original remains private.
             execution = (await repeat.readExecution(execution.id)).execution
@@ -1516,7 +1524,8 @@ export class ApprovalExecutionCoordinator {
           if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
             'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)
           ownedSession.execution = execution
-          await this.finishRepeatExecution(execution, repeat, input.owner, signal)
+          await timeRuntimeOperation('engine', 'execution.settle',
+            () => this.finishRepeatExecution(execution, repeat, input.owner, signal))
           return { state: 'completed', execution, result: execution.result }
         }
         // Approval delivery is not turn completion. Keep observing the same
@@ -1524,7 +1533,8 @@ export class ApprovalExecutionCoordinator {
         // Absence of a pending request is not a native acknowledgement. Keep
         // the durable wait until the exact source/continuation writer proves a
         // resumed turn or its terminal; never manufacture a running update.
-        await delay(100, undefined, { signal: signal })
+        await timeRuntimeOperation('engine', 'execution.backoff',
+          () => delay(100, undefined, { signal }), { intervalMs: 100 })
       }
     } catch (rawError) {
       // A credential may have been issued just before an abort rejected setup.

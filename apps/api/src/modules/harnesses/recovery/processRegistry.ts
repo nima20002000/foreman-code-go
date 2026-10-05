@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../../infrastructure/runtimeTiming.js'
 import { isDeepStrictEqual } from 'node:util'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
@@ -317,7 +318,8 @@ export class NativeProcessRegistry {
     const identity = JSON.stringify([resolve(scope.root), scope.owner, id])
     const previous = closing.get(identity)
     if (previous) return previous
-    const attempt = this.closeRegistered(scope, id, signal)
+    const attempt = timeRuntimeOperation('harness', 'process.close',
+      () => this.closeRegistered(scope, id, signal), { ownerId: scope.owner })
     closing.set(identity, attempt)
     void attempt.finally(() => { if (closing.get(identity) === attempt) closing.delete(identity) }).catch(() => undefined)
     return attempt

@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -30,7 +31,8 @@ async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeContro
       [runId, [nodeIds[1], nodeIds[2]]],
     )).rows
     if (started.length === 2 || (await runs.get(runId))?.executionState === 'completed') break
-    await delay(250)
+    await timeRuntimeOperation('engine', 'acceptance.branch_poll', () => delay(250),
+      { runId, intervalMs: 250 })
   }
   expect(started).toHaveLength(2)
   expect(new Set(started.map((item) => item.native_session_id)).size).toBe(2)

@@ -1,3 +1,4 @@
+import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import { DomainError } from '../errors.js'
 
 interface Waiter {
@@ -25,33 +26,36 @@ export class RunnerAdmission {
 
   async run<T>(runId: string, signal: AbortSignal, work: () => Promise<T>): Promise<T> {
     signal.throwIfAborted()
-    if (this.active < this.maximum && !this.queued) this.active++
-    else {
-      if (this.queued >= this.maximumWaiting || (!this.waiting.has(runId) && this.waiting.size >= this.maximumRuns)) {
-        throw new DomainError('RUNNER_ADMISSION_FULL', 'Worker capacity is full. This queued execution was not launched.', 503)
-      }
-      await new Promise<void>((resolve, reject) => {
-        const waiter: Waiter = {
-          runId, signal,
-          enter: () => { signal.removeEventListener('abort', waiter.abort); resolve() },
-          abort: () => {
-            const queue = this.waiting.get(runId)
-            const index = queue?.indexOf(waiter) ?? -1
-            if (index < 0) return
-            queue!.splice(index, 1)
-            this.queued--
-            if (!queue!.length) this.removeRun(runId)
-            reject(signal.reason)
-          },
+    const acquired = beginRuntimeTiming('engine', 'worker.admission', { runId, count: this.queued })
+    try {
+      if (this.active < this.maximum && !this.queued) this.active++
+      else {
+        if (this.queued >= this.maximumWaiting || (!this.waiting.has(runId) && this.waiting.size >= this.maximumRuns)) {
+          throw new DomainError('RUNNER_ADMISSION_FULL', 'Worker capacity is full. This queued execution was not launched.', 503)
         }
-        const queue = this.waiting.get(runId)
-        if (queue) queue.push(waiter)
-        else { this.waiting.set(runId, [waiter]); this.order.push(runId) }
-        this.queued++
-        signal.addEventListener('abort', waiter.abort, { once: true })
-        if (signal.aborted) waiter.abort()
-      })
-    }
+        await new Promise<void>((resolve, reject) => {
+          const waiter: Waiter = {
+            runId, signal,
+            enter: () => { signal.removeEventListener('abort', waiter.abort); resolve() },
+            abort: () => {
+              const queue = this.waiting.get(runId)
+              const index = queue?.indexOf(waiter) ?? -1
+              if (index < 0) return
+              queue!.splice(index, 1)
+              this.queued--
+              if (!queue!.length) this.removeRun(runId)
+              reject(signal.reason)
+            },
+          }
+          const queue = this.waiting.get(runId)
+          if (queue) queue.push(waiter)
+          else { this.waiting.set(runId, [waiter]); this.order.push(runId) }
+          this.queued++
+          signal.addEventListener('abort', waiter.abort, { once: true })
+          if (signal.aborted) waiter.abort()
+        })
+      }
+    } finally { acquired() }
     try { signal.throwIfAborted(); return await work() }
     finally {
       const run = this.order.shift()

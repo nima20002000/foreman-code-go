@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import { nativeOutputCollector } from './nativeCommandOutput.js'
@@ -271,12 +272,19 @@ export async function runCommand(
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
   const limit = options.maxOutputBytes ?? 8_000_000
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32_000_000) throw new Error('Invalid native command output limit.')
-  const result = await runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped,
+  let operation = 'other'
+  if (args[0] === '--version') operation = 'version'
+  else if (args[0] === 'login') operation = 'authentication'
+  else if (args[1] === 'generate-json-schema') operation = 'schema'
+  else if (args[0] === 'debug') operation = 'models'
+  else if (args[0] === 'mcp') operation = 'mcp_configuration'
+  const result = await timeRuntimeOperation('harness', 'process.command', () =>
+    runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped,
     ...(options.recovery ? { recovery: options.recovery } : {}), ...(environment ? { environment } : {}) }, async (child, secrets) => {
     const collect = nativeOutputCollector(limit, (text) => redactSecretText(text, secrets))
     const [stdout = '', stderr = ''] = await settleReaders(child, [collect(child.stdout), collect(child.stderr)])
     return { stdout, stderr }
-  })
+  }), { operation, ...(options.recovery ? { ownerId: options.recovery.owner } : {}) })
   combined.throwIfAborted()
   return result
 }

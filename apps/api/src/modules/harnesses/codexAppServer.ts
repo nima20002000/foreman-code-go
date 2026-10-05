@@ -1,3 +1,4 @@
+import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
@@ -813,6 +814,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       preparationSignal.throwIfAborted()
       if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
       nativeSubmissionAttempted = true
+      runtimeTimingPoint('harness', 'native.submit', { nativeSessionId: session.nativeSessionId })
       const result = await codexRequest(runtime.transport, 'turn/start', {
         threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
         input: nativeInput,
@@ -1234,8 +1236,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const environment = this.dependencies.environment()
-    const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, cwd, environment, true, signal)
-    return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
+    return timeRuntimeOperation('harness', 'native.inspect_mcp', async () => {
+      const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, cwd, environment, true, signal)
+      return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
+    })
   }
 
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
@@ -2221,6 +2225,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (size > MAX_EVENT_BYTES) throw new HarnessExecutionError('NATIVE_EVENT_TOO_LARGE', 'A native event exceeded the bounded delivery window.')
     runtime.sequence += 1
     runtime.events.push(event)
+    const item = isObject(payload.item) ? payload.item : undefined
+    runtimeTimingPoint('harness', 'native.event', { nativeSessionId: runtime.session.nativeSessionId,
+      ...(runtime.input.kind !== 'operator'
+        ? { runId: runtime.input.request.runId, executionId: runtime.input.request.executionId } : {}),
+      eventType: type, sequence: event.sequence,
+      ...(typeof payload.nativeMethod === 'string' ? { nativeMethod: payload.nativeMethod } : {}),
+      ...(typeof payload.turnId === 'string' ? { nativeTurnId: payload.turnId } : {}),
+      ...(typeof item?.type === 'string' ? { itemType: item.type } : {}) })
     runtime.eventSizes.push(size)
     runtime.eventBytes += size
     while (runtime.events.length > MAX_EVENTS || runtime.eventBytes > MAX_EVENT_BYTES) {
@@ -2236,9 +2248,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private wait(runtime: Runtime, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
     return new Promise<void>((resolve, reject) => {
+      const finished = beginRuntimeTiming('harness', 'native.notification_wait',
+        { nativeSessionId: runtime.session.nativeSessionId })
       const done = () => { cleanup(); resolve() }
       const abort = () => { cleanup(); reject(signal?.reason ?? new Error('Aborted')) }
-      const cleanup = () => { runtime.wake.delete(done); signal?.removeEventListener('abort', abort) }
+      const cleanup = () => { finished(); runtime.wake.delete(done); signal?.removeEventListener('abort', abort) }
       runtime.wake.add(done)
       signal?.addEventListener('abort', abort, { once: true })
     })

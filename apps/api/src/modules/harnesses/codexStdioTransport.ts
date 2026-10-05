@@ -1,3 +1,4 @@
+import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
 import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
@@ -117,12 +118,14 @@ export class CodexStdioTransport {
     if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
       throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
     }
+    const finished = beginRuntimeTiming('harness', 'native.rpc', { operation: method, intervalMs: this.timeoutMs,
+      ...(typeof params?.threadId === 'string' ? { nativeSessionId: params.threadId } : {}) })
     return new Promise<unknown>((resolve, reject) => {
       const abort = () => this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_CANCELED')
       const timer = setTimeout(() => this.settleFailure(id, 'CODEX_APP_SERVER_TIMEOUT'), this.timeoutMs)
       const operation: Operation = {
         method, resolve, reject, submitted: false, ...(late ? { late } : {}),
-        cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', abort) },
+        cleanup: () => { finished(); clearTimeout(timer); signal?.removeEventListener('abort', abort) },
       }
       this.operations.set(id, operation)
       signal?.addEventListener('abort', abort, { once: true })

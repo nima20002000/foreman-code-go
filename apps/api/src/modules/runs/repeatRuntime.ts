@@ -1,3 +1,4 @@
+import { beginRuntimeTiming, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -357,18 +358,21 @@ export async function executeRepeatRuntime(input: {
   }
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
   const drain = async (cleanup = false) => {
-    const wait = async () => { while (tasks.size) await Promise.allSettled([...tasks]) }
-    if (cleanup) return withCleanupDeadline(wait)
-    // Healthy siblings retain their active budgets; the cleanup deadline applies
-    // only after cancellation/restart, not while observing their original work.
-    let abort: (() => void) | undefined
+    const finished = beginRuntimeTiming('engine', 'wrapper.drain', { count: tasks.size })
     try {
-      await Promise.race([wait(), new Promise<never>((_resolve, reject) => {
-        abort = () => reject(signal.reason)
-        signal.addEventListener('abort', abort, { once: true })
-        if (signal.aborted) abort()
-      })])
-    } finally { if (abort) signal.removeEventListener('abort', abort) }
+      const wait = async () => { while (tasks.size) await Promise.allSettled([...tasks]) }
+      if (cleanup) return await withCleanupDeadline(wait)
+      // Healthy siblings retain their active budgets; the cleanup deadline applies
+      // only after cancellation/restart, not while observing their original work.
+      let abort: (() => void) | undefined
+      try {
+        await Promise.race([wait(), new Promise<never>((_resolve, reject) => {
+          abort = () => reject(signal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+          if (signal.aborted) abort()
+        })])
+      } finally { if (abort) signal.removeEventListener('abort', abort) }
+    } finally { finished() }
   }
   const track = (task: Promise<unknown>) => {
       tasks.add(task)
@@ -440,7 +444,7 @@ export async function executeRepeatRuntime(input: {
             return
           }
         }
-        else await input.store.completeRun()
+        else await timeRuntimeOperation('engine', 'run.settle', () => input.store.completeRun())
         await input.lifecycle.requestCleanup()
         await input.lifecycle.finishNative()
         await input.lifecycle.finishCleanup()
@@ -462,7 +466,8 @@ export async function executeRepeatRuntime(input: {
         // gaps; neither a new Run nor a new occurrence/native turn is admitted.
         if (attempt >= 2) throw error
         state = null
-        await delay(100, undefined, { signal })
+        await timeRuntimeOperation('engine', 'settlement.backoff', () => delay(100, undefined, { signal }),
+          { intervalMs: 100 })
       }
     }
   } catch (error) {
