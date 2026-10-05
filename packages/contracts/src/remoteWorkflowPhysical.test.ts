@@ -30,10 +30,16 @@ describe('original remote physical artifact association', () => {
       const output = remoteWorkflowPhysicalOutput(result, { version: 1, outputKeys: ['report'] })
       expect(output).toEqual({ kind: 'published-artifacts', result, artifactOutputs })
       expect(RemoteWorkflowPhysicalOutputSchema.parse(output)).toEqual(output)
-      expect(() => remoteWorkflowPhysicalOutput(result, { version: 1, outputKeys: ['another'] })).toThrow()
+      expect(remoteWorkflowPhysicalOutput(result, { version: 1, outputKeys: ['another'] })).toEqual({
+        kind: 'invalid-artifacts', result,
+        failure: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason: 'invalid_result' },
+      })
     }
-    expect(() => remoteWorkflowPhysicalOutput(native({ routing: { kind: 'finish' },
-      data: { latestDeliverable: {}, remainingFindings: [] } }), { version: 1, outputKeys: ['report'] })).toThrow()
+    const missing = native({ routing: { kind: 'finish' }, data: { latestDeliverable: {}, remainingFindings: [] } })
+    expect(remoteWorkflowPhysicalOutput(missing, { version: 1, outputKeys: ['report'] })).toEqual({
+      kind: 'invalid-artifacts', result: missing,
+      failure: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason: 'invalid_result' },
+    })
   })
   it.each([
     { ...published(), artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId: 'foreign-command' }] } },

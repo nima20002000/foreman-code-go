@@ -80,6 +80,10 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
         || receipt.terminal.resultDigest !== commandInputHash(terminal.result).slice('sha256:'.length)
         || receipt.terminal.kind !== (terminal.result.outcome==='succeeded'?'completed':terminal.result.outcome==='failed'?'failed':'cancelled')) return unavailable('terminal_result')
       if(readout.output.kind==='text-only'&&(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable('text_artifacts')
+      if (readout.output.kind === 'invalid-artifacts') {
+        if (!same(readout.output.failure, receipt.terminal.artifactValidationError)
+          || (receipt.terminal.artifactDigests?.length ?? 0) !== 0) return unavailable('artifact_validation')
+      } else if (receipt.terminal.artifactValidationError) return unavailable('artifact_validation')
     } else if(receipt.terminal.kind!=='cancelled'||!receipt.stopFence||readout.output||(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable('cancellation_closure')
   } else {
     if (readout.output || (readout.closure
@@ -294,6 +298,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (!capture || capture.owner !== owner) return unavailable('unbound_owner')
       const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
       const published=readout.output?.kind==='published-artifacts'
+      const invalidArtifacts = readout.output?.kind === 'invalid-artifacts'
       const check = () => {
         owner.assertOwned()
         if(retained){
@@ -367,7 +372,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         const identity={id:e.id,runId:e.runId,workflowNodeId:e.workflowNodeId,agentId:e.agentId,
           agentConfigurationVersionId:e.agentConfigurationVersionId,attempt:e.attempt,
           ...(e.workingDirectory?{workingDirectory:e.workingDirectory}:{}),...(e.runtimeDirectory?{runtimeDirectory:e.runtimeDirectory}:{})}
-        if(!published||!readout.closure||closure.closed_without_session||!same(closure.closed_reference,readout.session)
+        if((!published && !invalidArtifacts)||!readout.closure||closure.closed_without_session||!same(closure.closed_reference,readout.session)
           ||!same(closure.execution_identity,identity))return unavailable('stored_closure')
       }
       if (lifetime.lane) {
@@ -391,7 +396,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           return unavailable('writer_lane_captured_turn')
         }
       } else if (original.source.type === 'history' || original.source.type === 'event') return unavailable('missing_writer_lane')
-      if(published){if(!input.artifacts)return unavailable('artifact_verifier');await input.artifacts.assertPublications(sql,readout,capture.binding)}
+      if(published || invalidArtifacts){if(!input.artifacts)return unavailable('artifact_verifier');await input.artifacts.assertPublications(sql,readout,capture.binding)}
       check()
       // Publication is acknowledged only after this exact original was retained
       // by the existing canonical writer AND its owning transaction committed.

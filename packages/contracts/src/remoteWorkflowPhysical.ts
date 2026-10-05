@@ -3,7 +3,8 @@ import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeIn
   ExecutionResultSchema, AgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
 import { PlacementDigestSchema } from './nodePlacement.js'
-import { RemoteOperationReceiptSchema } from './remoteExecution.js'
+import { RemoteOperationReceiptSchema, WorkflowArtifactValidationFailureSchema,
+  type WorkflowArtifactValidationFailure } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
 import { WorkflowArtifactResultV1Schema, type WorkflowArtifactOutputsV1 } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
@@ -38,6 +39,12 @@ export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() 
  * publication receipts, saved declarations and original lifetime ownership must
  * still be verified by the receiver before accepting any artifact digest. */
 export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('invalid-artifacts'), result: z.lazy(() => ExecutionResultSchema),
+    failure: WorkflowArtifactValidationFailureSchema }).strict().superRefine((value, context) => {
+    if (value.result.outcome !== 'succeeded') {
+      context.addIssue({ code: 'custom', message: 'Artifact validation failure requires the original successful provider result.' })
+    }
+  }),
   z.object({ kind: z.literal('text-only'), result: z.lazy(() => ExecutionResultSchema).superRefine((value,context) => {
     if (value.output !== undefined && !z.object({ text: z.string() }).strict().safeParse(value.output).success)
       context.addIssue({ code: 'custom', message: 'Only the actual provider text-only result can attest zero result artifacts.' })
@@ -61,18 +68,24 @@ export type RemoteWorkflowPhysicalOutput = z.infer<typeof RemoteWorkflowPhysical
 
 /** Association metadata from original text; Main still verifies publication and bytes. */
 export function remoteWorkflowPhysicalOutput(result: z.infer<typeof ExecutionResultSchema>,
-  declaration?: WorkflowArtifactOutputsV1): RemoteWorkflowPhysicalOutput {
+  declaration?: WorkflowArtifactOutputsV1, failure?: WorkflowArtifactValidationFailure): RemoteWorkflowPhysicalOutput {
   if (!declaration || result.outcome !== 'succeeded') {
     return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'text-only', result })
   }
-  const native = z.object({ text: z.string() }).strict().parse(result.output)
-  const envelope = z.object({ artifactOutputs: WorkflowArtifactResultV1Schema }).passthrough().parse(JSON.parse(native.text))
-  const keys = new Set(envelope.artifactOutputs.outputs.map((output) => output.outputKey))
-  if (keys.size !== declaration.outputKeys.length || declaration.outputKeys.some((key) => !keys.has(key))) {
-    throw new Error('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+  if (failure) return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'invalid-artifacts', result, failure })
+  try {
+    const native = z.object({ text: z.string() }).strict().parse(result.output)
+    const envelope = z.object({ artifactOutputs: WorkflowArtifactResultV1Schema }).passthrough().parse(JSON.parse(native.text))
+    const keys = new Set(envelope.artifactOutputs.outputs.map((output) => output.outputKey))
+    if (keys.size !== declaration.outputKeys.length || declaration.outputKeys.some((key) => !keys.has(key))) {
+      throw new Error('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+    }
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'published-artifacts', result,
+      artifactOutputs: envelope.artifactOutputs })
+  } catch {
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'invalid-artifacts', result,
+      failure: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason: 'invalid_result' } })
   }
-  return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'published-artifacts', result,
-    artifactOutputs: envelope.artifactOutputs })
 }
 
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,

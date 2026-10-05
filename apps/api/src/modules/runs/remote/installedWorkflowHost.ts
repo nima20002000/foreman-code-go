@@ -53,7 +53,7 @@ import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNa
 import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
   type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
-import { workflowArtifactDigestsByOutputKey } from '@graphql/contracts/workflow-artifact-result'
+import { workflowArtifactDigestsByOutputKey, type WorkflowArtifactOutputsV1 } from '@graphql/contracts/workflow-artifact-result'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
@@ -79,7 +79,8 @@ export function captureInstalledWorkflowNativeOwner(registry:NativeProcessRegist
 /** Only matched provider history plus positive original registry closure can settle. Manager/process cleanup errors retain the original uncertainty. */
 export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOperationJournal;registry:NativeProcessRegistry;
   intent:DispatchIntent;history:NativeHistory;captured:InstalledWorkflowNativeOwner;
-  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactDigests?:string[]}):Promise<RemoteTerminalEvidence|null> {
+  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactOutputs?:WorkflowArtifactOutputsV1;
+  publications?:ReadonlyMap<string,AgentFilePublishResult['value']>}):Promise<RemoteTerminalEvidence|null> {
   const status=await input.journal.status(input.intent.operationId)
   if(status.status!=='known'||!isDeepStrictEqual(status.receipt.intent,input.intent)||!status.receipt.native
     ||status.receipt.native.sessionId!==input.session.nativeSessionId||input.captured.native.sessionId!==input.session.nativeSessionId
@@ -95,10 +96,28 @@ export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOp
   await input.manager.close(input.session)
   await input.registry.closeRegistration(input.registry.scope(input.captured.owner),input.captured.launch.launchId)
   if(!await input.registry.closeOwner(input.captured.owner))return null
+  const artifacts = result ? installedWorkflowArtifactSettlement(result, input.artifactOutputs, input.publications) : {}
   return RemoteTerminalEvidenceSchema.parse({kind:result?result.outcome==='succeeded'?'completed':result.outcome==='failed'?'failed':'cancelled':'cancelled',
     closureEvidenceDigest:digest({intent:input.intent,native:status.receipt.native,launch:input.captured.launch,physicalOwnerClosed:true}),
     ...(result?{result,resultDigest:digest(result)}:{}),
-    ...(input.artifactDigests ? { artifactDigests: input.artifactDigests } : {})})
+    ...artifacts})
+}
+
+function installedWorkflowArtifactSettlement(result: NonNullable<RemoteTerminalEvidence['result']>,
+  declaration?: WorkflowArtifactOutputsV1, publications?: ReadonlyMap<string, AgentFilePublishResult['value']>) {
+  const output = remoteWorkflowPhysicalOutput(result, declaration)
+  if (output.kind === 'invalid-artifacts') return { artifactValidationError: output.failure, artifactDigests: [] }
+  if (output.kind !== 'published-artifacts') return { artifactDigests: [] }
+  const digests: { outputKey: string; sha256: string }[] = []
+  for (const mapping of output.artifactOutputs.outputs) {
+    const publication = publications?.get(mapping.commandId)
+    if (!publication) {
+      return { artifactValidationError: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' as const,
+        reason: 'missing_publication' as const }, artifactDigests: [] }
+    }
+    digests.push({ outputKey: mapping.outputKey, sha256: publication.revision.sha256 })
+  }
+  return { artifactDigests: workflowArtifactDigestsByOutputKey(digests) }
 }
 
 /** Source verification uses W09's actual Main-authorized worker service. The runtime leaf is a separate anchored directory with an immutable operation receipt. */
@@ -359,7 +378,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           assertCurrent: async effectSignal => { await outputContext.assertCurrent(undefined, effectSignal); await outputPorts.assertCurrent(effectSignal) },
           storage: (prepared, pin) => {
             const storage = outputPorts.storage(prepared, pin)
-            if (!isDeepStrictEqual(storage.owner.binding, actual.context.binding)) unavailable('original_native_output_connection_conflict')
+            if (!('binding' in storage.owner)
+              || !isDeepStrictEqual(storage.owner.binding, actual.context.binding)) unavailable('original_native_output_connection_conflict')
             return storage
           },
           authorize: async (pin, operation, effectSignal) => {
@@ -438,19 +458,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!resident.native||resident.manager!==owner.manager)unavailable('original_native_owner_required')
           resident.retainedHistory=structuredClone(history)
           const state=await log.status(intent.operationId)
-          const result = history.terminalTurn?.result
           const declaration = resident.placement.payload.kind === 'agent' ? resident.placement.payload.artifactOutputs : undefined
-          const output = result ? remoteWorkflowPhysicalOutput(result, declaration) : undefined
-          const artifactDigests = output?.kind === 'published-artifacts'
-            ? workflowArtifactDigestsByOutputKey(output.artifactOutputs.outputs.map((mapping) => {
-              const publication = resident.publications.get(mapping.commandId)
-              if (!publication) unavailable('original_artifact_publication_missing')
-              return { outputKey: mapping.outputKey, sha256: publication!.revision.sha256 }
-            })) : []
           if(state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
             &&history.terminalTurn.providerId===state.receipt.native?.turnId))resident.launchDisabled=true
           const terminal=await settleInstalledWorkflowNativeOwner({journal:log,registry,intent,history,captured:resident.native,
-            manager:owner.manager,session:owner.session,artifactDigests})
+            manager:owner.manager,session:owner.session,publications:resident.publications,
+            ...(declaration ? { artifactOutputs: declaration } : {})})
           if(terminal) {
             const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
             if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
@@ -495,7 +508,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
               ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
               ...(receipt.terminal?.result ? { output: remoteWorkflowPhysicalOutput(receipt.terminal.result,
-                resident.placement.payload.kind === 'agent' ? resident.placement.payload.artifactOutputs : undefined) } : {})})
+                resident.placement.payload.kind === 'agent' ? resident.placement.payload.artifactOutputs : undefined,
+                receipt.terminal.artifactValidationError) } : {})})
             const assertOwnerCurrent = async () => {
               current(context.binding)
               await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
