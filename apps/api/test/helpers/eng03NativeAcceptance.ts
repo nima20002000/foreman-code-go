@@ -58,8 +58,17 @@ import { seedAgent3 } from './wave25Agent3.js'
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
-const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url))
-const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode'
+export function nativeAcceptanceBinaries(environment: NodeJS.ProcessEnv = process.env) {
+  if (environment.GRAPHQL_VERIFICATION_ROOT
+    && (!environment.ENG03_A_CODEX_BINARY || !environment.ENG03_A_OPENCODE_BINARY)) {
+    throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
+  }
+  return {
+    codexBinary: environment.ENG03_A_CODEX_BINARY
+      ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url)),
+    openCodeBinary: environment.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode',
+  }
+}
 
 export interface Eng03NativeRuntime {
   engine: LangGraphWorkflowEngine
@@ -137,10 +146,15 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
-  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
+  const { codexBinary, openCodeBinary } = nativeAcceptanceBinaries()
+  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
+    ?? (process.env.GRAPHQL_VERIFICATION_ROOT ? undefined : process.env.WAVE25_TEST_DATABASE_URL)
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
-  if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) {
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)
+    || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
+    || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(parsed.pathname.slice(1)))
+    || parsed.search || parsed.hash) {
     throw new Error('ENG03_A_TEST_DATABASE_URL must use a loopback database named for tests.')
   }
   const suffix = randomUUID().replaceAll('-', '')
