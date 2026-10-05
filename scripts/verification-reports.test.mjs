@@ -4,8 +4,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
 import { groupUsed } from './integration-process.mjs'
 import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess, sampleVerificationResources,
   validateVerificationContext, verificationCommand, verifyOfflinePreseed } from './verify-repository.mjs'
@@ -29,7 +27,9 @@ function context(suite = 'unit') {
       fingerprintDigest: digest, imageDigest: `sha256:${digest}`, toolchainDigest: digest,
       network: { schemaVersion: 2, mode: 'none' }, approvalId: id,
       approvalExpiresAt: '2026-10-05T13:00:00.000Z', qualificationExpiresAt: '2026-10-05T13:00:00.000Z' },
-  }, mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
+  }, privateGit: { sourceCommit: 'b'.repeat(40), generatedCommit: 'c'.repeat(40),
+    repositoryReceiptDigest: digest, configDigest: digest, indexDigest: digest },
+  mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
   limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
     logsArchiveBytes: 65536, logBytes: 8192 } }
 }
@@ -92,6 +92,7 @@ test('a native Node test process records each file and case, including skips', a
     writeFileSync(file, "import { test } from 'node:test'; test('passes', () => {}); test.skip('skips', () => {});\n")
     const code = await runVerificationCommand([process.execPath, '--test', file], {
       root: f.root, cwd: f.root, script: 'test', env: { ...process.env,
+        NODE_TEST_CONTEXT: 'child-v8',
         FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
         FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536' },
     })
@@ -140,8 +141,7 @@ test('finalization emits contract-valid summary, JUnit, Vitest JSON and a binary
       state: { startedAt: new Date(Date.now() - 1000).toISOString(), expected: [{ key: 'apps/api:build', kind: 'command' }] },
       terminalOutcome: 'passed', processStopped: true })
     assert.equal(summary.outcome, 'passed')
-    const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
-    const { JobVerificationReportSchema } = await import(pathToFileURL(require.resolve('@foreman-code/contracts/job-verification')).href)
+    const { JobVerificationReportSchema } = await import('../packages/contracts/dist/jobVerification.js')
     assert.equal(JobVerificationReportSchema.parse(summary).executionId, 'execution')
     for (const file of ['summary.json', 'junit.xml', 'vitest.json', 'logs.tar.gz']) assert.ok(existsSync(join(f.directory, file)))
     assert.equal(readFileSync(join(f.directory, 'logs.tar.gz'))[0], 0x1f)
@@ -253,25 +253,29 @@ test('measurement reads available cgroup metrics and denies missing or corrupt m
 })
 
 
-test('complete Node reports reconcile case totals and preserve nested names', () => withDirectory((directory) => {
-  const path = join(directory, 'node.ndjson')
-  const file = '/source/a.test.mjs'
-  const counts = { tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, cancelled: 0 }
-  const events = [
-    { type: 'test:start', file, name: 'suite', nesting: 0, timestamp: 1 },
-    { type: 'test:start', file, name: 'case', nesting: 1, timestamp: 2 },
-    { type: 'test:pass', file, name: 'case', nesting: 1, timestamp: 3, duration: 1 },
-    { type: 'test:pass', file, name: 'suite', nesting: 0, timestamp: 4, testType: 'suite' },
-    { type: 'test:summary', file, success: true, timestamp: 5, counts },
-    { type: 'test:summary', success: true, counts },
-  ]
-  const read = () => readNodeReport(path, { root: '/source', expectedFiles: ['a.test.mjs'], maxBytes: 4096 })
-  writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
-  const report = read()
-  assert.equal(report.complete, true)
-  assert.equal(report.totals.passed, 1)
-  assert.equal(report.files[0].assertionResults[0].fullName, 'suite > case')
-  events.at(-1).counts = { ...counts, failed: 1 }
-  writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
-  assert.equal(read().complete, false)
-}))
+test('complete Node reports reconcile case totals and preserve nested names', () => {
+  const f = fixture()
+  try {
+    const directory = f.directory
+    const path = join(directory, 'node.ndjson')
+    const file = '/source/a.test.mjs'
+    const counts = { tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, cancelled: 0 }
+    const events = [
+      { type: 'test:start', file, name: 'suite', nesting: 0, timestamp: 1 },
+      { type: 'test:start', file, name: 'case', nesting: 1, timestamp: 2 },
+      { type: 'test:pass', file, name: 'case', nesting: 1, timestamp: 3, duration: 1 },
+      { type: 'test:pass', file, name: 'suite', nesting: 0, timestamp: 4, testType: 'suite' },
+      { type: 'test:summary', file, success: true, timestamp: 5, counts },
+      { type: 'test:summary', success: true, counts },
+    ]
+    const read = () => readNodeReport(path, { root: '/source', expectedFiles: ['a.test.mjs'], maxBytes: 4096 })
+    writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
+    const report = read()
+    assert.equal(report.complete, true)
+    assert.equal(report.totals.passed, 1)
+    assert.equal(report.files[0].assertionResults[0].fullName, 'suite > case')
+    events.at(-1).counts = { ...counts, failed: 1 }
+    writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
+    assert.equal(read().complete, false)
+  } finally { f.close() }
+})

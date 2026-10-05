@@ -282,8 +282,11 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
   const directory = privateDirectory(env.FOREMAN_CODE_VERIFICATION_REPORT_DIR)
   const key = portionKey(relative(root, cwd).split(sep).join('/'), script)
   const logBytes = positiveInteger(Number(env.FOREMAN_CODE_VERIFICATION_LOG_BYTES), 'Log byte limit')
-  const options = { cwd, env, key, directory, logBytes }
   const nodeTests = basename(command[0]) === 'node' && command.includes('--test')
+  const commandEnvironment = { ...env }
+  // An independent suite must use its requested reporters, not its parent's test IPC channel.
+  if (nodeTests) delete commandEnvironment.NODE_TEST_CONTEXT
+  const options = { cwd, env: commandEnvironment, key, directory, logBytes }
   if (command[0] === 'vitest') {
     const inventory = portionPath(directory, key, 'inventory.json')
     const args = command.slice(1).filter((value) => value !== 'run')
