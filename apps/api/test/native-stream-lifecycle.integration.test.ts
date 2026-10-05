@@ -1,4 +1,4 @@
-import { makeCurrentWorkflowFixture, RunStartV3InputSchema, RunStartV3ResultSchema } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, RunStartV3InputSchema, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'

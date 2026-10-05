@@ -1,4 +1,4 @@
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { nativeEventBatches, NATIVE_EVENT_BATCH_SIZE } from './nativeEventBatches.js'
 
