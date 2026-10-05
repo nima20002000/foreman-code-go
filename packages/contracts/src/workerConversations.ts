@@ -155,9 +155,27 @@ export const WorkerConversationProfileFactsSchema = z.object({
 export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
 
 const callback = { admissionId: z.uuid(), binding: WorkerConversationBindingSchema }
+export const WorkerClaudeCallbackIdentitySchema = z.object({
+  ownerPrincipalId: id, attemptId: id, nativeSessionId: id, nativeMessageId: id,
+  clientCorrelationId: id, generation: id, toolUseId: id,
+  nativeTurnId: id.optional(), nativeRequestId: id.optional(), nativeRequestType: z.literal('can_use_tool').optional(),
+}).strict()
+export const WorkerClaudeAuthorityRequestSchema = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('admission') }).strict(),
+  z.object({ phase: z.literal('validate'), identity: WorkerClaudeCallbackIdentitySchema }).strict(),
+  z.object({ phase: z.literal('pending'), identity: WorkerClaudeCallbackIdentitySchema,
+    pending: z.lazy(() => PendingNativeInteractionSchema) }).strict(),
+  z.object({ phase: z.literal('response'), identity: WorkerClaudeCallbackIdentitySchema,
+    answer: z.object({ outcome: z.enum(['allow_once', 'deny', 'cancel', 'expired']), reason: z.string().optional() }).strict() }).strict(),
+])
+export type WorkerClaudeAuthorityRequest = z.infer<typeof WorkerClaudeAuthorityRequestSchema>
+export const WorkerClaudeCallbackAuthoritySchema = z.object({ ownerPrincipalId: id, attemptId: id }).strict()
+export const WorkerClaudeAuthorizationSchema = z.object({ authorized: z.literal(true) }).strict()
 export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('conversation.authorize'), ...callback, request: WorkerConversationRpcRequestSchema }).strict(),
   z.object({ method: z.literal('conversation.profile'), ...callback }).strict(),
+  z.object({ method: z.literal('conversation.claude-authority'), ...callback,
+    request: WorkerClaudeAuthorityRequestSchema }).strict(),
   z.object({ method: z.literal('conversation.session-observed'), ...callback,
     session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
   z.object({ method: z.literal('conversation.submitted'), ...callback, correlationId: id,

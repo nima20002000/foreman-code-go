@@ -4,6 +4,7 @@ import {
   WorkerConversationCallbackSchema, WorkerConversationRpcRequestSchema,
   type WorkerConversationRpcRequest, type WorkerConversationBinding,
   type WorkerConversationProfileFacts,
+  type WorkerClaudeAuthorityRequest,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
@@ -13,6 +14,7 @@ import { DomainError } from '../errors.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>
+  claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sessionObserved?(session: NativeSessionReference): Promise<void>
   submitted?(correlationId: string, identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>): Promise<void>
   settingsApplied?(): Promise<void>
@@ -24,12 +26,13 @@ export interface WorkerConversationChannel {
 interface Admission {
   request: WorkerConversationRpcRequest
   channel: WorkerConversationChannel
-  current(): Promise<void>
+  current(signal?: AbortSignal): Promise<void>
   callbacks: WorkerConversationCallbacks
   tail: Promise<unknown>
   session?: NativeSessionReference
   identities: Map<string, Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>>
   closed: boolean
+  claudeGeneration?: string
 }
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED', 'The original admitted worker chat request is unavailable.', 403)
@@ -40,23 +43,23 @@ export class MainWorkerConversationBridge {
   private readonly admissions = new Map<string, Admission>()
 
   capture(input: { request: WorkerConversationRpcRequest; channel: WorkerConversationChannel;
-    current(): Promise<void>; callbacks?: WorkerConversationCallbacks }) {
+    current(signal?: AbortSignal): Promise<void>; callbacks?: WorkerConversationCallbacks }) {
     const admissionId = randomUUID()
     const request = WorkerConversationRpcRequestSchema.parse({ ...structuredClone(input.request), admissionId })
     const admission: Admission = { request, channel: input.channel, current: input.current,
       callbacks: input.callbacks ?? {}, tail: Promise.resolve(), identities: new Map(), closed: false }
     this.admissions.set(admissionId, admission)
-    const assertCurrent = async () => {
+    const assertCurrent = async (signal?: AbortSignal) => {
       if (admission.closed || this.admissions.get(admissionId) !== admission) denied()
-      await admission.current()
+      await admission.current(signal)
       if (admission.closed || this.admissions.get(admissionId) !== admission) denied()
     }
     return {
       admissionId,
       async request(signal?: AbortSignal) {
-        await assertCurrent()
+        await assertCurrent(signal)
         const reply = await admission.channel.request(request, signal ? { signal } : {})
-        await assertCurrent()
+        await assertCurrent(signal)
         if (reply.bytes !== undefined) denied()
         return reply.payload
       },
@@ -72,7 +75,7 @@ export class MainWorkerConversationBridge {
     signal.throwIfAborted()
     if (admission.closed || !isDeepStrictEqual(admission.request.binding, binding)
       || !isDeepStrictEqual(admission.channel.binding, connection)) denied()
-    await admission.current()
+    await admission.current(signal)
     signal.throwIfAborted()
     if (admission.closed) denied()
   }
@@ -91,6 +94,28 @@ export class MainWorkerConversationBridge {
       const facts = await admission.callbacks.profile()
       await this.current(admission, callback.binding, connection, signal)
       return facts
+    }
+    if (callback.method === 'conversation.claude-authority') {
+      const request = admission.request
+      if (callback.binding.harness !== 'claude' || !admission.callbacks.claudeAuthority
+        || !['conversation.initial-turn', 'conversation.start-turn'].includes(request.method)) denied()
+      const authority = callback.request
+      if (authority.phase !== 'admission') {
+        const identity = authority.identity
+        const correlationId = 'correlationId' in request ? request.correlationId : undefined
+        const submission = correlationId && admission.identities.get(correlationId)?.nativeSubmission
+        const session = 'session' in request ? request.session : admission.session
+        if (!session || !submission || session.nativeSessionId !== identity.nativeSessionId
+          || submission.nativeSessionId !== identity.nativeSessionId
+          || submission.nativeMessageId !== identity.nativeMessageId
+          || submission.clientCorrelationId !== identity.clientCorrelationId
+          || identity.clientCorrelationId !== correlationId
+          || admission.claudeGeneration && admission.claudeGeneration !== identity.generation) denied()
+        admission.claudeGeneration ??= identity.generation
+      }
+      const result = await admission.callbacks.claudeAuthority(authority, signal)
+      await this.current(admission, callback.binding, connection, signal)
+      return result
     }
     const task = admission.tail.then(async () => {
       await this.current(admission, callback.binding, connection, signal)

@@ -14,6 +14,7 @@ import {
   WorkerConversationHistorySchema, WorkerConversationReceiptSchema, WorkerMcpInspectionSchema, WorkerResponseAvailabilitySchema,
   type WorkerConversationBinding, type WorkerConversationConfiguration, type WorkerConversationRpcRequest,
   type WorkerConversationProfileFacts,
+  type WorkerClaudeAuthorityRequest,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput,
   NativeInitialTurnInput, NativeCompactInput, NativeSteerInput, NativeResponseIdentity } from '../harnesses/port.js'
@@ -28,9 +29,10 @@ interface ManagerOptions {
   configuration: WorkerConversationConfiguration
   channel: WorkerConversationChannel
   bridge: MainWorkerConversationBridge
-  current(request: WorkerConversationRpcRequest): Promise<void>
+  current(request: WorkerConversationRpcRequest, signal?: AbortSignal): Promise<void>
   observeSession?(session: NativeSessionReference): Promise<void>
   profile?(): Promise<WorkerConversationProfileFacts>
+  claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
 }
 
@@ -52,8 +54,9 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   private capture(frame: WorkerConversationRpcRequest, callbacks: WorkerConversationCallbacks = {}) {
     const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
-      callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}), ...callbacks },
-      current: () => { this.lifetime.signal.throwIfAborted(); return this.options.current(frame) } })
+      callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}),
+        ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...callbacks },
+      current: signal => { this.lifetime.signal.throwIfAborted(); return this.options.current(frame, signal) } })
     this.leases.add(lease)
     return lease
   }

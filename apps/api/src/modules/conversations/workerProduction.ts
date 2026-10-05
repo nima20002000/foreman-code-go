@@ -15,6 +15,7 @@ import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.
 import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
 import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
+import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import type { PostgresAgentChatRepository } from './agentChatRepository.js'
 import { nativeCorrelation } from './operatorChatRepository.js'
@@ -126,7 +127,7 @@ export function createProductionWorkerConversations(input: {
         unavailable('The original worker conversation binding changed.')
       }
       const requestCallers = new WeakMap<WorkerConversationRpcRequest, string>()
-      const current = async (request: WorkerConversationRpcRequest) => {
+      const current = async (request: WorkerConversationRpcRequest, effectSignal?: AbortSignal) => {
         const live = await row(options.conversationId)
         const configurationId = live.kind === 'operator' ? live.operator_configuration_version_id : live.agent_configuration_version_id
         if (live.kind !== kind || configurationId !== configuration.id
@@ -176,13 +177,33 @@ export function createProductionWorkerConversations(input: {
             unavailable('The original Run native source is unavailable.')
           }
         }
-        const observation = { ...owner, observationPrincipalId: currentCaller, admissionSignal: signal }
+        const observation = { ...owner, observationPrincipalId: currentCaller,
+          ...(effectSignal ? { admissionSignal: effectSignal } : {}) }
         await profiles.revalidate(observation, accepted)
         const actual = input.endpoint().captureRequest(host.deviceId, 'execution-v1')
         if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
       }
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
         sourceWorkingDirectory: options.workingDirectory,
+        ...(configuration.harness.harness === 'claude' ? { claudeAuthority: async (
+          request: import('@foreman-code/contracts/remote-execution-rpc').WorkerClaudeAuthorityRequest,
+          effectSignal: AbortSignal) => {
+          effectSignal.throwIfAborted()
+          const context = request.phase === 'admission' ? undefined : request.identity
+          const authority = new PostgresClaudeInteractionAuthority(input.pool, owner, {
+            nativeCallbackContext: (sessionId, toolUseId) => context
+              && context.nativeSessionId === sessionId && context.toolUseId === toolUseId ? context : undefined,
+          })
+          if (request.phase === 'admission') return authority.callbackAdmission()
+          if (request.phase === 'pending') await authority.publishPending(request.identity, request.pending)
+          else if (request.phase === 'response') await authority.validateResponse(request.identity, {
+            outcome: request.answer.outcome,
+            ...(request.answer.reason !== undefined ? { reason: request.answer.reason } : {}),
+          })
+          else await authority.validate(request.identity)
+          effectSignal.throwIfAborted()
+          return { authorized: true }
+        } } : {}),
         profile: async () => {
           const installation = input.registry.pinOverride(accepted.override).installation
           let qualification: HarnessQualification | null = null

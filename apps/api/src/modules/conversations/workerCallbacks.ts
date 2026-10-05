@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { WorkerConversationProfileFactsSchema,
   type WorkerConversationRpcRequest, type WorkerConversationProfileFacts } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerClaudeAuthorityRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationHostPorts } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
@@ -12,6 +13,8 @@ export function workerConversationCallbacks(input: {
   capture(): WorkerConversationChannel | undefined
 }): Pick<WorkerConversationHostPorts, 'authorize' | 'observeSession' | 'observeSubmission' | 'observeSettings'> & {
   profile(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<WorkerConversationProfileFacts>
+  claudeAuthority(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
+    signal: AbortSignal): Promise<unknown>
 } {
   const request = async (source: WorkerConversationRpcRequest, payload: Record<string, unknown>, signal: AbortSignal) => {
     if (!source.admissionId) throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED',
@@ -29,6 +32,8 @@ export function workerConversationCallbacks(input: {
     return reply.payload
   }
   return {
+    claudeAuthority: (source, authority, signal) => request(source,
+      { method: 'conversation.claude-authority', request: authority }, signal),
     profile: async (source, signal) => WorkerConversationProfileFactsSchema.parse(
       await request(source, { method: 'conversation.profile' }, signal)),
     authorize: async (source, connection, signal) => {

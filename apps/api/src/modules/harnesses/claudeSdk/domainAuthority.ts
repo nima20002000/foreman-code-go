@@ -176,11 +176,26 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     if (this.binding.kind !== 'workflow') {
       const row = await this.chat(identity.attemptId)
       if (!row.provider_version) denied()
-      const pending = this.bridge.pendingInteractions({ harness: 'claude', nativeSessionId: identity.nativeSessionId, providerVersion: row.provider_version })[0]
+      const pending = this.bridge.pendingInteractions({ harness: 'claude', nativeSessionId: identity.nativeSessionId,
+        providerVersion: row.provider_version }).find(item => item.turn.nativeRequestId === identity.nativeRequestId)
       if (!pending) denied()
-      await this.binding.repository.pending(this.binding.conversationId, identity.attemptId, pending)
+      await this.publishPending(identity, pending)
     }
     return this.bridge.waitForResponse(identity)
+  }
+  /** The paired worker retains the SDK callback; Main publishes its existing conversation interaction. */
+  async publishPending(identity: ClaudeCallbackIdentity, raw: unknown): Promise<void> {
+    await this.validate(identity)
+    if (this.binding.kind === 'workflow') denied()
+    const pending = PendingNativeInteractionSchema.parse(raw)
+    const row = await this.chat(identity.attemptId)
+    const request = pending.request as Record<string, unknown>
+    if (!identity.nativeRequestId || pending.session.harness !== 'claude'
+      || pending.session.nativeSessionId !== identity.nativeSessionId || pending.session.providerVersion !== row.provider_version
+      || pending.turn.nativeRequestId !== identity.nativeRequestId || pending.nativeRequestType !== identity.nativeRequestType
+      || request.toolUseId !== identity.toolUseId || request.generation !== identity.generation
+      || request.nativeMessageId !== identity.nativeMessageId || request.attemptId !== identity.attemptId) denied()
+    await this.binding.repository.pending(this.binding.conversationId, identity.attemptId, pending)
   }
   async validateResponse(identity: ClaudeCallbackIdentity, answer: ClaudeInteractionAnswer): Promise<void> {
     await this.validate(identity)

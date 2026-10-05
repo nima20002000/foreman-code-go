@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { PendingNativeInteractionSchema } from '@foreman-code/contracts'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { createPostgresClaudeInteractionBridge, PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
@@ -58,6 +59,26 @@ async function offered(f: ReturnType<typeof fixture>) {
   const descriptor = (await f.interactionPort.pending(session))!
   return { pending, descriptor }
 }
+
+it.each(['operator', 'agent'] as const)('publishes an owned worker %s callback through the existing pending record', async kind => {
+  const f = fixture(kind)
+  const pending = PendingNativeInteractionSchema.parse({ session,
+    turn: { nativeMessageId: identity.nativeMessageId, nativeRequestId: identity.nativeRequestId },
+    nativeRequestType: identity.nativeRequestType,
+    request: { toolName: 'Read', input: { path: 'selected-file' }, nativeMessageId: identity.nativeMessageId,
+      toolUseId: identity.toolUseId, generation: identity.generation, attemptId: identity.attemptId },
+    responseOptions: [{ optionId: 'allow_once', semantic: 'approve_once', label: 'Allow once', persistence: 'request',
+      affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }] })
+  expect(f.bridge.pendingInteractions(session)).toHaveLength(0)
+  await f.authority.publishPending(identity, pending)
+  expect(f.row.pending_interaction).toEqual(pending)
+  expect(f.bridge.pendingInteractions(session)).toHaveLength(0)
+  await expect(f.authority.publishPending(identity, { ...pending,
+    request: { ...pending.request, generation: 'another-query' } })).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
+  expect(f.row.pending_interaction).toEqual(pending)
+  f.principals.get('sender')!.grants[0]!.actions = [kind === 'operator' ? 'operator_chat:read' : 'agent_chat:read']
+  await expect(f.authority.publishPending(identity, pending)).rejects.toMatchObject({ status: 403 })
+})
 it.each(['operator', 'agent'] as const)('derives actual %s sender/attempt and persists pending through its existing repository', async (kind) => {
   const f = fixture(kind)
   expect(await f.callbackAdmission()).toEqual({ ownerPrincipalId: 'sender', attemptId: 'model-request' })
