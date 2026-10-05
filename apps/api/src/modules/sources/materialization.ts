@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -12,6 +12,14 @@ import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
+/** Exclusive-write roots admit one execution at a time. Read-only roots give
+ * every execution its own private copy, so each execution owns a separate
+ * claim; a retained Orchestrator cannot block another Agent on the same root.
+ * Attempts of one execution still share and serialize on that claim. */
+function claimName(binding: RootBinding, executionId: string): string {
+  if (binding.accessMode === 'exclusive-write') return `binding-${binding.rootId}.lock`
+  return `binding-${binding.rootId}-${createHash('sha256').update(executionId).digest('hex')}.lock`
+}
 /** Lock the anchored directory inode, never a replaceable lock pathname. Linux
  * flock is shared across processes and automatically released on process death. */
 async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>, nonBlocking = false): Promise<T> {
@@ -53,7 +61,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     this.active++
     const signal = AbortSignal.any([AbortSignal.timeout(SOURCE_LIMITS.preparationMs), ...(input.signal ? [input.signal] : [])])
     let root: FileHandle | undefined, reservation: FileHandle | undefined, tree: FileHandle | undefined, lock: FileHandle | undefined
-    const id = randomUUID(), lockName = `binding-${binding.rootId}.lock`
+    const id = randomUUID(), lockName = claimName(binding, attempt.executionId)
     try {
       signal.throwIfAborted()
       root = await openPrivateRoot(binding.canonicalPath)
@@ -112,7 +120,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     const root = await openPrivateRoot(binding.canonicalPath)
     try {
       if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-      const lock = await open(anchored(root, `binding-${binding.rootId}.lock`), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+      const lock = await open(anchored(root, claimName(binding, attempt.executionId)), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
         throw error
       })
@@ -232,7 +240,7 @@ async function archiveMaterializationClaim(receipt: MaterializationReceipt,
     if (!equal(await identity(root), options.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
     await withClaimLock(root, async () => {
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
-      const name = `binding-${binding.rootId}.lock`, releasedName = 'released-claim.json'
+      const name = claimName(binding, receipt.executionId), releasedName = 'released-claim.json'
       const directory = await openChildDirectory(root, receipt.materializationId)
       const validateClaim = async (lock: FileHandle): Promise<void> => {
         const stat = await lock.stat()
@@ -365,7 +373,7 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
       if (!await nativeClosed() || !await preparationChildrenClosed(binding.canonicalPath))
         throw new SourceError('source-reconciliation-unconfirmed', 'A native owner or source process is live or uncertain.')
       await reauthorize()
-      const lockName = `binding-${binding.rootId}.lock`, archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
+      const lockName = claimName(binding, owner.attempt.executionId), archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
       let materializationId = owner.record?.receipt.materializationId ?? null
       if (current) {
         const claim = current as { version: number; materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }

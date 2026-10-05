@@ -32,7 +32,7 @@ function deferred() {
   const promise = new Promise<void>(done => { resolve = done })
   return { promise, resolve }
 }
-async function fixture() {
+async function fixture(accessMode: RootBinding['accessMode'] = 'exclusive-write') {
   const root = await mkdtemp('/tmp/source-claims-'); roots.push(root); await chmod(root, 0o700)
   const bytes = Buffer.from('accepted source\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
@@ -41,7 +41,7 @@ async function fixture() {
   const handle = await openPrivateRoot(root), filesystem = await identity(handle); await handle.close()
   const binding: RootBinding = { version: 1, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
     workspaceId: randomUUID(), rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: root,
-    filesystem, accessMode: 'exclusive-write', snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+    filesystem, accessMode, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const attempt: MaterializationAttempt = { placementHash: 'a'.repeat(64), executionId: randomUUID(), attemptId: randomUUID(), keyRevision: null, authorizationRevision: null }
   const materializer = () => new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {})
   return { root, bytes, manifest, binding, attempt, materializer }
@@ -66,6 +66,30 @@ it('serializes a delayed duplicate release with successor acquisition and preser
   const claim = JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8')) as { materializationId: string }
   expect(claim.materializationId).toBe(successor.materializationId)
   await expect(f.materializer().prepare({ ...next, attempt: { ...next.attempt, attemptId: randomUUID() } })).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+})
+
+it('lets another execution prepare a read-only root while the first execution keeps its claim', async () => {
+  const f = await fixture('read-only'), first = await f.materializer().prepare(f)
+  const other = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+  const second = await f.materializer().prepare(other)
+  expect(second.materializationId).not.toBe(first.materializationId)
+  expect(await readFile(join(f.root, second.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
+  // Each original attempt still recovers only its own claim and copy.
+  expect(await f.materializer().prepare(f)).toEqual(first)
+  expect(await f.materializer().prepare(other)).toEqual(second)
+  await expect(f.materializer().prepare({ ...f, attempt: { ...f.attempt, attemptId: randomUUID() } }))
+    .rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+  await releaseMaterializationClaim(first, async () => 'released')
+  expect(await f.materializer().prepare(other)).toEqual(second)
+  await releaseMaterializationClaim(second, async () => 'released')
+})
+
+it('keeps an exclusive-write root owned by one execution at a time', async () => {
+  const f = await fixture('exclusive-write'), first = await f.materializer().prepare(f)
+  const other = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+  await expect(f.materializer().prepare(other)).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+  await releaseMaterializationClaim(first, async () => 'released')
+  expect((await f.materializer().prepare(other)).executionId).toBe(other.attempt.executionId)
 })
 
 it('holds a kernel lock across validated claim deletion, including other processes', async () => {
