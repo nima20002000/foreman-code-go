@@ -82,6 +82,7 @@ async function deliverClaim(deps: ApprovalRuntimeDependencies, current: DurableI
   const writer = attached.manager
   const dispatchSignal = attached.signal ? AbortSignal.any([signal, attached.signal]) : signal
   return deps.repository.delivery.finish(claim, (interaction, writeSignal) => withOriginalInteractionDeliveryClaim<NativeDeliveryOutcome>({ ...claim, interaction }, async () => {
+    let phase = 'respond'
     try {
       // Revalidate permission/location AFTER the writer's control queue, using
       // its owned cancellation signal. The final SQL fence check commits before
@@ -91,6 +92,7 @@ async function deliverClaim(deps: ApprovalRuntimeDependencies, current: DurableI
         await deps.nativeRuntime.validateInteraction!(interaction, ownedSignal)
         await deps.repository.delivery.assertNativeDispatch(claim)
       }, writeSignal)
+      phase = 'read-receipt'
       const cached = deps.journal?.read(expectedSession, { nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType, option })
       if (cached) return { state: 'delivered', evidence: cached }
       const history = attached.manager.reconcileResponse
@@ -102,7 +104,8 @@ async function deliverClaim(deps: ApprovalRuntimeDependencies, current: DurableI
       const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
       componentLogger('engine').warn({ runId: interaction.runId,
         code: typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,100}$/.test(code) ? code : 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN',
-        errorType: error instanceof Error ? error.name : 'UnknownError' }, 'Native approval delivery is uncertain.')
+        phase, errorType: error instanceof Error ? error.name : 'UnknownError',
+        errorLocation: error instanceof Error ? error.stack?.split('\n')[1]?.trim() : undefined }, 'Native approval delivery is uncertain.')
       return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' }
     }
   }), dispatchSignal)

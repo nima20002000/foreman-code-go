@@ -149,7 +149,7 @@ export async function remoteReviewProduction() {
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
     let main: ChildProcess | undefined
     let mainFailure = ''
-    const failures: Array<{ code: string; runId: string | null }> = []
+    const failures: Array<{ code: string; runId: string | null; phase?: unknown; errorType?: unknown; errorLocation?: unknown }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!main || main.exitCode !== null || main.signalCode !== null) return
@@ -176,10 +176,10 @@ export async function remoteReviewProduction() {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
-          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown } }
+          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown }; phase?: unknown; errorType?: unknown; errorLocation?: unknown }
           const code = event.err?.code ?? event.code
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
-          failures.push({ code, runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
+          failures.push({ code, phase: event.phase, errorType: event.errorType, errorLocation: event.errorLocation, runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
           if (failures.length > 32) failures.shift()
         }
       })

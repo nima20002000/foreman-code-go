@@ -26,8 +26,14 @@ process.on('message', async message => {
     process.send?.({ kind: 'reconciled', requestId: message.requestId })
   } catch (error) {
     reconciliationFailure = error
+    const checkpointErrors = []
+    for (const { id } of (await database.pool.query('select id from runs')).rows) {
+      const tuple = await checkpoints.saver.getTuple({ configurable: { thread_id: id } })
+      checkpointErrors.push(...(tuple?.pendingWrites ?? []).filter(write => write[1] === '__error__')
+        .map(write => ({ runId: id, error: write[2] })))
+    }
     process.send?.({ kind: 'reconcile-failed', requestId: message.requestId,
-      message: error.message, code: error.code, stack: error.stack, details: error.details })
+      message: error.message, code: error.code, stack: error.stack, details: { original: error.details, checkpointErrors } })
   }
 })
 async function close() {
