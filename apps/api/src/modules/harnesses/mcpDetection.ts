@@ -7,6 +7,7 @@ import {
   type ScopedMcpDetection,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
+import type { ChildProcessEnvironment } from './port.js'
 
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
@@ -296,6 +297,8 @@ export interface PreparedExecutionCredential {
 export interface ExecutionCredentialProvider {
   /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
+  /** Verify the retained original environment without issuing another process credential. */
+  restore?(executionId: string, environment: ChildProcessEnvironment): Promise<IssuedWorkerCredential>
   /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */
   renew?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string>
   revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void>

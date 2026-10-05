@@ -78,6 +78,40 @@ it('renews an expired scoped token while its exact execution lease is still owne
   expect(after.revoked_at).toBe(null)
 })
 
+it('restores the original native credential after service restart without allocating or rotating it', async () => {
+  const issued = await credentials.issueForExecution(execution.id)
+  const before = (await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]
+  const restarted = new WorkerCredentialService(pool, new PostgresAccessService(pool), 60_000)
+  expect(await restarted.restoreForExecution(execution.id, issued.environment)).toEqual(issued)
+  expect((await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]).toEqual(before)
+  expect((await pool.query('select principal_id from worker_credential_bindings where execution_id=$1',
+    [execution.id])).rows).toEqual([{ principal_id: issued.principalId }])
+  await expect(restarted.restoreForExecution('another-execution', issued.environment))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+  await expect(restarted.restoreForExecution(execution.id, { ...issued.environment, agentId: 'agent-reviewer' }))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+  await expect(restarted.restoreForExecution(execution.id, { ...issued.environment,
+    variables: { ...issued.environment.variables, EXTRA: 'unexpected' } }))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+})
+
+it('denies credential restoration after revocation, expiry or Stop', async () => {
+  const revoked = await credentials.issueForExecution(execution.id)
+  await credentials.revoke(revoked)
+  await expect(credentials.restoreForExecution(execution.id, revoked.environment))
+    .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  const expired = await credentials.issueForExecution(execution.id)
+  await pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [expired.principalId])
+  await expect(credentials.restoreForExecution(execution.id, expired.environment))
+    .rejects.toMatchObject({ code: 'AUTH_EXPIRED' })
+  const stopped = await credentials.issueForExecution(execution.id)
+  await budgets.stop(execution.id)
+  await expect(credentials.restoreForExecution(execution.id, stopped.environment))
+    .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+})
+
 for (const revokedTable of ['management_principals', 'worker_credential_bindings'] as const) {
   it(`cannot revive a credential revoked in ${revokedTable}`, async () => {
     const issued = await credentials.issueForExecution(execution.id)
