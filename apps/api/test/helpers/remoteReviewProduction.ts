@@ -157,7 +157,7 @@ export async function remoteReviewProduction() {
       await new Promise<void>((resolve, reject) => {
         stopped.once('error', reject)
         stopped.once('exit', code => {
-          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Production Main cleanup failed: ${mainFailure}`))
+          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Production Main cleanup failed: ${mainFailure}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`))
           else resolve()
         })
         stopped.kill(signal)
@@ -176,10 +176,11 @@ export async function remoteReviewProduction() {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
-          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown }; phase?: unknown; errorType?: unknown; errorLocation?: unknown }
+          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown; phase?: unknown; errorType?: unknown; errorLocation?: unknown }
           const code = event.err?.code ?? event.code
+            ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
-          failures.push({ code, phase: event.phase, errorType: event.errorType, errorLocation: event.errorLocation, runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
+          failures.push({ code, phase: event.phase, errorType: event.errorType, errorLocation: event.errorLocation ?? (typeof event.err?.stack === 'string' ? event.err.stack.split('\n')[1]?.trim() : undefined), runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
           if (failures.length > 32) failures.shift()
         }
       })
