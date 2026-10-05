@@ -31,7 +31,10 @@ export async function sch11Fixture(database: Sch11Database, initialNow = '2030-0
   initialFixture = makeCurrentWorkflowFixture(randomUUID())) {
   const projectRoot = join(database.directory, 'projects'), runtimeRoot = join(database.directory, 'runtime')
   const directory = join(projectRoot, randomUUID())
-  await Promise.all([mkdir(directory, { recursive: true }), mkdir(runtimeRoot, { recursive: true })])
+  await Promise.all([
+    mkdir(directory, { recursive: true, mode: 0o700 }),
+    mkdir(runtimeRoot, { recursive: true, mode: 0o700 }),
+  ])
   const fixture = await seedAgent3(database.pool, directory, initialFixture, { run: false })
   const scope = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId }
   const identity = await stat(directory, { bigint: true })
