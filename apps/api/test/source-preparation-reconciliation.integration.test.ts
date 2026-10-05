@@ -151,7 +151,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const commandId=randomUUID();commandsToReconcile.push(commandId)
       // Retained preparations use the original domain path; HTTP retries preserve that identity.
       await expect(jobs.start(writer.principal, 'http', workspaceId,
-        { commandId, definitionId, expectedRevision: 1 })).rejects.toBeInstanceOf(DomainError)
+        { commandId, definitionId, expectedRevision: 1 })).rejects.toMatchObject({
+          code: i === 0 ? 'SOURCE_REPOSITORY_TIMEOUT' : 'SOURCE_ROOT_OWNED',
+        })
       const result=await start(commandId);expect(result.statusCode).toBeGreaterThanOrEqual(400)
     }
   },60000)

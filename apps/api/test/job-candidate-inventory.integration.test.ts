@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@graphql/contracts/workspace-root-policies'
 import { revokeDevice } from '@graphql/contracts/device-identity'
@@ -22,7 +22,7 @@ import { jobRuntimeMetadataFixture } from './helpers/jobRuntimeMetadataFixture.j
 describe.skipIf(!postgresEnabled)('canonical build candidate inventory', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
   let principal: Awaited<ReturnType<PostgresAccessService['issue']>>['principal']
-  beforeAll(async () => {
+  beforeEach(async () => {
     database = await currentDatabase()
     principal = (await new PostgresAccessService(database.pool).issue({ name: 'Inventory writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {}, actions: [
@@ -30,7 +30,7 @@ describe.skipIf(!postgresEnabled)('canonical build candidate inventory', () => {
         'sources:read', 'source_roots:read', 'settings:read', 'settings:update', 'workspace_locations:read',
       ] }] })).principal
   }, 60000)
-  afterAll(async () => { await database?.close() })
+  afterEach(async () => { await database?.close() })
   async function fixture() {
     const f = await retainedJobFixture(database.pool, database.directory, principal)
     const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })

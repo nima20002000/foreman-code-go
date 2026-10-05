@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { createProductionJobs } from '../src/modules/jobs/production.js'
 import { jobComputerHasCapacity } from '../src/modules/jobs/computerSelection.js'
@@ -15,7 +15,7 @@ import { retainedJobFixture } from './helpers/retainedJobFixture.js'
 describe.skipIf(!postgresEnabled)('production Job closure and retained-attempt recovery', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
   let principal: Awaited<ReturnType<PostgresAccessService['issue']>>['principal']
-  beforeAll(async () => {
+  beforeEach(async () => {
     database = await currentDatabase()
     principal = (await new PostgresAccessService(database.pool).issue({ name: 'Recovery writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {}, actions: [
@@ -23,7 +23,7 @@ describe.skipIf(!postgresEnabled)('production Job closure and retained-attempt r
         'sources:read', 'source_roots:read', 'settings:read', 'settings:update', 'workspace_locations:read',
       ] }] })).principal
   }, 60000)
-  afterAll(async () => { await database?.close() })
+  afterEach(async () => { await database?.close() })
 
   it.each(['cancelled', 'disabled'] as const)('settles %s before delivery and recovers interrupted source closure', async reason => {
     const f = await retainedJobFixture(database.pool, database.directory, principal)

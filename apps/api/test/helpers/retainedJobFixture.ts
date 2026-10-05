@@ -150,26 +150,35 @@ export async function retainedJobFixture(pool: pg.Pool, directory: string, princ
   const forbidden = async (): Promise<never> => { throw new Error('Fixture seeding cannot dispatch a Job') }
   const dispatch = new PostgresJobDispatch(pool, { deliver: forbidden, reconcile: forbidden, control: forbidden },
     { revalidate: forbidden, authorizeControl: forbidden, observe: forbidden }, new WorkerExecutionPolicy())
-  const binding = await dispatch.accept(pool, { workspaceId, executionId, attemptId, operationId,
-    spec: acceptedSpec, workflow: null, principal })
-  const execution = JobExecutionSchema.parse({ schemaVersion: 1, id: executionId, workspaceId, acceptedSpec,
-    ...binding, workflow: null, process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false },
-    transport: 'unknown', publication: 'pending', startedAt: null, finishedAt: null, lastSeenAt: null,
-    resultIssue: null, cancelRequestedAt: null, createdAt: now, updatedAt: now })
-  record.finalDispatchBindingHash = acceptedSpec.bindingHash
-  await pool.query(`insert into job_executions
-    (id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by)
-    values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`, [executionId, workspaceId, definition.versionId,
-    operationId, attemptId, JSON.stringify(execution), JSON.stringify(acceptedSpec), principal.id])
-  await pool.query(`insert into source_execution_materializations
-    (materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)
-    values($1,$2,$3,$4,$5,$6,1,$7,$8::jsonb,'prepared')`, [receipt.materializationId, workspaceId,
-    executionId, attemptId, operationId, root.binding.rootId, reservation.reservationId, JSON.stringify(record)])
-  await pool.query(`insert into job_computer_selections
-    (execution_id,workspace_id,definition_version_id,attempt_id,operation_id,host_key,spec,limits,selection,source_scope,source_bytes)
-    values($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,2097152)`,
-  [executionId, workspaceId, definition.versionId, attemptId, operationId, `${mainId}:main`, JSON.stringify(spec),
-    JSON.stringify(profile.limits), JSON.stringify({ mode: 'fixed', buildPriority: 100, settingsRevision: 1 }), scopeId])
+  const sql = await pool.connect()
+  let execution: ReturnType<typeof JobExecutionSchema.parse>
+  try {
+    await sql.query('begin')
+    const binding = await dispatch.accept(sql, { workspaceId, executionId, attemptId, operationId,
+      spec: acceptedSpec, workflow: null, principal })
+    execution = JobExecutionSchema.parse({ schemaVersion: 1, id: executionId, workspaceId, acceptedSpec,
+      ...binding, workflow: null, process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false },
+      transport: 'unknown', publication: 'pending', startedAt: null, finishedAt: null, lastSeenAt: null,
+      resultIssue: null, cancelRequestedAt: null, createdAt: now, updatedAt: now })
+    record.finalDispatchBindingHash = acceptedSpec.bindingHash
+    await sql.query(`insert into job_executions
+      (id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by)
+      values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`, [executionId, workspaceId, definition.versionId,
+      operationId, attemptId, JSON.stringify(execution), JSON.stringify(acceptedSpec), principal.id])
+    await sql.query(`insert into source_execution_materializations
+      (materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)
+      values($1,$2,$3,$4,$5,$6,1,$7,$8::jsonb,'prepared')`, [receipt.materializationId, workspaceId,
+      executionId, attemptId, operationId, root.binding.rootId, reservation.reservationId, JSON.stringify(record)])
+    await sql.query(`insert into job_computer_selections
+      (execution_id,workspace_id,definition_version_id,attempt_id,operation_id,host_key,spec,limits,selection,source_scope,source_bytes)
+      values($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,2097152)`,
+    [executionId, workspaceId, definition.versionId, attemptId, operationId, `${mainId}:main`, JSON.stringify(spec),
+      JSON.stringify(profile.limits), JSON.stringify({ mode: 'fixed', buildPriority: 100, settingsRevision: 1 }), scopeId])
+    await sql.query('commit')
+  } catch (error) {
+    await sql.query('rollback')
+    throw error
+  } finally { sql.release() }
   return { mainId, workspaceId, runtimeRoot, commands, locations, profile, retained, root, spec,
     definition, execution, record, sourceRuntime }
 }
