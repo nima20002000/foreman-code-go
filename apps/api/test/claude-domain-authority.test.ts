@@ -228,6 +228,6 @@ for (const kind of ['operator', 'agent'] as const) it(`admits ${kind} profile ob
   const authority = new PostgresClaudeInteractionAuthority({ query: f.query } as unknown as pg.Pool, binding, f.manager)
   await expect(authority.profileAdmission()).resolves.toBeUndefined()
   await expect(authority.callbackAdmission()).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
-  f.principals.get('sender')!.grants[0]!.actions = []
+  f.principals.get('sender')!.grants = []
   await expect(authority.profileAdmission()).rejects.toMatchObject({ status: 403 })
 })

@@ -120,6 +120,8 @@ export class F1Store {
       this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
       return result([], 1)
     }
+    // This message fixture has no admitted compaction command receipts.
+    if (sql.startsWith("select result#>'{state,compaction}' as compaction from management_command_receipts")) return result()
     if (sql.startsWith('with candidates as materialized ( select r.principal_id,r.operation,r.command_id')) return result() // No accepted controls in this fixture.
     if (sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')) {
       assert.equal(values[0], 'agent')
