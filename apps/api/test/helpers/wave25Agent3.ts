@@ -17,6 +17,7 @@ import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { assertFixtureResourcesSettled } from '../../../../scripts/test-resources.mjs'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
@@ -32,14 +33,22 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }
   const schema = `wave25_a3_${randomUUID().replaceAll('-', '')}`
+  const started = performance.now()
   const admin = new pg.Pool({ connectionString: url, max: 1 })
   await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString: url, max: 10,
     options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const directory = await privateFixtureDirectory('wave25-a3-')
+  const beforeMigration = performance.now()
   try { await applyApplicationMigrations(pool) } catch (error) {
     await pool.end(); await dropFixtureSchema(admin, schema); await admin.end()
     await removeFixtureDirectory(directory); throw error
+  }
+  if (process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE) {
+    await writeNativeAcceptanceEvidence(`fixture-setup-${randomUUID()}.json`, {
+      kind: 'workflow-database-fixture', schema,
+      setupMs: beforeMigration - started, migrationMs: performance.now() - beforeMigration,
+    })
   }
   return {
     pool, schema, directory,
