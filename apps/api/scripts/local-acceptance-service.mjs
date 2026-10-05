@@ -60,7 +60,11 @@ async function main() {
       // Do not load .env/.env.local from the checkout or write its Vite cache.
       envDir: join(state, 'empty-env'), cacheDir: join(state, 'vite-cache'), logLevel: 'silent',
       server: { host: '127.0.0.1', port: Number(process.env.ENG07_WEB_PORT), strictPort: true, open: false } })
-    close = () => server.close()
+    close = async () => {
+      // Finish HTML-triggered import warmup before close cancels Vite's dependency crawler.
+      await server.waitForRequestsIdle()
+      await server.close()
+    }
     if (closing) return close()
     await server.listen()
     send({ type: 'ready' })
