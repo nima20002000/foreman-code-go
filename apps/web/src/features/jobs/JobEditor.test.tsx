@@ -54,6 +54,29 @@ it('edits a saved verification definition while build and verification policies 
   await userEvent.click(screen.getByRole('button', { name: 'Save job definition' }))
   expect(saved).toEqual([expect.objectContaining({ expectedRevision: 1, spec: verificationDefinition.spec })])
 })
+
+it('keeps build choices usable and explains an insufficient saved verification report budget', async () => {
+  const template = { ...verificationTemplate, ready: false, outputs: null,
+    policy: { ...verificationTemplate.policy, maxOutputBytes: 3 }, setupIssue: 'report_budget_insufficient' }
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [definition.spec.source],
+    policies: [definition.spec.policy], autoPolicies: [{ policy: jobPolicyRequirements(definition.spec.policy),
+      limits: verificationTemplate.resources.limits }], verificationTemplates: [template] })))
+  render(<QueryClientProvider client={new QueryClient()}>
+    <JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} />
+  </QueryClientProvider>)
+  await screen.findByRole('option', { name: /Image/ })
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Job template' }),
+    screen.getByRole('option', { name: /Repository unit/ }))
+  expect(screen.getByText('Report budget too small')).toBeInTheDocument()
+  expect(screen.getByText(/Four required reports cannot fit the saved 3-byte output allowance/)).toBeInTheDocument()
+  expect(screen.queryByText('Choices unavailable')).toBeNull()
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Job template' }), 'custom')
+  expect(screen.queryByText('Report budget too small')).toBeNull()
+  expect(screen.getByRole('option', { name: /Image/ })).toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: 'Exact executable and arguments (JSON array)' }))
+    .toHaveValue(JSON.stringify(['corepack', 'pnpm', 'build']))
+  expect(screen.getByRole('textbox', { name: 'Output policy (JSON array)' })).toHaveValue('[]')
+})
 it('restores the saved Auto policy and limits when keeping runtime requirements', async () => {
   const limits = { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 }
   const policy = jobPolicyRequirements(definition.spec.policy)

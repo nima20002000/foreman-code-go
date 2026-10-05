@@ -23,6 +23,8 @@ describe('verification placement and policy', () => {
         policy, resources, maxUnitWorkers: 12 })
       expect(template.argv).toEqual(['node', 'scripts/verify-repository.mjs', '--context',
         '.graphql-job-inputs/verification.json'])
+      expect(template.outputs).not.toBeNull()
+      if (!template.outputs) throw new Error('A sufficient saved budget requires its report configuration.')
       expect(template.outputs.map(output => [output.path, output.required])).toEqual([
         ['.logs/verification/summary.json', true], ['.logs/verification/junit.xml', true],
         ['.logs/verification/vitest.json', true], ['.logs/verification/logs.tar.gz', true],
@@ -36,6 +38,17 @@ describe('verification placement and policy', () => {
         autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }).verificationTemplates)
         .toEqual([template])
     }
+  })
+  it('keeps all choices readable when a saved unqualified report allowance cannot fit four declarations', () => {
+    const { spec, resources, build } = verificationFixture()
+    const policy = { ...jobPolicyRequirementsRecord(spec.policy), maxOutputBytes: 3 }
+    const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
+      profileRevision: spec.policy.isolationPolicyRevision, suite: 'unit', ready: false,
+      policy, resources, maxUnitWorkers: 1 })
+    expect(template).toMatchObject({ ready: false, setupIssue: 'report_budget_insufficient', outputs: null, policy })
+    const choices = { sources: [build.source], targets: [], policies: [build.policy],
+      autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }
+    expect(JobAuthoringChoicesRecordSchema.parse(choices)).toEqual(choices)
   })
   it('keeps Auto requests separate from concrete immutable acceptance and preserves build history unchanged', () => {
     const { spec, acceptedBuild, definition, profile, resources, lifecycle } = verificationFixture()

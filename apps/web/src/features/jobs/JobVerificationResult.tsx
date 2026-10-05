@@ -11,7 +11,8 @@ export function JobVerificationResult({ execution, artifacts, artifactsUnavailab
   execution: JobExecutionRecord; artifacts: JobArtifact[]; artifactsUnavailable: boolean
 }) {
   const spec = execution.acceptedSpec
-  const declaration = 'verification' in spec ? spec.outputs.find(output => output.kind === 'suite-summary') : undefined
+  const declaration = 'verification' in spec
+    ? spec.outputs.find(output => output.kind === 'suite-summary' && output.required) : undefined
   const summary = artifacts.find(artifact => artifact.path === declaration?.path)
   const expected = 'verification' in spec ? {
     commit: spec.source.commit, manifestDigest: spec.source.manifestDigest,
