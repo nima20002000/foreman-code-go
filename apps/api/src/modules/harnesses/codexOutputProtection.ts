@@ -11,6 +11,7 @@ import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
+import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
   'The selected native sandbox did not prove protection of its output store.', 409)
@@ -56,6 +57,8 @@ export async function qualifyCodexOutputProtection(input: {
   }
   try {
     const environment = inheritedAgentEnvironment()
+    const redact = nativePersistenceRedactor(Object.values(environment)
+      .filter((value): value is string => typeof value === 'string' && value.length >= 8))
     if (selected.expectedSandbox.tmpdir) environment.TMPDIR = selected.expectedSandbox.tmpdir
     const qualified = await input.qualify(selected.binary, selected.providerVersion,
       selected.expectedSandbox.cwd, environment, true, signal, recovery)
@@ -141,7 +144,9 @@ export async function qualifyCodexOutputProtection(input: {
           commands: observed.map(({ item }) => ({ status: item.status, exitCode: item.exitCode,
             commandType: typeof item.command,
             commandDigest: typeof item.command === 'string'
-              ? createHash('sha256').update(item.command).digest('hex') : null })),
+              ? createHash('sha256').update(item.command).digest('hex') : null,
+            command: typeof item.command === 'string' && item.command.includes(marker)
+              ? redact.text(item.command).slice(0, 4096) : null })),
         })
     }
     const result = JSON.parse(String(observed[0]!.item.aggregatedOutput)) as {
