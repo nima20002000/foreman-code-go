@@ -465,7 +465,7 @@ export function createClaudeNativeSessionManager(options: {
         const rootOwner = frame.parent_tool_use_id == null ? matched
           ?? (messageId ? runtime.messageOwners.get(messageId) : undefined)
           ?? (typeof frame.uuid === 'string' ? runtime.messageOwners.get(frame.uuid) : undefined) : undefined
-        if (rootOwner?.submitted && frame.type === 'assistant' && frame.parent_tool_use_id == null) {
+        if (rootOwner?.submitted && !rootOwner.terminal && frame.type === 'assistant' && frame.parent_tool_use_id == null) {
           if (messageId) rootOwner.assistantMessageId = messageId
           else if (typeof frame.uuid === 'string') rootOwner.assistantMessageId = frame.uuid
         }
