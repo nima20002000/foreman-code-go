@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { access, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -133,7 +133,17 @@ export async function qualifyCodexOutputProtection(input: {
     }
     const observed = commands.filter((entry) => entry.threadId === threadId && entry.turnId === turnId)
     if (terminals.get(turnId) !== 'completed' || observed.length !== 1 || observed[0]!.item.command !== command
-      || observed[0]!.item.status !== 'completed' || observed[0]!.item.exitCode !== 0) throw unavailable()
+      || observed[0]!.item.status !== 'completed' || observed[0]!.item.exitCode !== 0) {
+      throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
+        'The original native sandbox probe did not execute the required command.', 409, {
+          terminalStatus: terminals.get(turnId) ?? null,
+          expectedCommandDigest: createHash('sha256').update(command).digest('hex'),
+          commands: observed.map(({ item }) => ({ status: item.status, exitCode: item.exitCode,
+            commandType: typeof item.command,
+            commandDigest: typeof item.command === 'string'
+              ? createHash('sha256').update(item.command).digest('hex') : null })),
+        })
+    }
     const result = JSON.parse(String(observed[0]!.item.aggregatedOutput)) as {
       marker: string; uid: number; tmpdir: string | null; direct: { denied: boolean }; descendant: { denied: boolean }
       descendantExitCode: number

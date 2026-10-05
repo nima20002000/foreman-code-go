@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -823,7 +822,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         await Promise.allSettled(mcpClients.map(client => client.close()))
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
-        await rm(projectPath, { recursive: true, force: true })
+        await rm(directory, { recursive: true, force: true })
       }
     })
   }, 600000)
