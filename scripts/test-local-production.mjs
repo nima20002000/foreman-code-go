@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readEnvironment, readProductionIdentity, waitForProductionReady,
+import { publish, readEnvironment, readProductionIdentity, renderEnvironment, waitForProductionReady,
   withInstallationLock } from './local-production-runtime.mjs'
 
 const execute = promisify(execFile)
@@ -16,6 +16,7 @@ const home = homedir()
 const app = join(home, '.local/lib/graphql-production')
 const config = join(home, '.config/graphql-production')
 const unit = 'graphql-operator-api.service'
+const databaseUnit = 'graphql-production-db.service'
 const origin = 'http://127.0.0.1:3041'
 
 async function systemctl(...args) {
@@ -31,6 +32,36 @@ async function waitUntil(read, accept, label, timeoutMs = 180_000) {
     await delay(250)
   }
   throw new Error(`Timed out waiting for ${label}.`)
+}
+
+async function recoverFailedDatabaseStartup(environment, ready) {
+  const directory = await mkdtemp(join(config, 'database-startup-regression-'))
+  const faultEnvironment = join(directory, 'database.env')
+  const dropIn = join(home, '.config/systemd/user', `${databaseUnit}.d`, `regression-${randomUUID()}.conf`)
+  let recovered = false
+  try {
+    await systemctl('stop', unit, databaseUnit)
+    // Compose's required password check fails the real database activation before touching its volume.
+    await publish(faultEnvironment, renderEnvironment({ GRAPHQL_PRODUCTION_DB_PASSWORD: '' }))
+    await publish(dropIn, `[Service]\nEnvironmentFile=${faultEnvironment}\n`)
+    await systemctl('daemon-reload')
+    await systemctl('start', '--no-block', unit)
+    await waitUntil(() => systemctl('show', '--property=Result', '--value', databaseUnit),
+      value => value === 'exit-code', 'failed first database activation', 30_000)
+    await publish(faultEnvironment, renderEnvironment({
+      GRAPHQL_PRODUCTION_DB_PASSWORD: environment.GRAPHQL_PRODUCTION_DB_PASSWORD,
+    }))
+    await ready()
+    assert.ok(Number(await systemctl('show', '--property=NRestarts', '--value', databaseUnit)) >= 1,
+      'The database must recover by automatic retry')
+    assert.equal(await systemctl('is-active', databaseUnit), 'active')
+    recovered = true
+  } finally {
+    await rm(dropIn, { force: true })
+    await rm(directory, { recursive: true, force: true })
+    await systemctl('daemon-reload')
+    if (!recovered) await systemctl('start', databaseUnit, unit)
+  }
 }
 
 async function main() {
@@ -159,6 +190,19 @@ async function main() {
     await call(writer, 'run_stop', { ...canceled, commandId: randomUUID() })
     assert.equal((await settled(canceled)).run.outcome, 'canceled')
 
+    await recoverFailedDatabaseStartup(environment, ready)
+    await Promise.all(clients.map(client => client.close()))
+    clients.length = 0
+    writer = await connect(writerCredential)
+    denied = await connect(deniedCredential)
+    await assert.rejects(call(denied, 'workspace_get', { workspaceId }), /not found|ACCESS_DENIED/)
+    assert.equal((await call(writer, 'workspace_get', { workspaceId })).workspace.id, workspaceId)
+    const afterStartup = await call(writer, 'run_record_get', canceled)
+    assert.equal(afterStartup.run.outcome, 'canceled')
+    assert.equal(afterStartup.cleanupPending, false)
+    assert.ok((await call(writer, 'operator_chat_get', { conversationId })).messages
+      .some(message => message.content.includes('LOCAL_PRODUCTION_OPERATOR')))
+
     const pid = await systemctl('show', '--property=MainPID', '--value', unit)
     await execute('/usr/bin/docker', ['compose', '--project-name', 'graphql-local-production',
       '--file', join(app, 'compose.production.yaml'), 'restart', 'postgres'], { timeout: 90_000,
@@ -266,7 +310,7 @@ async function main() {
     }
     if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'))
   }
-  console.log('Installed production passed: native execution, grants, cancellation, database restart and crash recovery.')
+  console.log('Installed production passed: native execution, grants, cancellation, database startup/restart and crash recovery.')
 }
 
 withInstallationLock(join(config, 'install.lock'), main).catch(error => {

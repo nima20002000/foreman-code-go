@@ -134,7 +134,7 @@ WantedBy=default.target
 `))
   await publish(join(directory, units.api), service(`[Unit]
 Description=graphql production API and dashboard
-Requires=${units.database}
+Wants=${units.database}
 After=${units.database}
 StartLimitIntervalSec=0
 

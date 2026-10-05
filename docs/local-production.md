@@ -22,8 +22,10 @@ Services do not depend on the source checkout remaining on disk.
 
 The installer replaces the existing `graphql-operator-api.service` dev command
 with the compiled production API, adds `graphql-production-db.service`, and enables
-both at user login. The API restarts on failure; Docker restarts crashed PostgreSQL
-containers. Docker itself must start at boot. Graphical-session autostart waits for
+both at user login. Database activation and the API retry failures independently,
+so an initial Docker or PostgreSQL startup failure recovers without another login
+or manual API start. Docker restarts crashed PostgreSQL containers. Docker itself
+must start at boot. Graphical-session autostart waits for
 the services and opens an app window in the owner's existing Chrome session. The
 application menu has a **graphql** launcher, with the same SVG used for its desktop
 icon, browser favicon, web manifest, and the Companion launcher. Chrome remains
@@ -108,7 +110,8 @@ corepack pnpm test:production:installed
 
 This uses the installed compiled release and authenticated Operator MCP. It tests
 an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
-a production PostgreSQL container restart, and recovery after killing the API's
+a failed first database activation followed by automatic recovery, a production
+PostgreSQL container restart, and recovery after killing the API's
 main process or the entire service during native work. After service-wide SIGKILL,
 it stops through MCP and verifies cleanup after another restart. Kernel removal of
 an empty native cgroup can confirm closure even when SIGKILL prevents an exit
