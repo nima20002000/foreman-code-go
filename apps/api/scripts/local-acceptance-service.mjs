@@ -35,12 +35,20 @@ async function recordFailure(failedStage, error) {
 async function shutdown() {
   if (closing) return
   closing = true
-  try { await close(); send({ type: 'closed' }); process.exit(0) }
+  try {
+    await close()
+    if (process.connected) {
+      await new Promise((resolve, reject) => process.send({ type: 'closed' },
+        (error) => error ? reject(error) : resolve()))
+    }
+    process.exit(0)
+  }
   catch { send({ type: 'failure', stage: 'shutdown', code: 'SHUTDOWN_FAILED' }); process.exit(1) }
 }
 process.on('SIGTERM', () => { void shutdown() })
 process.on('SIGINT', () => { void shutdown() })
 process.on('disconnect', () => { void shutdown() })
+process.on('message', (message) => { if (message?.type === 'shutdown') void shutdown() })
 
 async function main() {
   await assertOwned(state, owner)

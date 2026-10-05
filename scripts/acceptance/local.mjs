@@ -120,9 +120,14 @@ async function request(record, type, content = {}) {
 async function stop(record, signal = 'SIGTERM', milliseconds = 75_000) {
   if (!record || record.done) return
   record.expected = true
-  // Exact child handles, never port owners, process-name matches or a PID file.
-  record.child.kill(signal)
-  await bounded(record.exited, milliseconds, 'owned shutdown')
+  if (signal === 'SIGTERM' && record.child.connected) {
+    const sent = new Promise((resolve, reject) => record.child.send({ type: 'shutdown' },
+      (error) => error ? reject(error) : resolve()))
+    await bounded(Promise.all([sent, record.exited]), milliseconds, 'owned shutdown')
+  } else {
+    record.child.kill(signal)
+    await bounded(record.exited, milliseconds, 'owned shutdown')
+  }
 }
 async function shutdown() {
   stopping = true
@@ -132,9 +137,13 @@ async function shutdown() {
     if (!record) continue
     try {
       await stop(record)
-      if (record.code !== 0 || !record.closed) orderly = false
-    } catch {
+      if (record.code !== 0 || !record.closed) {
+        orderly = false
+        console.error(`ENG07 ${record.name} shutdown did not confirm resource closure.`)
+      }
+    } catch (error) {
       orderly = false
+      console.error(`ENG07 ${record.name} shutdown failed (${publicError(error)}).`)
       record.expected = true; record.child.kill('SIGKILL')
       await bounded(record.exited, 5000, 'owned forced exit').catch(() => undefined)
     }
