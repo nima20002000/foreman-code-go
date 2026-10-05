@@ -349,13 +349,21 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
   async cancel(id: string, context: TransferContext, signal?: AbortSignal) {
     return this.locked(id, async () => {
       signal?.throwIfAborted()
-      const j = await this.load(id); await this.authorize(j, context, 'cancel')
-      j.progress.state = 'cancelled'; delete j.receipt; signal?.throwIfAborted()
-        await this.save(j)
-      await unlink(this.path(id, 'part')).catch(error => { if (error.code !== 'ENOENT') throw error })
+      const j = await this.load(id)
+      await this.authorize(j, context, 'cancel')
+      j.progress.state = 'cancelled'
+      delete j.receipt
+      signal?.throwIfAborted()
+      await this.save(j)
+      await unlink(this.path(id, 'part')).catch(error => {
+        if (error.code !== 'ENOENT') throw error
+      })
       await this.syncDirectory()
-      if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; signal?.throwIfAborted()
-        await this.save(j) }
+      if (!await this.hasReaders(id)) {
+        j.canonicalReclaimed = true
+        signal?.throwIfAborted()
+        await this.save(j)
+      }
       return j.progress
     })
   }
