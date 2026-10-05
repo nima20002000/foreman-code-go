@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity, renderEnvironment,
@@ -46,7 +47,7 @@ async function configureEnvironment() {
   let password
   const previous = await readEnvironment(envFile)
   if (previous) {
-    password = previous.GRAPHQL_PRODUCTION_DB_PASSWORD
+    password = readProductEnvironment(previous, 'PRODUCTION_DB_PASSWORD')
     if (!password || !/^[a-f0-9]{64}$/.test(password)) {
       throw new Error('The production database password is missing or invalid. Restore production.env; do not reset the database.')
     }
@@ -59,21 +60,22 @@ async function configureEnvironment() {
   }
   const owned = {
     NODE_ENV: 'production',
-    GRAPHQL_LOCAL_PRODUCTION: '1',
+    FOREMAN_CODE_LOCAL_PRODUCTION: '1',
     HOST: '127.0.0.1',
     PORT: '3041',
     DATABASE_URL: `postgresql://graphql_production:${password}@127.0.0.1:55440/graphql_production`,
+    // Existing database units invoke Compose directly with this spelling.
     GRAPHQL_PRODUCTION_DB_PASSWORD: password,
-    GRAPHQL_BROWSER_ORIGIN: origin,
-    GRAPHQL_WEB_DIST: join(current, 'apps/web/dist'),
+    FOREMAN_CODE_BROWSER_ORIGIN: origin,
+    FOREMAN_CODE_WEB_DIST: join(current, 'apps/web/dist'),
     WORKSPACE_STORAGE_ROOT: join(data, 'workspaces'),
     FILE_STORAGE_ROOT: join(data, 'files'),
     HARNESS_WORKSPACE_ROOT: join(state, 'runs'),
-    GRAPHQL_APP_MCP_DIRECTORY: join(state, 'mcp'),
+    FOREMAN_CODE_APP_MCP_DIRECTORY: join(state, 'mcp'),
     LOG_DIR: join(state, 'logs'),
     XDG_CACHE_HOME: join(state, 'cache'),
     LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph',
-    GRAPHQL_DEV_BROWSER_ACCESS: '0',
+    FOREMAN_CODE_DEV_BROWSER_ACCESS: '0',
     NODE_OPTIONS: '',
     NODE_PATH: '',
   }
@@ -88,12 +90,16 @@ async function stageRelease() {
   await mkdir(releases, { recursive: true, mode: 0o700 })
   const release = await mkdtemp(join(releases, 'release-'))
   await mkdir(join(release, 'apps'), { recursive: true })
-  await run('corepack', ['pnpm', '--filter', '@graphql/api', 'deploy', '--prod', '--legacy', join(release, 'apps/api')])
+  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', join(release, 'apps/api')])
   await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
   await mkdir(join(release, 'scripts'), { recursive: true })
   for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
     await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
   }
+  const contractsSource = join(release, 'packages/contracts/src')
+  await mkdir(contractsSource, { recursive: true })
+  await copyFile(join(source, 'packages/contracts/src/productEnvironment.mjs'),
+    join(contractsSource, 'productEnvironment.mjs'))
   await mkdir(join(release, 'apps/worker/src'), { recursive: true })
   for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
     await copyFile(join(source, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
@@ -113,7 +119,7 @@ function service(template) {
 async function installServices() {
   const directory = join(home, '.config/systemd/user')
   await publish(join(directory, units.database), service(`[Unit]
-Description=graphql production PostgreSQL
+Description=Foreman Code production PostgreSQL
 StartLimitIntervalSec=0
 
 [Service]
@@ -133,7 +139,7 @@ UMask=0077
 WantedBy=default.target
 `))
   await publish(join(directory, units.api), service(`[Unit]
-Description=graphql production API and dashboard
+Description=Foreman Code production API and dashboard
 Wants=${units.database}
 After=${units.database}
 StartLimitIntervalSec=0
@@ -143,7 +149,7 @@ Type=exec
 Delegate=yes
 WorkingDirectory=@APP@/current/apps/api
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
-Environment=GRAPHQL_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
+Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
 Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
 ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health
@@ -169,7 +175,7 @@ exec '${current}/node' '${current}/scripts/local-production.mjs' open
 `, 0o700)
   await publish(join(home, '.local/share/applications/graphql-production.desktop'), `[Desktop Entry]
 Type=Application
-Name=graphql
+Name=Foreman Code
 Comment=Local agent workspace
 Exec=${launcher}
 Icon=${icon}
@@ -179,7 +185,7 @@ Categories=Development;
 `, 0o644)
   await publish(join(home, '.config/autostart/graphql-production.desktop'), `[Desktop Entry]
 Type=Application
-Name=graphql
+Name=Foreman Code
 Comment=Start the local dashboard after desktop login
 Exec=${launcher}
 Icon=${icon}
@@ -225,7 +231,7 @@ async function install() {
   await run('/usr/bin/systemctl', ['--user', 'enable', units.database, units.api])
   await run('/usr/bin/systemctl', ['--user', 'start', units.api])
   await openDashboard()
-  console.log(`graphql installed: ${origin}/workspaces`)
+  console.log(`Foreman Code installed: ${origin}/workspaces`)
   console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
 }
 

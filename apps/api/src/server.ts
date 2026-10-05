@@ -1,4 +1,5 @@
 import { loadProductEnvFile } from '@foreman-code/contracts/product-environment-node'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { mkdir, realpath } from 'node:fs/promises'
 
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
@@ -80,7 +81,8 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
-    if (process.env.GRAPHQL_WEB_DIST) await registerBuiltWeb(app, process.env.GRAPHQL_WEB_DIST)
+    const webRoot = readProductEnvironment(process.env, 'WEB_DIST')
+    if (webRoot) await registerBuiltWeb(app, webRoot)
     registerFileStorage()
     await database.ping()
     stopIfClosing()

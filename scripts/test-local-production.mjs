@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity,
   renderEnvironment, waitForProductionReady,
@@ -50,7 +51,7 @@ async function recoverFailedDatabaseStartup(environment, ready) {
     await waitUntil(() => systemctl('show', '--property=Result', '--value', databaseUnit),
       value => value === 'exit-code', 'failed first database activation', 30_000)
     await publish(faultEnvironment, renderEnvironment({
-      GRAPHQL_PRODUCTION_DB_PASSWORD: environment.GRAPHQL_PRODUCTION_DB_PASSWORD,
+      GRAPHQL_PRODUCTION_DB_PASSWORD: readProductEnvironment(environment, 'PRODUCTION_DB_PASSWORD'),
     }))
     await ready()
     assert.ok(Number(await systemctl('show', '--property=NRestarts', '--value', databaseUnit)) >= 1,
@@ -76,7 +77,7 @@ async function qualifyEnvironmentMigration(release) {
     OPENROUTER_API_KEY: 'test-only-provider-credential',
     HARNESS_TIMEOUT_MS: '600000',
   }
-  const owned = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
+  const owned = { NODE_ENV: 'production', FOREMAN_CODE_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
     DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production',
     GRAPHQL_PRODUCTION_DB_PASSWORD: 'test-only-database-credential' }
   const { loadConfig } = await import(pathToFileURL(join(release, 'apps/api/dist/config.js')))
@@ -119,7 +120,7 @@ async function qualifyEnvironmentMigration(release) {
 
 async function main() {
   const environment = await readEnvironment(join(config, 'production.env'))
-  assert.equal(environment?.GRAPHQL_LOCAL_PRODUCTION, '1', 'Install the compiled local production release first')
+  assert.equal(readProductEnvironment(environment ?? {}, 'LOCAL_PRODUCTION'), '1', 'Install the compiled local production release first')
   assert.equal(environment.HOST, '127.0.0.1')
   assert.equal(new URL(environment.DATABASE_URL).port, '55440')
   const release = await realpath(join(app, 'current'))
@@ -127,7 +128,7 @@ async function main() {
   const { Pool } = require('pg')
   const { Client } = await import(require.resolve('@modelcontextprotocol/sdk/client/index.js'))
   const { StreamableHTTPClientTransport } = await import(require.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'))
-  const contracts = join(release, 'apps/api/node_modules/@graphql/contracts/dist')
+  const contracts = join(release, 'apps/api/node_modules/@foreman-code/contracts/dist')
   const { ManagementActionSchema } = await import(pathToFileURL(join(contracts, 'management/index.js')))
   const { makeCurrentWorkflowFixture } = await import(pathToFileURL(join(contracts, 'wave25/index.js')))
   const { PostgresAccessService } = await import(pathToFileURL(join(release, 'apps/api/dist/modules/access/postgres.js')))
@@ -200,7 +201,7 @@ async function main() {
       assert.equal(catalog.discoveryError, null, `${harness} must pass native qualification`)
       const agent = (await call(writer, 'agent_create', { workspaceId, commandId: randomUUID(),
         agentId: randomUUID(), name: `Production ${harness}`, configuration: catalog.defaults,
-        prompt: { system: 'Follow the GraphQL work-handoff output contract. Do not use tools.' } })).value.agent
+        prompt: { system: 'Follow the Foreman Code work-handoff output contract. Do not use tools.' } })).value.agent
       const managed = (await call(writer, 'workflow_create', { workspaceId, commandId: randomUUID(),
         name: `Production ${harness}` })).value
       const definition = makeCurrentWorkflowFixture(randomUUID(), 'single').version.definition

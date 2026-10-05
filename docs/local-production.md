@@ -27,7 +27,7 @@ so an initial Docker or PostgreSQL startup failure recovers without another logi
 or manual API start. Docker restarts crashed PostgreSQL containers. Docker itself
 must start at boot. Graphical-session autostart waits for
 the services and opens an app window in the owner's existing Chrome session. The
-application menu has a **graphql** launcher, with the same SVG used for its desktop
+application menu has a **Foreman Code** launcher, with the same SVG used for its desktop
 icon, browser favicon, web manifest, and the Companion launcher. Chrome remains
 owned by the user; closing its window does not stop the API.
 
@@ -35,7 +35,7 @@ This installer creates no browser account or login secret. Integrate the implici
 local-user change before verifying ready-to-work startup. MCP still requires its
 existing bearer credentials, roles, grants, and harness security. Host installation
 is an OS-user operation, outside Operator MCP. The installer selects
-`GRAPHQL_LOCAL_PRODUCTION=1`: loopback production enables local harnesses through
+`FOREMAN_CODE_LOCAL_PRODUCTION=1` (legacy `GRAPHQL_LOCAL_PRODUCTION=1` remains supported): loopback production enables local harnesses through
 the same provider, account, model, approval and sandbox qualification used at
 every execution admission. Explicit harness disables remain in effect. Other
 production deployments retain their rollout restrictions.

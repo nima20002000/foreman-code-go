@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 export async function publish(path, content, mode = 0o600) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -104,23 +105,29 @@ export async function readEnvironment(path) {
 }
 
 export async function preserveOperatorConfiguration(path, previous, owned, validate) {
+  const canonicalName = key => key.replace(/^GRAPHQL_/, 'FOREMAN_CODE_')
+  const managed = new Set(Object.keys(owned).map(canonicalName))
+  resolveProductEnvironment(previous ?? {})
   let configuration
   try {
     configuration = JSON.parse(await readFile(path, 'utf8'))
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    configuration = Object.fromEntries(Object.entries(previous ?? {}).filter(([key]) => !(key in owned)))
+    configuration = Object.fromEntries(Object.entries(previous ?? {}).filter(([key]) => !managed.has(canonicalName(key))))
   }
   if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
     throw new Error('Operator configuration must be an object of environment settings.')
   }
   for (const [key, value] of Object.entries(configuration)) {
-    if (key in owned) throw new Error(`${key} is managed by the installer; remove it from operator.json.`)
+    if (managed.has(canonicalName(key))) {
+      throw new Error(`${key} is managed by the installer; remove it from operator.json.`)
+    }
     if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) {
       throw new Error(`Invalid operator setting: ${key}.`)
     }
   }
   const environment = { ...configuration, ...owned }
+  resolveProductEnvironment(environment)
   await validate(environment)
   await publish(path, JSON.stringify(configuration, null, 2) + '\n')
   return environment

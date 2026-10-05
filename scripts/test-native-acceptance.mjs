@@ -66,7 +66,7 @@ async function main() {
       delete environment.TEST_DATABASE_URL
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
-          'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@graphql/api', 'exec',
+          'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
           'vitest', 'run', 'test/eng03-c-native.acceptance.test.ts', '--no-file-parallelism',
         ], { cwd: root, env: environment, stdio: 'inherit' })
         child.once('error', reject)

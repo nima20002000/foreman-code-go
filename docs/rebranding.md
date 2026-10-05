@@ -14,7 +14,8 @@ no edits. Unprefixed settings such as `DATABASE_URL`, `HARNESS_WORKSPACE_ROOT`,
 
 Supported suffixes include `API_ENV_FILE`, `BROWSER_ORIGIN`, `DEV_BROWSER_ORIGIN`,
 `WEB_PORT`, `DEV_BROWSER_ACCESS`, `DEV_OPERATOR_PRINCIPAL_ID`,
-`LAPTOP_EXECUTION_ENABLED`, `DEVICE_LISTENER_ENABLED`,
+`LAPTOP_EXECUTION_ENABLED`, `DEVICE_LISTENER_ENABLED`, `LOCAL_PRODUCTION`,
+`WEB_DIST`, `APP_MCP_DIRECTORY`, `PRODUCTION_DB_PASSWORD`,
 `ENABLE_EXPERIMENTAL_CODEX_APP_SERVER`, `ENABLE_EXPERIMENTAL_CLAUDE_SDK`,
 `OPENCODE_PARITY_QUALIFIED`, `MCP_TOKEN`, `WORKER_BUILD_COMMIT`,
 `WORKER_ARTIFACT_DIRECTORY`, `HEAVY_BASE_TMPDIR`, `HEAVY_JOB_COMMON`,
@@ -22,6 +23,12 @@ Supported suffixes include `API_ENV_FILE`, `BROWSER_ORIGIN`, `DEV_BROWSER_ORIGIN
 `INTEGRATION_SHARDS`, `INTEGRATION_IDLE_TIMEOUT_MS`, and
 `INTEGRATION_FILE_TIMEOUT_MS`. Temporary local-browser settings remain aliases
 until the separate browser-auth removal workstream removes their consumers.
+The production installer accepts either database-password spelling and retains
+`GRAPHQL_PRODUCTION_DB_PASSWORD` only in its generated EnvironmentFile because
+existing database units invoke Compose with that name. Other installer-managed
+settings use canonical names. Both spellings are excluded from native child
+environments. Operator-owned settings retain their spelling and values; either
+alias of an installer-owned setting is forbidden in `operator.json`.
 Job containers receive both `FOREMAN_CODE_JOB_INPUT_MANIFEST` and
 `GRAPHQL_JOB_INPUT_MANIFEST` because older captured entrypoints may consume the latter.
 
@@ -51,7 +58,8 @@ Intentional residual identifiers:
   serialized fields such as `graphqlTools`, managed preset `graphql`, protocol
   events, native file-only server names, and persisted credential bindings.
 - `~/.local/share/graphql` storage/launcher roots, worker app/state directories,
-  `graphql-worker.service`, companion launcher/desktop filenames, worker artifact
+  `graphql-worker.service`, `graphql-operator-api.service`, production paths and
+  desktop identities, `/graphql.svg` icon URLs, companion launcher/desktop filenames, worker artifact
   filenames, job/container ownership labels and scheduler directories.
 - Existing GitHub repository/checkout paths, working documentation links, genuine
   GraphQL technology references, third-party names, historical audit records and

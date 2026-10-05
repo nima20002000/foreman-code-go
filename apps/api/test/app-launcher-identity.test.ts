@@ -25,21 +25,34 @@ async function fixture() {
 }
 
 describe('managed launcher installation identity', () => {
-  it('installs a configured launcher and rejects commands targeting the default installation', async () => {
-    const original = appLauncherPath()
-    const { directory, source } = await fixture()
-    vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', directory)
-    const installed = appLauncherPath()
-    await installManagedLauncher(source, installed)
-    expect(await readFile(installed, 'utf8')).toBe('// launcher')
-    const entry = { command: process.execPath, args: [installed], env_vars: [APP_MCP_TOKEN] }
-    expect(isAppLauncher('codex', entry)).toBe(true)
-    expect(isAppLauncher('codex', { ...entry, args: [original] })).toBe(false)
-  })
+  it.each(['GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
+    'installs a configured %s launcher and rejects the default installation', async name => {
+      const original = appLauncherPath()
+      const { directory, source } = await fixture()
+      vi.stubEnv(name, directory)
+      const installed = appLauncherPath()
+      await installManagedLauncher(source, installed)
+      expect(await readFile(installed, 'utf8')).toBe('// launcher')
+      const entry = { command: process.execPath, args: [installed], env_vars: [APP_MCP_TOKEN] }
+      expect(isAppLauncher('codex', entry)).toBe(true)
+      expect(isAppLauncher('codex', { ...entry, args: [original] })).toBe(false)
+    })
 
-  it.each(['', 'relative/mcp'])('rejects a relative launcher directory (%s)', (directory) => {
+  it.each(['GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
+    'rejects a relative %s launcher directory', name => {
+      for (const directory of ['', 'relative/mcp']) {
+        vi.stubEnv(name, directory)
+        expect(() => appLauncherPath()).toThrow('absolute directory')
+      }
+    })
+
+  it('accepts matching launcher aliases and rejects conflicting installation targets', async () => {
+    const { directory } = await fixture()
     vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', directory)
-    expect(() => appLauncherPath()).toThrow('absolute directory')
+    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', directory)
+    expect(appLauncherPath()).toBe(join(directory, 'launcher.mjs'))
+    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(directory, 'other'))
+    expect(() => appLauncherPath()).toThrow('conflicts')
   })
 
   it('recognizes the installed runtime after an API runtime change and preserves both installations', async () => {

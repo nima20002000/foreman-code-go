@@ -39,6 +39,15 @@ function openCodeFixture(cold = false) {
 }
 
 describe.skipIf(process.platform === 'win32')('PR17 Codex native recovery', () => {
+  it.each(['GRAPHQL_PRODUCTION_DB_PASSWORD', 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'])(
+    'rejects %s in scoped native environments', async name => {
+      const f = await codexFixture()
+      const worker = input(f.directory)
+      worker.environment = { agentId: 'agent-a', variables: { ...worker.environment!.variables, [name]: 'database-secret' } }
+      await assert.rejects(codexManager(f).createSession(worker),
+        (error: unknown) => errorCode(error) === 'CODEX_ENVIRONMENT_INVALID')
+    })
+
   it('F01: accepts the scoped Foreman Code credential through the Operator session path and rejects app-global secrets', async () => {
     const f = await codexFixture()
     const worker = input(f.directory)

@@ -1,6 +1,6 @@
 {
-  "name": "graphql",
-  "short_name": "graphql",
+  "name": "Foreman Code",
+  "short_name": "Foreman Code",
   "start_url": "/workspaces",
   "display": "standalone",
   "background_color": "#191d1f",

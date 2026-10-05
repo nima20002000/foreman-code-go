@@ -5,7 +5,7 @@ import { isAbsolute, join, sep } from 'node:path'
 
 /** Serve the compiled shell on the API origin, preserving API/MCP error responses. */
 export async function registerBuiltWeb(app: FastifyInstance, root: string): Promise<void> {
-  if (!isAbsolute(root)) throw new Error('GRAPHQL_WEB_DIST requires an absolute directory.')
+  if (!isAbsolute(root)) throw new Error('FOREMAN_CODE_WEB_DIST requires an absolute directory.')
   await access(join(root, 'index.html'))
   void app.register(fastifyStatic, {
     root,

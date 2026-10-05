@@ -14,7 +14,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'graphql-built-web-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'assets'))
-  await writeFile(join(root, 'index.html'), '<!doctype html><title>graphql</title><div id="root"></div>')
+  await writeFile(join(root, 'index.html'), '<!doctype html><title>Foreman Code</title><div id="root"></div>')
   await writeFile(join(root, 'assets/app-123.js'), 'console.log("compiled")')
   await writeFile(join(root, 'graphql.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>')
   const app = buildApp({ readiness: {

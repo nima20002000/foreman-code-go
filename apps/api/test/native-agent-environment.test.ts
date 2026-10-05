@@ -46,6 +46,7 @@ it('starts native children with their binary directory first and removes pnpm bi
 
 it('strips both ambient credential namespaces and only aliases an admitted native token', () => {
   const clean = inheritedAgentEnvironment({ GRAPHQL_MCP_TOKEN: 'ambient-old', FOREMAN_CODE_MCP_TOKEN: 'ambient-new',
+    GRAPHQL_PRODUCTION_DB_PASSWORD: 'database-old', FOREMAN_CODE_PRODUCTION_DB_PASSWORD: 'database-new',
     FOREMAN_CODE_OPERATOR_SECRET: 'operator-secret', FOREMAN_CODE_APP_SECRET: 'app-secret', PATH: '/usr/bin' })
   expect(clean).toEqual({ PATH: '/usr/bin', NO_COLOR: '1' })
   expect(appMcpTokenEnvironment({ GRAPHQL_MCP_TOKEN: 'admitted' })).toEqual({ GRAPHQL_MCP_TOKEN: 'admitted', FOREMAN_CODE_MCP_TOKEN: 'admitted' })

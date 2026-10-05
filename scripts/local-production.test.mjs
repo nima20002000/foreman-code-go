@@ -8,6 +8,63 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('renamed installer settings retain operator values and the existing database credential', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-renamed-settings-'))
+  const path = join(directory, 'operator.json')
+  const password = 'a'.repeat(64)
+  const owned = { FOREMAN_CODE_LOCAL_PRODUCTION: '1', FOREMAN_CODE_APP_MCP_DIRECTORY: '/installed/mcp',
+    GRAPHQL_PRODUCTION_DB_PASSWORD: password }
+  const previous = { GRAPHQL_LOCAL_PRODUCTION: '1', GRAPHQL_APP_MCP_DIRECTORY: '/installed/mcp',
+    FOREMAN_CODE_PRODUCTION_DB_PASSWORD: password, GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0',
+    OPENCODE_BINARY: '/opt/owner cli/opencode' }
+  const validate = environment => {
+    assert.equal(readProductEnvironment(environment, 'LOCAL_PRODUCTION'), '1')
+    assert.equal(readProductEnvironment(environment, 'APP_MCP_DIRECTORY'), '/installed/mcp')
+    assert.equal(readProductEnvironment(environment, 'PRODUCTION_DB_PASSWORD'), password)
+    assert.equal(readProductEnvironment(environment, 'OPENCODE_PARITY_QUALIFIED'), '0')
+  }
+  try {
+    const environment = await preserveOperatorConfiguration(path, previous, owned, validate)
+    assert.deepEqual(environment, { ...owned, GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0',
+      OPENCODE_BINARY: previous.OPENCODE_BINARY })
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+      GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0', OPENCODE_BINARY: previous.OPENCODE_BINARY,
+    })
+    for (const name of ['GRAPHQL_LOCAL_PRODUCTION', 'FOREMAN_CODE_LOCAL_PRODUCTION',
+      'GRAPHQL_PRODUCTION_DB_PASSWORD', 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD']) {
+      await writeFile(path, JSON.stringify({ [name]: 'override' }))
+      await assert.rejects(preserveOperatorConfiguration(path, previous, owned, validate), /managed by the installer/)
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('configuration aliases reject conflicts before publishing and retain matching operator spellings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-alias-conflicts-'))
+  const path = join(directory, 'operator.json')
+  const owned = { FOREMAN_CODE_LOCAL_PRODUCTION: '1' }
+  const settings = { GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0', FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: '0' }
+  try {
+    await preserveOperatorConfiguration(path, settings, owned, () => undefined)
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), settings)
+    const before = await readFile(path, 'utf8')
+    await assert.rejects(preserveOperatorConfiguration(path,
+      { GRAPHQL_PRODUCTION_DB_PASSWORD: 'old-secret', FOREMAN_CODE_PRODUCTION_DB_PASSWORD: 'new-secret' },
+      owned, () => undefined), error => {
+        assert.match(error.message, /FOREMAN_CODE_PRODUCTION_DB_PASSWORD conflicts with GRAPHQL_PRODUCTION_DB_PASSWORD/)
+        assert.ok(!error.message.includes('old-secret') && !error.message.includes('new-secret'))
+        return true
+      })
+    assert.equal(await readFile(path, 'utf8'), before)
+    await writeFile(path, JSON.stringify({ ...settings, FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: '1' }))
+    await assert.rejects(preserveOperatorConfiguration(path, undefined, owned, () => undefined), /conflicts/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('updates retain operator settings separately from installer isolation settings', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-settings-'))
