@@ -68,15 +68,15 @@ async function retainCodexDeclarations(f: Fixture): Promise<void> {
     assert.equal(binary.split(before).length, 2, `missing/ambiguous fixture seam: ${before}`)
     binary = binary.replace(before, after)
   }
-  replace('ephemeral: !!params.ephemeral, turns: [], settings: settings(params)',
-    'ephemeral: !!params.ephemeral, turns: [], dynamicTools: params.dynamicTools || [], settings: settings(params)')
-  replace('if (message.id !== undefined && message.method) outstanding.set', `
-    if (message.method === 'item/tool/call' && !(current.dynamicTools || []).some((tool) =>
+  replace("historyMode: 'legacy', modelProvider: 'openai', model:",
+    "dynamicTools: params.dynamicTools || [], historyMode: 'legacy', modelProvider: 'openai', model:")
+  replace('if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {', `
+    if (message.method === 'item/tool/call' && !(owner?.dynamicTools || []).some((tool) =>
       tool.type === 'function' && tool.name === message.params.tool)) {
       log({ undeclaredFileTool: message.params.tool })
       continue
     }
-    if (message.id !== undefined && message.method) outstanding.set`)
+    if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {`)
   await writeFile(f.binary, binary)
 }
 async function retainedCodexDeclarations(f: Fixture, sessionId: string) {
