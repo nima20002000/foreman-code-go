@@ -33,7 +33,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
   const defaults = new PostgresSettingsRepository(f.database.pool)
   const savedDefaults = await defaults.getHarnessDefaults()
   await defaults.saveHarnessDefaults({ ...savedDefaults,
-    codex: { ...savedDefaults.codex, model: configuration.model } })
+    codex: { ...savedDefaults.codex, model: configuration.model, reasoningEffort: configuration.reasoningEffort } })
   const processes = new NativeProcessRegistry(join(f.runtimeRoot, `qualification-${randomUUID()}`))
   const factories = new NativeHarnessFactories({
     codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, openCodeBinary: 'opencode',

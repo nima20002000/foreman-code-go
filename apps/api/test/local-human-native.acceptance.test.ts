@@ -19,8 +19,8 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
       const binaries = harnessBinaries(process.env)
       const codexArguments = [
         'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
-        '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-        '-c', 'model_reasoning_effort="low"',
+        '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna',
+        '-c', 'model_reasoning_effort="medium"',
         '-c', `mcp_servers.isolation.command=${JSON.stringify(process.execPath)}`,
         '-c', `mcp_servers.isolation.args=${JSON.stringify([script])}`,
         'Reply DONE.',
@@ -72,8 +72,8 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
       const owned = spawnOwnedStdioProcess({
         binary: harnessBinaries(process.env).codexBinary,
         args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check',
-          '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-          '-c', 'model_reasoning_effort="low"',
+          '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna',
+          '-c', 'model_reasoning_effort="medium"',
           '-c', `mcp_servers.isolation.command=${JSON.stringify(process.execPath)}`,
           '-c', `mcp_servers.isolation.args=${JSON.stringify([script])}`, 'Reply DONE.'],
         cwd: input.directory,
