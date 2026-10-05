@@ -191,8 +191,13 @@ async function freshControls(row) {
   // An empty provider session may report nothing to compact or a native refusal.
   // The populated-context checks below still require a successful manual boundary.
   assert.ok(['completed', 'no-op', 'failed'].includes(compacted.compaction.status))
-  assert.equal(compacted.compaction.dispatchPhase, 'dispatched', 'Fresh compact never reached the native owner.')
-  assert.ok(compacted.nativeSessionId, 'Fresh control admission did not retain its native session.')
+  if (compacted.nativeSessionId) {
+    assert.equal(compacted.compaction.dispatchPhase, 'dispatched', 'The existing fresh session was not addressed.')
+  } else {
+    assert.equal(compacted.compaction.status, 'no-op', 'A chat without a session must report that there is nothing to compact.')
+    assert.equal(compacted.compaction.dispatchPhase, 'reserved', 'An absent session cannot claim native dispatch.')
+    assert.equal(compacted.compaction.nativeOperationId, null)
+  }
   assert.deepEqual(messages(await transcript(row)), [], 'Fresh compact changed application message history.')
   const regular = await update(row, { kind: 'mode', mode: 'regular' })
   assert.equal(regular.desiredMode, 'regular')
@@ -208,8 +213,10 @@ for (const row of matrix.rows) {
   const marker = randomUUID()
   const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base), row) : null
   const normal = await send(row, `Remember this session marker and repeat it exactly once: ${marker}`)
-  assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
-    'The first message replaced the native session admitted by fresh controls.')
+  if (fresh.compacted.nativeSessionId) {
+    assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
+      'The first message replaced the existing fresh native session.')
+  }
   for (const content of row.compactionInputs) await send(row, content)
   const before = await idle(row)
   assert.ok(before.nativeSessionId, 'A normal text turn must establish a native session.')
