@@ -207,6 +207,10 @@ async function main() {
     FOREMAN_CODE_API_ENV_FILE: isolated.FOREMAN_CODE_API_ENV_FILE }
   toolEnv = {
     ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
+    // A build must validate the prepared dependencies rather than reinstall them under the isolated home.
+    pnpm_config_verify_deps_before_run: 'error',
+    // pnpm's default virtual-store setting depends on the install's CI context.
+    ...(isolated.CI !== undefined ? { CI: isolated.CI } : {}),
     ...(isolated.FOREMAN_CODE_HEAVY_JOB_COMMON ? { FOREMAN_CODE_HEAVY_JOB_COMMON: isolated.FOREMAN_CODE_HEAVY_JOB_COMMON } : {}),
     ...(isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN ? { FOREMAN_CODE_HEAVY_JOB_TOKEN: isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN } : {}),
   }
