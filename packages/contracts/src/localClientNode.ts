@@ -108,8 +108,8 @@ async function agentAncestor(pid: number, parents: ReadonlySet<number>): Promise
 
 async function linuxClient(remoteAddress: string, remotePort: number,
   localAddress: string, localPort: number, parents: ReadonlySet<number>): Promise<boolean> {
-  const filter = `( src ${remoteAddress} and sport = :${remotePort}
-    and dst ${localAddress} and dport = :${localPort} )`
+  const filter = `( src ${remoteAddress} and sport = :${remotePort}`
+    + ` and dst ${localAddress} and dport = :${localPort} )`
   const { stdout } = await inspectSockets('/usr/bin/ss',
     ['--tcp', '--no-header', '--numeric', '--extended', '--processes', filter], {
       timeout: 2_000, maxBuffer: 64 * 1024, encoding: 'utf8', env: { LC_ALL: 'C' },

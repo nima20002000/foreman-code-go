@@ -224,7 +224,7 @@ describe('FIL-17 + SCH selected Board', () => {
       http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('codex'))),
       http.get('/api/operator/conversations/summaries', () => HttpResponse.json({ conversations: [...states.values()].map(summarizeOperatorConversation) })),
       http.get('/api/operator/conversations/:id', ({ params }) => HttpResponse.json(states.get(String(params.id)))),
-      http.get('/api/operator/conversations/:id/files', ({ params }) => {
+      http.get('*/api/operator/conversations/:id/files', ({ params }) => {
         const state = states.get(String(params.id))
         if (!state) throw new Error('Unknown Operator conversation')
         return HttpResponse.json(FilePageSchema.parse({
