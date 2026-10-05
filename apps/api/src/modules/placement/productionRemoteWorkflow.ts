@@ -118,7 +118,9 @@ export function createProductionRemoteWorkflow(input: {
         beforePrepare: (intent, _placement, connection) => {
           const owner = requireOwner()
           return owner.oneShotConnection().transaction(sql => reserveRemoteDispatchOrigin(sql, owner, intent, connection,
-            { assertCurrent: (sql, current, pin, authenticated) => authority(sql, { intent: current, placement: pin }, authenticated, 'start') }))
+            { assertCurrent: async (sql, current, pin, authenticated) => {
+              await authority(sql, { intent: current, placement: pin }, authenticated, 'start')
+            } }))
         },
         commit: (receipt, authenticated) => {
           const owner = requireOwner()
