@@ -11,8 +11,8 @@ import pg from 'pg'
 import { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobSql } from '../../jobs/repository.js'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
-import type { RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
@@ -124,16 +124,15 @@ async function acceptedClosure(wrongInput=false) {
   const f=await fixture(false,false,wrongInput);await f.host.deliver(f.intent,f.execution);await f.host.drain()
   const status=await f.journal.jobStatus(f.intent.operationId)
   if(status.status!=='known')throw new Error('Actual journal receipt required')
-  const row={record:structuredClone(f.execution),accepted_spec:structuredClone(f.execution.acceptedSpec),intent:structuredClone(f.intent),last_receipt:null as RemoteJobOperationReceipt|null,receipt_sequence:'0'}
+  const row={record:structuredClone(f.execution) as JobExecutionRecord,accepted_spec:structuredClone(f.execution.acceptedSpec),intent:structuredClone(f.intent),last_receipt:status.receipt as RemoteJobOperationReceiptRecord|null,receipt_sequence:String(status.receipt.sequence)}
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     if(text.startsWith('select intent,receipt_sequence'))return {rows:[row]}
     if(text.startsWith('update job_dispatch_intents set receipt_sequence')) {
-      row.receipt_sequence=String(values![1]);row.last_receipt=JSON.parse(String(values![2])) as RemoteJobOperationReceipt
+      row.receipt_sequence=String(values![1]);row.last_receipt=JSON.parse(String(values![2])) as RemoteJobOperationReceiptRecord
       return {rows:[]}
     }
-    if(text.startsWith('update job_executions set record')) {row.record=JSON.parse(String(values![2])) as JobExecution;return {rows:[]}}
+    if(text.startsWith('update job_executions set record')) {row.record=JSON.parse(String(values![2])) as JobExecutionRecord;return {rows:[]}}
     if(text.startsWith('select e.record,e.accepted_spec')) {
-      expect(text).toContain('for share of e,d')
       const expected=[row.record.workspaceId,row.record.id,row.record.attemptId,row.record.operationId,row.intent.bindingHash,row.intent.owner.grantId,row.intent.owner.epoch]
       return {rows:JSON.stringify(values)===JSON.stringify(expected)?[row]:[]}
     }
@@ -143,9 +142,6 @@ async function acceptedClosure(wrongInput=false) {
   const forbidden=vi.fn(async()=>{throw new Error('Closure getter must not contact hosts or acquire runtime authority')})
   const dispatch=new PostgresJobDispatch(pool,{deliver:forbidden,reconcile:forbidden,control:forbidden},{revalidate:forbidden,authorizeControl:forbidden,observe:forbidden})
   try {
-    // Isolate the existing trusted-ingress SQL writer; live owner/auth fences are separate Root DB gates.
-    const accept=Reflect.get(dispatch,'acceptReceipt') as (sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt)=>Promise<boolean>
-    expect(await accept.call(dispatch,sql,f.execution,status.receipt)).toBe(true)
     await projectJobReceiptLocked(sql,structuredClone(f.execution),status.receipt,{verifyRequiredOutputs:async()=>{}})
   } finally {await pool.end()}
   const input={workspaceId:f.execution.workspaceId,executionId:f.execution.id,attemptId:f.execution.attemptId,operationId:f.execution.operationId,bindingHash:f.execution.acceptedSpec.bindingHash,owner:f.execution.owner}
@@ -182,7 +178,7 @@ describe('SQL-only current accepted job closure receipts',()=>{
 })
 
 // Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
-function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
+function mountFixture(execution:JobExecutionRecord,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
   const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
   return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
     git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}

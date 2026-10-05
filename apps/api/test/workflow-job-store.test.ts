@@ -13,6 +13,7 @@ import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { jobExecution,jobSpec } from './helpers/jobFixture.js'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 
 /** Real store/admission/repository code with explicit SQL doubles. No DB, native
  * entry, runtime qualification, or fabricated HarnessExecution occurs. */
@@ -21,7 +22,7 @@ function fixture(){
   const version=WorkflowVersionV3Schema.parse({...base.version,agentConfigurationVersionIds:{},entryNodeId:node.id,definition:{...base.version.definition,requiredAgentCount:0,entryNodeId:node.id,nodes:[node],edges:[],repeat:undefined,handoffs:undefined,executionPolicy:{maxParallelism:1,maxNodeExecutions:4}}})
   const savedVersion=JSON.parse(JSON.stringify(version)) as typeof version
   const run={...base.run,workflowVersionId:version.id,agentConfigurationVersionIds:{},executionState:'running' as const,authorizationPrincipalId:'actor',executionLocation:{runnerId:'local',rootPath:'/unit',locationRevision:1,identityHash:'sha256:'+'1'.repeat(64)}}
-  const state={preparation:undefined as unknown,bindings:[] as unknown[],slot:undefined as {identity:unknown;execution_id:string;input_digest:string;input_json:string}|undefined,job:undefined as typeof template|undefined,resolution:undefined as unknown,stopped:false,revoked:false,fence:'1'}
+  const state={preparation:undefined as unknown,bindings:[] as unknown[],slot:undefined as {identity:unknown;execution_id:string;input_digest:string;input_json:string}|undefined,job:undefined as JobExecutionRecord|undefined,resolution:undefined as unknown,stopped:false,revoked:false,fence:'1'}
   const effects=new Map<string,string>(),definition={schemaVersion:1 as const,id:node.jobDefinitionId,workspaceId:run.workspaceId,versionId:node.jobDefinitionVersionId,revision:1,name:'Immutable build',spec,createdAt:template.createdAt,updatedAt:template.updatedAt}
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     let rows:unknown[]=[]
@@ -47,7 +48,7 @@ function fixture(){
   const dispatch=new PostgresJobDispatch({} as pg.Pool,{deliver:vi.fn(),reconcile:vi.fn(),control:vi.fn()},{revalidate:vi.fn(),authorizeControl:vi.fn(),observe:vi.fn()})
   const adopt=vi.fn(async()=>{expect(state.job).toBeDefined()})
   const service=new JobService({} as pg.Pool,{} as PostgresCommandCoordinator,{preparation:{revalidateAccepted:vi.fn(),adoptFinalBinding:adopt,choices:vi.fn(),validate:vi.fn(),accept:vi.fn()},dispatch,artifacts:{list:vi.fn(),read:vi.fn()}})
-  const repository=new JobRepository(),verify=vi.fn(async(_sql:GraphTransactionSql,job:typeof template)=>{if(job.process.phase!=='terminal'||!job.process.processStopped||!job.finishedAt||job.publication!=='complete')throw new DomainError('JOB_RESULT_PENDING','No confirmed process/output settlement.',409)})
+  const repository=new JobRepository(),verify=vi.fn(async(_sql:GraphTransactionSql,job:JobExecutionRecord)=>{if(job.process.phase!=='terminal'||!job.process.processStopped||!job.finishedAt||job.publication!=='complete')throw new DomainError('JOB_RESULT_PENDING','No confirmed process/output settlement.',409)})
   const publication:WorkflowJobStorePublication={effect:vi.fn(async(_sql,_owner,_scope,_version,_effect,mutate,facts)=>{await mutate();await facts()}),assertReceipt:vi.fn(async()=>undefined),observe:vi.fn(async()=>undefined)}
   const store=new PostgresWorkflowJobNodeStore(owner,savedVersion,host,{admitPrepared:(sql,_ref,prep,prepared)=>service.admitPrepared(sql,{id:'actor',name:'Actor',audience:'operator',grants:[],expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null},definition,{workflowId:run.workflowId,runId:run.id,nodeId:node.id,nodeExecutionId:prep.executionId},prep.input,prepared,prep),read:sql=>repository.execution(sql,run.workspaceId,state.job!.id),artifacts:async()=>[],verifyResult:verify},publication)
   return {store,state,query,publication,adopt,assertAuthority,connection,version,run,spec,ref:{nodeId:node.id,occurrence:null},prepared:{...spec,source:{...spec.source,materializationId:randomUUID(),materializationDigest:'3'.repeat(64)}}}

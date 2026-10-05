@@ -1,5 +1,5 @@
 import type { HarnessExecution } from '@foreman-code/contracts'
-import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { GraphExecutionIdentitySchema, NodeResolutionSchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type RunGraphCurrentState, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
@@ -13,7 +13,7 @@ type PublicNode = RunGraphCurrentState['nodes'][number]
 export interface PublicProjectionOverlay extends PublicAttentionOverlay {
   executions?: readonly HarnessExecution[]
   /** Proposed persisted Job receipt state, under the existing Job/Run owner. */
-  jobs?: readonly JobExecution[]
+  jobs?: readonly JobExecutionRecord[]
   /** Guard-qualified proposed candidates from BR1-002, not transport observations. */
   native?: readonly CurrentNativeActivity[]
   closed?: boolean
@@ -117,7 +117,7 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   }
   for (const item of jobs.rows) putJob(item)
   for (const raw of overlay.jobs ?? []) {
-    const job = JobExecutionSchema.parse(raw), pin = jobPins.get(job.id)
+    const job = JobExecutionRecordSchema.parse(raw), pin = jobPins.get(job.id)
     if (job.workspaceId !== scope.workspaceId || job.workflow?.workflowId !== scope.workflowId
       || job.workflow.runId !== scope.runId || job.workflow.nodeExecutionId !== job.id) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     if (!pin || job.workflow.nodeId !== pin.workflow_node_id || job.attemptId !== pin.attempt_id

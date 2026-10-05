@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import type { JobDefinition } from '@foreman-code/contracts/jobs'
+import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
 import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -53,9 +53,9 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     if (result.kind === 'retained-execution') throw new Error('Fresh queue requests must own a queue ticket')
     return result.kind === 'accepted' ? result.ticketId : result.ticket.id
   }
-  const command = (definition: JobDefinition) => ({ commandId: randomUUID(), definitionId: definition.id,
+  const command = (definition: JobDefinitionRecord) => ({ commandId: randomUUID(), definitionId: definition.id,
     expectedRevision: definition.revision })
-  async function submit(f: Fixture, definition: JobDefinition) {
+  async function submit(f: Fixture, definition: JobDefinitionRecord) {
     const result = await f.jobs.enqueue(f.principal, 'http', f.workspaceId, command(definition))
     const id = admissionTicketId(result)
     return f.jobs.getQueueTicket(reader.principal, f.workspaceId, id)
