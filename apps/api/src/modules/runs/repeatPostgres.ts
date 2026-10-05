@@ -6,7 +6,7 @@ import {
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
   RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema, WorkflowVersionV3Schema,
   canonicalGraphJson, parseRepeatExitResultV1, parseWorkHandoffResult,
-  WorkReturnSchema,
+  WorkActivationInputSchema, WorkReturnSchema,
   validateRepeatDecisionV1, validateRepeatSuccessorV1,
   type WorkflowRunV3, type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
@@ -239,7 +239,12 @@ export class RepeatRunRepository {
       if (previous) {
         await this.recordedEffect(context, 'input.bind', previous.execution_id)
         const stored = await this.execution(context, previous.execution_id)
-        if (stored.workActivationId !== activationId || !sameRepeatValue(stored.input, input)) {
+        const frozen = WorkActivationInputSchema.parse(stored.input)
+        const expected = { ...input }
+        // Inputs admitted before parent obligations were exposed remain frozen.
+        // Reconstruction still validates that obligation from the saved ancestry.
+        if (!('parentRequest' in frozen)) delete expected.parentRequest
+        if (stored.workActivationId !== activationId || !sameRepeatValue(frozen, expected)) {
           return repeatConflict('WORK_ACTIVATION_REPLAY_CONFLICT')
         }
         return { execution: stored.execution, reused: true }
