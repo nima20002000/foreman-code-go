@@ -32,7 +32,7 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
           }
         })
       expect(record).toMatchObject({ created: true, removed: true, exitCode })
-      expect(record.name).toMatch(/^graphql_native_test_[a-f0-9]{32}$/)
+      expect(record.name).toMatch(/^graphql_native_[a-f0-9]{32}_test$/)
       expect(ownedNames.has(record.name)).toBe(false)
       ownedNames.add(record.name)
       expect((await admin.query('select 1 from pg_database where datname=$1', [record.name])).rowCount).toBe(0)
