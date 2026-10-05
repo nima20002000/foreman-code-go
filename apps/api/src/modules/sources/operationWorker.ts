@@ -132,7 +132,11 @@ export class SourceOperationWorkerService {
         owner = current
       }
       const reader = null
-      const quotaPool = await this.options.quotaPoolFor?.(owner.root.binding)
+      const quotaPool = owner.quotaRequired || owner.record?.receipt.quota
+        ? await this.options.quotaPoolFor?.(owner.root.binding) : undefined
+      if (owner.quotaRequired && !quotaPool) {
+        throw new SourceError('SOURCE_QUOTA_MISSING', 'The original verification Job requires its installed quota pool.')
+      }
       if (request.operation === 'sources.reconcile-preparation') {
         if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
         const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
