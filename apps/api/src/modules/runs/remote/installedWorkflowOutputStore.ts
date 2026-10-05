@@ -14,6 +14,7 @@ import { createNativeOutputBudgetLedger } from './installedNativeOutputStorage.j
 export const nativeOutputBudgetLimits = {
   maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
   maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
+  // Each turn has one command registry even when it creates multiple artifacts.
   maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal,
 }
 const Installation = DeviceSessionBindingSchema.pick({ mainId: true, deviceId: true, workerInstallationId: true })

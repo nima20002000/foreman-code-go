@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile, chmod, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,9 @@ import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, createNativeOutputBudgetLedger,
   type InstalledNativeOutputStorageInput } from './installedNativeOutputStorage.js'
 import { ensureInstalledWorkflowOutputStore } from './installedWorkflowNativeOutputs.js'
+import { nativeOutputBudgetLimits } from './installedWorkflowOutputStore.js'
 import { acquireNativeOutputBudgetLock } from './nativeOutputBudgetLock.js'
+import { WorkerNativeOutputRegistry } from './workerNativeOutputRegistry.js'
 import { openPrivateRoot } from '../../sources/privateFilesystem.js'
 
 const roots: string[] = []
@@ -43,9 +45,7 @@ async function startupFixture() {
     mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }
   const installation = { mainId: binding.mainId, deviceId: binding.deviceId,
     workerInstallationId: binding.workerInstallationId }
-  const limits = { maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
-    maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
-    maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
+  const limits = { ...nativeOutputBudgetLimits }
   const open = () => createNativeOutputBudgetLedger({
     rootDirectory: join(f.root, 'workflow-native-outputs', 'budget'), installation, limits })
   return { ...f, pairing, limits, open }
@@ -206,6 +206,123 @@ describe('explicit qualified native storage adapter, no native acceptance', () =
 })
 
 describe('durable native output installation budget, no qualification grants', () => {
+  it('creates and seals more than four artifacts through the installed storage and real command registry', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const storage = await createInstalledNativeOutputStorage({
+      ...f.input, limits: f.limits, budget: await f.open(),
+    })
+    const callback = { assertCurrent: async () => {} }
+    const registry = await WorkerNativeOutputRegistry.open({
+      configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low',
+        sandbox: 'workspace-write', serviceTier: 'standard' },
+      scope: { kind: 'temporary', chat: { kind: 'agent', workspaceId: 'workspace', workflowId: 'workflow',
+        conversationId: 'conversation', agentId: 'agent', runId: 'run', executionId: 'execution' } },
+      callback, authority: callback, storage,
+      publisher: { publish: async () => { throw new Error('Publication is outside this storage fixture') } },
+    })
+    try {
+      const artifactIds: string[] = []
+      for (let index = 0; index < 6; index += 1) {
+        const created = await registry.dispatch({ operation: 'create', commandId: randomUUID(),
+          filename: `report-${index}.md`, mediaType: 'text/markdown' }, callback)
+        if (created.operation !== 'create') throw new Error('Expected created artifact')
+        artifactIds.push(created.artifactId)
+        const bytes = Buffer.from(`output ${index}`)
+        await registry.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
+          offset: 0, contentBase64: bytes.toString('base64') }, callback)
+        expect(await registry.dispatch({ operation: 'seal', commandId: randomUUID(),
+          artifactId: created.artifactId }, callback)).toEqual({ operation: 'seal', artifactId: created.artifactId,
+          byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
+      }
+      expect(new Set(artifactIds).size).toBe(6)
+      expect(await readdir(f.input.rootDirectory)).toEqual(expect.arrayContaining(artifactIds))
+    } finally {
+      await registry.withdraw()
+    }
+    expect(await readdir(f.input.rootDirectory)).toEqual([])
+    const recovered = await f.open()
+    await (await recovered.reserve({ owner: f.input.owner, artifactId: randomUUID(),
+      limits: f.limits, requested: f.limits })).assertCurrent()
+  })
+
+  it('charges command allowances per original turn and retains the charge until its final artifact is retired', async () => {
+    const f = await fixture()
+    const rootDirectory = join(f.root, 'budget')
+    await mkdir(rootDirectory, { mode: 0o700 })
+    const binding = f.input.owner.binding
+    const installation = { mainId: binding.mainId, deviceId: binding.deviceId,
+      workerInstallationId: binding.workerInstallationId }
+    const limits = { maxDiskBytes: 8, maxSnapshotBytes: 8, maxCommandRecords: 2 }
+    const requested = { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 }
+    const input = { rootDirectory, installation, limits }
+    const ledger = await createNativeOutputBudgetLedger({ ...input, initializeNewStore: true })
+    const original = { artifactId: randomUUID(), owner: f.input.owner, limits, requested }
+    const first = await ledger.reserve(original)
+    const sameTurn = { ...original, artifactId: randomUUID() }
+    await ledger.reserve(sameTurn)
+    await ledger.reserve({ ...original, artifactId: randomUUID(),
+      owner: { ...f.input.owner, nativeTurnId: 'second-turn' } })
+    const thirdTurn = { ...original, artifactId: randomUUID(), owner: { ...f.input.owner, nativeTurnId: 'third-turn' } }
+    await expect(ledger.reserve(thirdTurn)).rejects.toThrow()
+    await first.release()
+    await expect(ledger.reserve(thirdTurn)).rejects.toThrow()
+    const recovered = await createNativeOutputBudgetLedger(input)
+    await (await recovered.reserve(sameTurn)).release()
+    await (await recovered.reserve(thirdTurn)).assertCurrent()
+  })
+
+  it('reuses released capacity and preserves retry fencing after an interrupted release and restart', async () => {
+    const f = await fixture()
+    const rootDirectory = join(f.root, 'budget')
+    await mkdir(rootDirectory, { mode: 0o700 })
+    const binding = f.input.owner.binding
+    const input = { rootDirectory, installation: { mainId: binding.mainId, deviceId: binding.deviceId,
+      workerInstallationId: binding.workerInstallationId },
+      limits: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } }
+    const ledger = await createNativeOutputBudgetLedger({ ...input, initializeNewStore: true })
+    const original = { artifactId: randomUUID(), owner: f.input.owner, limits: input.limits, requested: input.limits }
+    const reservation = await ledger.reserve(original)
+    const beforeRelease = await readFile(join(rootDirectory, '.native-output-budget.json'))
+    await reservation.release()
+    const completed = await ledger.reserve({ ...original, artifactId: randomUUID() })
+    await completed.release()
+    // A crash can leave the retirement record saved while the active journal is unchanged.
+    await writeFile(join(rootDirectory, '.native-output-budget.json'), beforeRelease)
+    const recovered = await createNativeOutputBudgetLedger(input)
+    await reservation.release()
+    await expect(reservation.assertCurrent()).rejects.toThrow()
+    await expect(recovered.reserve(original)).rejects.toThrow()
+    await expect(recovered.reserve({ ...original,
+      owner: { ...original.owner, nativeTurnId: 'foreign-turn' } })).rejects.toThrow()
+    await (await recovered.reserve({ ...original, artifactId: randomUUID() })).assertCurrent()
+  })
+
+  it('recovers a full legacy journal of released artifacts without consuming active capacity', async () => {
+    const f = await startupFixture()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const journalFile = join(f.root, 'workflow-native-outputs', 'budget', '.native-output-budget.json')
+    const journal = JSON.parse(await readFile(journalFile, 'utf8'))
+    const requested = { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 }
+    const retired = Array.from({ length: BYTE_TRANSFER_POLICY.maxRecords }, () => ({ artifactId: randomUUID(),
+      owner: f.input.owner, requested, released: true }))
+    journal.payload.records = retired
+    journal.checksum = createHash('sha256').update(JSON.stringify(journal.payload)).digest('hex')
+    await writeFile(journalFile, JSON.stringify(journal))
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const recovered = await f.open()
+    const firstRetired = retired[0]!
+    await expect(recovered.reserve({ artifactId: firstRetired.artifactId, owner: firstRetired.owner,
+      requested, limits: f.limits })).rejects.toThrow()
+    const original = { owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits }
+    const reservation = await recovered.reserve(original)
+    await reservation.assertCurrent()
+    await reservation.release()
+    await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
+    const restarted = await f.open()
+    await (await restarted.reserve({ ...original, artifactId: randomUUID() })).assertCurrent()
+  }, 60_000)
+
   it('recovers exact reservations and enforces aggregate caps across turns and ledger instances', async () => {
     const f = await fixture(), owner = f.input.owner, binding = owner.binding
     const rootDirectory = join(f.root, 'budget'); await mkdir(rootDirectory, { mode: 0o700 })
