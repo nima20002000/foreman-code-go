@@ -27,6 +27,14 @@ import type { Sch11Fixture } from './sch11Fixture.js'
 /** Native acceptance only: the same qualifiers, owner guards and persistence as production. */
 export async function qualifyScheduleHarness(f: Sch11Fixture, principal: ManagementPrincipal,
   registry: ProductionHarnessRegistry, settings: HostHarnessOverride[], authority: HostHarnessOverrideAuthority) {
+  const configuration = settings[0]?.configuration
+  if (!configuration || configuration.harness !== 'codex') {
+    throw new Error('The native schedule fixture requires its configured Codex model.')
+  }
+  const defaults = new PostgresSettingsRepository(f.database.pool)
+  const savedDefaults = await defaults.getHarnessDefaults()
+  await defaults.saveHarnessDefaults({ ...savedDefaults,
+    codex: { ...savedDefaults.codex, model: configuration.model } })
   const processes = new NativeProcessRegistry(join(f.runtimeRoot, `qualification-${randomUUID()}`))
   const factories = new NativeHarnessFactories({
     codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, openCodeBinary: 'opencode',
@@ -58,7 +66,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     { codex: suites.codex.revision, opencode: suites.opencode.revision })
   const service = new HarnessQualificationService(repository, qualifications, suites,
     { codex: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, opencode: 'opencode' },
-    f.commands, new PostgresSettingsRepository(f.database.pool), undefined, undefined,
+    f.commands, defaults, undefined, undefined,
     (_harness, _binary, timeoutMs) => scopedCompatibilityProbe({ registry: processes,
       pin: harness => registry.pinDefault(harness),
       assertInstallation,
