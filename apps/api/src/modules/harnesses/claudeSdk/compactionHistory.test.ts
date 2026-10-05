@@ -1,3 +1,5 @@
+import { saveClaudeCompactionResult } from './compactionResults.js'
+import { recoverPersistedClaudeCompaction } from './recoverCompaction.js'
 import { mkdtemp, mkdir, appendFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,5 +34,21 @@ it('recovers only the new manual boundary from the same persisted session and sc
     await expect(readClaudeCompactionHistory(session, after.cursor)).rejects.toBeInstanceOf(SyntaxError)
     await writeFile(path, `${JSON.stringify(frame('repaired-boundary', 'manual'))}\n`)
     expect((await readClaudeCompactionHistory(session)).boundaries).toMatchObject([{ uuid: 'repaired-boundary' }])
+  } finally { await rm(profilePath, { recursive: true, force: true }) }
+})
+
+for (const outcome of ['no-op', 'failed'] as const) it(`reads a cold ${outcome} receipt without SDK startup`, async () => {
+  const profilePath = await mkdtemp(join(tmpdir(), 'claude-control-recovery-'))
+  const scope = { profilePath, cwd: '/owned-project', configRevision: 'configuration', deviceId: 'main' }
+  const nativeSessionId = randomUUID()
+  const nativeRequestId = randomUUID()
+  try {
+    await saveClaudeCompactionResult({ ...scope, nativeSessionId }, nativeRequestId, outcome)
+    const pending = { requestId: randomUUID(), nativeSessionId, nativeRequestId, nativeOperationId: null,
+      claudeSession: scope, status: 'uncertain' as const, message: '', beforeTokens: null,
+      observedAt: new Date().toISOString() }
+    expect((await recoverPersistedClaudeCompaction(pending)).status).toBe(outcome)
+    expect((await recoverPersistedClaudeCompaction({ ...pending,
+      claudeSession: { ...scope, configRevision: 'another-configuration' } })).status).toBe('uncertain')
   } finally { await rm(profilePath, { recursive: true, force: true }) }
 })

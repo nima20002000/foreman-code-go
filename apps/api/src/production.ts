@@ -544,7 +544,7 @@ export function buildProductionApp(
         if (!configuration || configuration.contentHash !== binding.configurationHash || !isDeepStrictEqual(configuration.harnessProfileSelection, selector)) {
           throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact saved Operator configuration changed before its read-only inspection.', 409)
         }
-      } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).callbackAdmission()
+      } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).profileAdmission()
       await assertDeviceHostInstallation(client, selector.target.hostRef, selector.target.applicationInstallationId)
       binding.admissionSignal?.throwIfAborted()
     },
@@ -843,18 +843,21 @@ export function buildProductionApp(
     createClaude: (configuration, conversationId, fileInputs, recovery) => {
       if (configuration.harness.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude requires the pinned Claude configuration.', 409)
       requireClaudeProductionCredentialDelivery(configuration.harness)
+      const controlBinding: Extract<import('./modules/harnesses/claudeSdk/domainAuthority.js').ClaudeDomainBinding, { kind: 'operator' }>
+        = { kind: 'operator', conversationId, repository: operatorConversations }
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
-        binding: { kind: 'operator', conversationId, repository: operatorConversations }, role: 'operator',
+        binding: controlBinding, role: 'operator',
         configuration: configuration.harness, workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
         recovery, appMcpAccess: fileInputs ? 'none' : 'scoped', mode: infrastructure?.mode ?? 'native',
         ...(fileInputs ? { files: { service: () => productionFileTools(app), ...(infrastructure?.claudeFileSdk ? { sdk: infrastructure.claudeFileSdk } : {}) } } : {}),
         ...(infrastructure?.claudeClient ? { loadClient: infrastructure.claudeClient } : {}),
         inspectionStart: async () => {
           const row = await operatorConversations.active(conversationId)
-          if (!row?.active_request_id || row.operator_configuration_version_id !== configuration.id) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The accepted Operator turn is unavailable.', 409)
-          return { kind: 'operator', correlationId: nativeCorrelation(conversationId, row.active_request_id), configuration,
+          if (!row || !row.active_request_id && !controlBinding.controlPrincipalId
+            || row.operator_configuration_version_id !== configuration.id) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The accepted Operator turn is unavailable.', 409)
+          return { kind: 'operator', correlationId: nativeCorrelation(conversationId, row.active_request_id ?? 'session-control'), configuration,
             workingDirectory: operatorWorkingDirectory, environment: { agentId: configuration.operatorId, variables: {} } }
         },
       })

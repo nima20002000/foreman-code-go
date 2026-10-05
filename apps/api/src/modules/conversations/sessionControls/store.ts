@@ -1,3 +1,4 @@
+import { recoverPersistedClaudeCompaction } from '../../harnesses/claudeSdk/recoverCompaction.js'
 import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
 import type pg from 'pg'
@@ -33,10 +34,12 @@ export class SessionControlStore {
     this.commands = new NativeConversationControlCommands(pool, {
       operation: role === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
       parse: value => SessionControlStateSchema.parse(value), prefix: 'SESSION', label: 'Session controls',
-      recoverOutcome: (state, payload, requestId) => {
+      recoverOutcome: (state, payload, requestId, principalId) => {
         const request = SessionControlRequestSchema.parse(payload)
         if (request.kind !== 'compact') return state.lastRequestId === requestId
-        return state.compaction?.requestId === requestId && !compactionBlocksSend(state.compaction)
+          && state.lastRequestPrincipalId === principalId
+        return state.compaction?.requestId === requestId && state.compaction.principalId === principalId
+          && !compactionBlocksSend(state.compaction)
       },
       auditOutcome: (state, payload) => {
         if (!payload || typeof payload !== 'object' || !('kind' in payload) || payload.kind !== 'compact') return 'succeeded'
@@ -98,7 +101,15 @@ export class SessionControlStore {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native compaction result belongs to a different request or session.', 409)
       }
       if (JSON.stringify(reconciled) !== JSON.stringify(state.compaction)) {
-        state.compaction = reconciled
+        state.compaction = { ...state.compaction, ...reconciled, principalId: state.compaction.principalId }
+        await this.save(state)
+      }
+    }
+    if (state.compaction && compactionBlocksSend(state.compaction) && !manager
+      && session?.harness === 'claude' && state.compaction.nativeSessionId === session.nativeSessionId) {
+      const recovered = await recoverPersistedClaudeCompaction(state.compaction)
+      if (JSON.stringify(recovered) !== JSON.stringify(state.compaction)) {
+        state.compaction = recovered
         await this.save(state)
       }
     }
@@ -110,6 +121,7 @@ export class SessionControlStore {
       }
       await this.save(state)
     }
+    if (state.compaction && !compactionBlocksSend(state.compaction)) await this.reconcileReceipt(binding, state)
     const rows = await this.pool.query<{ compaction: unknown }>(`select result#>'{state,compaction}' as compaction
       from management_command_receipts where target_key=$1 and operation=$2
       and result#>>'{state,compaction,requestId}'=command_id order by created_at desc limit 32`,
@@ -163,6 +175,7 @@ export class SessionControlStore {
           if (input.kind === 'save-default') {
             state.defaults = input.preferences
             state.lastRequestId = input.requestId
+            state.lastRequestPrincipalId = current.principalId
             await this.saveDefaults(current, state)
             return state
           }
@@ -170,8 +183,9 @@ export class SessionControlStore {
           state.applicability = current.session ? 'safe-resume' : 'next-turn'
         }
         state.lastRequestId = input.requestId
+        state.lastRequestPrincipalId = current.principalId
         await this.save(state)
-        if (input.kind === 'preferences' && current.session && !current.busyReason
+        if (input.kind === 'preferences' && current.session && current.session.harness !== 'claude' && !current.busyReason
           && current.manager?.applySessionPreferences) {
           markDispatch()
           await current.manager.applySessionPreferences(current.session, input.preferences, signal)
@@ -192,10 +206,11 @@ export class SessionControlStore {
       if (parsed.requestId !== requestId || parsed.nativeSessionId !== (binding.session?.nativeSessionId ?? null)) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native result does not match this compaction.', 409)
       }
-      state.compaction = { ...state.compaction, ...parsed }
+      state.compaction = { ...state.compaction, ...parsed, principalId: binding.principalId, dispatchPhase: parsed.dispatchPhase
+        ?? (state.compaction?.dispatchPhase === 'dispatched' ? 'dispatched' : 'preflight') }
       await this.save(state)
     }
-    const initial = { requestId, nativeSessionId: binding.session?.nativeSessionId ?? null,
+    const initial = { requestId, principalId: binding.principalId, nativeSessionId: binding.session?.nativeSessionId ?? null,
       nativeOperationId: null, status: 'accepted' as const, dispatchPhase: 'reserved' as const,
       reservationOwner, beforeTokens: null,
       message: 'Compaction is starting.', observedAt: new Date().toISOString() }
@@ -223,8 +238,10 @@ export class SessionControlStore {
         || 'deliveryState' in error && error.deliveryState === 'not-delivered'
         || 'method' in error && error.method === 'thread/compact/start' && 'uncertain' in error && error.uncertain === false
       )
-      await progress({ ...state.compaction!, status: definite ? 'failed' : 'uncertain',
-        message: definite ? 'The native provider rejected compaction.' : 'Compaction is unconfirmed. Recover by reading this conversation.' })
+      let message = 'Compaction is unconfirmed. Recover by reading this conversation.'
+      if (definite) message = 'The native provider rejected compaction.'
+      if (!dispatchAttempted) message = 'Compaction stopped before native dispatch. You can try again.'
+      await progress({ ...state.compaction!, status: definite ? 'failed' : 'uncertain', message })
     } finally {
       this.compacting.delete(requestId)
     }
@@ -318,6 +335,24 @@ export class SessionControlStore {
     [state.conversationId!, JSON.stringify(saved), revision])
     if (result.rowCount !== 1) throw new DomainError('SESSION_BUSY', 'The conversation changed or another turn started. Refresh its status.', 409)
     state.revision = saved.revision
+  }
+
+  private async reconcileReceipt(binding: SessionControlBinding, state: SessionControlState) {
+    const compaction = state.compaction!
+    await this.pool.query(`with settled as (
+      update management_command_receipts set result=result || jsonb_build_object('status','completed','state',$5::jsonb)
+      where principal_id=$1 and operation=$2 and command_id=$3 and target_key=$4
+        and (result->>'status' in ('pending','uncertain')
+          or result->>'status'='completed' and result#>>'{state,compaction,requestId}'=$3
+            and result#>>'{state,compaction,status}' in ('accepted','running','uncertain'))
+      returning target_key
+    ) insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      select $1,coalesce((select source from management_audit where principal_id=$1 and action=$2
+        and target_key=$4 and details->>'commandId'=$3 order by sequence limit 1),'http'),$2,target_key,$6,
+        jsonb_build_object('commandId',$3::text,'phase','reconciled') from settled`,
+    [compaction.principalId ?? binding.principalId, this.role === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
+      compaction.requestId, binding.conversationId, JSON.stringify(state),
+      compaction.status === 'failed' ? 'failed' : 'succeeded'])
   }
 
   private async saveDefaults(binding: SessionControlBinding, state: SessionControlState) {

@@ -844,10 +844,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   appliedSessionPreferences(session: NativeSessionReference): SessionPreferences | null {
     const runtime = this.requireRuntime(session)
-    const preferences = runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({})
-    const expected = preferences.contextBudget ?? runtime.contextBudgetLimit
-    if (expected !== undefined && runtime.context?.capacityTokens !== expected) return null
-    return preferences
+    // Native thread startup/resume acknowledges configuration; usable context can include a provider reserve.
+    return runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({})
   }
 
   async sessionControlCapabilities(session: NativeSessionReference): Promise<SessionControlCapabilities> {
@@ -888,9 +886,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         baselineTurnId: before.thread.turns.at(-1)?.id ?? null,
         nativeOperationId: null, status: 'accepted', message: 'Compaction is starting.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
+      let dispatched = false
       try {
         await input.onProgress(runtime.compaction)
         await input.onDispatch?.()
+        dispatched = true
         await runtime.transport.request('thread/compact/start', { threadId: session.nativeSessionId }, signal)
         await input.onProgress(runtime.compaction)
         const waitSignal = AbortSignal.any([this.shutdownController.signal, AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
@@ -902,7 +902,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.record(runtime, 'session.compaction', { ...runtime.compaction })
         return runtime.compaction
       } catch (error) {
-        const definite = error instanceof CodexRpcError && error.method === 'thread/compact/start' && !error.uncertain
+        const definite = !dispatched || error instanceof CodexRpcError && error.method === 'thread/compact/start' && !error.uncertain
         runtime.compaction = { ...runtime.compaction, status: definite ? 'failed' : 'uncertain',
           message: definite ? 'Codex rejected compaction.' : 'Native compaction is unconfirmed.' }
         throw error
@@ -1909,7 +1909,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal.throwIfAborted()
     }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
-      disabledAppMcpServerNames, contextBudgetLimit: modelFacts?.contextWindow ?? undefined,
+      disabledAppMcpServerNames, contextBudgetLimit: typeof modelFacts === 'object' ? modelFacts.contextWindow ?? undefined : undefined,
     }
   }
 

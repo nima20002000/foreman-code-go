@@ -16,8 +16,8 @@ import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 
 export type ClaudeDomainBinding =
   | { kind: 'workflow'; runId: string; executionId: string; attempt: number; getOwner(): RunOwnership | undefined }
-  | { kind: 'operator'; conversationId: string; repository: Pick<PostgresOperatorConversationRepository, 'pending'> }
-  | { kind: 'agent'; conversationId: string; workspaceId: string; repository: Pick<PostgresAgentChatRepository, 'pending'> }
+  | { kind: 'operator'; conversationId: string; controlPrincipalId?: string; repository: Pick<PostgresOperatorConversationRepository, 'pending'> }
+  | { kind: 'agent'; conversationId: string; workspaceId: string; controlPrincipalId?: string; repository: Pick<PostgresAgentChatRepository, 'pending'> }
 export interface ClaudeCurrentCallbackOwner {
   nativeCallbackContext(sessionId: string, toolUseId: string): { nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string; generation: string } | undefined
 }
@@ -60,6 +60,25 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     if (!ownerPrincipalId) denied()
     await this.chatPrincipal(ownerPrincipalId, row, 'write')
     return { ownerPrincipalId, attemptId: row.active_request_id! }
+  }
+
+  async profileAdmission(): Promise<void> {
+    if (this.binding.kind === 'workflow') { await this.callbackAdmission(); return }
+    const row = (await this.database.query<ChatRow>(
+      'select * from operator_conversations where id=$1', [this.binding.conversationId])).rows[0]
+    if (!row || row.kind !== this.binding.kind || row.deleted_at || row.cancel_requested || row.record.status === 'archived'
+      || this.binding.kind === 'agent' && row.workspace_id !== this.binding.workspaceId) denied()
+    if (row.active_request_id) { await this.callbackAdmission(); return }
+    const caller = this.binding.controlPrincipalId
+    if (!caller || this.binding.kind === 'operator' && row.owner_principal_id !== caller) denied()
+    await this.chatPrincipal(caller, row, 'write')
+  }
+
+  async callbackAdmissionIfActive() {
+    if (this.binding.kind === 'workflow') return this.callbackAdmission()
+    const row = (await this.database.query<{ active_request_id: string | null }>(
+      'select active_request_id from operator_conversations where id=$1', [this.binding.conversationId])).rows[0]
+    return row?.active_request_id ? this.callbackAdmission() : undefined
   }
 
   private async workflowAdmission(database: Database): Promise<{ ownerPrincipalId: string; attemptId: string }> {
@@ -208,6 +227,7 @@ export function createPostgresClaudeInteractionBridge(input: {
   const bridge = new ClaudeInteractionBridge(input.configuration, authority)
   authority.bind(bridge)
   return { authority, bridge, callbackAdmission: () => authority.callbackAdmission(),
+    callbackAdmissionIfActive: () => authority.callbackAdmissionIfActive(),
     interactionPort: {
       async pending(session: NativeSessionReference, signal?: AbortSignal) { signal?.throwIfAborted(); return bridge.pendingInteractions(session)[0] },
       respond: (session: NativeSessionReference, requestId: string, option: ApprovalResponseOption, signal?: AbortSignal) => bridge.respond(session, requestId, option, signal),

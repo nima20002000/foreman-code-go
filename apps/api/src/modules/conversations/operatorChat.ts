@@ -323,8 +323,11 @@ export class OperatorChatService {
     const configuration = await this.repository.configuration(row.operator_configuration_version_id)
     if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Conversation configuration is unavailable.', 409)
     const busy = !!row.active_request_id || !!row.pending_interaction
+    const fileInputs = this.runtimes.get(id)?.fileInputs
+      ?? (write && row.fork_request_id && this.managers.hasFileInputs
+        ? await this.managers.hasFileInputs(id, row.fork_request_id) : false)
     const runtime = write && !busy && row.native_session_id
-      ? await this.runtime(id, row, configuration, this.lifetime.signal, Boolean(this.runtimes.get(id)?.fileInputs))
+      ? await this.runtime(id, row, configuration, this.lifetime.signal, fileInputs, principal.id)
       : this.runtimes.get(id)
     const session = runtime?.session ?? (row.native_session_id ? {
       harness: configuration.harness.harness, providerVersion: row.provider_version ?? 'unknown',
@@ -497,11 +500,12 @@ export class OperatorChatService {
   }
 
   private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal,
-    fileInputs: boolean): Promise<Runtime> {
+    fileInputs: boolean, controlPrincipalId?: string): Promise<Runtime> {
     signal.throwIfAborted()
     const resident = this.runtimes.get(id)
     if (resident && (resident.observationOnly || Boolean(resident.fileInputs) !== fileInputs)) await this.release(id)
     const existing = this.runtimes.get(id)
+    if (controlPrincipalId) existing?.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (existing?.session) {
       if (!fileInputs && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the Foreman Code MCP connection in the selected harness before chatting.', 409)
@@ -510,6 +514,7 @@ export class OperatorChatService {
     }
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
+    if (controlPrincipalId) runtime.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (!runtime.environment) {
       const preferences = await this.sessionControls().preferences(id)
       if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)

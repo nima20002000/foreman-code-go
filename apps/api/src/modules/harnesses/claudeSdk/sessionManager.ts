@@ -360,6 +360,7 @@ export function createClaudeNativeSessionManager(options: {
     }
     runtime.controlPending = true
     runtime.replacingForResume = true
+    const startup = startupSignal(signal)
     try {
       await runtime.sdk.close()
       await runtime.pumping
@@ -373,7 +374,7 @@ export function createClaudeNativeSessionManager(options: {
           env: claudeSessionEnvironment({ ...(options.sdkOptions.env as Record<string, string> | undefined),
             ...start.environment?.variables }, preferences) },
         ...(runtime.session ? { resume: { ...options.scope, nativeSessionId: runtime.session.nativeSessionId } } : {}),
-        ...(signal ? { signal } : {}), onObservation: observation => observed(runtime, observation),
+        ...(startup.signal ? { signal: startup.signal } : {}), onObservation: observation => observed(runtime, observation),
         ...(options.cancelPendingRequests ? { cancelPendingRequests: () => {
           if (!runtime.replacingForResume) options.cancelPendingRequests!()
         } } : {}),
@@ -393,6 +394,7 @@ export function createClaudeNativeSessionManager(options: {
       delete runtime.appliedPreferences
       throw error
     } finally {
+      startup.release()
       runtime.replacingForResume = false
       runtime.controlPending = false
     }
@@ -1050,22 +1052,24 @@ export function createClaudeNativeSessionManager(options: {
       const completed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
       const control = { state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
         nativeOperationId: null, nativeRequestId: claudePromptUuid(input.clientCorrelationId),
-        claudeCursor: before.cursor, status: 'running' as CompactionState['status'], message: 'Compacting context.',
+        claudeSession: { ...options.scope }, claudeCursor: before.cursor, status: 'running' as CompactionState['status'], message: 'Compacting context.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: now() },
         promptUuid: claudePromptUuid(input.clientCorrelationId), progress: input.onProgress, finish, fail }
       runtime.compaction = control
       const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
       const abort = () => fail(waitSignal.reason)
       waitSignal.addEventListener('abort', abort, { once: true })
+      let dispatched = false
       try {
         await input.onProgress(control.state)
         await input.onDispatch?.()
+        dispatched = true
         await runtime.sdk.offer({ promptUuid: control.promptUuid, content: '/compact' }, signal)
         await input.onProgress(control.state)
         await completed
         return control.state
       } catch (error) {
-        const definite = !!error && typeof error === 'object' && (
+        const definite = !dispatched || !!error && typeof error === 'object' && (
           'deliveryState' in error && error.deliveryState === 'not-delivered'
           || 'certainty' in error && error.certainty === 'definite')
         control.state = { ...control.state, status: definite ? 'failed' : 'uncertain',

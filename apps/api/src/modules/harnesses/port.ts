@@ -159,6 +159,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly harness: AgentHarness
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  /** The domain supplies the authenticated control caller; native callbacks still require a message owner. */
+  setSessionControlPrincipal?(principalId: string): void
   applySessionPreferences?(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal): Promise<void>
   configureSessionPreferences?(preferences: SessionPreferences): Promise<void>
   sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>

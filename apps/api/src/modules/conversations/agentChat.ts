@@ -519,8 +519,8 @@ export class AgentChatService {
     const row = await this.conversation(workspaceId, id, principal, write ? 'agent_chat:write' : 'agent_chat:read')
     const state = await this.readConversation(principal, workspaceId, id)
     const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
-    const runtime = !row.active_request_id && row.native_session_id && configuration
-      ? await this.runtime(row, configuration, `session-control:${id}`, this.lifetime.signal) : this.runtimes.get(id)
+    const runtime = write && !row.active_request_id && row.native_session_id && configuration
+      ? await this.runtime(row, configuration, `session-control:${id}`, this.lifetime.signal, principal.id) : this.runtimes.get(id)
     const session = runtime?.session ?? (row.native_session_id ? {
       harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id,
     } : undefined)
@@ -925,12 +925,13 @@ export class AgentChatService {
   }
   private runtimeDirectory(id: string) { return join(resolve(this.runtimeRoot), 'agent-chat', id) }
 
-  private async runtime(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, signal: AbortSignal): Promise<Runtime> {
+  private async runtime(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, signal: AbortSignal, controlPrincipalId?: string): Promise<Runtime> {
     this.assertOpen()
     const unavailable = this.sessionUnavailable(row, configuration)
     if (unavailable) throw new DomainError(unavailable.message === EPHEMERAL_SESSION_LOST ? 'AGENT_CHAT_EPHEMERAL_SESSION_LOST' : 'AGENT_CHAT_UNAVAILABLE',
       unavailable.message, 409, { reason: unavailable.reason })
     const existing = this.runtimes.get(row.id)
+    if (controlPrincipalId) existing?.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (existing?.session) {
       if (existing.session.nativeSessionId !== row.native_session_id) {
         throw new DomainError('AGENT_CHAT_SESSION_UNBOUND', 'Native session creation has not been durably bound.', 409)
@@ -941,6 +942,7 @@ export class AgentChatService {
     this.assertOpen()
     signal.throwIfAborted()
     const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
+    if (controlPrincipalId) runtime.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (!existing) {
       const preferences = await this.sessionControls.preferences(row.id)
       if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)

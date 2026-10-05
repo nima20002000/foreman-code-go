@@ -6,12 +6,14 @@ import { createInterface } from 'node:readline'
 import type { ClaudePersistedSession } from './port.js'
 import type { CompactionState } from '@graphql/contracts'
 
+export class ClaudeCompactionHistoryUnavailableError extends Error {}
+
 export interface ClaudeCompactionCursor {
   identity: string
   offset: number
   scope: string
 }
-function scopeDigest(session: ClaudePersistedSession) {
+export function claudeSessionScopeHash(session: ClaudePersistedSession) {
   return createHash('sha256').update(JSON.stringify(session)).digest('hex')
 }
 
@@ -37,7 +39,7 @@ export async function readClaudeCompactionHistory(session: ClaudePersistedSessio
       const info = await file.stat()
       if (!info.isFile()) throw new Error('Native transcript is not a regular file')
       const identity = createHash('sha256').update(JSON.stringify([canonical,info.dev,info.ino,info.birthtimeMs])).digest('hex')
-      const scope = scopeDigest(session)
+      const scope = claudeSessionScopeHash(session)
       if (cursor && (cursor.identity !== identity || cursor.scope !== scope || cursor.offset > info.size)) {
         throw new Error('The native transcript identity changed during compaction')
       }
@@ -68,7 +70,7 @@ export async function readClaudeCompactionHistory(session: ClaudePersistedSessio
       return { cursor: { identity, offset: completeSize, scope }, boundaries }
     } finally { await file.close() }
   }
-  throw new Error('The exact native Claude transcript is unavailable')
+  throw new ClaudeCompactionHistoryUnavailableError('The exact native Claude transcript is unavailable')
 }
 
 export function recoveredClaudeCompaction(state: CompactionState, boundaries: readonly Record<string, unknown>[]): CompactionState {

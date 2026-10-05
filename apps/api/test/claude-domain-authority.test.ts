@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
-import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
+import { createPostgresClaudeInteractionBridge, PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
 import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/fixture', permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'AskUserQuestion'], permissionRules: [], instructions: '', mcpServers: {} }
 const session = { harness: 'claude' as const, nativeSessionId: 'native-session', providerVersion: 'fixture-cli' }
@@ -12,7 +12,7 @@ const identity = { ownerPrincipalId: 'sender', attemptId: 'model-request', nativ
 function fixture(kind: 'operator' | 'agent' = 'operator') {
   const principals = new Map(['sender', 'responder'].map((id) => [id, { id, name: id, audience: 'operator', grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:respond', 'agent_chat:read', 'agent_chat:write', 'agent_chat:respond'], scope: {} }], expires_at: new Date('2099-01-01'), revoked_at: null, delegated_from: null }]))
   const row = { kind, owner_principal_id: kind === 'operator' ? 'sender' : null, workspace_id: 'workspace', workflow_id: 'workflow', origin_run_id: null,
-    active_request_id: 'model-request', native_session_id: session.nativeSessionId, provider_version: session.providerVersion, cancel_requested: false, deleted_at: null, record: { status: 'open' },
+    active_request_id: 'model-request' as string | null, native_session_id: session.nativeSessionId, provider_version: session.providerVersion, cancel_requested: false, deleted_at: null, record: { status: 'open' },
     payload: { ownerPrincipalId: 'sender', nativeSubmission: { kind: 'message', nativeSessionId: session.nativeSessionId, nativeMessageId: identity.nativeMessageId, clientCorrelationId: identity.clientCorrelationId } },
     pending_interaction: null as unknown, response_delivery: null as string | null }
   let receipts: unknown[] = []
@@ -22,6 +22,7 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
     if (callbackResult) return callbackResult
     const result = (rows: unknown[], rowCount = rows.length) => ({ rows, rowCount, command: 'SELECT', oid: 0, fields: [] })
     if (text.includes('from management_principals where id=')) return result(principals.has(values[0] as string) ? [principals.get(values[0] as string)] : [])
+    if (text.startsWith('select * from operator_conversations') || text.startsWith('select active_request_id from operator_conversations')) return result([row])
     if (text.includes('join operator_conversation_turns t')) { expect(values[0]).toBe('conversation'); expect([null, 'model-request']).toContain(values[1]); return result([structuredClone(row)]) }
     if (text.includes('select principal_id,result from management_command_receipts')
       || text.includes('select result from management_command_receipts')) return result(receipts)
@@ -200,4 +201,19 @@ it('workflow response uses original-source readback plus active delivery lease a
   await port.interactionPort.respond(session, callback.nativeRequestId, pending.responseOptions[0]!)
   expect((await callbackPromise).behavior).toBe('allow')
   expect((await port.interactionPort.reconcileResponse(session, { nativeRequestId: callback.nativeRequestId, option: pending.responseOptions[0]! })).responseDeliveries).toEqual([])
+})
+
+it.each(['operator', 'agent'] as const)('authorizes idle %s profile controls without admitting tool callbacks', async kind => {
+  const f = fixture(kind)
+  f.row.active_request_id = null
+  const binding = kind === 'operator' ? { kind, conversationId: 'conversation', controlPrincipalId: 'sender',
+    repository: new PostgresOperatorConversationRepository({ query: f.query } as unknown as pg.Pool) }
+    : { kind, conversationId: 'conversation', workspaceId: 'workspace', controlPrincipalId: 'sender',
+      repository: new PostgresAgentChatRepository({ query: f.query } as unknown as pg.Pool) }
+  const authority = new PostgresClaudeInteractionAuthority({ query: f.query } as unknown as pg.Pool, binding, f.manager)
+  await expect(authority.profileAdmission()).resolves.toBeUndefined()
+  await expect(authority.callbackAdmissionIfActive()).resolves.toBeUndefined()
+  await expect(authority.callbackAdmission()).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
+  f.principals.get('sender')!.grants[0]!.actions = [kind === 'operator' ? 'operator_chat:read' : 'agent_chat:read']
+  await expect(authority.profileAdmission()).rejects.toMatchObject({ status: 403 })
 })

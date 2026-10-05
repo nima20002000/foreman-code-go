@@ -399,17 +399,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       state.compaction = { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
         nativeOperationId: baseline, status: 'running', message: 'Compacting context.',
         beforeTokens: state.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
-      await input.onProgress(state.compaction)
       const [providerID, ...model] = state.configuration.model.split('/')
       let accepted: unknown
+      let dispatched = false
       try {
+        await input.onProgress(state.compaction)
         await input.onDispatch?.()
+        dispatched = true
         accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerID, modelID: model.join('/'), auto: false }),
       }, combined)
       } catch (error) {
-        const definite = error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
+        const definite = !dispatched || error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
         state.compaction = { ...state.compaction, status: definite ? 'failed' : 'uncertain',
           message: definite ? 'OpenCode rejected compaction.' : 'Read to recover native compaction.' }
         throw error

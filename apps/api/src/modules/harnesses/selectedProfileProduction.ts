@@ -26,7 +26,7 @@ export function productionSelectedProfileManager(input: {
   openCodeFiles?: Extract<NativeHarnessAllocation, { harness: 'opencode' }>['chatFiles']
 }) {
   input = { ...input, configuration: structuredClone(input.configuration), selector: structuredClone(input.selector) }
-  return input.factories.allocateAdmitted(input.configuration.harness, async signal => {
+  const result = input.factories.allocateAdmitted(input.configuration.harness, async signal => {
     const owner = { ...input.binding, admissionSignal: signal }
     const accepted = await input.profiles.admit(owner, input.selector)
     signal.throwIfAborted()
@@ -38,9 +38,13 @@ export function productionSelectedProfileManager(input: {
     const common = { selection, configured: selection.instance, role: input.role, workingDirectory: input.workingDirectory,
       ownerAgentId: input.ownerAgentId, processRecovery: input.recovery, appMcpAccess: input.appMcpAccess,
       ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
-      revalidateSelection: (effectSignal?: AbortSignal) => input.profiles.revalidate({ ...owner, admissionSignal: effectSignal ?? signal }, accepted) }
+      revalidateSelection: (effectSignal?: AbortSignal) => input.profiles.revalidate({ ...input.binding, admissionSignal: effectSignal ?? signal }, accepted) }
     return input.configuration.harness === 'codex' ? { ...common, harness: 'codex', ...(input.files ? { chatFiles: input.files } : {}) }
       : { ...common, harness: 'opencode', ...(input.configuration.advanced ? { advancedConfiguration: input.configuration.advanced } : {}),
         ...(input.openCodeFiles ? { chatFiles: input.openCodeFiles } : {}) }
   })
+  result.manager.setSessionControlPrincipal = principalId => {
+    if (input.binding.kind === 'operator' || input.binding.kind === 'agent') input.binding.controlPrincipalId = principalId
+  }
+  return result
 }

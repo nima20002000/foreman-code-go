@@ -44,7 +44,7 @@ export class NativeConversationControlCommands<State> {
 
   constructor(private readonly pool: Pick<pg.Pool, 'query'>, private readonly contract: {
     operation: 'agent_chat_control' | 'operator_chat_control'; parse(value: unknown): State; prefix: string; label: string;
-    recoverOutcome?(state: State, payload: unknown, requestId: string): boolean;
+    recoverOutcome?(state: State, payload: unknown, requestId: string, principalId: string): boolean;
     auditOutcome?(state: State, payload: unknown): 'succeeded' | 'failed' | 'uncertain';
   }) {}
 
@@ -162,7 +162,7 @@ export class NativeConversationControlCommands<State> {
       }
       if (readCurrent && this.contract.recoverOutcome) {
         const state = this.contract.parse(await readCurrent())
-        if (this.contract.recoverOutcome(state, payload, requestId)) {
+        if (this.contract.recoverOutcome(state, payload, requestId, principal.id)) {
           const result = { ...prior.result, status: 'completed', state }
           await this.pool.query(`with recovered as (
             update management_command_receipts set result=$5::jsonb

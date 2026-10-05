@@ -8,6 +8,11 @@ import type {
   ClaudeSdkOutput, ClaudeSdkQuery, ClaudeSdkRunner, ClaudeSdkSession, ClaudeSdkUserMessage, ClaudeSessionScope,
 } from './port.js'
 
+class ClaudeInputNotOfferedError extends Error {
+  readonly deliveryState = 'not-delivered'
+  readonly certainty = 'definite'
+}
+
 export function assertClaudeSessionScope(session: ClaudePersistedSession, scope: ClaudeSessionScope): void {
   for (const key of ['deviceId', 'profilePath', 'configRevision', 'cwd'] as const) {
     if (session[key] !== scope[key]) throw new Error(`Claude session ${key} mismatch`)

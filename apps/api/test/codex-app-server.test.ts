@@ -196,6 +196,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     if (failure?.status === 'rejected') throw failure.reason
   })
 
+  it('releases the native fence when dispatch metadata cannot be saved before sending', async () => {
+    const session = await manager.createSession(source)
+    await assert.rejects(manager.compactSession(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+      onProgress: async () => {}, onDispatch: async () => { throw new Error('Dispatch storage failed') } }), /Dispatch storage failed/)
+    assert.equal((await wire('thread/compact/start')).length, 0)
+    const task = await start(session, 'follow-up', 'after-preflight')
+    await finish(f.directory, session.nativeSessionId)
+    await task.result
+  })
+
   it('recovers a resident compaction from native history when completion notifications are lost', async () => {
     const session = await manager.createSession(source)
     await flag('drop-compact-events')
@@ -220,11 +230,13 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     source = { ...source, sessionPreferences: SessionPreferencesSchema.parse({ contextBudget: 100000 }) }
     const session = await manager.createSession(source)
     assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    assert.equal(manager.appliedSessionPreferences(session)?.contextBudget, 100000)
     await manager.closeForRestart(session)
     const resumed = makeManager()
     await resumed.attachSession(session, source)
     assert.deepEqual((await resumed.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
     await resumed.applySessionPreferences(session, SessionPreferencesSchema.parse({}))
+    assert.equal(resumed.appliedSessionPreferences(session)?.contextBudget, null)
     const last = (await wire('thread/resume')).at(-1)!
     assert.equal((last.params as { config: Record<string, unknown> }).config.model_context_window, undefined)
   })

@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { claudeSessionScopeHash } from './compactionHistory.js'
 import { constants } from 'node:fs'
 import { mkdir, open, rename } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -11,7 +12,7 @@ const ResultSchema = z.object({
 }).strict()
 function resultLocation(session: ClaudePersistedSession, promptUuid: string) {
   z.string().uuid().parse(promptUuid)
-  const scope = createHash('sha256').update(JSON.stringify(session)).digest('hex')
+  const scope = claudeSessionScopeHash(session)
   const directory = join(session.profilePath, 'foreman-session-controls', scope)
   return { scope, directory, path: join(directory, `${promptUuid}.json`) }
 }

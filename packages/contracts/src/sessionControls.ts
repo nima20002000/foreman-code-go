@@ -41,12 +41,15 @@ export const ContextSnapshotSchema = z.object({
 export type ContextSnapshot = z.infer<typeof ContextSnapshotSchema>
 export const CompactionStateSchema = z.object({
   requestId: z.string(),
+  principalId: z.string().optional(),
   nativeSessionId: z.string().nullable(),
   nativeOperationId: z.string().nullable(),
   baselineTurnId: z.string().nullable().optional(),
   dispatchPhase: z.enum(['reserved', 'preflight', 'dispatched']).optional(),
   reservationOwner: z.string().optional(),
   nativeRequestId: z.string().optional(),
+  claudeSession: z.object({ deviceId: z.string(), profilePath: z.string(), configRevision: z.string(),
+    cwd: z.string() }).strict().optional(),
   claudeCursor: z.object({ identity: z.string(), offset: z.number().int().nonnegative(), scope: z.string() }).strict().optional(),
   status: z.enum(['accepted', 'running', 'completed', 'no-op', 'failed', 'uncertain']),
   message: z.string(),
@@ -58,6 +61,7 @@ export const SessionControlStateSchema = z.object({
   conversationId: z.string().nullable(),
   revision: z.number().int().nonnegative(),
   lastRequestId: z.string().optional(),
+  lastRequestPrincipalId: z.string().optional(),
   profileKey: z.string(),
   desiredMode: SessionModeSchema,
   appliedMode: SessionModeSchema.nullable(),

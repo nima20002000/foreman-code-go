@@ -819,3 +819,23 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
   await restarted.manager.dispose!()
   await rm(profilePath, { recursive: true, force: true })
 })
+
+it('releases its runtime fence after a failed pre-dispatch save without offering compact', async () => {
+  const f = fixture()
+  f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+  f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, cwd: '/work',
+    claude_code_version: '2.1.284', slash_commands: ['compact'] })
+  await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+  await expect(f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+    onProgress: async () => {}, onDispatch: async () => { throw new Error('Dispatch storage failed') } }))
+    .rejects.toThrow('Dispatch storage failed')
+  expect(f.offers).not.toHaveBeenCalled()
+  const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'next-task' }))
+  const message = await f.nextMessage()
+  f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+    subtype: 'success', is_error: false, result: 'done' })
+  await output
+  await f.manager.dispose!()
+})
