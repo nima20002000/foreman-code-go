@@ -78,7 +78,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
           + 'Launch requires an approved source/root and current host-bound CI qualification. '
           + 'Connecting a computer or listing tools is not qualification. '
           + 'Job management tools remain Operator-only; Coder and Orchestrator roles cannot invoke them. '
-          + 'Revoked-Worker cleanup requires separate browser-owner approval; MCP cannot approve itself or enable execution.'
+          + 'Revoked-Worker cleanup requires separate local-human approval; MCP cannot approve itself or enable execution.'
       }] : []), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
         detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. '
           + (scheduleRuntime?.configured ? 'Timed Run admission is composed; see schedule_delivery for policy and readiness. '
