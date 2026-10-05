@@ -770,7 +770,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         }, signal), 'CODEX_THREAD_RESUME_INVALID')
         this.validateThreadResponse(prepared, response, session.nativeSessionId)
         const runtime = this.runtime(prepared, structuredClone(session), candidate.transport, true)
-        if (!this.responseJournal?.readTurnRejection(session, input.correlationId)) {
+        const rejected = input.correlationId && this.responseJournal?.readTurnRejection(session, input.correlationId)
+        if (!rejected) {
           await this.synchronize(runtime, undefined, signal)
         }
         await candidate.activate(runtime)

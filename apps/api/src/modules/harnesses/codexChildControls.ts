@@ -6,7 +6,7 @@ import { codexRequest, type QualifiedCodex } from './codexProtocol.js'
 import { CodexRpcError, isObject, type JsonObject } from './codexStdioTransport.js'
 import { HarnessExecutionError } from './errors.js'
 import type { CodexTransport } from './codexAppServer.js'
-import type { Thread, Turn } from './codexMethodTypes.js'
+import type { Thread, Turn, ThreadTurnsListResponse, ThreadItemsListResponse } from './codexMethodTypes.js'
 
 export interface CodexChildControlHost {
   rootThreadId: string
@@ -174,10 +174,11 @@ export class CodexChildControls {
     while (target !== host.rootThreadId) {
       if (visited.has(target) || visited.size >= 32) throw new SubagentDispatchRejectedError()
       visited.add(target)
-      const source = isObject(thread.source) && isObject(thread.source.subAgent) ? thread.source.subAgent : {}
-      const spawn = isObject(source.thread_spawn) ? source.thread_spawn : {}
+      const source = thread.source
+      const subAgent = typeof source === 'object' && 'subAgent' in source ? source.subAgent : undefined
+      const spawn = typeof subAgent === 'object' && 'thread_spawn' in subAgent ? subAgent.thread_spawn : undefined
       if (thread.id !== target || thread.ephemeral || !thread.parentThreadId
-        || spawn.parent_thread_id !== thread.parentThreadId
+        || spawn?.parent_thread_id !== thread.parentThreadId
         || target === child.native.childSessionId && thread.parentThreadId !== child.native.parentSessionId) {
         throw new SubagentDispatchRejectedError()
       }
@@ -204,7 +205,7 @@ export class CodexChildControls {
     const seen = new Set<string>()
     if (receipt.operation === 'run_subagent_interrupt_v1') {
       do {
-        const page = await codexRequest(host.transport, 'thread/turns/list', {
+        const page: ThreadTurnsListResponse = await codexRequest(host.transport, 'thread/turns/list', {
           threadId: target, cursor, limit: 50, sortDirection: 'desc',
         })
         current()
@@ -217,7 +218,7 @@ export class CodexChildControls {
       return 'uncertain'
     }
     do {
-      const page = await codexRequest(host.transport, 'thread/items/list', {
+      const page: ThreadItemsListResponse = await codexRequest(host.transport, 'thread/items/list', {
         threadId: target, cursor, limit: 50, sortDirection: 'asc',
       })
       current()

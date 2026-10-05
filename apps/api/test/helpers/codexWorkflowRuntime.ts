@@ -1,6 +1,7 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { insertProviderRun, providerLaunchCredentials, providerAppEndpoint, stopProviderRun } from './wave25Br1003Runtime.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
+import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
 import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from '../../src/modules/interactions/reviewNativeCapture.js'
 import { ReviewNativeProofServices } from '../../src/modules/interactions/reviewNativeProof.js'
@@ -84,7 +85,10 @@ export async function codexWorkflowRuntime(kind: 'questions' | 'form') {
     const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
     const credentials = new Wave25WorkerCredentialService(db.pool, access)
     const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials,
-      manager => codexMcpInspectorAdapter(manager as Parameters<typeof codexMcpInspectorAdapter>[0]), db.pool)
+      manager => {
+        if (!(manager instanceof CodexAppServerSessionManager)) throw new Error('Expected the Codex workflow manager')
+        return codexMcpInspectorAdapter(manager)
+      }, db.pool)
     const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
       launchCredentials, continuationValidator(db.pool, locations),
       new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),

@@ -756,8 +756,10 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     it(`Operator ${kind} responses deny read-only callers and preserve HTTP/MCP readback after service restart`, async () => {
       const id = await createOperator()
       await sendOperator(id, 'input-turn', 'wait')
-      const submission = await until(async () => (await readOperator(id)).nativeSubmission)
-      assert(submission.kind === 'turn')
+      const submission = await until(async () => {
+        const row = await messages.active(id)
+        return row?.native_session_id && row.active_native_turn_id ? row : undefined
+      })
       const params = kind === 'questions' ? {
         itemId: 'questions', isBlocking: true, autoResolutionMs: null,
         questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',
@@ -767,8 +769,8 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
       const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
       await emit(native.directory, { id: 5102, method, params: {
-        threadId: submission.nativeSessionId,
-        turnId: kind === 'standalone-form' ? null : submission.nativeTurnId, ...params,
+        threadId: submission.native_session_id,
+        turnId: kind === 'standalone-form' ? null : submission.active_native_turn_id, ...params,
       } })
       const pending = await until(async () => (await readOperator(id)).pendingInteraction)
       if (kind === 'standalone-form') assert.equal(pending.turn.nativeTurnId, undefined)

@@ -17,7 +17,10 @@ export const NativeInteractionInputSchema = z.discriminatedUnion('kind', [
 export type NativeInteractionInput = z.infer<typeof NativeInteractionInputSchema>
 export type InteractionResponseValue = z.infer<ReturnType<typeof z.json>>
 
-type ResponseOption = { input?: NativeInteractionInput; response?: InteractionResponseValue }
+type ResponseOption = {
+  input?: NativeInteractionInput | undefined
+  response?: InteractionResponseValue | undefined
+}
 
 function schemaDraft(schema: Record<string, unknown>): SchemaDraft {
   const dialect = String(schema.$schema ?? '')

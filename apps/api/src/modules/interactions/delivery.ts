@@ -37,7 +37,7 @@ export interface NativeResponseDeliveryEvidence {
   nativeRequestType: string
   optionId: string
   semantic: NonNullable<DurableInteraction['selectedSemantic']>
-  responseDigest?: string
+  responseDigest?: string | undefined
 }
 
 export function responseValueDigest(value: unknown): string {

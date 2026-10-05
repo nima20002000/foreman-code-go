@@ -119,7 +119,7 @@ export class InteractionService {
   }
 
   respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number;
-    commandId?: string; response?: InteractionResponseValue },
+    commandId?: string; response?: InteractionResponseValue | undefined },
     options: InteractionResponseOptions = {}) {
     return respondToApproval(this.approvalDependencies(), responder, input, options)
   }

@@ -108,7 +108,7 @@ export async function resumeApproval(deps: ApprovalRuntimeDependencies, interact
   await deps.repository.delivery.finishGraphResume(claim, error)
 }
 export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,
-  input: { interactionId: string; optionId: string; expectedRevision: number; response?: InteractionResponseValue },
+  input: { interactionId: string; optionId: string; expectedRevision: number; response?: InteractionResponseValue | undefined },
   options: InteractionResponseOptions = {}) {
   const current = await read(deps, input.interactionId)
   if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind !== 'orchestrator')) {

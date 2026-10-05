@@ -1,6 +1,7 @@
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
+import type { RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -60,7 +61,7 @@ describe('actual worker native-port adapter', () => {
     f.manager.respond = respond
     const status = await f.journal.status('operation')
     if (status.status !== 'known') throw new Error('Missing receipt')
-    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'response', operationId: f.intent.operationId,
+    const command: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'response', operationId: f.intent.operationId,
       attemptId: f.intent.attemptId, executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
       owner: f.intent.owner, native: status.receipt.native, action: { kind: 'respond', interactionId: 'interaction',
         interactionRevision: '1', nativeInteractionId: 'question', response: selected } }
