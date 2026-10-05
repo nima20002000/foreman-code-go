@@ -1,8 +1,6 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import pg from 'pg'
 import { AgentSchema, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture, AcceptedRepeatStartV1Schema, WorkflowRunV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
@@ -17,6 +15,7 @@ import { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
@@ -36,7 +35,7 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
   await admin.query(`create schema ${schema}`)
   const pool = new pg.Pool({ connectionString: url, max: 10,
     options: `-c search_path=${schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
-  const directory = await mkdtemp(join(tmpdir(), 'wave25-a3-'))
+  const directory = await privateFixtureDirectory('wave25-a3-')
   try { await applyApplicationMigrations(pool) } catch (error) {
     await pool.end(); await admin.query(`drop schema ${schema} cascade`); await admin.end()
     await rm(directory, { recursive: true, force: true }); throw error
