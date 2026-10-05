@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -71,7 +71,7 @@ function ownedChild(name, file, args, env, ipc = false) {
       if (!record.noticeShown) { console.log('ENG07 recovery is unresolved; inspect the Run before continuing.'); record.noticeShown = true }
     }
     if (message?.type === 'failure') {
-      const error = Object.assign(new Error('Service operation failed.'), { code: message.code })
+      const error = Object.assign(new Error('Service operation failed.'), { code: message.code, stage: message.stage })
       if (message.requestId) record.pending.get(message.requestId)?.reject(error)
       else failed(error)
     }
@@ -274,8 +274,26 @@ async function main() {
   input.once('close', () => finish())
   await ended
 }
-main().catch((error) => {
-  if (!abort.signal.aborted) console.error(`ENG07 ${stage} failed (${publicError(error)}). See prerequisites and troubleshooting in docs/acceptance/owner-walkthrough.md.`)
+main().catch(async (error) => {
+  if (!abort.signal.aborted) console.error(`ENG07 ${stage} failed (${publicError(error)}; service stage: ${error.stage ?? 'controller'}). See prerequisites and troubleshooting in docs/acceptance/owner-walkthrough.md.`)
+  const archive = process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE
+  if (archive && state) {
+    try {
+      await mkdir(archive, { recursive: true, mode: 0o700 })
+      for (const kind of ['api', 'web']) {
+        const file = join(state, `${kind}-failure.json`)
+        try {
+          const diagnostic = await readFile(file, 'utf8')
+          await writeFile(join(archive, `local-${kind}-failure-${randomUUID()}.json`), diagnostic,
+            { flag: 'wx', mode: 0o600 })
+        } catch (failure) {
+          if (failure.code !== 'ENOENT') throw failure
+        }
+      }
+    } catch {
+      console.error('ENG07 private startup diagnostic archive failed.')
+    }
+  }
   process.exitCode = process.exitCode || 1
 }).finally(async () => {
   try { await shutdown() } catch {

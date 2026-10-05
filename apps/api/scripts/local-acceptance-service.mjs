@@ -1,13 +1,14 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { assertOwned, publicError } from '../../../scripts/acceptance/safety.mjs'
 import { seed } from '../../../scripts/acceptance/scenarios.mjs'
 import { parity } from '../../../scripts/acceptance/parity.mjs'
 import { assertTestDatabase, ownedTestDatabaseUrl } from '../../../scripts/test-resources.mjs'
 import * as schemas from '@foreman-code/contracts/wave25'
 import * as sdk from '@modelcontextprotocol/client'
+import { redactSecretText } from '../src/modules/harnesses/secrets.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const state = process.env.ENG07_STATE
@@ -58,7 +59,9 @@ async function main() {
   await assertTestDatabase(db.pool, { directory: state, token: process.env.FOREMAN_CODE_TEST_OWNER,
     name: process.env.ENG07_DATABASE, databaseUrl: process.env.TEST_DATABASE_URL })
   const identity = (await db.pool.query('select current_database() as database, current_schema() as schema')).rows[0]
-  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07') throw new Error('Database identity mismatch.')
+  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07') {
+    throw Object.assign(new Error('Database identity mismatch.'), { code: 'ACCEPTANCE_DATABASE_IDENTITY_MISMATCH' })
+  }
   stage = 'migrations'
   await db.migrate()
   const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
@@ -100,6 +103,16 @@ async function main() {
   })
 }
 main().catch(async (error) => {
+  const secrets = Object.entries(process.env).filter(([key, value]) => value
+    && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
+  const diagnostic = { kind, stage, code: publicError(error), name: error?.name,
+    message: redactSecretText(String(error?.message ?? 'Unknown startup failure'), secrets) }
+  try {
+    await writeFile(join(state, `${kind}-failure.json`), JSON.stringify(diagnostic, null, 2),
+      { flag: 'wx', mode: 0o600 })
+  } catch {
+    send({ type: 'notice', code: 'STARTUP_DIAGNOSTIC_UNAVAILABLE' })
+  }
   send({ type: 'failure', stage, code: publicError(error) })
   try { await close() } finally { process.exit(1) }
 })
