@@ -19,6 +19,7 @@ import { PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/cla
 import { MainWorkerConversationBridge } from '../src/modules/conversations/workerBridge.js'
 import { createMainWorkerClaudeFiles } from '../src/modules/conversations/mainWorkerClaudeFiles.js'
 import { createWorkerClaudeFiles } from '../src/modules/conversations/workerClaudeFiles.js'
+import { readConversationPublicationReceipts } from '../src/modules/conversations/messagePublications.js'
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { workerConversationFixture } from '../src/modules/conversations/workerFixtures.test-support.js'
@@ -119,7 +120,8 @@ async function fixture(readOnly: boolean) {
   const acknowledge = () => bridge.handle({ method: 'conversation.submitted', binding,
     admissionId: lease.admissionId, correlationId, identity: { nativeSubmission: submission } },
   recorded.connection, AbortSignal.timeout(5000))
-  return { db, client, call, acknowledge, ref, scope, sender, lease, mainFiles }
+  return { db, client, call, acknowledge, ref, scope, sender, lease, mainFiles,
+    readConversation: () => repository.get(conversation.id) }
 }
 
 describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native messages', () => {
@@ -142,6 +144,12 @@ describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native m
     expect(replay.value).toEqual(first.value)
     const saved = await f.db.pool.query('select file_id,revision_id from file_tool_publications')
     expect(saved.rows).toEqual([{ file_id: first.value.file.fileId, revision_id: first.value.revision.revisionId }])
+    const state = await f.readConversation()
+    expect(state).toBeDefined()
+    const receipts = await readConversationPublicationReceipts(f.db.pool, state!.conversation.id,
+      state!.messages.map(message => message.id))
+    expect(receipts).toEqual([expect.objectContaining({ fileId: first.value.file.fileId,
+      fileRevisionId: first.value.revision.revisionId })])
     expect((await f.call('files.list', { scope: { ...f.scope, chat: {
       ...f.scope.chat, conversationId: randomUUID(),
     } } })).isError).toBe(true)

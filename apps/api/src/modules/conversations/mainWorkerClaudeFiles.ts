@@ -24,7 +24,7 @@ export function createMainWorkerClaudeFiles(input: {
     nativeCallbackContext(sessionId: string, toolUseId: string): ClaudeNativeCallbackContext | undefined {
       const identity = current.getStore()
       if (closed || !identity || identity.nativeSessionId !== sessionId || identity.toolUseId !== toolUseId
-        || !identity.nativeMessageId || !identity.clientCorrelationId) return undefined
+        || !identity.nativeMessageId || !identity.clientCorrelationId || !identity.generation) return undefined
       return { nativeSessionId: identity.nativeSessionId, nativeMessageId: identity.nativeMessageId,
         clientCorrelationId: identity.clientCorrelationId, generation: identity.generation }
     },

@@ -20,8 +20,11 @@ export function createWorkerClaudeFiles(input: {
       try {
         if (closed) throw new DomainError('CLAUDE_FILE_CONTEXT_DENIED', 'The file tool owner is closed.', 403)
         const identity = await calls.resolve(operation, extra)
-        if (!identity || closed) throw new DomainError('CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED',
+        if (!identity || closed || identity.agentId || identity.parentToolUseId || identity.nativeTurnId
+          || !identity.nativeMessageId || !identity.clientCorrelationId || !identity.generation) {
+          throw new DomainError('CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED',
           'The file call requires an observed root SDK callback.', 403)
+        }
         const result = toolResult(await input.authority.file(identity, operation, args, input.signal))
         return { content: result.content.filter(value => value.type === 'text')
           .map(value => ({ type: 'text', text: value.text })),
