@@ -85,13 +85,20 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
       expect(journalEvidence).toMatchObject({ source: 'provider_history', optionId: option.optionId })
       expect(journalEvidence.responseDigest).toMatch(/^[a-f0-9]{64}$/)
       await f.db.pool.query('drop trigger fail_input_delivery on durable_interactions')
-      // Expire only the failed delivery's database lease; no native operation is replayed.
-      await f.db.pool.query(`update interaction_delivery_attempts set lease_expires_at=clock_timestamp()-interval '1 second'
-        where interaction_id=$1`, [interaction.id])
       const restarted = new InteractionService(f.repository, new PostgresApprovalBudgetRepository(f.db.pool),
         f.native, request => f.engine.resumeInteraction(request), f.journal)
       registerApprovalCheckpointResume(restarted, f.engine)
       services.interactions = new OperatorInteractionService(restarted)
+      await restarted.recover({ limit: 20 })
+      expect((await f.repository.get(interaction.id))?.deliveryState).toBe('submitted')
+      expect(await responses()).toHaveLength(1)
+      // Model elapsed ownership for the same failed attempt at both persisted lease boundaries.
+      await f.db.pool.query(`with expired as (
+        update interaction_delivery_attempts set lease_expires_at=clock_timestamp()-interval '1 second'
+        where interaction_id=$1 returning interaction_id,lease_owner
+      ) update durable_interactions d set delivery_lease_expires_at=clock_timestamp()-interval '1 second'
+        where d.id=$1 and exists (select 1 from expired a
+          where a.interaction_id=d.id and a.lease_owner=d.delivery_token)`, [interaction.id])
       await restarted.recover({ limit: 20 })
       const replay = await client.callTool({ name: 'interaction_respond', arguments: input })
       expect(replay.isError).not.toBe(true)

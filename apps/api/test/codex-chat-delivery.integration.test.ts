@@ -283,6 +283,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       where conversation_id=$1 and request_id=$2`, [id, 'opencode-preflight'])).rows[0]
     assert.equal(receipt.result.error.code, 'OPENCODE_MCP_SERVER_NOT_CONFIGURED')
     assert.equal(receipt.retryable, true)
+    openCodeServer.config = { mcp: { missing: { type: 'remote', url: 'http://fixture.invalid/mcp', enabled: false } } }
     openCodeServer.onPrompt = (sessionId) => {
       openCodeServer!.complete(nativeCorrelation(id, 'opencode-retry'), 'Retry completed', sessionId)
     }
@@ -294,6 +295,8 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
     assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
     assert.equal(openCodeServer.calls.filter((call) => call.path.includes('/prompt_async')).length, 1)
+    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.includes('/mcp/missing/connect')).length, 1)
+    assert.deepEqual(openCodeServer.mcp.missing, { status: 'connected' })
     assert.equal((await readOperator(id)).messages.filter((message) => message.role === 'assistant').at(-1)?.content,
       'Retry completed')
   })
