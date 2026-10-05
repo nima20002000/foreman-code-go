@@ -26,6 +26,7 @@ import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -40,7 +41,12 @@ export async function qualifyEng03OpenCode() {
   url.searchParams.set('options', `-c search_path=${schema}`)
   const pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
   const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
-  const processes = new NativeProcessRegistry(join(directory, 'native-process-registry'))
+  const registryDirectory = join(directory, 'native-process-registry')
+  const processes = new NativeProcessRegistry(registryDirectory)
+  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation, {
+    kind: 'native-qualification', registryDirectory, schema, databaseUrl: configured,
+  })
   const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
     .map(([, value]) => value).filter((value): value is string => Boolean(value))
   let factories: NativeHarnessFactories | undefined
@@ -50,18 +56,16 @@ export async function qualifyEng03OpenCode() {
     clearQualificationGate()
     await catalog?.shutdownChecks()
     factories?.stopAuxiliaries()
-    const errors: unknown[] = []
-    const phases = [
-      [() => service?.shutdown(), () => factories?.disposeAuxiliaries()],
-      [() => pool.end()],
-      [() => dropFixtureSchema(admin, schema)],
-      [() => admin.end(), () => removeFixtureDirectory(directory)],
-    ]
-    for (const phase of phases) {
-      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))
-      for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+    await factories?.disposeAuxiliaries()
+    await service?.shutdown()
+    for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
+      if (!await processes.closeOwner(owner)) throw new Error('Native qualification closure is unconfirmed.')
     }
-    if (errors.length) throw new AggregateError(errors, 'Native qualification cleanup failed.')
+    await pool.end()
+    await dropFixtureSchema(admin, schema)
+    await admin.end()
+    await removeFixtureDirectory(directory)
+    completeTestResourceCleanup(invocation, cleanupId)
   }
   try {
     await applyApplicationMigrations(pool)
