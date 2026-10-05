@@ -1,3 +1,4 @@
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import type { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -40,11 +41,11 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
       throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation must use the exact authenticated accepted device.', 409)
     return channel
   }
-  private async call(root: SourceRootRecord, request: SourceFilesystemOperation) {
+  private async call(root: SourceRootRecord, request: SourceFilesystemOperation, signal?: AbortSignal) {
     const connection = this.connection(root)
     // RootWorkerClient uses the same captured W07 request closure; this namespace
     // changes only the domain schema, never transport/connection authority.
-    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request).catch((error: unknown) => {
+    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request, signal ? { signal } : undefined).catch((error: unknown) => {
       if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
         throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
       if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {
@@ -79,7 +80,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
   async verify(record: SourceMaterializationRecord): Promise<string> {
     const root = await this.rootFor(record, 'sources.verify'), response = await this.call(root, { version: 1, operation: 'sources.verify', record, relativeCwd: '' })
-    if (response.operation !== 'sources.verify' || response.workTree !== join(root.binding.canonicalPath, record.receipt.materializationId, 'tree'))
+    if (response.operation !== 'sources.verify' || response.workTree !== join(sourceMaterializationParent(record.receipt), 'tree'))
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source reply is not the actual original private tree.', 409)
     return response.workTree
   }
@@ -88,7 +89,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     const response = await this.call(root, { version: 1, operation: 'sources.verify', record, relativeCwd })
     if (response.operation !== 'sources.verify') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected working directory verification.', 409)
     const proof = response.cwdAttestation
-    if (response.workTree !== join(root.binding.canonicalPath, record.receipt.materializationId, 'tree')
+    if (response.workTree !== join(sourceMaterializationParent(record.receipt), 'tree')
       || response.canonicalCwd !== join(response.workTree, relativeCwd) || proof.relativeCwd !== relativeCwd
       || proof.materializationId !== record.receipt.materializationId || proof.executionId !== record.receipt.executionId
       || proof.attemptId !== record.receipt.attemptId || proof.operationId !== record.operationId || proof.sourceBindingHash !== record.receipt.placementHash
@@ -101,15 +102,15 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
   async privateRepository(record: SourceMaterializationRecord, _manifest: SourceManifest) {
     const root = await this.rootFor(record, 'sources.private-repository'), response = await this.call(root, { version: 1, operation: 'sources.private-repository', record })
-    if (response.operation !== 'sources.private-repository' || response.repository.workTree !== join(root.binding.canonicalPath, record.receipt.materializationId, 'tree')
-      || response.repository.gitDirectory !== join(root.binding.canonicalPath, record.receipt.materializationId, 'repository'))
+    if (response.operation !== 'sources.private-repository' || response.repository.workTree !== join(sourceMaterializationParent(record.receipt), 'tree')
+      || response.repository.gitDirectory !== join(sourceMaterializationParent(record.receipt), 'repository'))
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Repository reply is not the actual detached original private Git store.', 409)
     if (_manifest.snapshotId !== record.receipt.binding.snapshotId || _manifest.manifestDigest !== record.receipt.verifiedManifestDigest)
       throw new DomainError('SOURCE_PIN_CONFLICT', 'Repository belongs to another exact source snapshot.', 409)
     return response.repository
   }
-  async releaseClaim(record: SourceMaterializationRecord): Promise<number> {
-    const root = await this.rootFor(record, 'sources.release'), response = await this.call(root, { version: 1, operation: 'sources.release', record })
+  async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number> {
+    const root = await this.rootFor(record, 'sources.release'), response = await this.call(root, { version: 1, operation: 'sources.release', record }, options?.signal)
     if (response.operation !== 'sources.release' || response.materializationId !== record.receipt.materializationId || response.operationId !== record.operationId)
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Closure acknowledgment belongs to another original materialization.', 409)
     return response.retainedBytes

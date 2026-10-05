@@ -48,7 +48,7 @@ export const MaterializationReceiptSchema = z.object({
 }).strict()
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>
 
-export function sourceMaterializationComponents(receipt: MaterializationReceipt): string[] {
+export function sourceMaterializationComponents(receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): string[] {
   return [...(receipt.quota ? [receipt.quota.namespace] : []), receipt.materializationId]
 }
 export function sourceMaterializationParent(receipt: MaterializationReceipt): string {

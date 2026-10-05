@@ -1,3 +1,4 @@
+import { sourceMaterializationParent, sourceMaterializationComponents } from '@foreman-code/contracts/source-materialization'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
@@ -60,7 +61,7 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
   if(!isDeepStrictEqual(approvedRoots.hostRef,placement.hostRef)||approvedRoots.applicationInstallationId!==placement.registration?.workerInstallationId
     ||approvedRoots.managedRuntimeRoot!==placement.destination.managedRuntimeRoot
     ||!receipt.binding.canonicalPath.startsWith(`${approvedRoots.managedRuntimeRoot}/`)
-    ||source.workingTree.canonicalProjectRoot!==join(receipt.binding.canonicalPath,receipt.materializationId,'tree')
+    ||source.workingTree.canonicalProjectRoot!==join(sourceMaterializationParent(receipt),'tree')
     ||source.workingTree.canonicalCwd!==cwd.canonicalCwd||cwd.canonicalCwd!==join(source.workingTree.canonicalProjectRoot,cwd.relativeCwd)
     ||cwd.attestationDigest!==sourceCwdAttestationDigest(cwd))return unavailable()
   const inspectSource=async()=>{
@@ -71,11 +72,11 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
       if(await realpath(receipt.binding.canonicalPath)!==receipt.binding.canonicalPath
         ||!isDeepStrictEqual(await identity(directory),receipt.binding.filesystem))return unavailable()
       await check()
-      for(const [index,part] of [receipt.materializationId,'tree',...(cwd.relativeCwd?cwd.relativeCwd.split('/'):[])].entries()) {
+      for(const [index,part] of [...sourceMaterializationComponents(receipt),'tree',...(cwd.relativeCwd?cwd.relativeCwd.split('/'):[])].entries()) {
         const child=await openChildDirectory(directory,part)
         await directory.close();directory=child
         await check()
-        if(index===1&&!isDeepStrictEqual(await identity(directory),receipt.localTreeIdentity))return unavailable()
+        if(index===sourceMaterializationComponents(receipt).length&&!isDeepStrictEqual(await identity(directory),receipt.localTreeIdentity))return unavailable()
         await check()
       }
       if(!isDeepStrictEqual(await identity(directory),cwd.filesystem)||await realpath(cwd.canonicalCwd)!==cwd.canonicalCwd)return unavailable()

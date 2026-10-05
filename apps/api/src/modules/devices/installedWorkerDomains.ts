@@ -1,3 +1,4 @@
+import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
@@ -135,6 +136,10 @@ export async function createInstalledWorkerDomains(input: {
     const sources = new SourceOperationWorkerService({
       authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
       approvedRoots: roots,
+      async quotaPoolFor(binding) {
+        const pool = await installedSourceQuotaPool(input.jobConfiguration ?? null, binding)
+        return pool ? { pool } : undefined
+      },
       currentOwner: async (operation, context) => {
         const reply = await request(SOURCE_OPERATION_EXTENSION.namespace, { version: 1, operation: 'sources.authorize', request: operation }, { signal: context.signal })
         const value = SourceOperationResponseSchema.parse(reply.payload)

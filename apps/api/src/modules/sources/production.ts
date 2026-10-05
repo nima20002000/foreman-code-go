@@ -1,3 +1,5 @@
+import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
+import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
 import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { AgentSourceAttemptAuthority, installedSourceAttemptAuthority } from './agentSourceAuthority.js'
@@ -15,7 +17,7 @@ import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
 import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
-import { mkdir } from 'node:fs/promises'
+import { lstat, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
@@ -48,6 +50,7 @@ import { resolvePreparationReconciliationOwner } from './preparationReconciliati
  * Construction does not fabricate an allowlist or authorize native execution. */
 export async function createProductionSources(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
+  installedJobConfiguration?: InstalledRuntimeConfigurationLocation;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
   transferSender?: SourcePackageTransferAdmission['sender'];
@@ -188,6 +191,13 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       } }
   } }
   const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
+  const quotaPoolFor = async (binding: SourceRootRecord['binding']) => {
+    const path = join(input.runtimeRoot, 'job-runtime.json')
+    const exists = input.installedJobConfiguration ?? await lstat(path).then(() => ({ path, ownerUid: process.getuid!() }),
+      error => { if (error.code === 'ENOENT') return null; throw error })
+    const pool = await installedSourceQuotaPool(exists, binding)
+    return pool ? { pool } : undefined
+  }
   const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession, {
     async closed(owner) {
       if (owner.preparationKind === 'workflow') return localWorkflowPreparationClosed(input.pool, owner)
@@ -213,7 +223,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
         throw error
       } finally { sql.release() }
     },
-  })
+  }, quotaPoolFor)
   const sources = new PostgresSourceService(input.pool, input.commands, input.locations, snapshots, input.mainId, roots, executions, {
     async confirmedClosed(record) {
       const sql = await input.pool.connect()
