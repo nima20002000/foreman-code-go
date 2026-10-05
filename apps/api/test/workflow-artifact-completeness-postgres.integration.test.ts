@@ -280,4 +280,22 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
     await pool.query('update remote_execution_receipts set receipt=$2::jsonb where operation_id=$1', [x.intent.operationId, text(changed)])
     await expect(x.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' }); expect(await x.visits()).toBe(0)
   })
+  it.each(['invalid_result', 'missing_publication'] as const)(
+    'retains a terminal %s failure and rejects acceptance through fresh connections', async reason => {
+      const x = await seed()
+      const original = structuredClone(x.execution.result)
+      const failed = { ...x.remote, terminal: { ...x.remote.terminal!, artifactDigests: [],
+        artifactValidationError: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason } } }
+      await pool.query('update remote_execution_receipts set receipt=$2::jsonb where operation_id=$1',
+        [x.intent.operationId, text(failed)])
+      await expect(x.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' })
+      await expect(x.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' })
+      expect(await x.visits()).toBe(0)
+      const retained = (await pool.query<{ receipt: typeof failed }>(
+        'select receipt from remote_execution_receipts where operation_id=$1', [x.intent.operationId])).rows[0]!.receipt
+      expect(retained.terminal.result).toEqual(original)
+      expect(retained.terminal.artifactValidationError).toEqual(failed.terminal.artifactValidationError)
+      expect((await pool.query<{ record: HarnessExecution }>('select record from harness_executions where id=$1',
+        [x.execution.id])).rows[0]!.record.result).toEqual(original)
+    })
 })

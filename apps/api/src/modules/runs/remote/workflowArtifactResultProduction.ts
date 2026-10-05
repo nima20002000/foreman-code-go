@@ -1,5 +1,6 @@
 import { isDeepStrictEqual as same } from 'node:util'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../../interactions/workflowNativeCapture.js'
@@ -103,11 +104,14 @@ export function createProductionWorkflowArtifactResultSource(ports: {
       if (!node || node.kind === 'job' || !node.artifactOutputs) return
       if (!same(capture.source, proof.original) || !same(capture.session, proof.session)
         || !same(repeatExecutionIdentity(capture.execution), proof.execution) || capture.owner.runId !== proof.scope.runId) return unavailable()
-      const transfer = await ports.physical.artifactTerminalContext(sql, capture.owner, capture, proof)
       const original = await readDispatchIntent(sql, capture.execution.id)
       const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
       if (!intent || intent.runId !== proof.scope.runId || intent.nodeId !== proof.ref.nodeId
         || intent.inputDigest !== proof.inputDigest || intent.technicalAttempt !== capture.execution.attempt) return unavailable()
+      const terminal = (await sql.query<{ receipt: unknown }>(
+        'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+      if (terminal?.receipt && RemoteOperationReceiptSchema.parse(terminal.receipt).terminal?.artifactValidationError) return
+      const transfer = await ports.physical.artifactTerminalContext(sql, capture.owner, capture, proof)
       const accepted = await ports.authority.resolveWorkflowContext({ workspaceId: proof.scope.workspaceId,
         workflowId: proof.scope.workflowId, runId: proof.scope.runId, nodeId: proof.ref.nodeId,
         executionId: capture.execution.id, attemptId: intent.attemptId, placementHash: intent.bindingHash }, transfer, sql)

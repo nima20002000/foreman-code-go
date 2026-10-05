@@ -4,6 +4,7 @@ import { ArtifactAttemptSchema } from '@graphql/contracts/artifact-edges'
 import { TransferContextSchema, VerifiedTransferReceiptSchema } from '@graphql/contracts/byte-transfer'
 import { parseWorkHandoffArtifactResult } from '@graphql/contracts/wave25'
 import { parseWorkflowArtifactResult } from '@graphql/contracts/workflow-artifact-result'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 import { digest } from '../../files/tools/context.js'
 import { DomainError } from '../../errors.js'
 import { readDispatchIntent } from '../../placement/persistence.js'
@@ -44,6 +45,12 @@ export async function recoverWorkflowArtifactOutputs(input: {
     const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
     if (!intent || intent.runId !== owner.runId || intent.nodeId !== node.id
       || intent.technicalAttempt !== execution.attempt || intent.inputDigest !== stored.inputDigest) throw unavailable()
+    const receipt = (await sql.query<{ receipt: unknown }>(
+      'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+    if (receipt?.receipt && RemoteOperationReceiptSchema.parse(receipt.receipt).terminal?.artifactValidationError) {
+      throw new DomainError('WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT',
+        'The original native result failed artifact validation after physical closure.', 409)
+    }
     const source = await readWorkflowTerminalReceiptLocked(sql, snapshot, stored)
     await assertSettlementLocked(sql, snapshot.run, [execution.id], owner)
     let mappings
