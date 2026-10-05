@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { JobDefinition, ResolvedJobDefinitionSpec, JobExecution, RunInput } from '@foreman-code/contracts'
 import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
+import { JobExecutionSchema } from '@foreman-code/contracts/jobs'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
 import { JobService } from './service.js'
@@ -164,7 +165,7 @@ async function admit(workflowInput: RunInput | null) {
   const service = new JobService({} as pg.Pool, {} as PostgresCommandCoordinator,
     { preparation, dispatch: { accept, cancelForRunCleanup:async()=>{throw new Error('No Run cleanup in this admission fixture')}, cancel: async () => {}, wake: async () => {} }, artifacts: { read: vi.fn(), list: async () => [] } })
   const workflow = workflowInput === null ? null : { workflowId: id, runId: id, nodeId: id, nodeExecutionId: id }
-  const job = await service.admit(sql, principal, definition, workflow, workflowInput)
+  const job = JobExecutionSchema.parse(await service.admit(sql, principal, definition, workflow, workflowInput))
   return { job, definition, query, materialize, adoptFinalBinding, accept }
 }
 

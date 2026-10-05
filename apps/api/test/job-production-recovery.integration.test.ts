@@ -128,6 +128,17 @@ describe.skipIf(!postgresEnabled)('production Job closure and retained-attempt r
         intent, connection, workerIncarnationId: incarnationId, entryAttempted: false, stopFence: true,
         terminal: { outcome: 'cancelled', processStopped: true }, publication: 'complete',
       } })
+      const status = await journal.jobStatus(f.execution.operationId)
+      if (status.status !== 'known') throw new Error('Original retained receipt missing')
+      const persisted = (await database.pool.query<{ last_receipt: unknown; receipt_sequence: string }>(
+        'select last_receipt,receipt_sequence::text from job_dispatch_intents where execution_id=$1',
+        [f.execution.id])).rows[0]!
+      expect(persisted.last_receipt).toEqual(status.receipt)
+      expect(persisted.receipt_sequence).toBe(String(status.receipt.sequence))
+      expect(await runtime.dispatch.readAcceptedClosureReceipt(database.pool, {
+        workspaceId: f.workspaceId, executionId: execution.id, attemptId: execution.attemptId,
+        operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner,
+      })).toEqual(status.receipt)
       expect((await database.pool.query('select state from source_execution_materializations where execution_id=$1',
         [f.execution.id])).rows[0]).toEqual({ state: 'closed' })
       expect(await jobComputerHasCapacity(database.pool, f.spec.target, f.profile)).toBe(true)

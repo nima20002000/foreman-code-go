@@ -8,6 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
 import { acceptedJobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
 import { reserveVerificationReportSpace } from './executorOutputs.js'
@@ -174,7 +175,7 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
   const assertLocal = async () => {
     if (candidate.fingerprint.schemaVersion === 3) {
       await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: observedHost() })
-    } else await assertJobRuntimeEntryContext(candidate)
+    } else await assertJobRuntimeEntryContext(JobQualificationCandidateSchema.parse(candidate))
     if (bootIdentity() !== connection.bootId) throw new Error('Original Job boot changed; no automatic reboot relaunch')
     const status = await input.journal.jobStatus(execution.operationId)
     if (status.status !== 'known' || !same(status.receipt.intent.owner, execution.owner) || !same(status.receipt.execution.acceptedSpec, execution.acceptedSpec) ||
