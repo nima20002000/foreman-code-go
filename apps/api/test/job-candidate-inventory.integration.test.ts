@@ -69,7 +69,7 @@ describe.skipIf(!postgresEnabled)('canonical build candidate inventory', () => {
       const edited = await f.profiles.save(principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
         id: f.profile.id, expectedRevision: 1, name: 'Edited profile', spec: {
           rootId: f.root.binding.rootId, bindingRevision: 1, limits: f.profile.limits,
-          policy: jobPolicyRequirements(f.profile.policy),
+          policy: { ...jobPolicyRequirements(f.profile.policy), maxWorkerSpoolBytes: 131072 },
         } })
       expect(edited).toMatchObject({ revision: 2, status: 'unqualified', measurement: null })
       await f.runtime.jobs.cancel(principal, 'http', f.workspaceId, f.execution.id, randomUUID())

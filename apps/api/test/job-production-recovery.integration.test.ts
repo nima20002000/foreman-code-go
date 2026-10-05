@@ -78,7 +78,7 @@ describe.skipIf(!postgresEnabled)('production Job closure and retained-attempt r
     const intent = (await database.pool.query<{ intent: RemoteJobDispatchIntent }>(
       'select intent from job_dispatch_intents where execution_id=$1', [f.execution.id])).rows[0]!.intent
     const journalPath = join(f.runtimeRoot, 'journal')
-    let journal = await RemoteOperationJournal.open(journalPath)
+    let journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
     const connection = { kind: 'main' as const, mainId: f.mainId, mainInstallationId: f.mainId, bootId: randomUUID() }
     const incarnationId = randomUUID()
     await journal.jobAccept(intent, f.execution, connection, incarnationId)
