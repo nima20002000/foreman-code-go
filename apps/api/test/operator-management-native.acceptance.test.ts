@@ -18,6 +18,8 @@ import { registerProductionFileStorage } from '../src/modules/files/production.j
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
+import type { NativeMcpInspectionEvidence } from '../src/modules/harnesses/mcpDetection.js'
+import { runCommand } from '../src/modules/harnesses/process.js'
 import { productionOperatorManagers } from '../src/modules/harnesses/operatorFiles/managers.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
@@ -64,6 +66,12 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
       const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
+      const inspections: NativeMcpInspectionEvidence[] = []
+      const configurationReadbacks: unknown[] = []
+      let state: ReturnType<typeof GetOperatorConversationResponseSchema.parse> | undefined
+      const evidenceDirectory = process.env.OPERATOR_NATIVE_EVIDENCE_DIR
+        ?? join(process.cwd(), '.logs', 'operator-management-native')
+      const evidencePath = join(evidenceDirectory, `${harness}-${denied ? 'denied' : 'allowed'}-${randomUUID()}.json`)
       try {
         const port = await availablePort()
         const endpoint = `http://127.0.0.1:${port}/mcp`
@@ -120,7 +128,34 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           }, resolver)
           const authority = new PostgresOperatorChatAuthority(pool, access,
             new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), directory, endpoint,
-            manager => factories.inspector(manager))
+            manager => ({ async inspect(input) {
+              const inspected = await factories.inspector(manager).inspect(input)
+              inspections.push(inspected)
+              if (harness === 'opencode' && !inspected.entry?.credentialEnvironmentVariable) {
+                const owner = 'operator-configuration-diagnostic'
+                const marker = `graphql_probe_${randomUUID()}`
+                for (const injected of [false, true]) {
+                  const result = await runCommand(binaries.openCodeBinary, ['debug', 'config'], directory,
+                    input.signal, injected ? { expectedAgentId: owner,
+                      beforeSpawn: async () => ({ agentId: owner, variables: { GRAPHQL_MCP_TOKEN: marker } }) } : undefined)
+                  if (result.exitCode !== 0) {
+                    configurationReadbacks.push({ injected, exitCode: result.exitCode })
+                    continue
+                  }
+                  const entry = JSON.parse(result.stdout).mcp?.graphql
+                  const authorization = Object.entries(entry?.headers ?? {})
+                    .find(([name]) => name.toLowerCase() === 'authorization')?.[1]
+                  configurationReadbacks.push({ injected, type: entry?.type, endpoint: entry?.url,
+                    enabled: entry?.enabled, oauth: entry?.oauth,
+                    authorization: { present: typeof authorization === 'string',
+                      emptyBearer: authorization === 'Bearer ', masked: authorization === '***',
+                      maskedBearer: authorization === 'Bearer ***',
+                      redactedBearer: authorization === 'Bearer [REDACTED]',
+                      unexpanded: authorization === 'Bearer {env:GRAPHQL_MCP_TOKEN}' } })
+                }
+              }
+              return inspected
+            } }))
           const chat = new OperatorChatService(new PostgresOperatorConversationRepository(pool),
             operators, recordingResolver, directory, authority)
           services.operatorChat = chat
@@ -169,7 +204,6 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           { conversationId: conversation.id, request })
         expect(accepted.replayed).toBe(false)
         const signal = AbortSignal.timeout(180000)
-        let state: ReturnType<typeof GetOperatorConversationResponseSchema.parse>
         do {
           signal.throwIfAborted()
           await new Promise(done => setTimeout(done, 500))
@@ -214,8 +248,15 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
             .toEqual([{ command_id: command.commandId, result: readback }])
         }
       } finally {
-        try { await f?.close() }
-        finally { await rm(home, { recursive: true, force: true }) }
+        try {
+          await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 })
+          await writeFile(evidencePath, JSON.stringify({ harness, denied, inspections,
+            configurationReadbacks, nativeEvents, state }, null, 2), { mode: 0o600 })
+          process.stdout.write(`Operator native evidence ${evidencePath}\n`)
+        } finally {
+          try { await f?.close() }
+          finally { await rm(home, { recursive: true, force: true }) }
+        }
       }
     }, 240000)
   }
