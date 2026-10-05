@@ -167,6 +167,8 @@ describe('authenticated namespace carrier mechanics', () => {
     ['AUTH_REVOKED', false],
     ['REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', true],
     ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', false],
+    ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
+    ['NATIVE_ARTIFACT_AUTHORITY_DENIED', false],
     ['WORKER_WORKFLOW_UNAVAILABLE', false],
     ['backpressure', true],
     ['job-publication-pending', true],

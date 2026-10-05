@@ -37,6 +37,7 @@ import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
@@ -45,7 +46,7 @@ import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
-import { retainInstalledCodexInventory } from './modules/harnesses/installedCodexInspection.js'
+import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
@@ -206,7 +207,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
-import { createInstalledCodexQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
+import { createInstalledHarnessQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
@@ -369,8 +370,10 @@ export function buildProductionApp(
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
-        if (selectedSuites) await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding, inventory: result.payload, suiteRevisions: {
+            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+          } })
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
@@ -587,8 +590,10 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution), selectedSuites ? createInstalledCodexQualificationRetention({
-      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
+      } }, workerExecution), selectedSuites ? createInstalledHarnessQualificationRetention({
+      repository: qualificationRepository, suiteRevisions: {
+        codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+      },
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
@@ -598,8 +603,10 @@ export function buildProductionApp(
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(30000)])
         const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
         bounded.throwIfAborted()
-        await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding: captured.binding, inventory: result.payload, suiteRevisions: {
+            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+          } })
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
@@ -726,15 +733,24 @@ export function buildProductionApp(
         throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
       }
       if (binding.placement.hostRef.kind === 'device') {
-        const authenticated = deviceRuntime.endpointForDomains().currentBinding(binding.placement.hostRef.deviceId)
-        if (!authenticated) {
-          throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The authenticated execution connection is unavailable.', 503)
+        const stored = (await sql.query<{ receipt: unknown }>(
+          'select receipt from remote_execution_receipts where operation_id=$1',
+          [binding.intent.operationId])).rows[0]
+        const receipt = stored && RemoteOperationReceiptSchema.parse(stored.receipt)
+        if (receipt?.native) {
+          const authenticated = deviceRuntime.endpointForDomains().currentBinding(binding.placement.hostRef.deviceId)
+          if (!authenticated) {
+            throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The authenticated execution connection is unavailable.', 503)
+          }
+          if (authenticated.bootId !== receipt.connection.bootId) {
+            throw new DomainError('REMOTE_NATIVE_OWNER_CLOSED', 'The connected computer restarted during the run.', 409)
+          }
+          await assertRemoteExecutionAuthority(sql, locations, {
+            version: 1, intent: binding.intent, placement: binding.placement, action: 'read',
+          }, authenticated, agentPlacement)
+          signal?.throwIfAborted()
+          return
         }
-        await assertRemoteExecutionAuthority(sql, locations, {
-          version: 1, intent: binding.intent, placement: binding.placement, action: 'read',
-        }, authenticated, agentPlacement)
-        signal?.throwIfAborted()
-        return
       }
       const row = (await sql.query<{ principal_id: string; workspace_id: string }>("select record->>'authorizationPrincipalId' as principal_id,workspace_id from runs where id=$1", [binding.intent.runId])).rows[0]
       if (!row) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
