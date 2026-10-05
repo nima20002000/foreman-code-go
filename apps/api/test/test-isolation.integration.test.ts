@@ -111,13 +111,16 @@ it('checks accepted Run locations and native directories independently of the cu
   const fixture = await agent3Database()
   const outside = createTestRoot()
   try {
+    const outsideRun = await seedAgent3(fixture.pool, outside.directory,
+      makeCurrentWorkflowFixture(randomUUID(), 'single'))
+    await fixture.pool.query('update workspaces set execution_location=$2::jsonb where id=$1',
+      [outsideRun.scope.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: fixture.directory })])
+    await expect(assertOwnedExecutionDestinations(fixture.pool, {
+      workspaceId: outsideRun.scope.workspaceId, runId: outsideRun.run.id,
+    })).rejects.toThrow('owned root')
     const saved = await seedAgent3(fixture.pool, fixture.directory, makeCurrentWorkflowFixture(randomUUID(), 'single'))
     const selection = { workspaceId: saved.scope.workspaceId, runId: saved.run.id }
     await assertOwnedExecutionDestinations(fixture.pool, selection)
-    await fixture.pool.query("update runs set record=jsonb_set(record,'{executionLocation,rootPath}',$2::jsonb) where id=$1",
-      [saved.run.id, JSON.stringify(outside.directory)])
-    await expect(assertOwnedExecutionDestinations(fixture.pool, selection)).rejects.toThrow('owned root')
-    await fixture.pool.query('update runs set record=$2::jsonb where id=$1', [saved.run.id, JSON.stringify(saved.run)])
     const execution = HarnessExecutionSchema.parse({ ...candidateFor(saved),
       workingDirectory: fixture.directory, runtimeDirectory: outside.directory })
     await fixture.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
