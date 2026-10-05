@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -10,7 +11,7 @@ it('captures this complete committed repository into real private storage within
   const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
   const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-capture-')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-capture-'))
   try {
     const store = new PrivateSourceSnapshotStore(directory)
     const manifest = await captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths, executablePolicy: 'strip', sink: store })
@@ -23,7 +24,7 @@ it('captures this complete committed repository into real private storage within
 }, 60_000)
 
 it('joins the actual Git child after cancellation with unread batch output', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-abort-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-abort-')), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(storage), abort = vi.spyOn(store, 'abort'), commitSink = vi.spyOn(store, 'commit')
   try {
@@ -43,7 +44,7 @@ it('joins the actual Git child after cancellation with unread batch output', asy
 })
 
 it('quiesces every bounded pending private write before quarantining a failed capture', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-pipeline-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-pipeline-')), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   let release!: () => void, entered!: () => void
   const held = new Promise<void>(resolve => { release = resolve }), allEntered = new Promise<void>(resolve => { entered = resolve })
@@ -71,7 +72,7 @@ it('quiesces every bounded pending private write before quarantining a failed ca
 })
 
 it('maps its expired preparation budget to a typed retryable failure after private-write quiescence', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-timeout-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-timeout-')), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(storage), controller = new AbortController(), abort = vi.spyOn(store, 'abort'), publish = vi.spyOn(store, 'commit')
   try {

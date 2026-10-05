@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -9,7 +10,7 @@ import { build } from 'esbuild';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const bundleDirectory = await mkdtemp('/var/tmp/job-cleanup-test-bundle-');
+const bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-test-bundle-'));
 after(() => rm(bundleDirectory, { recursive: true, force: true }));
 const exports = [
   ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem']],
@@ -37,7 +38,7 @@ const worker = await import(pathToFileURL(join(bundleDirectory, 'cleanup.mjs')).
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t) {
-  const directory = await mkdtemp('/var/tmp/job-cleanup-state-');
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-state-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state');
   const runtime = join(directory, 'managed');

@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
 
 async function fixture(t) {
-  const root = await mkdtemp('/var/tmp/ci-image-context-'), repository = join(root, 'repo'), output = join(root, 'context');
+  const root = await mkdtemp(join(persistentFixtureRoot, 'ci-image-context-')), repository = join(root, 'repo'), output = join(root, 'context');
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(repository);
   const git = (...args) => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();

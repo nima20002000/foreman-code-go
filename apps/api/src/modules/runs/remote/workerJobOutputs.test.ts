@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from '../../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -14,7 +15,7 @@ afterEach(async () => {
 })
 
 it('ends expired output collection while leaving a lost connection retryable', async () => {
-  const root = await mkdtemp('/var/tmp/job-output-expiry-')
+  const root = await mkdtemp(join(persistentFixtureRoot, 'job-output-expiry-'))
   roots.push(root)
   await writeFile(join(root, 'result.json'), '{}', { mode: 0o600 })
   const execution = jobExecution()

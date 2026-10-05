@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,14 +7,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
-for (const [storage, directory, persistent] of [['tmpfs', '/dev/shm', false], ['persistent', '/var/tmp', true]]) {
+for (const [storage, directory, persistent] of [['tmpfs', '/dev/shm', false], ['persistent', persistentFixtureRoot, true]]) {
 test(`packaged GUI serves CSP and keeps doctor read-only on ${storage} storage`, { skip: !artifact }, async (t) => {
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   assert.equal((await stat(join(artifact, 'install'))).mode & 0o777, 0o700);
   const { createCompanionServer } = await import(pathToFileURL(join(artifact, 'src/companionServer.mjs')).href);
   if (!persistent) assert.equal((await statfs(directory)).type, 0x01021994);
   const state = await mkdtemp(join(directory, 'packaged-companion-'));
-  const home = await mkdtemp(join('/var/tmp', 'packaged-harness-home-'));
+  const home = await mkdtemp(join(persistentFixtureRoot, 'packaged-harness-home-'));
   const bin = join(home, '.nvm/versions/node/v22.17.1/bin');
   await mkdir(bin, { recursive: true });
   await writeFile(join(bin, 'codex'), '#!/usr/bin/env node\nconsole.log(process.version)', { mode: 0o700 });

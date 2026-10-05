@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -20,7 +21,7 @@ const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function filesystem(path: string) { const handle = await openPrivateRoot(path); try { return await identity(handle) } finally { await handle.close() } }
 async function fixture(device = false) {
-  const root = await mkdtemp('/var/tmp/hrt-source-policy-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'hrt-source-policy-')); roots.push(root)
   const mainId = randomUUID(), workspaceId = randomUUID(), rootPolicyId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID()
   const runtimeRoot = join(root, 'runtime'), base = join(root, 'base'), namespace = join(runtimeRoot, 'source-materializations', rootPolicyId)
   await mkdir(runtimeRoot, { mode: 0o700 }); await mkdir(base, { mode: 0o700 }); await mkdir(join(runtimeRoot, 'source-materializations'), { mode: 0o700 }); await mkdir(namespace, { mode: 0o700 })

@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { buildApp } from '../src/app.js'
 import { toolFailure } from '../src/mcp/shared/results.js'
 import { randomUUID } from 'node:crypto'
@@ -46,7 +47,7 @@ it('keeps root fixtures private with genuine filesystem identities despite an un
 })
 
 it('reports a guarded unsafe source root through HTTP and MCP without granting filesystem access', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-guard-'), root = join(directory, 'private')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-guard-')), root = join(directory, 'private')
   await mkdir(root, { mode: 0o700 }); await chmod(directory, 0o775)
   const app = buildApp({logger:false,readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}}})
   app.post('/guarded-source', async () => { const handle = await openPrivateRoot(root); await handle.close() })
