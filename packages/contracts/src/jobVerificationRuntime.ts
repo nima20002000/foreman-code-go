@@ -1,8 +1,16 @@
 import { z } from 'zod'
-import { DeviceDigestSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
+import { DeviceDigestSchema, DeviceSafeIntegerSchema, DeviceExecutionAdmissionFields } from './deviceResources.js'
 import {
   ProvisionedJobRuntimeFingerprintSchema, JOB_RUNTIME_WORKSPACE_LAYOUT, JobRuntimeMeasurementSchema,
   JobRuntimeProfileSchema, JobRuntimeFingerprintSchema,
+  JobRuntimeApprovalSchema, JobQualificationCandidateSchema, ProvisionedJobQualificationCandidateSchema,
+  ProvisionedInstalledJobRuntimeDescriptorSchema, JobRuntimeNativeAdmissionSchema,
+  JobRuntimeQualificationResultSchema, JobRuntimeQualificationRpcRequestSchema,
+  JobRuntimeQualificationRpcResponseSchema,
+  JobRuntimeProfileSaveSchema,
+  InstalledJobRuntimeDescriptorSchema,
+  ProvisionedJobRuntimeQualificationRpcRequestSchema, ProvisionedJobRuntimeQualificationRpcResponseSchema,
+  validateJobRuntimeNativeContext,
 } from './jobRuntime.js'
 import { JobVerificationSuiteSchema } from './jobVerification.js'
 import {
@@ -10,6 +18,7 @@ import {
   JobVerificationApprovalConfigSchema, JobVerificationPolicyRequirementsSchema, JobVerificationProfileIdentitySchema,
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt } from './jobVerificationSeed.js'
 
 /** W09 authenticates these private repository facts before the worker constructs the read-only context. */
 export const JobVerificationPrivateGitSchema = z.object({
@@ -217,3 +226,168 @@ export const JobVerificationProfileSchema = z.object({
   }
 })
 export const JobRuntimeProfileRecordSchema = z.union([JobRuntimeProfileSchema, JobVerificationProfileSchema])
+export type JobRuntimeProfileRecord = z.infer<typeof JobRuntimeProfileRecordSchema>
+export type JobVerificationProfile = z.infer<typeof JobVerificationProfileSchema>
+export function jobRuntimeProfilePolicy(profile: JobRuntimeProfileRecord) {
+  if (profile.schemaVersion === 1) return profile.policy
+  return { ...profile.spec.policy, isolationPolicyId: profile.id, isolationPolicyRevision: profile.revision }
+}
+export function jobRuntimeProfileLimits(profile: JobRuntimeProfileRecord) {
+  return profile.schemaVersion === 1 ? profile.limits : profile.spec.resources.limits
+}
+export function jobRuntimeQualificationId(profile: JobRuntimeProfileRecord): string | null {
+  if (!profile.measurement) return null
+  return profile.schemaVersion === 1 ? profile.measurement.qualificationId : profile.measurement.identity.qualificationId
+}
+export const JobRuntimeProfileSaveRecordSchema = JobRuntimeProfileSaveSchema.extend({
+  spec: z.union([JobRuntimeProfileSaveSchema.shape.spec, JobVerificationProfileInputSchema]),
+}).strict()
+export type JobRuntimeProfileSaveRecord = z.infer<typeof JobRuntimeProfileSaveRecordSchema>
+
+export const JobVerificationRuntimeApprovalSchema = z.object({
+  ...JobRuntimeApprovalSchema.shape,
+  schemaVersion: z.literal(2),
+  fingerprint: JobVerificationRuntimeFingerprintSchema,
+  requestedAt: TimestampSchema,
+}).strict().superRefine((value, context) => {
+  const fingerprint = value.fingerprint
+  if (value.profileId !== fingerprint.profileId || value.profileRevision !== fingerprint.profileRevision
+    || value.workspaceId !== fingerprint.root.binding.workspaceId || !fingerprint.approvalConfig.review
+    || Date.parse(value.expiresAt) - Date.parse(value.requestedAt) !== fingerprint.approvalConfig.approvalLifetimeMs
+    || (value.approvedAt !== null && Date.parse(value.approvedAt) < Date.parse(value.requestedAt))) {
+    context.addIssue({ code: 'custom', message: 'Verification approval retains its reviewed configuration and fingerprint.' })
+  }
+})
+export const JobRuntimeApprovalRecordSchema = z.union([JobRuntimeApprovalSchema, JobVerificationRuntimeApprovalSchema])
+export type JobRuntimeApprovalRecord = z.infer<typeof JobRuntimeApprovalRecordSchema>
+
+export const JobVerificationQualificationCandidateSchema = z.object({
+  ...ProvisionedJobQualificationCandidateSchema.shape,
+  fingerprint: JobVerificationRuntimeFingerprintSchema,
+}).strict().superRefine((value, context) => {
+  const fingerprint = value.fingerprint
+  if (value.sourceParent !== fingerprint.root.binding.canonicalPath
+    || fingerprint.root.binding.accessMode !== 'exclusive-write'
+    || value.operationId !== value.qualificationId
+    || value.volumeCapacityBytes !== fingerprint.quota.volumeCapacityBytes
+    || (value.backingFile === null) !== (value.backingBytes === null)
+    || value.backingFile === null && fingerprint.quota.growthMode !== 'filesystem-project-quota'
+    || value.backingBytes !== null && value.backingBytes !== value.volumeCapacityBytes
+    || value.ttlSeconds * 1000 > fingerprint.approvalConfig.approvalLifetimeMs) {
+    context.addIssue({ code: 'custom', message: 'Verification candidate retains the original approved operation and quota.' })
+  }
+})
+export const JobQualificationCandidateRecordSchema = z.union([
+  JobQualificationCandidateSchema, ProvisionedJobQualificationCandidateSchema, JobVerificationQualificationCandidateSchema,
+])
+export type JobQualificationCandidateRecord = z.infer<typeof JobQualificationCandidateRecordSchema>
+
+export const JobVerificationInstalledRuntimeDescriptorSchema = ProvisionedInstalledJobRuntimeDescriptorSchema.safeExtend({
+  resources: JobResourceRequestSchema,
+  network: JobNetworkPolicySchema,
+  approvalConfig: JobVerificationApprovalConfigSchema,
+}).strict()
+export const JobVerificationRuntimeNativeAdmissionSchema = z.object({
+  ...JobRuntimeNativeAdmissionSchema.shape,
+  ...DeviceExecutionAdmissionFields,
+  schemaVersion: z.literal(3),
+}).strict().superRefine(validateJobRuntimeNativeContext)
+export const InstalledJobRuntimeDescriptorRecordSchema = z.union([
+  InstalledJobRuntimeDescriptorSchema, ProvisionedInstalledJobRuntimeDescriptorSchema,
+  JobVerificationInstalledRuntimeDescriptorSchema,
+])
+export const JobRuntimeNativeAdmissionRecordSchema = z.union([
+  JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema,
+])
+export type JobRuntimeNativeAdmissionRecord = z.infer<typeof JobRuntimeNativeAdmissionRecordSchema>
+export const JobVerificationRuntimeQualificationResultSchema = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('qualified'), measurement: JobVerificationRuntimeMeasurementSchema }).strict(),
+  JobRuntimeQualificationResultSchema.options[1],
+])
+export const JobRuntimeQualificationResultRecordSchema = z.union([
+  JobRuntimeQualificationResultSchema, JobVerificationRuntimeQualificationResultSchema,
+])
+export const JobVerificationRuntimeQualificationRpcRequestSchema = z.discriminatedUnion('operation', [
+  z.object({ version: z.literal(3), operation: z.literal('inspect'), profile: JobVerificationProfileSchema }).strict(),
+  z.object({ version: z.literal(3), operation: z.enum(['run', 'authorize']),
+    admission: JobVerificationRuntimeNativeAdmissionSchema, candidate: JobVerificationQualificationCandidateSchema }).strict(),
+]).superRefine((value, context) => {
+  if (value.operation === 'inspect') return
+  const { admission, candidate } = value
+  if (admission.approvalId !== candidate.approvalId || admission.qualificationId !== candidate.qualificationId
+    || admission.operationId !== candidate.operationId || admission.profileId !== candidate.fingerprint.profileId
+    || admission.profileRevision !== candidate.fingerprint.profileRevision
+    || admission.workspaceId !== candidate.fingerprint.root.binding.workspaceId
+    || Object.keys(DeviceExecutionAdmissionFields).some(field =>
+      Reflect.get(admission, field) !== Reflect.get(candidate.fingerprint, field))) {
+    context.addIssue({ code: 'custom', message: 'Verification transport retains the original admission and device authority.' })
+  }
+})
+export const JobVerificationRuntimeQualificationRpcResponseSchema = z.discriminatedUnion('operation', [
+  z.object({ version: z.literal(3), operation: z.literal('inspect'),
+    descriptor: JobVerificationInstalledRuntimeDescriptorSchema,
+    fingerprint: JobVerificationRuntimeFingerprintSchema }).strict(),
+  z.object({ version: z.literal(3), operation: z.literal('run'), admission: JobVerificationRuntimeNativeAdmissionSchema,
+    candidate: JobVerificationQualificationCandidateSchema, result: JobVerificationRuntimeQualificationResultSchema }).strict(),
+  z.object({ version: z.literal(3), operation: z.literal('authorize'), admission: JobVerificationRuntimeNativeAdmissionSchema,
+    candidate: JobVerificationQualificationCandidateSchema,
+    approval: z.object({ status: z.literal('approved'), fingerprint: DeviceDigestSchema,
+      expiresAt: TimestampSchema }).strict() }).strict(),
+]).superRefine((value, context) => {
+  if (value.operation === 'inspect') {
+    const { descriptor, fingerprint } = value
+    if (JSON.stringify(descriptor.target) !== JSON.stringify({ hostRef: fingerprint.hostRef,
+      registration: fingerprint.registration, mainInstallationId: fingerprint.mainInstallationId })
+      || JSON.stringify(descriptor.resources) !== JSON.stringify(fingerprint.resources)
+      || JSON.stringify(descriptor.network) !== JSON.stringify(fingerprint.network)
+      || JSON.stringify(descriptor.approvalConfig) !== JSON.stringify(fingerprint.approvalConfig)
+      || JSON.stringify(descriptor.quota) !== JSON.stringify(fingerprint.quota)
+      || descriptor.runtimeExecutable !== fingerprint.runtimeExecutable
+      || descriptor.ociExecutable !== fingerprint.ociExecutable
+      || descriptor.aggregateCgroupIdentityDigest !== fingerprint.aggregateCgroupIdentityDigest
+      || Object.keys(DeviceExecutionAdmissionFields).some(field =>
+        Reflect.get(descriptor, field) !== Reflect.get(fingerprint, field))) {
+      context.addIssue({ code: 'custom', message: 'Installed descriptor must retain the captured verification configuration.' })
+    }
+    return
+  }
+  if (!JobVerificationRuntimeQualificationRpcRequestSchema.safeParse({ version: value.version,
+    operation: value.operation, admission: value.admission, candidate: value.candidate }).success) {
+    context.addIssue({ code: 'custom', message: 'Qualification response must retain its original admission and candidate.' })
+  }
+  if (value.operation === 'authorize') {
+    if (value.approval.fingerprint !== value.admission.fingerprintDigest
+      || value.approval.expiresAt !== value.admission.expiresAt) {
+      context.addIssue({ code: 'custom', message: 'Qualification authorization cannot replace or renew the original approval.' })
+    }
+    return
+  }
+  if (value.result.outcome !== 'qualified') return
+  const { measurement } = value.result
+  if (measurement.identity.approvalId !== value.admission.approvalId
+    || measurement.identity.qualificationId !== value.admission.qualificationId
+    || measurement.identity.fingerprintDigest !== value.admission.fingerprintDigest
+    || JSON.stringify(measurement.fingerprint) !== JSON.stringify(value.candidate.fingerprint)
+    || Date.parse(measurement.expiresAt) > Date.parse(value.admission.expiresAt)) {
+    context.addIssue({ code: 'custom', message: 'Measured verification cannot change its approved operation or lifetime.' })
+  }
+})
+export const JobRuntimeQualificationRpcRequestRecordSchema = z.union([
+  JobRuntimeQualificationRpcRequestSchema, ProvisionedJobRuntimeQualificationRpcRequestSchema,
+  JobVerificationRuntimeQualificationRpcRequestSchema,
+])
+export const JobRuntimeQualificationRpcResponseRecordSchema = z.union([
+  JobRuntimeQualificationRpcResponseSchema, ProvisionedJobRuntimeQualificationRpcResponseSchema,
+  JobVerificationRuntimeQualificationRpcResponseSchema,
+])
+export const JobRuntimeProfileListRecordSchema = z.object({
+  profiles: z.array(z.object({ profile: JobRuntimeProfileRecordSchema, ready: z.boolean(),
+    reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()),
+  approvals: z.array(JobRuntimeApprovalRecordSchema),
+}).strict()
+export const JobRuntimeQualificationReadRecordSchema = z.object({
+  approval: JobRuntimeApprovalRecordSchema,
+  nativeAdmission: z.union([JobRuntimeNativeAdmissionSchema, JobVerificationRuntimeNativeAdmissionSchema]).nullable(),
+  measurement: JobRuntimeMeasurementRecordSchema.nullable(), profile: JobRuntimeProfileRecordSchema,
+  readiness: z.object({ ready: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict(),
+}).strict()

@@ -1,3 +1,5 @@
+import { JOB_RUNTIME_PROVISIONING_SUITE, JOB_RUNTIME_WORKSPACE_LAYOUT } from '../../src/jobRuntime.js'
+import { JOB_VERIFICATION_BASE_CHECKS } from '../../src/jobVerificationRuntime.js'
 import { ResolvedJobDefinitionSpecSchema, AcceptedJobSpecSchema } from '../../src/jobs.js'
 import { JobQueueTicketSchema, JobResourceReservationSchema } from '../../src/jobAdmission.js'
 import { ResolvedVerificationJobSpecSchema, JobVerificationReportSchema } from '../../src/jobVerification.js'
@@ -88,4 +90,51 @@ export function verificationFixture() {
     publication: 'complete', requiredOutputsVerified: true,
   }
   return { build, spec, profile, resources, definition, ticket, reservation, acceptedBuild, report, pass }
+}
+
+export function verificationMeasurementFixture() {
+  const { build, resources, profile } = verificationFixture()
+  const id = verificationId
+  const digest = verificationDigest
+  const gib = 2 ** 30
+  const root = {
+    version: 1, source: { approvedSourceId: id, snapshotId: id, manifestDigest: digest },
+    selection: { hostRef: build.target.hostRef, rootPolicyId: id, rootPolicyRevision: '1', locationRevision: '1' },
+    binding: { version: 1, mainId: id, deviceId: null, workerInstallationId: null, workspaceId: 'workspace', rootId: id,
+      bindingRevision: 1, locationRevision: 1, canonicalPath: '/approved/source',
+      filesystem: { device: '1', inode: '2', mountId: '3' }, accessMode: 'exclusive-write', snapshotId: id, manifestDigest: digest },
+    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', registration: null,
+    attestationId: 'attestation', attestationDigest: digest, boundAt: verificationTime,
+  }
+  const fingerprint = {
+    schemaVersion: 3, profileId: profile.profileId, profileRevision: 1, specDigest: digest,
+    hostRef: build.target.hostRef, registration: null, mainInstallationId: id, bootId: id, root,
+    runtimeExecutable: '/usr/bin/podman', runtimeBinarySha256: digest, ociExecutable: '/usr/bin/crun', ociBinarySha256: digest,
+    configurationDigest: digest, imageDigest: build.policy.imageDigest, toolchainDigest: digest,
+    limits: resources.limits, workspaceLayout: JOB_RUNTIME_WORKSPACE_LAYOUT,
+    resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
+    provisioningSuite: JOB_RUNTIME_PROVISIONING_SUITE,
+    deviceLimits: { cpuLimit: 4, memoryBytes: 8 * gib, pidsLimit: 1024, diskBytes: 64 * gib },
+    quota: {
+      volumeId: id, mountIdentityDigest: digest, volumeCapacityBytes: 64 * gib,
+      growthMode: 'filesystem-project-quota', reservedHostBytes: gib, controlProjectId: 1, workloadProjectId: 2,
+      controlHardLimitBytes: gib, controlUsageBytes: 0, workloadHardLimitBytes: 63 * gib, workloadUsageBytes: 0,
+      controlHardInodes: 1000, controlUsedInodes: 0, workloadHardInodes: 1_000_000, workloadUsedInodes: 0,
+      quotaRevision: 1, quotaDigest: digest, accountingEnabled: true, enforcementEnabled: true,
+      inheritanceVerified: true, rootlessAccountingVerified: true,
+    },
+    aggregateCgroupIdentityDigest: digest, imageManifestDigest: `sha256:${digest}`, imageConfigDigest: `sha256:${digest}`,
+    network: profile.network, resources,
+    approvalConfig: { schemaVersion: 1, revision: 1, approvalLifetimeMs: 3_600_000,
+      review: { reviewedByPrincipalId: 'owner', reviewedAt: verificationTime, decisionDigest: digest } },
+    tools: [],
+  }
+  const checkIds = [...JOB_VERIFICATION_BASE_CHECKS, 'network-none']
+  return {
+    schemaVersion: 2, identity: profile, fingerprint, origin: 'real-runtime', approvedAt: verificationTime,
+    checkedAt: verificationTime, expiresAt: profile.qualificationExpiresAt,
+    checks: checkIds.map(id => ({ id, passed: true, evidenceDigest: digest })),
+    suites: [{ suite: 'unit', resources, coldCachePeakBytes: gib, coldCachePeakInodes: 1000,
+      maxConcurrentHeavyJobs: 1, maxUnitWorkers: 1, maxIntegrationShards: 1, evidenceDigest: digest }],
+  }
 }
