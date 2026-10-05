@@ -1,13 +1,19 @@
 import { beforeEach, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions/workflowClosure.js'
-import { localWorkflowSourceClosed } from './workflowCleanup.js'
+import { readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
+import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from './workflowCleanup.js'
+import { PostgresSourceService } from './service.js'
 
 vi.mock('../interactions/workflowClosure.js', () => ({
   readWorkflowClosure: vi.fn(),
   readUnboundWorkflowClosure: vi.fn(),
 }))
+vi.mock('../interactions/retainedRemoteReviewer.js', () => ({ readRetainedRemoteReviewer: vi.fn() }))
 beforeEach(() => vi.resetAllMocks())
 
 function fixture(bound: boolean, state: 'completed' | 'starting' = 'completed') {
@@ -55,4 +61,64 @@ it('keeps the claim when execution identity or closure lookup cannot be confirme
   expect(await localWorkflowSourceClosed(f.sql, 'another-execution')).toBe(false)
   vi.mocked(readWorkflowClosure).mockRejectedValue(new Error('closure database unavailable'))
   await expect(localWorkflowSourceClosed(f.sql, f.execution.id)).rejects.toThrow('closure database unavailable')
+})
+
+function remoteSourceFixture() {
+  const execution = HarnessExecutionSchema.parse({ ...fixture(true).execution, result: { outcome: 'succeeded' } })
+  const hash = 'a'.repeat(64)
+  const filesystem = { device: '1', inode: '2', mountId: '3' }
+  const record = SourceMaterializationRecordSchema.parse({
+    receipt: { version: 1, materializationId: randomUUID(), executionId: execution.id, attemptId: randomUUID(),
+      placementHash: hash, keyRevision: 1, authorizationRevision: 1,
+      binding: { version: 1, mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+        workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1,
+        canonicalPath: '/original/source', filesystem, accessMode: 'read-only', snapshotId: randomUUID(), manifestDigest: hash },
+      verifiedManifestDigest: hash, verifiedEntries: 1, verifiedBytes: 4,
+      verifiedAt: '2026-10-04T00:00:00Z', localTreeIdentity: filesystem },
+    rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: randomUUID(), reservationId: randomUUID(),
+    sourceBindingHash: hash, finalDispatchBindingHash: hash, state: 'prepared',
+  })
+  const pool = { query: async () => ({ rows: [{ record, execution }] }) } as unknown as Pick<pg.Pool, 'query'>
+  const sources = { confirmClosed: vi.fn(async () => undefined) }
+  const report = vi.fn()
+  return { pool, sources, report, record }
+}
+
+it('retains the source claim for a verified original reviewer, then requires physical closure after retention ends', async () => {
+  const f = remoteSourceFixture()
+  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue({ generation: '1', principalId: 'reviewer',
+    session: { harness: 'codex', nativeSessionId: 'native-session', providerVersion: '0.154.0' } })
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+})
+
+it('reports closure uncertainty when no verified retained reviewer owns the source', async () => {
+  const f = remoteSourceFixture()
+  const uncertainty = new Error('Original source closure is unconfirmed')
+  f.sources.confirmClosed.mockRejectedValue(uncertainty)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+  expect(f.report).toHaveBeenCalledWith(uncertainty)
+})
+
+it('reproduces unconfirmed physical closure and defers the actual source service only for verified retention', async () => {
+  const f = remoteSourceFixture()
+  const releaseClaim = vi.fn(async () => 0)
+  const dependencies = [f.pool, {}, {}, {}, f.record.receipt.binding.mainId, {}, { releaseClaim },
+    { confirmedClosed: async () => false }] as unknown as ConstructorParameters<typeof PostgresSourceService>
+  const sources = new PostgresSourceService(...dependencies)
+  await expect(sources.confirmClosed(f.record)).rejects.toMatchObject({ code: 'SOURCE_EXECUTION_UNCERTAIN' })
+  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue({ generation: '1', principalId: 'reviewer',
+    session: { harness: 'codex', nativeSessionId: 'native-session', providerVersion: '0.154.0' } })
+  await closeCompletedWorkflowSources(f.pool, sources, f.report)
+  expect(f.report).not.toHaveBeenCalled()
+  expect(releaseClaim).not.toHaveBeenCalled()
+  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
+  await closeCompletedWorkflowSources(f.pool, sources, f.report)
+  expect(f.report).toHaveBeenCalledWith(expect.objectContaining({ code: 'SOURCE_EXECUTION_UNCERTAIN' }))
+  expect(releaseClaim).not.toHaveBeenCalled()
 })

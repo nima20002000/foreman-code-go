@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { DEVICE_APPLICATION_JSON_BYTES } from '@graphql/contracts/device-application'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { DispatchIntent, AcceptedNodePlacement } from '@graphql/contracts/node-placement'
-import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RemoteReceiptPageSchema, type RemoteReceiptPage,
-  type RemoteExecutionRpcRequest } from '@graphql/contracts/remote-execution-rpc'
+  type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { pageJsonContinuationBytes, readJsonContinuation } from './jsonContinuation.js'
 
 type Response = Record<string, unknown>

@@ -1,9 +1,9 @@
-import type { AgentConfigurationVersion } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { SavedNodePlacementSchema, type SavedNodePlacement } from '@graphql/contracts/node-placement'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
-import { HostHarnessOverrideSchema } from '@graphql/contracts/harness-registry'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { withAdvancedDefaults, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
 import type { HarnessInstallationRegistry } from '../harnesses/installationRegistry.js'
@@ -52,7 +52,7 @@ export async function resolveLocalMainPlacement(input: {
   const requested = configuration.harnessProfileSelection
   const compatible = profiles.rows.map(row => HostHarnessOverrideSchema.parse(row.record)).filter(profile =>
     profile.enabled
-    && sameWorkflowValue(profile.configuration, configuration.harness)
+    && sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))
     && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision
       && sameWorkflowValue(profile.target, requested.target))
     && installed.some(item => item.installed && sameWorkflowValue(item.hostRef, hostRef)

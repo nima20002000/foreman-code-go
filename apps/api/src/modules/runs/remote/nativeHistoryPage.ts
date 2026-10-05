@@ -1,10 +1,10 @@
 import { DEVICE_HISTORY_PAGE_BYTES, type DeviceHistoryPage,
-  type DeviceJsonContinuationRequest } from '@graphql/contracts/device-application'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+  type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { isDeepStrictEqual } from 'node:util'
-import { DEVICE_JSON_CONTINUATION_LIMIT } from '@graphql/contracts/device-application'
+import { DEVICE_JSON_CONTINUATION_LIMIT } from '@foreman-code/contracts/device-application'
 import { pageJsonContinuationBytes } from './jsonContinuation.js'
 import { encodeResultCopies, historyResultPaths } from './executionResultCodec.js'
 

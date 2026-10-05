@@ -1,8 +1,8 @@
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
-  DurableInteractionSchema, ReviewJobSchema } from '@graphql/contracts'
-import { WorkflowRunV3Schema, WorkflowVersionV3Schema, sameWorkflowValue } from '@graphql/contracts/wave25'
-import type { DispatchIntent } from '@graphql/contracts/node-placement'
-import type { RemoteOperationReceipt, RemoteReviewerRequest } from '@graphql/contracts/remote-execution'
+  DurableInteractionSchema, ReviewJobSchema } from '@foreman-code/contracts'
+import { WorkflowRunV3Schema, WorkflowVersionV3Schema, sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
+import type { RemoteOperationReceipt, RemoteReviewerRequest } from '@foreman-code/contracts/remote-execution'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresRepeatReviewerBindings } from '../interactions/repeatReviewer.js'
 import { DomainError } from '../errors.js'

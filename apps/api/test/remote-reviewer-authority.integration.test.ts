@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { DispatchIntentSchema } from '@graphql/contracts/node-placement'
+import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { assertRemoteReviewAssignment } from '../src/modules/placement/remoteReviewerAuthority.js'
 import { buildApp } from '../src/app.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'

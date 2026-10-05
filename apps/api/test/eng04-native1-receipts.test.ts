@@ -16,17 +16,18 @@ function fixture() {
     source_semantic_digest: semantic, source_sequence: '12', effect_digest: digest,
     effect_semantic_digest: semantic, effect_sequence: '12' }
   const calls: string[] = []
+  const reads: unknown[][] = []
   const rows: Array<Record<string, unknown>> = [row]
-  const client = { async query(text: string) {
-    const q = text.replace(/\s+/g, ' ').trim(); calls.push(q)
-    if (q.startsWith('select r.workspace_id')) {
-      expect(q).toContain('join run_graph_sources')
-      expect(q).toContain('left join run_graph_effects')
+  const client = { async query(text: string, values: unknown[] = []) {
+    const q = text.replace(/\s+/g, ' ').trim()
+    calls.push(q.startsWith('select') ? 'receipt-read' : q)
+    if (q.startsWith('select')) {
+      reads.push(structuredClone(values))
       return { rows: structuredClone(rows), rowCount: rows.length }
     }
     return { rows: [], rowCount: 0 }
   } } as unknown as pg.ClientBase
-  return { receipt, row, rows, calls, connection: new ExclusiveGraphConnection(client, () => undefined) }
+  return { receipt, row, rows, calls, reads, connection: new ExclusiveGraphConnection(client, () => undefined) }
 }
 
 /** Real transaction facade and receipt code over scripted query replies. These
@@ -37,7 +38,9 @@ describe('ENG04 NATIVE-1 canonical same-transaction receipt readback', () => {
     await f.connection.transaction((sql) => assertRepeatCanonicalReceiptLocked(sql, f.receipt))
     expect(f.calls[0]).toMatch(/^begin/)
     expect(f.calls.at(-1)).toBe('commit')
-    expect(f.calls.some((text) => text.includes('run_graph_batches'))).toBe(false)
+    expect(f.reads).toEqual([[f.receipt.scope.runId, f.receipt.evidence.sourceKind,
+      f.receipt.evidence.sourceId, f.receipt.evidence.sourceRevision,
+      f.receipt.effect!.kind, f.receipt.effect!.entityId]])
     await f.connection.close()
   })
   it('enlists readback after the canonical publication finalizer, not a detached read', async () => {
@@ -52,7 +55,7 @@ describe('ENG04 NATIVE-1 canonical same-transaction receipt readback', () => {
       expect(f.calls).toHaveLength(1)
     })
     expect(f.calls[1]).toBe('canonical-finalizer')
-    expect(f.calls[2]).toMatch(/^select r.workspace_id/)
+    expect(f.calls[2]).toBe('receipt-read')
     expect(f.calls.at(-1)).toBe('commit')
     await f.connection.close()
   })

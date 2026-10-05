@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 
 const execute = promisify(execFile)
@@ -76,13 +77,18 @@ export async function createRemoteReviewTls(directory: string) {
 /** Build the same committed, allowlisted artifact used by the installer. An
  * unsupported host fails the real packaging gate instead of substituting facts. */
 export async function buildRemoteReviewWorkerRelease(directory: string) {
-  if (process.env.GRAPHQL_TEST_WORKER_RELEASE) return process.env.GRAPHQL_TEST_WORKER_RELEASE
+  const suppliedRelease = readProductEnvironment(process.env, 'TEST_WORKER_RELEASE')
+  if (suppliedRelease) return suppliedRelease
   const { hostFacts } = await import(new URL('../../../worker/src/diagnostics.mjs', import.meta.url).href)
   const facts = await hostFacts(homedir(), [directory]) as {
     os: string; osRelease: string; arch: string; libc: string; node: string
   }
-  for (const release of ['24.04', '26.04']) {
-    const targetFile = fileURLToPath(new URL(`../../../worker/artifacts/ubuntu-${release}-x64-target.json`, import.meta.url))
+  const targets = [
+    'ubuntu-24.04-x64-target.json', 'ubuntu-26.04-x64-target.json',
+    'ubuntu-24.04-x64-node-22.23.2-target.json', 'ubuntu-26.04-x64-node-22.23.2-target.json',
+  ]
+  for (const name of targets) {
+    const targetFile = fileURLToPath(new URL(`../../../worker/artifacts/${name}`, import.meta.url))
     const target = JSON.parse(await readFile(targetFile, 'utf8')) as typeof facts
     const fields = ['os', 'osRelease', 'arch', 'libc', 'node'] as const
     if (!fields.every(field => target[field] === facts[field])) continue

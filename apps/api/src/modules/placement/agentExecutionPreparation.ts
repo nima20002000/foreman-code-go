@@ -24,6 +24,22 @@ type NativeSourcePort = SourceAdmissionPort & {
  * outside G1; final materialized evidence is adopted on the original owner. */
 export class AgentExecutionPreparation {
   constructor(private readonly sources: NativeSourcePort, private readonly producer: AgentPlacementProducer) {}
+  private async currentPurpose(sql: GraphSqlClient, owner: RunOwnership,
+    run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
+    owner.assertOwned()
+    if (owner.runId !== run.id || execution.runId !== run.id) this.conflict()
+    const resident = await sql.query(`select 1 from harness_executions e
+      join execution_native_sessions s on s.execution_id=e.id
+      join workflow_native_entries n on n.execution_id=e.id and n.run_id=e.run_id
+      where e.id=$1 and e.run_id=$2 and n.phase='entered'
+        and e.record->>'nativeSessionId'=s.reference->>'nativeSessionId'
+        and e.record->>'agentId'=$3 and e.record->>'agentConfigurationVersionId'=$4
+        and (e.record->>'attempt')::integer=$5 for share of e,s,n`,
+    [execution.id, run.id, execution.agentId, execution.agentConfigurationVersionId, execution.attempt])
+    if (resident.rowCount !== 1) return undefined
+    await owner.readOneShotFence(sql)
+    return { purpose: 'resident' as const }
+  }
   async prepare(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
     const accepted = await owner.oneShotConnection().transaction(async sql => {
       const placement = await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)
@@ -32,7 +48,8 @@ export class AgentExecutionPreparation {
       if (!intent || placement.payload.kind !== 'agent' || placement.payload.agentConfigurationVersionId !== execution.agentConfigurationVersionId
         || !('kind' in placement.source) || placement.source.kind !== 'pending') this.conflict()
       const principal = await readLiveManagementPrincipal(sql, run.authorizationPrincipalId)
-      await this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId)
+      await this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId,
+        await this.currentPurpose(sql, owner, run, execution))
       const source = placement.source as Extract<typeof placement.source, { kind: 'pending' }>
       const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId: run.workspaceId, rootId: source.rootId,
         bindingRevision: source.bindingRevision, source: { approvedSourceId: source.approvedSourceId, snapshotId: source.snapshotId, manifestDigest: source.manifestDigest } })
@@ -42,7 +59,8 @@ export class AgentExecutionPreparation {
     const { placement, intent, principal, root } = accepted
     const assertCurrent = async () => {
       owner.assertOwned()
-      await owner.oneShotConnection().transaction(sql => this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId))
+      await owner.oneShotConnection().transaction(async sql => this.producer.assertPinsCurrent(sql, placement, principal,
+        run.workspaceId, await this.currentPurpose(sql, owner, run, execution)))
     }
     const relativeCwd = posix.relative(placement.destination.canonicalProjectRoot, placement.destination.canonicalCwd)
     let native: NativeExecutionPlacement

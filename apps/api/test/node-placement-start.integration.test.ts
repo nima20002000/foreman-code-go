@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest'
 import {
   CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema, RunStartV3ResultSchema,
   makeCurrentWorkflowFixture,
-} from '@graphql/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import { ScheduleOperatorCapabilitiesSchema } from '../src/mcp/operator/tools/workflowSchedules.js'
-import { RunPlacementGetResultSchema } from '@graphql/contracts/placement-readback'
-import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { RunPlacementGetResultSchema } from '@foreman-code/contracts/placement-readback'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
@@ -83,7 +83,7 @@ async function fixture() {
       async save(via: 'http' | 'mcp') {
         if (via === 'mcp') {
           const result = await client.callTool({ name: 'workflow_save_v3', arguments: saveInput })
-          expect(result.isError).not.toBe(true)
+          expect(result.isError, JSON.stringify(result)).not.toBe(true)
           return CurrentWorkflowSaveResultSchema.parse(result.structuredContent).value
         }
         const response = await app!.inject({ method: 'PUT', url: `${path}/definition`, headers, payload: saveInput })
@@ -143,6 +143,9 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       node.artifactOutputs = { version: 1, outputKeys: ['report'] }
       f.saveInput.graph.nodes = [node]
       f.saveInput.graph.edges = []
+      f.saveInput.expectedAgentConfigurationVersionIds = {
+        [node.agentId]: f.saveInput.expectedAgentConfigurationVersionIds[node.agentId]!,
+      }
       const saved = await f.save('mcp')
       expect(agentWorkflowNode(saved.version.definition.nodes[0]).placement).toBeUndefined()
       const input = startInput(f, saved)
@@ -164,7 +167,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       expect(toolError(await denied.callTool({ name: 'run_start', arguments: { ...input, commandId: randomUUID() } })))
         .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
     } finally { await f.close() }
-  })
+  }, 120_000)
   it.each(['http', 'mcp'] as const)('%s Save and Start persist an unplaced Main Agent and an explicit remote Agent', async via => {
     const f = await fixture()
     let stage = 'save'

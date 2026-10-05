@@ -1,14 +1,15 @@
 /* global process */
 import { readFile } from 'node:fs/promises'
-import { createDatabase } from '../../src/infrastructure/database.ts'
-import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
-import { buildProductionApp } from '../../src/production.ts'
+import { createDatabase } from '../../dist/infrastructure/database.js'
+import { createCheckpointStore } from '../../dist/infrastructure/checkpoints.js'
+import { buildProductionApp } from '../../dist/production.js'
+import { codexQualificationSuite, opencodeQualificationSuite } from '../../dist/modules/harnesses/qualification/cliEntry.js'
 
 const { config, infrastructure } = JSON.parse(await readFile(process.argv[2], 'utf8'))
 const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
 const production = buildProductionApp(config, database, checkpoints, false,
-  undefined, undefined, undefined, infrastructure)
+  undefined, undefined, { codex: codexQualificationSuite, opencode: opencodeQualificationSuite }, infrastructure)
 production.registerFileStorage()
 await checkpoints.setup()
 await production.initialize()

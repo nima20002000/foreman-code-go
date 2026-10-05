@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEVICE_APPLICATION_JSON_BYTES, DEVICE_HISTORY_PAGE_BYTES } from '@graphql/contracts/device-application'
-import type { NativeHarnessEvent } from '@graphql/contracts'
+import { DEVICE_APPLICATION_JSON_BYTES, DEVICE_HISTORY_PAGE_BYTES } from '@foreman-code/contracts/device-application'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { readJsonContinuation } from './jsonContinuation.js'

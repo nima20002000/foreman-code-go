@@ -1,11 +1,39 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { operatorChatSettings } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@foreman-code/contracts'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { AgentDefaultsUpdateResultSchema, ManagedAgentDefaultsSchema } from '@foreman-code/contracts/management'
 import { initializeNativeDefaults } from '../src/modules/harnesses/initializeDefaults.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
+
+it('initializes an available harness while leaving an unranked native default unset and preserving retries', async () => {
+  const fixture = await reviewAuthMcpDatabase()
+  let rankedCodex = false
+  const options = async (harness: HarnessOptions['harness']): Promise<HarnessOptions> => ({
+    harness, providerVersion: 'native-fixture', authenticated: harness !== 'claude',
+    models: [{ id: harness === 'opencode' ? 'connected/preferred' : 'unranked-model',
+      ...(harness === 'opencode' || rankedCodex ? { defaultPriority: 0 } : {}),
+      reasoningEfforts: ['low', 'medium'], variants: ['', 'medium'], serviceTiers: ['standard'] }],
+    nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+  })
+  try {
+    await initializeNativeDefaults({ pool: fixture.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    const repository = new PostgresSettingsRepository(fixture.pool)
+    const first = await repository.getManagedHarnessDefaults()
+    expect(first.unavailable).toEqual(['codex'])
+    expect(first.defaults.codex).toEqual(DEFAULT_HARNESS_DEFAULTS.codex)
+    expect(first.defaults.opencode.model).toBe('connected/preferred')
+    await initializeNativeDefaults({ pool: fixture.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    expect(await repository.getManagedHarnessDefaults()).toEqual(first)
+    rankedCodex = true
+    await initializeNativeDefaults({ pool: fixture.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    const recovered = await repository.getManagedHarnessDefaults()
+    expect(recovered.unavailable ?? []).toEqual([])
+    expect(recovered.defaults.codex.model).toBe('unranked-model')
+    expect(recovered.defaults.opencode).toEqual(first.defaults.opencode)
+  } finally { await fixture.close() }
+}, 30_000)
 
 it('persists detected defaults once, preserves explicit pins and exposes the exact medium Claude effort through authenticated MCP', async () => {
   const f = await reviewAuthMcpDatabase()

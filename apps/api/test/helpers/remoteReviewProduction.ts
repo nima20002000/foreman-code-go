@@ -7,25 +7,26 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { ManagementActionSchema } from '@graphql/contracts/management'
+import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
-  WorkerPairingConfigurationSchema } from '@graphql/contracts/device-identity'
-import { loadOrCreateWorkerIdentity, persistWorkerPairing, pairingProof } from '@graphql/contracts/device-identity-node'
+  WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
+import { loadOrCreateWorkerIdentity, persistWorkerPairing, pairingProof } from '@foreman-code/contracts/device-identity-node'
 import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
-  HostHarnessInstanceCheckResultSchema } from '@graphql/contracts/harness-registry'
-import { SourceApproveResultSchema, SourceRootBindResultSchema } from '@graphql/contracts/source-admission'
-import { WorkspaceRootListResultSchema } from '@graphql/contracts/workspace-root-policies'
-import { WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
+  HostHarnessInstanceCheckResultSchema } from '@foreman-code/contracts/harness-registry'
+import { SourceApproveResultSchema, SourceRootBindResultSchema } from '@foreman-code/contracts/source-admission'
+import { WorkspaceRootListResultSchema } from '@foreman-code/contracts/workspace-root-policies'
+import { WorkspaceBoundLocationSetResultSchema } from '@foreman-code/contracts/workspace-bound-location'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
-  ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+  ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { loadConfig } from '../../src/config.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
-import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls } from './remoteReviewProvider.js'
@@ -98,9 +99,16 @@ export async function remoteReviewProduction() {
     const stateDirectory = join(directory, 'worker-state')
     const workerProject = join(directory, 'worker-projects', 'project')
     const workerRuntime = join(directory, 'worker-runtime')
-    for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime]) {
+    const claudeProfile = join(directory, 'claude-profile')
+    for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
       await mkdir(path, { recursive: true, mode: 0o700 })
     }
+    // The Codex fixture never chooses an ambient Claude model during startup.
+    const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
+      configDirectory: claudeProfile, authMode: 'subscription', permissionMode: 'default', sandbox: 'read-only',
+      tools: [], permissionRules: [], instructions: '', mcpServers: {} })
+    await db.pool.query(`insert into application_settings(key,record,revision)
+      values('harness-defaults',$1::jsonb,1)`, [JSON.stringify({ claude })])
     await writeFile(join(project, 'README.md'), '# Remote review fixture\n', { mode: 0o600 })
     await execute('git', ['init', '--quiet', project])
     await execute('git', ['-C', project, 'add', 'README.md'])
@@ -117,7 +125,7 @@ export async function remoteReviewProduction() {
     const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, PORT: String(await freePort()),
       HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),
       CODEX_BINARY: provider.binary, OPENCODE_BINARY: join(directory, 'missing-opencode'),
-      DATABASE_QUERY_TIMEOUT_MS: '10000', GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' })
+      DATABASE_QUERY_TIMEOUT_MS: '10000', FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '1' })
     config.workspaceStorageRoot = join(directory, 'projects')
     const checkpointSchema = `${db.schema}_checkpoints`
     config.checkpoints.schema = checkpointSchema
@@ -141,6 +149,7 @@ export async function remoteReviewProduction() {
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
     let main: ChildProcess | undefined
     let mainFailure = ''
+    const failures: Array<{ code: string; runId: string | null }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!main || main.exitCode !== null || main.signalCode !== null) return
@@ -158,12 +167,28 @@ export async function remoteReviewProduction() {
     const startMain = async () => {
       let ready = false
       mainFailure = ''
-      const started = spawn(process.execPath, ['--import', 'tsx',
+      const started = spawn(process.execPath, [
         fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
-        stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env },
       })
       main = started
+      let pendingLog = ''
+      started.stdout!.on('data', chunk => {
+        pendingLog = `${pendingLog}${String(chunk)}`.slice(-65536)
+        const lines = pendingLog.split('\n')
+        pendingLog = lines.pop()!
+        for (const line of lines) {
+          let parsed: unknown
+          try { parsed = JSON.parse(line) } catch { continue }
+          if (!parsed || typeof parsed !== 'object') continue
+          const event = parsed as { level?: number; code?: unknown; runId?: unknown; err?: { code?: unknown } }
+          const code = event.err?.code ?? event.code
+          if (!event.level || event.level < 40 || typeof code !== 'string' || !/^[A-Z][A-Z0-9_]{1,127}$/.test(code)) continue
+          failures.push({ code, runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
+          if (failures.length > 32) failures.shift()
+        }
+      })
       started.stderr!.on('data', chunk => { mainFailure = `${mainFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'kind' in message && message.kind === 'ready'
@@ -402,7 +427,8 @@ export async function remoteReviewProduction() {
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
     return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version,
-      start, call, value, details, reconcile, registry, close,
+      start, call, value, details, reconcile, registry, close, origin: () => origin,
+      failures: () => structuredClone(failures),
       workerPid: () => worker?.pid,
       inventory: () => value('harness_registry_get', hostRef).then(HarnessRegistryReadbackSchema.parse),
       denyNextReservedResponse: () => { denyReservedResponse = true },

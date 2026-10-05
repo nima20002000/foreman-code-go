@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { RemoteExecutionRpcRequest } from '@graphql/contracts/remote-execution-rpc'
-import { RemoteWorkflowPhysicalReadoutSchema } from '@graphql/contracts/remote-workflow-physical'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import type { NativeHistory } from '../../harnesses/port.js'
 import type { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
@@ -11,8 +11,8 @@ import { assertOriginalPhysicalDirectories, matchingOriginalRegistryLaunch,
   type InstalledWorkflowPhysicalReadouts } from './workflowPhysicalReadout.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
-import { commandInputHash } from '@graphql/contracts/command-identity-node'
-import { hasPositiveRemoteNonEntryClosure, remoteNonEntryClosureDigest } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { hasPositiveRemoteNonEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { randomUUID } from 'node:crypto'
 
 async function closedEntryReply(frame: RemoteExecutionRpcRequest, journal: RemoteOperationJournal) {

@@ -58,17 +58,6 @@ export const opencodeQualificationSuite: QualificationSuite = {
       turnId: 'qualification', allowMutation: true, allowedTools: ['files.read', 'files.publish_result'] }
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
     const redact = <T>(value: T): T => server.redactWithAdditionalSecrets(value, [token])
-    const observedRequests = new Map<string, typeof fileRequests[number]>()
-    app.addHook('preHandler', async (request) => {
-      const observed = { method: request.method, body: redact(request.body) }
-      fileRequests.push(observed)
-      observedRequests.set(request.id, observed)
-    })
-    app.addHook('onResponse', async (request, reply) => {
-      const observed = observedRequests.get(request.id)
-      if (observed) observed.statusCode = reply.statusCode
-      observedRequests.delete(request.id)
-    })
     const sourceId = randomUUID(), sourceRevisionId = randomUUID(), outputId = randomUUID(), outputRevisionId = randomUUID()
     const now = new Date().toISOString(), expiresAt = new Date(Date.parse(now) + 3_600_000).toISOString()
     const sourceBytes = Buffer.from(`# Qualification\n\n${marker}\n`)
@@ -197,7 +186,13 @@ export const opencodeQualificationSuite: QualificationSuite = {
       }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
-        fileListener = await createQualificationFileMcpListener(fileService, token)
+        fileListener = await createQualificationFileMcpListener(fileService, token, {
+          observeRequest: (request) => {
+            const observed: typeof fileRequests[number] = { method: request.method, body: redact(request.body) }
+            fileRequests.push(observed)
+            return (statusCode) => { observed.statusCode = statusCode }
+          },
+        })
         mcpName = `graphql_files_qualification_${randomUUID().replaceAll('-', '').slice(0, 12)}`
         await request('/mcp', { name: mcpName, config: { type: 'remote', url: fileListener.endpoint, enabled: true,
           oauth: false, headers: { Authorization: `Bearer ${token}` } } })

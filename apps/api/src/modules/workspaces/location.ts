@@ -18,6 +18,7 @@ import {
   type WorkspaceLocationValidateInput,
 } from '@foreman-code/contracts/management'
 import type pg from 'pg'
+import { WorkspaceLocationIdentitySchema } from '@foreman-code/contracts/workspace-root-policies'
 
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
@@ -229,6 +230,22 @@ export class WorkspaceLocationService {
     accessMode: WorkspaceLocationAccessMode,
     signal?: AbortSignal,
   ): Promise<RunExecutionLocation> {
+    const snapshot = await this.snapshotAssigned(client, workspaceId, expectedLocationRevision, signal)
+    const current = await this.validatePath(workspaceId, snapshot.runnerId, snapshot.rootPath, accessMode, signal)
+    if (identityHash(current.identity) !== snapshot.identityHash) {
+      throw new DomainError('WORKSPACE_LOCATION_CHANGED', 'The selected directory was replaced after it was saved. Validate and save it again.', 409)
+    }
+    return snapshot
+  }
+
+  /** Records the workspace selection for a Run whose complete Agent placement
+   * admission validates execution directories through their owning hosts. */
+  async snapshotAssigned(
+    client: pg.PoolClient,
+    workspaceId: string,
+    expectedLocationRevision: number,
+    signal?: AbortSignal,
+  ): Promise<RunExecutionLocation> {
     signal?.throwIfAborted()
     const result = await client.query<LocationRow>(
       `select execution_location, execution_location_identity, location_revision, archived_at
@@ -245,12 +262,8 @@ export class WorkspaceLocationService {
       throw new DomainError('WORKSPACE_LOCATION_UNCONFIGURED', 'Set a valid workspace execution location before starting a run.', 409)
     }
     const location = ExecutionLocationSchema.parse(row.execution_location)
-    const storedIdentity = row.execution_location_identity as LocationIdentity
+    const storedIdentity = WorkspaceLocationIdentitySchema.parse(row.execution_location_identity)
     signal?.throwIfAborted()
-    const current = await this.validatePath(workspaceId, location.runnerId, location.rootPath, accessMode, signal)
-    if (identityHash(current.identity) !== identityHash(storedIdentity)) {
-      throw new DomainError('WORKSPACE_LOCATION_CHANGED', 'The selected directory was replaced after it was saved. Validate and save it again.', 409)
-    }
     return RunExecutionLocationSchema.parse({ ...location, locationRevision: revision, identityHash: identityHash(storedIdentity) })
   }
 

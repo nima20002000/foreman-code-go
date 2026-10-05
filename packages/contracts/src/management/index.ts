@@ -14,6 +14,7 @@ export * from "./settingsExperience.js";
 
 import {
   AgentSchema,
+  AgentHarnessSchema,
   AgentDefaultsSchema,
   CodexHarnessConfigurationSchema,
   OpenCodeHarnessConfigurationSchema,
@@ -542,6 +543,8 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
   defaults: ManagementHarnessDefaultsSchema,
+  /** Explicitly select a preset even when its template values did not change. */
+  configure: AgentHarnessSchema.array().max(3).optional(),
 }).strict();
 export const HarnessConfigurationCheckInputSchema = z.object({
   configuration: HarnessConfigurationSchema,
@@ -553,6 +556,7 @@ export const HarnessConfigurationCheckResultSchema = z.object({
 }).strict();
 
 export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
+export const UnavailableHarnessDefaultsSchema = HarnessGetInputSchema.shape.harness.array().max(3);
 export const HarnessCatalogEntrySchema = z.object({
   harness: z.enum(["codex", "opencode", "claude"]),
   defaults: ManagementHarnessConfigurationSchema,

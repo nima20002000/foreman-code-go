@@ -9,7 +9,7 @@ import { RemoteOperationJournal } from './operationJournal.js'
 import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
 import type { RemoteOwnerControl, RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { bootIdentity, processIdentity, identityAlive } from '../../harnesses/recovery/linuxIdentity.js'
-import { DEVICE_APPLICATION_JSON_BYTES } from '@graphql/contracts/device-application'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 afterEach(async () => { await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })

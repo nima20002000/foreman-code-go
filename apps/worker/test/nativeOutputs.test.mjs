@@ -14,7 +14,7 @@ const bundle = await mkdtemp('/var/tmp/native-output-worker-bundle-');
 after(() => rm(bundle, { recursive: true, force: true }));
 const contracts = JSON.parse(await readFile(join(repository, 'packages/contracts/package.json')));
 const alias = Object.fromEntries(Object.entries(contracts.exports).map(([name, value]) => [
-  name === '.' ? '@graphql/contracts' : `@graphql/contracts/${name.slice(2)}`,
+  name === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${name.slice(2)}`,
   join(repository, 'packages/contracts', value.import.replace('./dist/', './src/').replace(/\.js$/, '.ts')),
 ]));
 const buildOptions = { bundle: true, platform: 'node', format: 'esm', target: 'node22', alias,

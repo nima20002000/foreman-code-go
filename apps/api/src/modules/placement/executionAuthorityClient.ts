@@ -2,7 +2,7 @@ import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAutho
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { DomainError } from '../errors.js'
-import type { RemoteReviewerRequest } from '@graphql/contracts/remote-execution'
+import type { RemoteReviewerRequest } from '@foreman-code/contracts/remote-execution'
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Worker composition supplies the established W07 channel request, not fetch to
  * a public HTTP route. The main's response carries correlation, never a permit. */

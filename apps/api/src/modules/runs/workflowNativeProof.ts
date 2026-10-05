@@ -7,14 +7,16 @@ import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workf
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { currentRunGraphPublication } from '../run-graph/publication.js'
-import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
+import { assertRepeatCanonicalReceiptRows, requireRepeatCanonicalReceiptBeforeCommit,
+  type RepeatCanonicalReceiptRow } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../interactions/workflowNativeCapture.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
 import { readRepeatExecutionLocked, type StoredRepeatExecution } from './repeatPostgres.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { prepareRepeatNativeUpdate } from './repeatNode.js'
 import type { RepeatNativeBoundaryEvidence, RepeatNativeEvidence } from './repeatNativeRepository.js'
-import { assertWorkflowNativeEntryPermitLocked, readWorkflowNativeEntryLocked, workflowNativeReservation } from './workflowNativeEntry.js'
+import { assertWorkflowNativeEntryPermitLocked, assertWorkflowNativeEntryRow,
+  type NativeEntryRow, workflowNativeReservation } from './workflowNativeEntry.js'
 import { repeatExecutionIdentity, repeatId, sameRepeatValue, type RepeatNodeRef, type RepeatScope } from './repeatResolution.js'
 import type { RunOwnership } from './ownership.js'
 import { matchingDeliveryEvidence } from '../interactions/delivery.js'
@@ -81,40 +83,59 @@ export class WorkflowNativeProofServices {
     await this.assertAdditionalPhysical?.(sql, owner, capture)
     if (capture.owner !== owner || !isDeepStrictEqual(immutableExecution(capture.execution), immutableExecution(stored.execution))) return fail()
     const reservation = workflowNativeReservation(scope, stored.ref, stored.execution, stored.inputDigest)
-    const entry = await readWorkflowNativeEntryLocked(sql, reservation)
-    if (entry.phase !== 'entered' || !entry.transition || entry.transition.phase !== 'entered'
-      || !entry.source_id || !entry.source_digest) return fail('NATIVE_ENTRY_CONFLICT')
-    await assertRepeatCanonicalReceiptLocked(sql, { scope,
-      evidence: { sourceKind: 'execution', sourceId: entry.source_id, sourceRevision: '1' },
-      sourceDigest: entry.source_digest, effect: null })
-    // Read and lock the same physical guards in one round trip. Nothing is
-    // cached between calls: lease expiry and every immutable identity are still
-    // revalidated at each original boundary and immediately before commit.
+    // The physical locks depend on the entered journal and receipt reads.
+    // Every boundary, including precommit, reads fresh rows and database time.
     const physical = (await sql.query<{
+      entry: NativeEntryRow | null; entry_receipts: RepeatCanonicalReceiptRow[]
       session: { reference: unknown } | null; configuration: { harness: string } | null
       closure: { generation: string; expected_reference: unknown; closed: boolean } | null
       lane: { owner_agent_id: string; harness: string; native_session_id: string; generation: string;
         token: string | null; correlation: string | null; provider_id: string | null; held: boolean } | null
-    }>(`with current_session as materialized (
-        select reference from execution_native_sessions where execution_id=$1 for update
+    }>(`with current_entry as materialized (
+        select phase,reservation,reservation_digest,transition,source_id,source_digest
+        from workflow_native_entries where execution_id=$1 and run_id=$6 for update
+      ), current_entry_receipt as materialized (
+        select r.workspace_id,r.workflow_id,r.workflow_version_id,
+          v.execution_semantics_version,h.protocol_version,h.head_sequence::text,
+          s.source_digest,s.semantic_digest as source_semantic_digest,s.first_sequence::text as source_sequence,
+          null::text as effect_digest,null::text as effect_semantic_digest,null::text as effect_sequence
+        from current_entry n join runs r on r.id=$6
+        join workflow_versions v on v.id=r.workflow_version_id
+        join run_graph_heads h on h.run_id=r.id
+        join run_graph_sources s on s.run_id=r.id and s.source_kind='execution'
+          and s.source_id=n.source_id and s.source_revision=1
+      ), current_session as materialized (
+        select reference from execution_native_sessions where execution_id=$1
+          and (select count(*) from current_entry_receipt)=1 for update
       ), current_configuration as materialized (
         select record#>>'{harness,harness}' as harness from agent_configuration_versions
-        where id=$2 and agent_id=$3 and workspace_id=$4 for share
+        where id=$2 and agent_id=$3 and workspace_id=$4
+          and (select count(*) from current_entry_receipt)=1 for share
       ), current_closure as materialized (
         select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
-        from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update
+        from execution_native_closures where execution_id=$1
+          and (select count(*) from current_entry_receipt)=1 order by generation desc limit 1 for update
       ), current_lane as materialized (
         select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
           record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,
           coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
-        from native_session_lanes where id=$5 for update
-      ) select (select row_to_json(s) from current_session s) as session,
+        from native_session_lanes where id=$5
+          and (select count(*) from current_entry_receipt)=1 for update
+      ) select (select row_to_json(n) from current_entry n) as entry,
+        coalesce((select json_agg(r) from current_entry_receipt r),'[]'::json) as entry_receipts,
+        (select row_to_json(s) from current_session s) as session,
         (select row_to_json(c) from current_configuration c) as configuration,
         (select row_to_json(c) from current_closure c) as closure,
         (select row_to_json(l) from current_lane l) as lane`,
     [stored.execution.id, stored.execution.agentConfigurationVersionId, stored.execution.agentId,
-      scope.workspaceId, capture.lane?.id ?? null])).rows[0]!
+      scope.workspaceId, capture.lane?.id ?? null, scope.runId])).rows[0]!
+    const entry = assertWorkflowNativeEntryRow(physical.entry, reservation)
+    if (entry.phase !== 'entered' || !entry.transition || entry.transition.phase !== 'entered'
+      || !entry.source_id || !entry.source_digest) return fail('NATIVE_ENTRY_CONFLICT')
+    assertRepeatCanonicalReceiptRows(physical.entry_receipts, { scope,
+      evidence: { sourceKind: 'execution', sourceId: entry.source_id, sourceRevision: '1' },
+      sourceDigest: entry.source_digest, effect: null })
     const sessionRow = physical.session
     if (sessionRow ? !sameRepeatValue(NativeSessionReferenceSchema.parse(sessionRow.reference), capture.session)
       : capture.source.type !== 'session_created') return fail()
@@ -245,7 +266,8 @@ export class WorkflowNativeProofServices {
         // Keep the live capture check while publishing its individual events.
         capture.assertCurrent()
         if (retainedEvents.has(event)) continue
-        await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation)
+        await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation,
+          capture.source.type === 'event' ? { sql, scope, execution: stored.execution } : undefined)
       }
       if (history?.terminalTurn && capture.lane) {
         await this.publishContinuations(sql, run, stored, scope, capture, record, owner)
@@ -310,7 +332,8 @@ export class WorkflowNativeProofServices {
     const lease = capture.lane ? { id: capture.lane.id, token: capture.lane.token, live: capture.kind === 'live',
       ...(capture.lane.providerId ? { providerId: capture.lane.providerId } : {}) } : undefined
     // The first frame still initializes or verifies the current graph correlation.
-    await appendWorkflowNativeGraphEventLocked(sql, owner, frames[0]!.event, lease)
+    await appendWorkflowNativeGraphEventLocked(sql, owner, frames[0]!.event, lease, undefined, undefined,
+      { sql, scope, execution: stored.execution })
     for (const frame of frames.slice(1)) {
       frame.capture.assertCurrent()
       await appendNormalizedNativeEvent(sql, normalizeNativeProducerEvent(frame.event))

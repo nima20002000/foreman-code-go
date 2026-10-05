@@ -2,18 +2,49 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { DurableInteractionSchema, GetInteractionResponseSchema, ReviewJobSchema } from '@graphql/contracts'
-import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@graphql/contracts/remote-execution'
-import { hasPositiveRemoteEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
-import { SourcePreparationSchema } from '@graphql/contracts/source-admission'
-import { SavedRunDetailsSchema } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema, DurableInteractionSchema, GetInteractionResponseSchema,
+  ReviewJobSchema, withAdvancedDefaults } from '@foreman-code/contracts'
+import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
+import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { SourcePreparationSchema } from '@foreman-code/contracts/source-admission'
+import { RunExecutionLocationV3Schema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateResultSchema,
+  HarnessOptionsResultSchema, ManagementHarnessDefaultsSchema } from '@foreman-code/contracts/management'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
+async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>) {
+  const fixture = await remoteReviewProduction()
+  try {
+    await check(fixture)
+  } catch (error) {
+    console.error('Remote review production error codes', fixture.failures())
+    try {
+      await fixture.close()
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Remote review and fixture cleanup failed.', { cause: cleanupError })
+    }
+    throw error
+  }
+  await fixture.close()
+}
+
 async function reviewInProgress(fixture: Fixture) {
+  const requesterVersion = Object.entries(fixture.version.agentConfigurationVersionIds)
+    .find(([agentId]) => agentId !== fixture.version.approval.designatedOrchestratorAgentId)?.[1]
+  const row = (await fixture.db.pool.query<{ record: unknown }>(
+    'select record from agent_configuration_versions where id=$1', [requesterVersion])).rows[0]
+  const configuration = AgentConfigurationVersionSchema.parse(row?.record)
+  expect(configuration.harness.harness).toBe('codex')
+  if (configuration.harness.harness !== 'codex') throw new Error('The requester requires the Codex fixture.')
+  expect(configuration.harness.advanced).toBeUndefined()
+  expect(fixture.profiles[1]!.configuration).toEqual(withAdvancedDefaults(configuration.harness))
   const started = await fixture.start()
+  const location = RunExecutionLocationV3Schema.parse(started.run.executionLocation)
+  expect(location.runnerId).toBe(fixture.profiles[0]!.target.applicationInstallationId)
+  expect((await fixture.details(started.run.id)).run.executionLocation).toEqual(location)
   const interaction = await waitForRemoteReview(async () => {
     await fixture.reconcile()
     return (await fixture.pending(started.run.id))[0]
@@ -71,9 +102,58 @@ async function receipts(fixture: Fixture, runId: string) {
 }
 
 describe('production remote review and native recovery through authenticated MCP', () => {
+  it('keeps unranked native defaults unavailable through authenticated HTTP and MCP while Main starts', async () => {
+    await withRemoteReviewFixture(async fixture => {
+      const catalog = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
+      expect(catalog.capability).toBeNull()
+      expect(catalog.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
+      const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      expect(options.models.map(model => model.id)).toContain('test-model')
+      expect(options.models.every(model => model.defaultPriority === undefined && model.releasedAt === undefined)).toBe(true)
+      const configuration = (await fixture.db.pool.query<{ record: { harness: { model: string } } }>(
+        'select record from agent_configuration_versions where id=$1',
+        [fixture.version.agentConfigurationVersionIds[fixture.version.approval.designatedOrchestratorAgentId!]])
+      ).rows[0]!
+      expect(configuration.record.harness.model).toBe('test-model')
+      const response = await fetch(`${fixture.origin()}/api/management/harnesses/codex`, {
+        headers: { authorization: `Bearer ${fixture.writer.token}` },
+      })
+      expect(response.status).toBe(200)
+      expect(HarnessCatalogEntrySchema.parse(await response.json())).toEqual(catalog)
+      const reader = await fixture.access.issue({ name: 'No harness grants', audience: 'operator',
+        expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['settings:read'], scope: {} }] })
+      const deniedHttp = await fetch(`${fixture.origin()}/api/management/harnesses/codex`, {
+        headers: { authorization: `Bearer ${reader.token}` },
+      })
+      expect(deniedHttp.status).toBe(403)
+      const denied = await fixture.call('harness_get', { harness: 'codex' }, reader.token)
+        .then(result => ({ result }), (error: unknown) => ({ error }))
+      if ('error' in denied) expect(denied.error).toMatchObject({ code: -32602 })
+      else expect(denied.result.isError).toBe(true)
+      const presets = HarnessCatalogResultSchema.parse(await fixture.value('harness_list', {}))
+      const defaults = ManagementHarnessDefaultsSchema.parse(Object.fromEntries(
+        presets.items.map(entry => [entry.harness, entry.defaults])))
+      defaults.codex.model = 'test-model'
+      const input = { commandId: randomUUID(), expectedRevision: catalog.defaultsRevision,
+        defaults, configure: ['codex'] }
+      const saved = HarnessDefaultsUpdateResultSchema.parse(await fixture.value('harness_defaults_update', input))
+      expect(saved.value.defaults.codex.model).toBe('test-model')
+      expect(HarnessDefaultsUpdateResultSchema.parse(await fixture.value('harness_defaults_update', input)))
+        .toEqual({ ...saved, replayed: true })
+      const selected = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
+      expect(selected.discoveryError).toBeNull()
+      expect(selected.capability?.ready).toBe(true)
+      const unconfigured = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'opencode' }))
+      expect(unconfigured.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
+      const deniedSave = await fixture.call('harness_defaults_update', { ...input, commandId: randomUUID() }, reader.token)
+        .then(result => ({ result }), (error: unknown) => ({ error }))
+      if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })
+      else expect(deniedSave.result.isError).toBe(true)
+    })
+  }, 240_000)
+
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
-    const fixture = await remoteReviewProduction()
-    try {
+    await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
       const reader = await fixture.access.issue({ name: 'Remote review reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
@@ -100,12 +180,11 @@ describe('production remote review and native recovery through authenticated MCP
         assignment: expect.objectContaining({ jobId: active.job.id, correlationId: active.job.correlationId }),
         providerId: delivered.job.providerTurnOrMessageId, settled: true,
       }))
-    } finally { await fixture.close() }
+    })
   }, 240_000)
 
   it('continues credential maintenance and the retained review after Main crashes with the Worker still alive', async () => {
-    const fixture = await remoteReviewProduction()
-    try {
+    await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
       const beforeInventory = await fixture.inventory()
       const originalWorkerPid = fixture.workerPid()
@@ -159,12 +238,11 @@ describe('production remote review and native recovery through authenticated MCP
       expect(fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
         original => original.owner === owner.owner)).map(owner => owner.launchId).sort())
         .toEqual(ownerLaunchIds)
-    } finally { await fixture.close() }
+    })
   }, 240_000)
 
   it('settles the original native owners after an installed Worker crash without launching a replacement', async () => {
-    const fixture = await remoteReviewProduction()
-    try {
+    await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
       const originalReceipts = await receipts(fixture, active.run.id)
       const ownerLaunchIds = fixture.registry.snapshot().launches.filter(owner => active.owners.some(
@@ -197,12 +275,11 @@ describe('production remote review and native recovery through authenticated MCP
       expect(detail.run.outcome).toBe('canceled')
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === active.job.correlationId)).toHaveLength(1)
-    } finally { await fixture.close() }
+    })
   }, 240_000)
 
   it('retries the same reserved decision through authenticated MCP after a post-reservation authorization failure', async () => {
-    const fixture = await remoteReviewProduction()
-    try {
+    await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
       fixture.denyNextReservedResponse()
       await fixture.provider.releaseReview()
@@ -232,16 +309,25 @@ describe('production remote review and native recovery through authenticated MCP
       expect(receipt.controls.filter(control => control.action.kind === 'respond')).toEqual([command])
       expect(fixture.deliveryReads).toContainEqual({ command, phase: 'reserved' })
       expect((await fixture.provider.calls()).filter(call => 'approvalResponse' in call)).toHaveLength(1)
-    } finally { await fixture.close() }
+    })
   }, 240_000)
 
   it('closes a requester entry interrupted before session acknowledgment through installed recovery and authenticated Stop', async () => {
-    const fixture = await remoteReviewProduction()
-    try {
+    await withRemoteReviewFixture(async fixture => {
       await fixture.provider.blockRequesterSession()
       const started = await fixture.start()
-      const blocked = await waitForRemoteReview(fixture.provider.calls,
-        calls => calls.some(call => 'requesterSessionBlocked' in call), 'requester thread creation before session acknowledgment')
+      const blocked = await waitForRemoteReview(async () => {
+        const calls = await fixture.provider.calls()
+        const executions = await fixture.executions(started.run.id)
+        const failed = executions.find(execution => execution.result?.outcome === 'failed')
+        if (failed) {
+          throw new Error(`Run execution failed before requester session acknowledgment: ${JSON.stringify({
+            executionId: failed.id, state: failed.state, errorCode: failed.result?.error?.code,
+          })}`)
+        }
+        return calls
+      }, calls => calls.some(call => 'requesterSessionBlocked' in call),
+      'requester thread creation before session acknowledgment')
       const provider = blocked.find(call => 'requesterSessionBlocked' in call)!.requesterSessionBlocked as { pid: number }
       const requesterNode = fixture.version.definition.nodes.find(node => node.id !== fixture.version.entryNodeId)!
       const requester = (await fixture.executions(started.run.id)).find(execution => execution.workflowNodeId === requesterNode.id)!
@@ -309,6 +395,6 @@ describe('production remote review and native recovery through authenticated MCP
       expect((await fixture.provider.calls()).filter(call => 'requesterSessionBlocked' in call)).toHaveLength(1)
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === `execution:${requester.id}`)).toHaveLength(0)
-    } finally { await fixture.close() }
+    })
   }, 240_000)
 })

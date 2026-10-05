@@ -16,7 +16,7 @@ import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegis
   type NativeLaunchObservation } from './registryObservation.js'
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
-import { NativeProcessObservationSchema } from '@graphql/contracts/remote-execution-entry-closure'
+import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
 export interface NativeProcessRecovery {

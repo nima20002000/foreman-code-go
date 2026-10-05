@@ -9,4 +9,3 @@ export function endpointMatches(actual: string | undefined, expected: string): b
       && left.pathname === right.pathname && left.search === right.search && left.hash === right.hash
   } catch { return false }
 }
-

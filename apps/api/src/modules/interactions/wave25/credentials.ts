@@ -3,12 +3,12 @@ import { WorkerCredentialService, type IssuedWorkerCredential, APP_MCP_TOKEN_ENV
 import type { PostgresAccessService } from '../../access/postgres.js'
 import { fail, isCurrentApprovalRun, runFor } from './context.js'
 import { credentialAuthority, assertWave25WorkerBinding } from './credentialAuthority.js'
-import { ReviewJobSchema, type ReviewJob } from '@graphql/contracts'
+import { ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
 import type { SessionWriteLease } from '../sessionWriter.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 type Purpose = 'workflow' | 'reviewer'
 
 export class Wave25WorkerCredentialService extends WorkerCredentialService {

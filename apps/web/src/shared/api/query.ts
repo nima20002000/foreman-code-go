@@ -256,12 +256,13 @@ export function useUpdateManagedHarnessDefaultsMutation() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: (input: Parameters<typeof updateManagedHarnessDefaults>[0]) => updateManagedHarnessDefaults(input),
-    onSuccess: (response) => {
+    onSuccess: (response, input) => {
       client.setQueryData<Awaited<ReturnType<typeof getManagedHarnessCatalog>>>(queryKeys.managedHarnessCatalog, (current) => {
         if (!current || current.some(entry => entry.defaultsRevision > response.value.revision)) return current
         return Object.values(response.value.defaults).map(defaults => {
           const prior = current.find(entry => entry.harness === defaults.harness)
-          const unchanged = prior && JSON.stringify(prior.defaults) === JSON.stringify(defaults)
+          const unchanged = prior && !input.configure?.includes(defaults.harness)
+            && JSON.stringify(prior.defaults) === JSON.stringify(defaults)
           return { harness: defaults.harness, defaults, defaultsRevision: response.value.revision,
             capability: unchanged ? prior.capability : null, discoveryError: unchanged ? prior.discoveryError : null }
         })

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual as same } from 'node:util'
-import { parseWorkflowArtifactResult } from '@graphql/contracts/workflow-artifact-result'
+import { parseWorkflowArtifactResult } from '@foreman-code/contracts/workflow-artifact-result'
 import type { WorkflowArtifactTerminalPorts } from './workflowArtifactResultProduction.js'
 import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
 import { readReconciledDispatchIntent } from './persistence.js'

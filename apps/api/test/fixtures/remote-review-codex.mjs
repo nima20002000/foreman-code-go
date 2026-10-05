@@ -13,10 +13,11 @@ const log = value => appendFileSync(join(root, 'calls.jsonl'), `${JSON.stringify
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`)
 const reply = (id, result) => send({ id, result })
 const notify = (method, params) => send({ method, params })
-const disabled = args.some((value, index) => value === '-c' && args[index + 1] === 'mcp_servers.graphql.enabled=false')
+const mcpName = 'foreman-code'
+const disabled = args.some((value, index) => value === '-c' && args[index + 1] === `mcp_servers.${mcpName}.enabled=false`)
 const mcp = {
-  name: 'graphql', enabled: !disabled, required: true,
-  transport: { type: 'stdio', command: process.execPath, args: [settings.launcher], env_vars: ['GRAPHQL_MCP_TOKEN'] },
+  name: mcpName, enabled: !disabled, required: true,
+  transport: { type: 'stdio', command: process.execPath, args: [settings.launcher], env_vars: ['FOREMAN_CODE_MCP_TOKEN'] },
 }
 
 if (args[0] === '--version') {
@@ -34,7 +35,7 @@ if (args[0] === 'debug') {
   process.exit(0)
 }
 if (args[0] === 'mcp') {
-  send(args[1] === 'list' ? [{ name: 'graphql' }] : mcp)
+  send(args[1] === 'list' ? [{ name: mcpName }] : mcp)
   process.exit(0)
 }
 if (args[0] !== 'app-server') process.exit(2)
@@ -107,7 +108,7 @@ async function qualificationFiles(turn, prompt) {
 
 async function mcpCall(name, arguments_) {
   const { Client, StreamableHTTPClientTransport } = await import(settings.clientModule)
-  const token = process.env.GRAPHQL_MCP_TOKEN
+  const token = process.env.FOREMAN_CODE_MCP_TOKEN
   const digest = createHash('sha256').update(token).digest('hex')
   const route = JSON.parse(readFileSync(join(dirname(settings.launcher), 'routes', `${digest}.json`), 'utf8'))
   const client = new Client({ name: 'Remote reviewer protocol fixture', version: '1' })
@@ -225,13 +226,14 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     if (turn?.status === 'inProgress') complete(turn, 'Interrupted', 'interrupted')
   } else if (message.method === 'config/read') {
     reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'on-request',
-      mcp_servers: { graphql: { ...mcp.transport, enabled: mcp.enabled, required: true } } }, origins: {}, layers: [] })
+      mcp_servers: { [mcpName]: { ...mcp.transport, enabled: mcp.enabled, required: true } } }, origins: {}, layers: [] })
   } else if (message.method === 'mcpServerStatus/list') {
     reply(message.id, { data: [], nextCursor: null })
   } else if (message.method === 'model/list') {
     reply(message.id, { data: [{ id: 'test-model', model: 'test-model', displayName: 'Test model',
       description: 'External protocol fixture', hidden: false, isDefault: true, defaultReasoningEffort: 'low',
-      supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' }] }], nextCursor: null })
+      supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
+        { reasoningEffort: 'medium', description: 'Medium' }] }], nextCursor: null })
   } else if (message.method === 'config/mcpServer/reload') {
     reply(message.id, {})
   } else {

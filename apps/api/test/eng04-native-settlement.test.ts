@@ -124,6 +124,22 @@ class NativePgShape {
       if (q.startsWith('select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,')) {
         expect(values).toEqual([f.run.id]); return rows([currentUnitRunRow(f)])
       }
+      if (q.startsWith('with pinned_version')) {
+        expect(values).toEqual([f.version.id, f.run.workspaceId, f.run.workflowId,
+          Object.values(f.run.agentConfigurationVersionIds)])
+        return rows([{ versions: [currentUnitVersionRow(f)], configurations: currentUnitConfigurationRows(f) }])
+      }
+      if (q.startsWith('with pinned_head')) {
+        expect(values).toEqual([this.execution.id, f.run.id])
+        return rows([{ heads: [{ protocol_version: 1 }], effects: [{ payload_digest: this.bindingDigest }],
+          executions: [{ record: this.execution, accepted: false, identity: repeatExecutionIdentity(this.execution),
+            slot_id: repeatSlotId(f.run.id, reservation.ref), occurrence_id: null,
+            execution_occurrence_id: null, identity_occurrence_id: null, technical_attempt: this.execution.attempt,
+            execution_run_id: this.execution.runId, execution_node_id: this.execution.workflowNodeId,
+            execution_agent_id: this.execution.agentId, execution_attempt: this.execution.attempt,
+            workflow_node_id: this.execution.workflowNodeId, input_json: JSON.stringify(this.execution.input),
+            input_digest: reservation.inputDigest }] }])
+      }
       if (q.startsWith('select id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record')) {
         expect(values).toEqual([f.version.id, f.run.workspaceId, f.run.workflowId])
         return rows([currentUnitVersionRow(f)])

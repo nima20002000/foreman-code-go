@@ -284,11 +284,11 @@ export interface PreparedExecutionCredential {
 
 /** Provider-neutral lifecycle seam consumed by legacy and rich session execution paths. */
 export interface ExecutionCredentialProvider {
-  recoverRemote?(executionId: string, access: import('@graphql/contracts/remote-execution').RemoteApplicationAccess,
-    job?: import('@graphql/contracts').ReviewJob):
+  recoverRemote?(executionId: string, access: import('@foreman-code/contracts/remote-execution').RemoteApplicationAccess,
+    job?: import('@foreman-code/contracts').ReviewJob):
     Promise<IssuedWorkerCredential>
   bindReviewerJob?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>,
-    job: import('@graphql/contracts').ReviewJob, lane: import('../interactions/sessionWriter.js').SessionWriteLease): Promise<void>
+    job: import('@foreman-code/contracts').ReviewJob, lane: import('../interactions/sessionWriter.js').SessionWriteLease): Promise<void>
   /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
   /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */

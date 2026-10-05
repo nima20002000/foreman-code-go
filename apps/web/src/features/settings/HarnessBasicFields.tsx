@@ -13,12 +13,16 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)
   const models: Array<{ value: string; label: string; description: string; disabled?: boolean }> = query.data?.models.map((item) => ({ value: item.id, label: item.name || item.id, description: item.id })) ?? []
-  if (!models.some((item) => item.value === value.model)) models.unshift({ value: value.model, label: value.model,
+  if (!models.some((item) => item.value === value.model)) models.unshift({ value: value.model, label: value.model || 'No default model',
     description: query.isPending ? 'Loading native models…' : 'Saved model · not in the native catalog', disabled: true })
-  if (value.harness === 'claude') return <ClaudeConfigurationFields value={value} onChange={onChange}
+  const missingModel = !value.model.trim() ? <Alert tone="warning" title="Default model unavailable">
+    Choose a native model before using this preset.
+  </Alert> : null
+  if (value.harness === 'claude') return <>{missingModel}<ClaudeConfigurationFields value={value} onChange={onChange}
     models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
-    error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} />
+    error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} /></>
   return <div className="harness-basic-fields">
+    {missingModel}
     <div className="harness-model-settings">
       <div className="harness-model-fields">
         <Combobox label="Model" value={value.model} options={models} error={fieldMessage(issues, 'model')}

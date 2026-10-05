@@ -1,9 +1,9 @@
-import { ExecutionResultSchema } from '@graphql/contracts'
-import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import { ExecutionResultSchema } from '@foreman-code/contracts'
+import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { RemoteResultDictionarySchema, type RemoteResultDictionary,
-  type RemoteWorkflowPhysicalReadout } from '@graphql/contracts/remote-workflow-physical'
-import { DEVICE_JSON_CONTINUATION_LIMIT } from '@graphql/contracts/device-application'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+  type RemoteWorkflowPhysicalReadout } from '@foreman-code/contracts/remote-workflow-physical'
+import { DEVICE_JSON_CONTINUATION_LIMIT } from '@foreman-code/contracts/device-application'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 
 type ResultPath = Array<string | number>
 type Container = Record<string | number, unknown>

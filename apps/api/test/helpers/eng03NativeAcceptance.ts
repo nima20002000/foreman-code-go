@@ -28,6 +28,7 @@ import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/proc
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { openCodeMcpInspectorAdapter } from '../../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
+import { object } from '../../src/modules/harnesses/opencodeProtocol.js'
 import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
@@ -207,7 +208,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
       const fallback = harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
-          reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }
+          reasoningEffort: process.env.ENG03_CODEX_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
         : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
           variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
       const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined
@@ -617,7 +618,20 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
               nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
             lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
               currentTurnOrMessageId: lane.currentTurnOrMessageId },
-            lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
+            lastEvents: history?.events.slice(-20).map(({ type, sequence, payload }) => {
+              const part = object(payload.part)
+              const state = object(part.state)
+              const info = object(payload.info)
+              const providerError = object(info.error)
+              return { type, sequence,
+                partType: typeof part.type === 'string' ? part.type : undefined,
+                tool: typeof part.tool === 'string' ? part.tool : undefined,
+                toolStatus: typeof state.status === 'string' ? state.status : undefined,
+                messageRole: typeof info.role === 'string' ? info.role : undefined,
+                messageFinish: typeof info.finish === 'string' ? info.finish : undefined,
+                providerErrorName: typeof providerError.name === 'string' ? providerError.name : undefined,
+              }
+            }) }
         }))
       }
       const requests = await pool.query<{ record: unknown }>(

@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { MAX_FILE_BYTES, type AgentFilePublishInput, type AgentFilePublishResult,
-  type TemporaryFileScope } from '@graphql/contracts/files'
-import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
+  type TemporaryFileScope } from '@foreman-code/contracts/files'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { WorkerNativeOutputCommandSchema, WorkerNativeOutputReplySchema,
-  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@graphql/contracts/worker-native-output'
+  type WorkerNativeOutputCommand, type WorkerNativeOutputReply } from '@foreman-code/contracts/worker-native-output'
 import type { NativeOutputBridge, NativeOutputCallback, NativeOutputTurnPin,
   NativeOutputPreparation, NativeOutputQualificationInput, WorkflowNativeOutputs } from '../../harnesses/workflowNativeOutput.js'
 import { DomainError } from '../../errors.js'

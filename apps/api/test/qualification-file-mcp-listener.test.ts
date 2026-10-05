@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema,
-  AgentFileReadResultSchema } from '@graphql/contracts/files'
+  AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import { createQualificationFileMcpListener } from '../src/modules/harnesses/qualification/fileMcpListener.js'
 import { fileToolFixture } from './support/fileTools.js'
 
@@ -14,7 +14,7 @@ async function call(endpoint: string, token: string, name: string, args: unknown
   const text = await response.text()
   const data = text.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? text
   return { status: response.status, body: data ? JSON.parse(data) as {
-    result?: { isError?: boolean; structuredContent?: unknown }
+    result?: { isError?: boolean; structuredContent?: unknown; content?: Array<{ type: string; text?: string }> }
   } : undefined }
 }
 
@@ -22,13 +22,27 @@ describe('native qualification file MCP listener', () => {
   it('reads and publishes through the authenticated shared file service and persists immutable results', async () => {
     const f = await fileToolFixture()
     const source = await f.upload('# qualification source\n')
-    const listener = await createQualificationFileMcpListener(f.service, f.token)
+    const requests: Array<{ method: string; body: unknown; statusCode?: number }> = []
+    const listener = await createQualificationFileMcpListener(f.service, f.token, {
+      observeRequest: (request) => {
+        const observed: typeof requests[number] = { ...request }
+        requests.push(observed)
+        return (statusCode) => { observed.statusCode = statusCode }
+      },
+    })
     try {
       const read = await call(listener.endpoint, f.token, 'files.read', { ...source, offset: 0, length: 65536 })
       expect(read.status).toBe(200)
       const original = AgentFileReadResultSchema.parse(read.body?.result?.structuredContent)
       if (original.status !== 'ready') throw new Error('The qualification source is unavailable.')
       expect(Buffer.from(original.contentBase64, 'base64').toString()).toBe('# qualification source\n')
+      expect(read.body?.result?.content?.[1]).toEqual({ type: 'text', text: '# qualification source\n' })
+      expect(requests).toEqual([{
+        method: 'POST', statusCode: 200,
+        body: expect.objectContaining({ method: 'tools/call', params: {
+          name: 'files.read', arguments: { ...source, offset: 0, length: 65536 },
+        } }),
+      }])
       const copied = await call(listener.endpoint, f.token, 'files.create_working_copy', {
         commandId: randomUUID(), source, destination: f.scope,
       })

@@ -1,13 +1,13 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { ExecutionResult } from '@graphql/contracts'
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteWorkflowPhysicalOutputSchema, type RemoteWorkflowPhysicalOutput } from '@graphql/contracts/remote-workflow-physical'
+import type { ExecutionResult } from '@foreman-code/contracts'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
+import { RemoteWorkflowPhysicalOutputSchema, type RemoteWorkflowPhysicalOutput } from '@foreman-code/contracts/remote-workflow-physical'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
-  type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
+  type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema,
-  workflowArtifactDigestsByOutputKey } from '@graphql/contracts/workflow-artifact-result'
+  workflowArtifactDigestsByOutputKey } from '@foreman-code/contracts/workflow-artifact-result'
 import { z } from 'zod'
-import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { DomainError } from '../../errors.js'
 import { fileScopeIdentity } from '../../files/requests.js'
 

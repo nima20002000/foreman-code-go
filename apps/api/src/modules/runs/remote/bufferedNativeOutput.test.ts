@@ -1,10 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
-import type { AgentFilePublishInput, TemporaryFileScope } from '@graphql/contracts/files'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import type { AgentFilePublishInput, TemporaryFileScope } from '@foreman-code/contracts/files'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { BufferedNativeOutputRegistry, NativeOutputMemoryBudget, createBufferedNativeOutputs } from './bufferedNativeOutput.js'
 import { openCodeArtifactMutationAllowed, workflowArtifactFilePolicy } from '../../harnesses/workflowArtifactPolicy.js'
-import { DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { codexNativeOutputDeclarations } from '../../harnesses/codexNativeOutput.js'
 
 function registry(budget = new NativeOutputMemoryBudget()) {

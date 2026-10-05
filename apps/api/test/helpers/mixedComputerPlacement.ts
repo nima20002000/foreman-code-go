@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@graphql/contracts/workspace-root-policies'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
-import { SavedNodePlacementSchema } from '@graphql/contracts/node-placement'
-import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from '@graphql/contracts/harness-registry'
+import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
+import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
 import { RunPlacementReadService } from '../../src/modules/placement/readService.js'
 import { readRemoteObservations } from '../../src/modules/runs/remote/persistence.js'
@@ -155,7 +155,12 @@ export async function mixedComputerPlacement(f: Fixture, directory: string) {
     new PrivateSourceSnapshotStore(join(directory, 'snapshots')), mainId, {} as RegisteredSourceRootPort,
     { authorize: unused, prepare: unused, verify: unused, verifyWorkingDirectory: unused,
       releaseClaim: unused, authorizeFinal: unused }, { confirmedClosed: unused })
-  const producer = new AgentPlacementProducer(f.db.pool, mainId, sources, policies, installations,
+  const producer = new AgentPlacementProducer(f.db.pool, mainId, sources, policies, {
+    installations,
+    pinOverride: value => installations.pin({ instanceId: value.instanceId,
+      hostRef: value.target.hostRef, harnessInstallationId: value.target.harnessInstallationId,
+      connectionGeneration: '1', environmentGeneration: '1' }),
+  },
     { codex: 'codex-live-4', opencode: 'opencode-live-4' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   return { producer, locationRevision, source, local: placements[0]!, remote: placements[1]!,
     reads: new RunPlacementReadService(f.db.pool, readRemoteObservations) }

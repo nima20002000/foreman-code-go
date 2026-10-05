@@ -22,6 +22,18 @@ function BasicFields({ initial }: { initial: HarnessConfiguration }) {
   return <HarnessBasicFields value={value} onChange={onChange} includeSandbox={false} />
 }
 
+it('shows an unset default and clears its warning after an explicit native model selection', async () => {
+  const user = userEvent.setup()
+  render(<BasicFields initial={{ ...DEFAULT_HARNESS_DEFAULTS.codex, model: '' }} />)
+  expect(screen.getByText('Default model unavailable')).toBeVisible()
+  const model = screen.getByRole('combobox', { name: 'Model' })
+  await user.click(model)
+  await user.type(model, 'long native model')
+  await user.keyboard('{Enter}')
+  expect(model).toHaveValue('A long native model label that remains searchable and selectable')
+  expect(screen.queryByText('Default model unavailable')).not.toBeInTheDocument()
+})
+
 it('keeps long model labels searchable by keyboard and retains supported effort choices', async () => {
   const user = userEvent.setup()
   render(<BasicFields initial={DEFAULT_HARNESS_DEFAULTS.codex} />)

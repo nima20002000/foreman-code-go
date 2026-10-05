@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { registerAppRoute } from '../../harnesses/appMcpLauncher.js'
@@ -39,7 +40,7 @@ export async function createWorkerMcpEndpoint(input: {
 }) {
   input.signal.throwIfAborted()
   let expiresAt = input.relay.expiresAt
-  const token = input.relay.environment.variables.GRAPHQL_MCP_TOKEN
+  const token = readProductEnvironment(input.relay.environment.variables, 'MCP_TOKEN')
   if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
   const digest = createHash('sha256').update(`Bearer ${token}`).digest()
   const active = new Set<Promise<unknown>>()

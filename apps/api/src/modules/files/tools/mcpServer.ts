@@ -7,7 +7,7 @@ import {
   AgentFilePublishInputSchema, AgentFilePublishResultSchema,
   AgentFileWriteWorkingCopyInputSchema, AgentFileWriteWorkingCopyResultSchema,
   AgentFileApplyFormatEditInputSchema, AgentFileApplyFormatEditResultSchema,
-} from '@graphql/contracts/files'
+} from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
 import { isMutation } from './context.js'

@@ -37,7 +37,7 @@ import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
-import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
@@ -789,14 +789,21 @@ export function buildProductionApp(
       const run = await runs.get(execution.runId)
       if (!configuration || configuration.id !== execution.agentConfigurationVersionId
         || configuration.agentId !== execution.agentId || configuration.harness.harness !== input.harness
-        || !run?.executionLocation || run.executionLocation.runnerId !== 'runner-local') {
-        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned local execution identity.', 409)
+        || !run?.executionLocation) {
+        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned execution identity.', 409)
       }
       const context = {
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
         workingDirectory: input.workingDirectory, configuration, runId: execution.runId, attempt: execution.attempt,
       }
       const preparedContext = await remoteWorkflow.prepareContext(context)
+      const placement = preparedContext.acceptedPlacement
+      if (!placement && run.executionLocation.runnerId !== locations.runnerId) {
+        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'An unplaced execution requires the local workspace runner.', 409)
+      }
+      let runnerId = run.executionLocation.runnerId
+      if (placement?.hostRef.kind === 'main') runnerId = locations.runnerId
+      if (placement?.hostRef.kind === 'device') runnerId = placement.registration!.workerInstallationId
       const { manager } = managers.resolve(preparedContext)
       const detection = remoteWorkflow.isRemote(input.executionId)
         ? remoteMcpPreflight(manager, preparedContext)
@@ -804,7 +811,7 @@ export function buildProductionApp(
       if (input.harness === 'claude') {
         const claude = claudeLaunches.get(manager)
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
-        const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+        const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
         const entry = inspected.entry
         if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
@@ -822,14 +829,14 @@ export function buildProductionApp(
           const start = { ...await claude.inspectionStart(), environment: credential.environment }
           await claude.manager.refreshInspectionCredentials(start, { ...configuration.harness.mcpServers,
             [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
-          const checked = await detection.preflight({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+          const checked = await detection.preflight({ harness: 'claude', runnerId,
             workingDirectory: input.workingDirectory, ...(input.signal ? { signal: input.signal } : {}) })
           if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
           await appRoutes.refresh()
           return { credential, detection: checked }
         } catch (error) { await credentials.revoke(credential); throw error }
       }
-      const launch = new WorkerLaunchCredentialService(detection, credentials, run.executionLocation.runnerId)
+      const launch = new WorkerLaunchCredentialService(detection, credentials, runnerId)
       // The coordinator reserved and retained this exact manager lifetime
       // BEFORE preflight. It owns disposal + durable closure on every failure;
       // releasing an empty resolver here would destroy the only positive proof.

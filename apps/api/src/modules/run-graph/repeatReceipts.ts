@@ -20,7 +20,7 @@ export interface RepeatCanonicalReceipt {
    * Source and effect semantic digests must always agree, even without this. */
   semanticDigest?: string
 }
-interface ReceiptRow {
+export interface RepeatCanonicalReceiptRow {
   workspace_id: string
   workflow_id: string
   workflow_version_id: string
@@ -36,6 +36,19 @@ interface ReceiptRow {
 }
 function conflict(): never {
   throw new DomainError('REPEAT_PUBLICATION_RECEIPT_CONFLICT', 'The exact canonical repeat publication receipt is unavailable or inconsistent.', 409)
+}
+
+function validatedReceipt(input: RepeatCanonicalReceipt): RepeatCanonicalReceipt {
+  const scope = RepeatMetadataScopeV1Schema.parse(input.scope)
+  const evidence = GraphEvidenceSchema.parse(input.evidence)
+  GraphDigestSchema.parse(input.sourceDigest)
+  if (input.semanticDigest !== undefined) GraphDigestSchema.parse(input.semanticDigest)
+  if (input.effect) {
+    GraphIdSchema.parse(input.effect.kind)
+    GraphIdSchema.parse(input.effect.entityId)
+    GraphDigestSchema.parse(input.effect.digest)
+  }
+  return { ...input, scope, evidence, effect: input.effect ? { ...input.effect } : null }
 }
 
 /** Read persisted receipts on the SAME branded SQL transaction as the domain
@@ -60,18 +73,9 @@ export async function assertRepeatCanonicalReceiptLocked(sql: GraphTransactionSq
 export async function assertRepeatCanonicalReceipt(sql: GraphSqlClient,
   input: RepeatCanonicalReceipt): Promise<void> {
   try {
-    const scope = RepeatMetadataScopeV1Schema.parse(input.scope)
-    const evidence = GraphEvidenceSchema.parse(input.evidence)
-    GraphDigestSchema.parse(input.sourceDigest)
-    if (input.semanticDigest !== undefined) GraphDigestSchema.parse(input.semanticDigest)
-    if (input.effect) {
-      // Kind is the canonical adapter's existing effect kind, not a locally
-      // redefined v3 GraphEffect union. Explicit mapping belongs to that adapter.
-      GraphIdSchema.parse(input.effect.kind)
-      GraphIdSchema.parse(input.effect.entityId)
-      GraphDigestSchema.parse(input.effect.digest)
-    }
-    const rows = await sql.query<ReceiptRow>(`select r.workspace_id,r.workflow_id,r.workflow_version_id,
+    const receipt = validatedReceipt(input)
+    const { scope, evidence } = receipt
+    const rows = await sql.query<RepeatCanonicalReceiptRow>(`select r.workspace_id,r.workflow_id,r.workflow_version_id,
         v.execution_semantics_version,h.protocol_version,h.head_sequence::text,
         s.source_digest,s.semantic_digest as source_semantic_digest,s.first_sequence::text as source_sequence,
         e.effect_digest,e.semantic_digest as effect_semantic_digest,e.first_sequence::text as effect_sequence
@@ -80,9 +84,21 @@ export async function assertRepeatCanonicalReceipt(sql: GraphSqlClient,
       join run_graph_sources s on s.run_id=r.id and s.source_kind=$2 and s.source_id=$3 and s.source_revision=$4::bigint
       left join run_graph_effects e on e.run_id=r.id and e.effect_kind=$5 and e.entity_id=$6
       where r.id=$1`, [scope.runId, evidence.sourceKind, evidence.sourceId, evidence.sourceRevision,
-      input.effect?.kind ?? null, input.effect?.entityId ?? null])
-    const row = rows.rows[0]
-    if (rows.rows.length !== 1 || !row || row.workspace_id !== scope.workspaceId
+      receipt.effect?.kind ?? null, receipt.effect?.entityId ?? null])
+    assertRepeatCanonicalReceiptRows(rows.rows, receipt)
+  } catch (error) {
+    if (error instanceof DomainError) throw error
+    return conflict()
+  }
+}
+
+/** Validation of rows read by the caller's locked query; it grants no capability. */
+export function assertRepeatCanonicalReceiptRows(rows: readonly RepeatCanonicalReceiptRow[],
+  input: RepeatCanonicalReceipt): void {
+  try {
+    const { scope } = validatedReceipt(input)
+    const row = rows[0]
+    if (rows.length !== 1 || !row || row.workspace_id !== scope.workspaceId
       || row.workflow_id !== scope.workflowId || row.workflow_version_id !== scope.workflowVersionId
       || row.execution_semantics_version !== 3 || row.protocol_version !== 1
       || row.source_digest !== input.sourceDigest

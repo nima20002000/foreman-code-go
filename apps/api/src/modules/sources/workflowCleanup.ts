@@ -3,6 +3,7 @@ import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/sourc
 import type pg from 'pg'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions/workflowClosure.js'
+import { readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 import type { PostgresSourceService } from './service.js'
 
 export async function localWorkflowSourceClosed(sql: GraphSqlClient, executionId: string): Promise<boolean> {
@@ -23,7 +24,7 @@ export async function closeCompletedWorkflowSources(
   sources: Pick<PostgresSourceService, 'confirmClosed'>,
   report: (error: unknown) => void,
 ): Promise<void> {
-  const rows = await pool.query<{ record: unknown }>(`select m.record
+  const rows = await pool.query<{ record: unknown; execution: unknown }>(`select m.record,e.record as execution
     from source_execution_materializations m
     join harness_executions e on e.id=m.execution_id
     join source_storage_reservations s on s.reservation_id=m.reservation_id
@@ -35,7 +36,14 @@ export async function closeCompletedWorkflowSources(
     order by m.materialization_id limit 100`)
   for (const row of rows.rows) {
     try {
-      await sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record))
+      const record = SourceMaterializationRecordSchema.parse(row.record)
+      if (record.receipt.binding.deviceId !== null) {
+        const execution = HarnessExecutionSchema.parse(row.execution)
+        // A completed initial reviewer turn still owns its source while the
+        // verified original session remains available for review decisions.
+        if (execution.id === record.receipt.executionId && await readRetainedRemoteReviewer(pool, execution)) continue
+      }
+      await sources.confirmClosed(record)
     } catch (error) {
       report(error)
     }

@@ -26,7 +26,7 @@ import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } fr
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 import { acquireJournalOwner } from './journalOwner.js'
-import { hasPositiveRemoteEntryClosure } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
 const ControlDeliverySchema = z.object({
   operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),

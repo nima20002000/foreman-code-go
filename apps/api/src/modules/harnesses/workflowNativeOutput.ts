@@ -1,5 +1,5 @@
-import type { OpenCodeHarnessConfiguration, NativeSessionReference } from '@graphql/contracts'
-import type { WorkerNativeOutputCommand, WorkerNativeOutputReply } from '@graphql/contracts/worker-native-output'
+import type { OpenCodeHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
+import type { WorkerNativeOutputCommand, WorkerNativeOutputReply } from '@foreman-code/contracts/worker-native-output'
 import type { CodexNativeOutputQualificationInput, CodexNativeOutputs } from './codexNativeOutput.js'
 
 export interface NativeOutputTurnPin {

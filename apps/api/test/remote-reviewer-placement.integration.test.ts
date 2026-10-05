@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveInputSchema,
-  CurrentWorkflowSaveResultSchema, ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
+  CurrentWorkflowSaveResultSchema, ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { remoteReviewerPlacementFixture } from './helpers/remoteReviewerPlacement.js'
 import { postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'

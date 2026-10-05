@@ -1,9 +1,9 @@
 import { createServer } from 'node:https'
 import { readFile } from 'node:fs/promises'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
-import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
-import type { DeviceApplicationFrame } from '@graphql/contracts/device-application'
-import { RemoteOwnerControlSchema } from '@graphql/contracts/remote-execution'
+import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
+import type { DeviceApplicationFrame } from '@foreman-code/contracts/device-application'
+import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 
 /** Forward actual paired frames unchanged. A test can delay authorization at
  * the network boundary; Main still performs the original scope checks. */
@@ -53,21 +53,21 @@ export async function createRemoteReviewTransport(input: {
       }
     }
     let ready = false
-    const waiting: RawData[] = []
+    const waiting: Array<{ data: RawData; binary: boolean }> = []
     const fail = () => { worker.terminate(); main.terminate() }
     main.on('open', () => {
       ready = true
-      for (const message of waiting.splice(0)) main.send(message)
+      for (const message of waiting.splice(0)) main.send(message.data, { binary: message.binary })
     })
-    main.on('message', data => {
+    main.on('message', (data, binary) => {
       observe(data, 'to-worker')
-      worker.send(data)
+      worker.send(data, { binary })
     })
     main.on('error', fail)
     worker.on('error', fail)
     main.on('close', () => { sockets.delete(main); worker.close() })
     worker.on('close', () => { sockets.delete(worker); main.close() })
-    worker.on('message', data => {
+    worker.on('message', (data, binary) => {
       const forward = async () => {
         observe(data, 'to-main')
         const frame = JSON.parse(data.toString()) as DeviceApplicationFrame
@@ -89,8 +89,8 @@ export async function createRemoteReviewTransport(input: {
             }
           }
         }
-        if (ready) main.send(data)
-        else waiting.push(data)
+        if (ready) main.send(data, { binary })
+        else waiting.push({ data, binary })
       }
       void forward().catch(fail)
     })

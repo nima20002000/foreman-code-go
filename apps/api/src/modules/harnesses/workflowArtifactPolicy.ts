@@ -1,4 +1,4 @@
-import type { HarnessConfiguration, OpenCodeHarnessConfiguration } from '@graphql/contracts'
+import type { HarnessConfiguration, OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 import { ALL_FILE_TOOL_NAMES, type FileToolOperation } from '../files/tools/types.js'
 import { codexChatFileTools } from './codexFiles/declarations.js'
 

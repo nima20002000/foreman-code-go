@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { DEVICE_JSON_CONTINUATION_BYTES, DEVICE_JSON_CONTINUATION_LIMIT, DeviceJsonContinuationSchema,
-  type DeviceJsonContinuation, type DeviceJsonContinuationRequest } from '@graphql/contracts/device-application'
+  type DeviceJsonContinuation, type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 type ContinuationOptions = { maxBytes?: number }
