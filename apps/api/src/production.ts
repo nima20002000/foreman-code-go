@@ -849,7 +849,18 @@ export function buildProductionApp(
   const workerChats = createProductionWorkerConversations({ pool: database.pool,
     endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
     operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
-    qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app), suiteRevisions: selectedSuites ? {
+    qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app),
+    files: (conversationId, configuration, workingDirectory) => async ({ host, assertHost, ...turn }) => {
+      const admissions = 'operatorId' in configuration
+        ? operatorCodexFileAdmissions(() => app, database.pool, configuration, workingDirectory, fileStorageRoot,
+          { host, assertCurrent: assertHost })
+        : postgresCodexChatFiles(database.pool, () => {
+          if (!fileStorage) throw new Error('Production file storage is not registered.')
+          return fileStorage
+        }, async () => host, { assertCurrent: assertHost })
+      return productionCodexChatFiles(() => app, conversationId, admissions).prepare(turn)
+    },
+    suiteRevisions: selectedSuites ? {
       codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
     } : {} })
   const recoverChatCompaction = async (

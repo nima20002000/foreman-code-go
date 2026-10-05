@@ -12,6 +12,7 @@ import { pathsOverlap } from '../../workspaces/filesystem.js'
 import { codexChatFileTools } from '../codexFiles/declarations.js'
 import { codexChatHostDirectory, localCodexChatHost } from '../codexFiles/localHost.js'
 import type { ProductionCodexChatFiles } from '../codexFiles/production.js'
+import type { CodexFileHostLease } from '../codexFiles/port.js'
 import { acceptedOperatorFileInputs, adoptOperatorFilePublications } from './postgres.js'
 
 /** Uses the same byte/auth service as the native OpenCode bridge. The pre-ACK
@@ -28,7 +29,8 @@ export async function assertOperatorCodexHost(fileStorageRoot: string, workingDi
 }
 
 export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg.Pool,
-  configuration: OperatorConfigurationVersion, workingDirectory: string, fileStorageRoot: string): ProductionCodexChatFiles {
+  configuration: OperatorConfigurationVersion, workingDirectory: string, fileStorageRoot: string,
+  workerHost?: { host: CodexFileHostLease; assertCurrent(): Promise<void> }): ProductionCodexChatFiles {
   return { async resolve(input) {
     input.signal.throwIfAborted()
     const harness = configuration.harness
@@ -40,7 +42,8 @@ export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg
     if (allowMutation) await accepted.authorization.resolve(accepted.owner,
       { kind: 'operator', conversationId: input.conversationId }, 'write')
     const allowedTools = codexChatFileTools(harness)
-    await assertOperatorCodexHost(fileStorageRoot, workingDirectory,
+    if (workerHost) await workerHost.assertCurrent()
+    else await assertOperatorCodexHost(fileStorageRoot, workingDirectory,
       harness.advanced?.additionalWritableDirectories ?? [], allowMutation)
     const service = productionFileTools(app())
     const context: FileToolContext = { ownerPrincipalId: accepted.row.owner_principal_id, scope: accepted.scope,
@@ -57,7 +60,7 @@ export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg
       return result
     }
     input.signal.throwIfAborted()
-    const host = await localCodexChatHost(fileStorageRoot)
+    const host = workerHost?.host ?? await localCodexChatHost(fileStorageRoot)
     return {
       clientCorrelationId: input.clientCorrelationId,
       accepted: { ownerPrincipalId: context.ownerPrincipalId, scope: context.scope,

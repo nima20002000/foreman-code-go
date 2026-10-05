@@ -13,6 +13,7 @@ import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
 import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
+import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -94,6 +95,44 @@ const prompt = {
   sessionMode: SessionModeSchema.optional(), preferences: SessionPreferencesSchema.optional(),
 }
 const applicationAccess = z.object({ kind: z.literal('operator-chat-mcp'), token: z.string().min(1).max(16384) }).strict()
+const copyIdentity = { transferId: z.uuid(), executionHostId: id }
+export const WorkerConversationFileCopySchema = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('validate'), executionHostId: id }).strict(),
+  z.object({ phase: z.literal('begin'), ...copyIdentity, filename: z.string().min(1).max(1024),
+    mediaType: FileMediaTypeSchema, sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    byteSize: z.number().int().min(0).max(MAX_FILE_BYTES) }).strict(),
+  z.object({ phase: z.literal('chunk'), ...copyIdentity, offset: z.number().int().min(0).max(MAX_FILE_BYTES),
+    contentBase64: z.string().max(87384).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/) }).strict(),
+  z.object({ phase: z.literal('finish'), ...copyIdentity }).strict(),
+  z.object({ phase: z.literal('close'), executionHostId: id }).strict(),
+])
+export type WorkerConversationFileCopy = z.infer<typeof WorkerConversationFileCopySchema>
+export const WorkerConversationRegisteredCopySchema = z.object({ registrationId: z.uuid(), executionHostId: id,
+  executionPath: directory, writable: z.literal(false), byteSize: z.number().int().min(0).max(MAX_FILE_BYTES),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+export const WorkerConversationFileActionSchema = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('prepare'), executionHostId: id }).strict(),
+  z.object({ phase: z.literal('input'), prompt: z.string().max(1_000_000) }).strict(),
+  z.object({ phase: z.literal('activate'), nativeTurnId: id }).strict(),
+  z.object({ phase: z.literal('call'), call: z.object({ threadId: id, turnId: id,
+    tool: id, arguments: z.unknown(), namespace: z.string().nullable().optional() }).strict() }).strict(),
+  z.object({ phase: z.literal('publications') }).strict(),
+  z.object({ phase: z.literal('close') }).strict(),
+])
+export type WorkerConversationFileAction = z.infer<typeof WorkerConversationFileActionSchema>
+export const WorkerConversationFilePreparationSchema = z.object({
+  allowedTools: z.array(z.enum(['files.list', 'files.read', 'files.create_working_copy',
+    'files.publish_result', 'files.write_working_copy', 'files.apply_format_edit'])).max(6),
+}).strict()
+export const WorkerConversationFileInputSchema = z.array(z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: z.string(), text_elements: z.tuple([]) }).strict(),
+  z.object({ type: z.literal('localImage'), path: directory }).strict(),
+]))
+export const WorkerConversationFileResultSchema = z.object({ success: z.boolean(),
+  contentItems: z.array(z.object({ type: z.literal('inputText'), text: z.string() }).strict()),
+}).strict()
+export const WorkerConversationFilePublicationsSchema = MessageAttachmentRefsSchema
 export const WorkerResponseAvailabilityQuerySchema = z.object({
   nativeRequestId: id, nativeRequestType: id, expectedNativeTurnId: id.optional(),
   expectedNativeMessageId: id.optional(), expectedGeneration: id.optional(),
@@ -107,6 +146,8 @@ export const WorkerResponseAvailabilitySchema = z.object({
     'unqualified', 'identity_mismatch', 'response_in_flight', 'unsupported']),
 }).strict()
 export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('conversation.file-copy'), ...binding, admissionId: z.uuid(),
+    copy: WorkerConversationFileCopySchema }).strict(),
   z.object({ method: z.literal('conversation.status'), ...binding }).strict(),
   z.object({ method: z.literal('conversation.open'), ...binding, operationId: id,
     configuration: WorkerConversationConfigurationSchema, mode: z.enum(['create', 'attach', 'fork']),
@@ -181,6 +222,11 @@ export type WorkerClaudeAuthorityRequest = z.infer<typeof WorkerClaudeAuthorityR
 export const WorkerClaudeCallbackAuthoritySchema = z.object({ ownerPrincipalId: id, attemptId: id }).strict()
 export const WorkerClaudeAuthorizationSchema = z.object({ authorized: z.literal(true) }).strict()
 export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('conversation.files'), ...callback,
+    session: z.lazy(() => NativeSessionReferenceSchema), correlationId: id,
+    action: WorkerConversationFileActionSchema }).strict(),
+  z.object({ method: z.literal('conversation.file-copy-authorize'), ...callback,
+    copy: WorkerConversationFileCopySchema }).strict(),
   z.object({ method: z.literal('conversation.authorize'), ...callback, request: WorkerConversationRpcRequestSchema }).strict(),
   z.object({ method: z.literal('conversation.profile'), ...callback }).strict(),
   z.object({ method: z.literal('conversation.claude-authority'), ...callback,

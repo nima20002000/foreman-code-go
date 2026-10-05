@@ -31,7 +31,8 @@ interface AdmissionRow {
 
 /** Resolve only the exact persisted receipt, message and native session. */
 export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFileService,
-  host: (conversationId: string) => Promise<CodexFileHostLease>, hostRoot: string): ProductionCodexChatFiles {
+  host: (conversationId: string) => Promise<CodexFileHostLease>,
+  hostRoot: string | { assertCurrent(): Promise<void> }): ProductionCodexChatFiles {
   const access = new PostgresAccessService(pool)
   const authorization = new PostgresFileConversationAuthorization(pool)
   const workflows = new PostgresWorkflowRepository(pool)
@@ -64,17 +65,21 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
       || configuration.harness.sandbox === 'danger-full-access') throw new DomainError(
       'CODEX_FILE_HOST_UNAVAILABLE', 'This Codex configuration cannot safely receive local file paths.', 409)
     const allowMutation = configuration.harness.sandbox === 'workspace-write'
-    const writableRoots = await Promise.all([row.conversation_record.workingDirectory,
-      ...(configuration.harness.advanced?.additionalWritableDirectories ?? [])].map((path) => realpath(path)))
-    await mkdir(hostRoot, { recursive: true, mode: 0o700 })
-    const canonicalHostRoot = await realpath(hostRoot)
-    const inside = (parent: string, child: string) => {
-      const path = relative(resolve(parent), resolve(child))
-      return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith('../'))
+    if (typeof hostRoot === 'string') {
+      const writableRoots = await Promise.all([row.conversation_record.workingDirectory,
+        ...(configuration.harness.advanced?.additionalWritableDirectories ?? [])].map((path) => realpath(path)))
+      await mkdir(hostRoot, { recursive: true, mode: 0o700 })
+      const canonicalHostRoot = await realpath(hostRoot)
+      const inside = (parent: string, child: string) => {
+        const path = relative(resolve(parent), resolve(child))
+        return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith('../'))
+      }
+      if (writableRoots.some((root) => inside(root, canonicalHostRoot) || inside(canonicalHostRoot, root))
+        || (allowMutation && ['/tmp', '/var/tmp'].some((root) => inside(root, canonicalHostRoot)))) throw new DomainError(
+        'CODEX_FILE_HOST_UNAVAILABLE', 'The file host overlaps a Codex writable root.', 409)
+    } else {
+      await hostRoot.assertCurrent()
     }
-    if (writableRoots.some((root) => inside(root, canonicalHostRoot) || inside(canonicalHostRoot, root))
-      || (allowMutation && ['/tmp', '/var/tmp'].some((root) => inside(root, canonicalHostRoot)))) throw new DomainError(
-      'CODEX_FILE_HOST_UNAVAILABLE', 'The file host overlaps a Codex writable root.', 409)
     const allowedTools = codexChatFileTools(configuration.harness)
     if (allowMutation) await authorization.resolve(owner, { kind: 'agent', workspaceId: row.workspace_id,
       conversationId: input.conversationId }, 'write')

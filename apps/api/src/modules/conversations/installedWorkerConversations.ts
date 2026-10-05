@@ -34,6 +34,10 @@ import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
 import { WorkerConversationHost, type WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
 import { allocateInstalledWorkerClaude } from './installedWorkerClaude.js'
+import { WorkerConversationFiles } from './workerFiles.js'
+import { localCodexChatHost } from '../harnesses/codexFiles/localHost.js'
+import { assertOperatorCodexHost } from '../harnesses/operatorFiles/codex.js'
+import { join } from 'node:path'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -62,6 +66,7 @@ export async function createInstalledWorkerConversations(input: {
     return request
   }
   const callbacks = workerConversationCallbacks({ currentBinding: input.current, capture: input.capture })
+  const files = new WorkerConversationFiles(callbacks)
   const allocate = async (binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read'): Promise<WorkerConversationAllocation> => {
     const harness = binding.harness
@@ -98,9 +103,23 @@ export async function createInstalledWorkerConversations(input: {
     let manager: NativeHarnessSessionManager
     let inspector: NativeMcpInspector
     if (harness === 'codex') {
+      if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
+      const fileStorageRoot = join(input.stateDirectory, 'conversation-file-storage')
+      const assertFileHost = async (signal: AbortSignal) => {
+        await before(signal)
+        if (configuration.harness.harness !== 'codex' || configuration.harness.sandbox === 'danger-full-access') {
+          unavailable('This Codex configuration cannot safely receive attachment paths.')
+        }
+        await assertOperatorCodexHost(fileStorageRoot, binding.workingDirectory,
+          configuration.harness.advanced?.additionalWritableDirectories ?? [],
+          configuration.harness.sandbox === 'workspace-write')
+      }
+      const chatFiles = purpose === 'chat' && appMcpAccess === 'none'
+        ? files.adapter({ source, signal: input.signal, assertCurrent: assertFileHost,
+          host: () => localCodexChatHost(fileStorageRoot) }) : undefined
       const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: suiteRevision })
       const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
-      undefined, { ...dependencies,
+      chatFiles, { ...dependencies,
         qualify: async (executable, version, cwd, environment, authenticated, signal) => {
           await before(signal)
           return dependencies.qualify(executable, version, cwd, environment, authenticated, signal, scope)
@@ -168,9 +187,13 @@ export async function createInstalledWorkerConversations(input: {
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
     return { manager, inspector, nativeOwner, start,
+      ...(harness === 'codex' && appMcpAccess === 'none' ? {
+        recoverFiles: (request, nativeTurnId, signal) => files.recover(request, nativeTurnId, signal),
+      } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
         await manager.dispose?.()
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
+        await files.closeConversation(binding.owner.conversationId)
         await mcp?.close()
       } }
   }
@@ -188,8 +211,12 @@ export async function createInstalledWorkerConversations(input: {
   return {
     handle(raw: unknown, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
       const request = WorkerConversationRpcRequestSchema.parse(raw)
+      if (request.method === 'conversation.file-copy') {
+        if (!isDeepStrictEqual(input.current(), connection)) unavailable('The attachment copy channel changed.')
+        return operations.run(request, () => files.copy(request, signal))
+      }
       return operations.run(request, () => host.handle(request, connection, signal))
     },
-    close: () => host.shutdown(),
+    close: async () => { await host.shutdown(); await files.close() },
   }
 }

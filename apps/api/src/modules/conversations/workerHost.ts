@@ -26,6 +26,8 @@ export interface WorkerConversationAllocation {
   deliverClaudeCredential?(token: string, signal: AbortSignal): Promise<void>
   recoverClaudeAuthority?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
     submission: NonNullable<WorkerConversationReceipt['turns'][number]['nativeSubmission']>, signal: AbortSignal): Promise<void>
+  recoverFiles?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
+    nativeTurnId: string, signal: AbortSignal): Promise<void>
 }
 export interface WorkerConversationHostPorts {
   journal: WorkerConversationJournal
@@ -391,6 +393,10 @@ export class WorkerConversationHost {
         const turn = record.turns.find(turn => turn.correlationId === request.correlationId)
         if (request.method === 'conversation.reconcile' && turn?.nativeSubmission && turn.status !== 'completed') {
           await resident.allocation.recoverClaudeAuthority?.(request, turn.nativeSubmission, signal)
+          await this.authorize(request, connection, signal)
+        }
+        if (request.method === 'conversation.reconcile' && turn?.nativeTurnId && turn.status !== 'completed') {
+          await resident.allocation.recoverFiles?.(request, turn.nativeTurnId, signal)
           await this.authorize(request, connection, signal)
         }
         let history: NativeHistory

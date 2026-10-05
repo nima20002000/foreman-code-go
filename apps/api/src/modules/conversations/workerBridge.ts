@@ -12,6 +12,7 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
+import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>
@@ -19,6 +20,7 @@ export interface WorkerConversationCallbacks {
   sessionObserved?(session: NativeSessionReference): Promise<void>
   submitted?(correlationId: string, identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>): Promise<void>
   settingsApplied?(): Promise<void>
+  files?: PrepareWorkerFiles
 }
 export interface WorkerConversationChannel {
   binding: Readonly<DeviceSessionBinding>
@@ -34,6 +36,7 @@ interface Admission {
   identities: Map<string, Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>>
   closed: boolean
   claudeGeneration?: string
+  files?: MainWorkerFiles
 }
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED', 'The original admitted worker chat request is unavailable.', 403)
@@ -45,7 +48,7 @@ export class MainWorkerConversationBridge {
 
   capture(input: { request: WorkerConversationRpcRequest; channel: WorkerConversationChannel;
     current(signal?: AbortSignal): Promise<void>; callbacks?: WorkerConversationCallbacks;
-    recoveredSubmission?: NativeMessageSubmission }) {
+    recoveredSubmission?: NativeMessageSubmission; recoveredTurnId?: string }) {
     const admissionId = randomUUID()
     const request = WorkerConversationRpcRequestSchema.parse({ ...structuredClone(input.request), admissionId })
     const admission: Admission = { request, channel: input.channel, current: input.current,
@@ -57,11 +60,26 @@ export class MainWorkerConversationBridge {
         || submission.clientCorrelationId !== request.correlationId) denied()
       admission.identities.set(submission.clientCorrelationId, { nativeSubmission: structuredClone(submission) })
     }
+    if (input.recoveredTurnId) {
+      if (request.method !== 'conversation.reconcile' || request.binding.harness !== 'codex'
+        || !request.correlationId || !admission.callbacks.files) denied()
+      admission.identities.set(request.correlationId, { nativeTurnId: input.recoveredTurnId })
+    }
     this.admissions.set(admissionId, admission)
     const assertCurrent = async (signal?: AbortSignal) => {
       if (admission.closed || this.admissions.get(admissionId) !== admission) denied()
       await admission.current(signal)
       if (admission.closed || this.admissions.get(admissionId) !== admission) denied()
+    }
+    if (admission.callbacks.files) {
+      admission.files = new MainWorkerFiles(admission.callbacks.files, async (copy, signal) => {
+        await assertCurrent(signal)
+        const reply = await admission.channel.request({ method: 'conversation.file-copy',
+          binding: request.binding, admissionId, copy }, { signal })
+        await assertCurrent(signal)
+        if (reply.bytes !== undefined) denied()
+        return reply.payload
+      })
     }
     return {
       admissionId,
@@ -103,6 +121,26 @@ export class MainWorkerConversationBridge {
       const facts = await admission.callbacks.profile()
       await this.current(admission, callback.binding, connection, signal)
       return facts
+    }
+    if (callback.method === 'conversation.file-copy-authorize') {
+      if (!admission.files?.authorizes(callback.copy)) denied()
+      return { authorized: true }
+    }
+    if (callback.method === 'conversation.files') {
+      const request = admission.request
+      const session = 'session' in request ? request.session : admission.session
+      const recovering = request.method === 'conversation.reconcile' && request.correlationId
+        && admission.identities.get(request.correlationId)?.nativeTurnId
+      if (!admission.files || callback.binding.harness !== 'codex' || callback.binding.appMcpAccess !== 'none'
+        || !recovering && !['conversation.start-turn', 'conversation.initial-turn'].includes(request.method)
+        || !('correlationId' in request) || request.correlationId !== callback.correlationId
+        || !session || !isDeepStrictEqual(session, callback.session)) denied()
+      if (callback.action.phase === 'input' && (!('prompt' in request) || request.prompt !== callback.action.prompt)) denied()
+      const identity = admission.identities.get(callback.correlationId)
+      const result = await admission.files.handle(callback.action, { session,
+        clientCorrelationId: callback.correlationId, signal, nativeTurnId: identity?.nativeTurnId })
+      await this.current(admission, callback.binding, connection, signal)
+      return result
     }
     if (callback.method === 'conversation.claude-authority') {
       const request = admission.request

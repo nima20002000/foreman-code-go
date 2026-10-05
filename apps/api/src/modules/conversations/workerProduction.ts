@@ -31,6 +31,7 @@ import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
 import { AgentChatDirectoryBindingSchema } from '@foreman-code/contracts/agent-chat'
 import { revalidateAgentChatDirectory } from './agentChatDirectory.js'
+import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -63,6 +64,7 @@ export function createProductionWorkerConversations(input: {
   suiteRevisions: Partial<Record<'codex' | 'opencode', string>>
   access: Pick<PostgresAccessService, 'authenticate'>
   mcpForward(): SelectedMainMcpForward
+  files?(conversationId: string, configuration: WorkerConversationConfiguration, workingDirectory: string): PrepareWorkerFiles
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -202,6 +204,8 @@ export function createProductionWorkerConversations(input: {
       }
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
         sourceWorkingDirectory: options.workingDirectory,
+        ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
+          ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
         ...(configuration.harness.harness === 'claude' ? { claudeAuthority: async (
           request: import('@foreman-code/contracts/remote-execution-rpc').WorkerClaudeAuthorityRequest,
           effectSignal: AbortSignal) => {

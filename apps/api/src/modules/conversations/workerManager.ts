@@ -23,6 +23,7 @@ import { normalizeResponseAvailability, type NativeResponseAvailabilityQuery } f
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { MainWorkerConversationBridge, type WorkerConversationCallbacks, type WorkerConversationChannel } from './workerBridge.js'
 import { DomainError } from '../errors.js'
+import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 
 function conflict(message: string): never { throw new DomainError('WORKER_CONVERSATION_CONFLICT', message, 409) }
 interface ManagerOptions {
@@ -35,6 +36,7 @@ interface ManagerOptions {
   profile?(): Promise<WorkerConversationProfileFacts>
   claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
+  files?: PrepareWorkerFiles
 }
 
 /** Main's existing native port targets one conversation on its selected paired worker. */
@@ -57,12 +59,14 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     return { ...input, binding: this.options.binding } as WorkerConversationRpcRequest
   }
   private capture(frame: WorkerConversationRpcRequest, options: {
-    callbacks?: WorkerConversationCallbacks; recoveredSubmission?: NativeMessageSubmission
+    callbacks?: WorkerConversationCallbacks; recoveredSubmission?: NativeMessageSubmission; recoveredTurnId?: string
   } = {}) {
     const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
       callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}),
+        ...(this.options.files ? { files: this.options.files } : {}),
         ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...options.callbacks },
       ...(options.recoveredSubmission ? { recoveredSubmission: options.recoveredSubmission } : {}),
+      ...(options.recoveredTurnId ? { recoveredTurnId: options.recoveredTurnId } : {}),
       current: signal => { this.lifetime.signal.throwIfAborted(); return this.options.current(frame, signal) } })
     this.leases.add(lease)
     return lease
@@ -320,17 +324,29 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal) {
     this.assertSession(session)
-    const submission = this.harness === 'claude'
-      ? this.receipt?.turns.find(turn => turn.correlationId === correlationId)?.nativeSubmission : undefined
+    const live = this.recoveredCallbacks.get(correlationId)
+    if (live) {
+      const history = this.historyResponse(await live.request(signal))
+      if (this.receipt?.turns.find(turn => turn.correlationId === correlationId)?.status === 'completed') {
+        this.release(live)
+        this.recoveredCallbacks.delete(correlationId)
+      }
+      return history
+    }
+    const accepted = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
+    const submission = this.harness === 'claude' ? accepted?.nativeSubmission : undefined
+    const recoveredTurnId = this.harness === 'codex' && this.options.files
+      && accepted?.status !== 'completed' ? accepted?.nativeTurnId : undefined
     const frame = this.frame({ method: 'conversation.reconcile', session, correlationId })
-    const lease = this.capture(frame, submission ? { recoveredSubmission: submission } : {})
+    const lease = this.capture(frame, { ...(submission ? { recoveredSubmission: submission } : {}),
+      ...(recoveredTurnId ? { recoveredTurnId } : {}) })
     try {
       const history = this.historyResponse(await lease.request(signal))
       const previous = this.recoveredCallbacks.get(correlationId)
       if (previous) this.release(previous)
       this.recoveredCallbacks.delete(correlationId)
       const turn = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
-      if (submission && turn?.status !== 'completed') this.recoveredCallbacks.set(correlationId, lease)
+      if ((submission || recoveredTurnId) && turn?.status !== 'completed') this.recoveredCallbacks.set(correlationId, lease)
       else this.release(lease)
       return history
     } catch (error) {

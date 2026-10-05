@@ -2,6 +2,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { WorkerConversationProfileFactsSchema,
   type WorkerConversationRpcRequest, type WorkerConversationProfileFacts } from '@foreman-code/contracts/remote-execution-rpc'
 import type { WorkerClaudeAuthorityRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerConversationFileAction, WorkerConversationFileCopy } from '@foreman-code/contracts/remote-execution-rpc'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationHostPorts } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
@@ -15,6 +17,10 @@ export function workerConversationCallbacks(input: {
   profile(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<WorkerConversationProfileFacts>
   claudeAuthority(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal): Promise<unknown>
+  files(source: WorkerConversationRpcRequest, session: NativeSessionReference, correlationId: string,
+    action: WorkerConversationFileAction, signal: AbortSignal): Promise<unknown>
+  authorizeCopy(source: WorkerConversationRpcRequest, copy: WorkerConversationFileCopy,
+    signal: AbortSignal): Promise<void>
 } {
   const request = async (source: WorkerConversationRpcRequest, payload: Record<string, unknown>, signal: AbortSignal) => {
     if (!source.admissionId) throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED',
@@ -32,6 +38,14 @@ export function workerConversationCallbacks(input: {
     return reply.payload
   }
   return {
+    files: (source, session, correlationId, action, signal) => request(source,
+      { method: 'conversation.files', session, correlationId, action }, signal),
+    authorizeCopy: async (source, copy, signal) => {
+      const result = await request(source, { method: 'conversation.file-copy-authorize', copy }, signal)
+      if (!result || typeof result !== 'object' || !('authorized' in result) || result.authorized !== true) {
+        throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED', 'The attachment copy was not authorized.', 403)
+      }
+    },
     claudeAuthority: (source, authority, signal) => request(source,
       { method: 'conversation.claude-authority', request: authority }, signal),
     profile: async (source, signal) => WorkerConversationProfileFactsSchema.parse(
