@@ -37,8 +37,8 @@ vi.doMock('../src/modules/harnesses/opencodeServer.js', async () => {
     constructor(options: ConstructorParameters<typeof actual.ManagedOpenCodeServer>[0]) {
       super()
       serverOptions.push(options)
-      this.config = { mcp: { graphql: { enabled: false } } }
-      this.mcp = { graphql: { status: 'disabled' } }
+      this.config = { mcp: { 'foreman-code': { enabled: false } } }
+      this.mcp = { 'foreman-code': { status: 'disabled' } }
       this.beforeRequest = (path, init) => {
         if (new URL(path, 'http://fixture.invalid').pathname === '/mcp' && init.method === 'POST') {
           const body = JSON.parse(String(init.body)) as { name: string }
@@ -377,7 +377,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       const command = { requestId: randomUUID(), content: '', attachments: [ref] }
       const read = vi.spyOn(tools, 'readAccepted')
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => issued.length === 1, 10000)
+      await until(async () => {
+        const state = await chat.get(conversation.id, owner)
+        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
+        return issued.length === 1
+      }, 10000)
       const context = issued[0]!.context
       expect(context.scope).toEqual({ kind: 'temporary', chat: {
         kind: 'operator', ownerPrincipalId: owner.id, operatorId: current.operator.id, conversationId: conversation.id,
@@ -476,7 +480,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       }
       const command = { requestId: randomUUID(), content: '', attachments }
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => issued.length === 1, 10000)
+      await until(async () => {
+        const state = await chat.get(conversation.id, owner)
+        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
+        return issued.length === 1
+      }, 10000)
       const { context, token } = issued[0]!
       const receipt = async () => (await pool.query<{ input_hash: string; payload: unknown; message_id: string }>(
         'select input_hash,payload,message_id from operator_conversation_turns where conversation_id=$1 and request_id=$2',
