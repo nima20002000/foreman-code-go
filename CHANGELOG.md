@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.17] - 2026-10-05
+
+### Fixed
+
+- Publish native approval interrupt bindings as soon as their checkpoint is saved, so independent sibling executions can progress while approval prompts remain usable in the app and Operator MCP readback.
+- Commit delivered approval responses through the active Run owner and queue continuation behind the existing graph invocation, avoiding duplicate native submissions.
+- Join queued approval continuation during Stop before reclaiming cleanup ownership, including responses delivered while a sibling is still active.
+
 ## [0.0.16] - 2026-10-05
 
 ### Fixed
