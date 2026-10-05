@@ -11,6 +11,7 @@ import {
 import {
   JobResourceRequestSchema, JobVerificationPolicySchema, JobVerificationPolicyRequirementsSchema,
   JobVerificationProfileIdentitySchema,
+  JobVerificationLifecycleSchema, verificationJobLifecycle,
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
@@ -123,10 +124,14 @@ export const AcceptedVerificationJobSpecSchema = z.object({
   verification: JobVerificationRequestSchema,
   profile: JobVerificationProfileIdentitySchema,
   reservationId: z.uuid(),
+  lifecycle: JobVerificationLifecycleSchema,
 }).strict().superRefine(validateHistoricalDeviceExecutionAdmission).superRefine((value, context) => {
   validateJobDefinitionPaths(value, context)
   validateVerificationPolicy(value, context)
   const { profile, policy } = value
+  if (JSON.stringify(value.lifecycle) !== JSON.stringify(verificationJobLifecycle(value.lifecycle.dispatchAt, policy))) {
+    context.addIssue({ code: 'custom', message: 'Verification deadlines retain the original dispatch budget.' })
+  }
   if (profile.profileId !== policy.isolationPolicyId || profile.profileRevision !== policy.isolationPolicyRevision
     || profile.imageDigest !== policy.imageDigest || profile.toolchainDigest !== policy.toolchainDigest
     || JSON.stringify(profile.network) !== JSON.stringify(policy.network)) {

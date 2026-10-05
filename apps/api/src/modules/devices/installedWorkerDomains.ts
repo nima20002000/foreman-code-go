@@ -3,8 +3,9 @@ import { componentLogger } from '../../infrastructure/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
-import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { createInstalledJobExecutionHost } from '../jobs/executorInstalled.js'
+import { createVerificationSystemInput } from '../jobs/verificationSystemInput.js'
 import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSink.js'
 import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
@@ -24,7 +25,11 @@ import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { HarnessDiscoveryRequestSchema } from '@foreman-code/contracts/harness-registry'
-import { SOURCE_OPERATION_EXTENSION, SourceOperationResponseSchema, SourceTransferStatusResponseSchema } from '@foreman-code/contracts/source-operations'
+import {
+  SOURCE_OPERATION_EXTENSION,
+  SourceOperationResponseSchema,
+  SourceTransferStatusResponseSchema,
+} from '@foreman-code/contracts/source-operations'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
 import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
 import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
@@ -55,6 +60,7 @@ export async function createInstalledWorkerDomains(input: {
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
   const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'job-runtime-operations.json'))
+  const systemInput = createVerificationSystemInput({ configuration: input.jobConfiguration ?? null, journal: jobJournal })
   let journalOpening: Promise<RemoteOperationJournal> | undefined
   const journal = () => journalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'workflow-operations.json'))
   const current = () => {
@@ -115,6 +121,7 @@ export async function createInstalledWorkerDomains(input: {
     providers: { ...input.rsync, quiescent: async (intent, signal) => { await rsync.writers.quiescent(intent, signal); await input.rsync!.quiescent(intent, signal) } },
     ownership: rsync.ownership, journal: await jobJournal(), current, request })
   if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobInputRsync = createInstalledJobInputRsync({
+    systemInput,
     receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
     receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const }))
@@ -175,6 +182,7 @@ export async function createInstalledWorkerDomains(input: {
     const connection = current(), retained = await jobJournal()
     const application = new WorkerJobApplicationSink({ request })
     jobInputs = jobInputRsync ?? createWorkerJobInputPort({ channel: { request, currentBinding: current },
+      systemInput,
       stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
     const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
       ...input.jobReports,
@@ -210,7 +218,7 @@ export async function createInstalledWorkerDomains(input: {
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {
         if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'Execution requires its actual authenticated worker channel.', 409)
-        const job = RemoteJobExecutionRpcRequestSchema.safeParse(payload).success ? await openJobs() : jobs
+        const job = RemoteJobExecutionRpcRequestRecordSchema.safeParse(payload).success ? await openJobs() : jobs
         return { payload: await createRemoteExecutionHandler({ handle: async raw => {
           if (!workflow) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The installed Workflow runtime is unavailable.', 409)
           return (await workflow(raw, context)).payload

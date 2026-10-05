@@ -3,7 +3,18 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath } from 'node:fs/promises'
 import { z } from 'zod'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema, type CurrentJobRuntimeFingerprint, type JobRuntimeFingerprint, type JobRuntimeNativeAdmission, type JobRuntimeProfile, type JobQualificationCandidate } from '@foreman-code/contracts/job-runtime'
+import {
+  JOB_RUNTIME_WORKSPACE_LAYOUT,
+  CurrentJobRuntimeFingerprintSchema,
+  JobRuntimeFingerprintSchema,
+  InstalledJobRuntimeDescriptorSchema,
+  type CurrentJobRuntimeFingerprint,
+  type JobRuntimeFingerprint,
+  type JobRuntimeNativeAdmission,
+  type JobRuntimeProfile,
+} from '@foreman-code/contracts/job-runtime'
+import type { JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { inspectInstalledVerificationCandidate } from './installedVerificationRuntime.js'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -77,6 +88,17 @@ export async function captureInstalledRuntimeConfiguration(input: InstalledJobRu
 
 /** Read only. No default paths, env, image, pin or readiness can be fabricated. */
 export async function readInstalledRuntimeConfiguration(location: InstalledRuntimeConfigurationLocation | null): Promise<InstalledJobRuntimeConfiguration> {
+  return readProtectedRuntimeConfiguration(location, InstalledJobRuntimeConfigurationSchema)
+}
+export async function readProtectedRuntimeConfiguration<T>(
+  location: InstalledRuntimeConfigurationLocation | null, schema: z.ZodType<T>,
+): Promise<T> {
+  try { return schema.parse(JSON.parse((await readProtectedRuntimeFile(location)).toString('utf8'))) }
+  catch (error) { if (error instanceof DomainError) throw error; return unavailable('configuration_unavailable') }
+}
+export async function readProtectedRuntimeFile(
+  location: InstalledRuntimeConfigurationLocation | null, maximumBytes = 65536,
+): Promise<Buffer> {
   if (!location) unavailable('missing_configuration')
   if (!Number.isSafeInteger(location.ownerUid) || location.ownerUid < 0 || !location.path.startsWith('/')) unavailable('invalid_configuration_location')
   let file: Awaited<ReturnType<typeof open>> | undefined
@@ -84,7 +106,7 @@ export async function readInstalledRuntimeConfiguration(location: InstalledRunti
     if (await realpath(location.path) !== location.path) unavailable('configuration_retargeted')
     file = await open(location.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = await file.stat()
-    if (!before.isFile() || before.uid !== location.ownerUid || before.mode & 0o022 || before.nlink !== 1 || before.size > 65536) unavailable('configuration_not_protected')
+    if (!before.isFile() || before.uid !== location.ownerUid || before.mode & 0o022 || before.nlink !== 1 || before.size > maximumBytes) unavailable('configuration_not_protected')
     const bytes = Buffer.alloc(before.size)
     let offset = 0
     while (offset < bytes.length) {
@@ -94,7 +116,7 @@ export async function readInstalledRuntimeConfiguration(location: InstalledRunti
     }
     const after = await file.stat()
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) unavailable('configuration_changed')
-    return InstalledJobRuntimeConfigurationSchema.parse(JSON.parse(bytes.toString('utf8')))
+    return bytes
   } catch (error) {
     if (error instanceof DomainError) throw error
     return unavailable('configuration_unavailable')
@@ -179,9 +201,10 @@ export async function inspectInstalledJobRuntime(input: {
 /** Recheck the genuine admitted candidate on its own physical host. The
  * projection contains existing fingerprint facts, never a synthetic profile. */
 export async function inspectInstalledJobRuntimeCandidate(input: {
-  configuration: InstalledRuntimeConfigurationLocation | null; candidate: JobQualificationCandidate; host: InstalledRuntimeObservedHost
+  configuration: InstalledRuntimeConfigurationLocation | null; candidate: JobQualificationCandidateRecord; host: InstalledRuntimeObservedHost
 }): Promise<void> {
   const candidate = input.candidate, original = candidate.fingerprint
+  if (original.schemaVersion === 3) return inspectInstalledVerificationCandidate(input)
   if (original.workspaceLayout !== JOB_RUNTIME_WORKSPACE_LAYOUT) unavailable('unsupported_workspace_layout')
   const configuration = await readInstalledRuntimeConfiguration(input.configuration)
   assertInstalledHost(configuration, input.host)

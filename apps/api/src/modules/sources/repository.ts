@@ -8,7 +8,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { MaterializationReceipt, SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { z } from 'zod'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JOB_RUNTIME_WORKSPACE_LAYOUT } from '@foreman-code/contracts/job-runtime'
 import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { sourceMaterializationDigest } from './bindingHash.js'
@@ -243,12 +243,12 @@ async function privateFile(directory:FileHandle,name:string,maxBytes:number):Pro
     return await handle.readFile()
   } finally {await handle.close()}
 }
-function jobRepositoryOwner(execution:JobExecution) {
+function jobRepositoryOwner(execution:JobExecutionRecord) {
   return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,
     owner:execution.owner,specDigest:execution.acceptedSpec.specDigest,bindingHash:execution.acceptedSpec.bindingHash,
     materializationId:execution.acceptedSpec.source.materializationId,materializationDigest:execution.acceptedSpec.source.materializationDigest}
 }
-function requireJobRepositoryOwner(execution:JobExecution,mounts:PrivateJobRepositoryMounts) {
+function requireJobRepositoryOwner(execution:JobExecutionRecord,mounts:PrivateJobRepositoryMounts) {
   const expected=jobRepositoryOwner(execution),parent=dirname(execution.acceptedSpec.target.destination.canonicalProjectRoot)
   if(!isDeepStrictEqual(expected,{workspaceId:mounts.workspaceId,executionId:mounts.executionId,attemptId:mounts.attemptId,
     operationId:mounts.operationId,owner:mounts.owner,specDigest:mounts.specDigest,bindingHash:mounts.bindingHash,
@@ -261,7 +261,7 @@ function requireJobRepositoryOwner(execution:JobExecution,mounts:PrivateJobRepos
 }
 /** Creates only exact app-owned mountpoint/state metadata under an already verified
  * original materialization. Incomplete claims persist; no aged-lock deletion or cleanup. */
-export async function preparePrivateJobRepositoryMounts(input:{record:SourceMaterializationRecord;execution:JobExecution;
+export async function preparePrivateJobRepositoryMounts(input:{record:SourceMaterializationRecord;execution:JobExecutionRecord;
   attempt:MaterializationAttempt;materializer:SourceMaterializationPort;reauthorize:()=>Promise<void>}):Promise<PrivateJobRepositoryMounts> {
   const {record,execution}=input,receipt=record.receipt
   if(record.operationId!==execution.operationId||receipt.executionId!==execution.id||receipt.attemptId!==execution.attemptId
@@ -315,7 +315,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
 }
 /** Read-only original-record check before native create. Does not initialize Git,
  * reopen arbitrary paths, drop held state, or reverify an already mutable Job tree. */
-export async function verifyPrivateJobRepositoryMounts(execution:JobExecution,raw:PrivateJobRepositoryMounts):Promise<void> {
+export async function verifyPrivateJobRepositoryMounts(execution:JobExecutionRecord,raw:PrivateJobRepositoryMounts):Promise<void> {
   const mounts={...mountBody(raw),receiptDigest:raw.receiptDigest}
   requireJobRepositoryOwner(execution,mounts)
   const reservation=await openPrivateRoot(dirname(mounts.git.directory))

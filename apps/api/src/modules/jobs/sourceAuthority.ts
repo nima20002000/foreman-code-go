@@ -2,7 +2,7 @@ import { readJobComputerSelection } from './computerSelection.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { JobDefinitionSchema, isAutoJobSpec, type ResolvedJobDefinitionSpec } from '@foreman-code/contracts/jobs'
+import { JobDefinitionRecordSchema, isAutoJobSpecRecord, type ResolvedJobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
 import { SourceRootRecordSchema, type SourceMaterializationRecord, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
@@ -26,7 +26,7 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
       const actor=await readLiveManagementPrincipal(sql,manual.principal_id)
       if(principal&&principal.id!==actor.id)throw new DomainError('AUTH_INVALID','Source preparation belongs to another job principal.',403)
       requireAuthorization(actor,'jobs:start',{workspaceId:manual.workspace_id})
-      const definition=JobDefinitionSchema.parse(manual.definition)
+      const definition=JobDefinitionRecordSchema.parse(manual.definition)
       if(definition.workspaceId!==manual.workspace_id)throw new DomainError('JOB_PREPARATION_PIN_CONFLICT','The saved job preparation scope changed.',409)
       const queued = (await sql.query<{ record: unknown; owner_id: string | null; owner_fence: string | null }>(
         'select record,owner_id,owner_fence from job_admission_queue where execution_id=$1 for share',
@@ -54,7 +54,7 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
       const accepted=(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length>0
       if(!queued&&!accepted&&current?.version_id!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The saved job changed before admission.',409)
       if(!accepted&&Date.now()-manual.created_at.getTime()>definition.spec.policy.preparationTimeoutMs)throw new DomainError('JOB_PREPARATION_TIMEOUT','The actual job preparation exceeded its accepted budget.',409)
-      return {principal:actor,workspaceId:manual.workspace_id,spec:isAutoJobSpec(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
+      return {principal:actor,workspaceId:manual.workspace_id,spec:isAutoJobSpecRecord(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
     }
     const workflow=(await sql.query<{preparation:unknown}>('select preparation from workflow_job_preparations where preparation->>\'executionId\'=$1 and preparation->>\'attemptId\'=$2 and preparation->>\'operationId\'=$3 for share',[executionId,attemptId,operationId])).rows[0]
     if(!workflow)throw new DomainError('JOB_PREPARATION_MISSING','No actual manual job or Run slot allocated this source attempt.',409)
@@ -73,9 +73,9 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
     const definition=await new JobRepository().version(sql,run.workspaceId,node.jobDefinitionVersionId,node.jobDefinitionId)
     if(!(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length)await requireJobPreparationDeadline(sql,'workflow',executionId,definition.spec.policy.preparationTimeoutMs)
     if(definition.revision!==node.jobDefinitionRevision)throw new DomainError('JOB_VERSION_PIN_CONFLICT','The saved job version differs from the accepted workflow.',409)
-    return {principal:actor,workspaceId:run.workspaceId,spec:isAutoJobSpec(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
+    return {principal:actor,workspaceId:run.workspaceId,spec:isAutoJobSpecRecord(definition.spec) ? await readJobComputerSelection(sql, definition, {executionId,attemptId,operationId}) : definition.spec}
   }
-  private check(root:SourceRootRecord,spec:ResolvedJobDefinitionSpec) {
+  private check(root:SourceRootRecord,spec:ResolvedJobDefinitionSpecRecord) {
     if(canonical(root.source)!==canonical({approvedSourceId:spec.source.approvedSourceId,snapshotId:spec.source.snapshotId,manifestDigest:spec.source.manifestDigest})
       ||root.binding.accessMode!=='exclusive-write'||canonical(root.selection.hostRef)!==canonical(spec.target.hostRef)||canonical(root.registration)!==canonical(spec.target.registration)
       ||root.attestationId!==spec.target.destination.attestationId||root.attestationDigest!==spec.target.destination.attestationHash

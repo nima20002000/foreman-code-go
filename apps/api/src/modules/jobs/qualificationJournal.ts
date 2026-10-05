@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRuntimeQualificationResultSchema } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema }
+  from '@foreman-code/contracts/job-verification-runtime'
 
 const process = z.object({ pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
 const boundary = z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'),
@@ -7,14 +8,14 @@ const boundary = z.object({ kind: z.literal('cgroup-v2'), path: z.string().start
 const subject = z.object({ kind: z.literal('qualification'), qualificationId: z.uuid(), profileId: z.string().min(1),
   profileRevision: z.number().int().positive(), operationId: z.uuid(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 export const QualificationOCICertificateSchema = z.object({
-  scope: z.object({ subject, admission: JobRuntimeNativeAdmissionSchema, bootId: z.uuid() }).strict(),
+  scope: z.object({ subject, admission: JobRuntimeNativeAdmissionRecordSchema, bootId: z.uuid() }).strict(),
   containerId: z.string().regex(/^[a-f0-9]{64}$/), process, boundary,
   helpers: z.array(z.object({ kind: z.enum(['conmon', 'launcher']), process, boundary: boundary.nullable() }).strict()).max(512),
   lifecycle: z.enum(['active', 'closed', 'closure-unconfirmed']),
 }).strict()
 export const QualificationReceiptSchema = z.object({
-  admission: JobRuntimeNativeAdmissionSchema, candidate: JobQualificationCandidateSchema,
-  result: JobRuntimeQualificationResultSchema.nullable(), sequence: z.number().int().positive(),
+  admission: JobRuntimeNativeAdmissionRecordSchema, candidate: JobQualificationCandidateRecordSchema,
+  result: JobRuntimeQualificationResultRecordSchema.nullable(), sequence: z.number().int().positive(),
   phase: z.enum(['received', 'native_entry_attempted', 'closed', 'uncertain']),
   launches: z.array(z.object({ launchId: z.uuid(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().min(0).max(255).nullable(), signal: z.string().nullable() }).strict().nullable(),

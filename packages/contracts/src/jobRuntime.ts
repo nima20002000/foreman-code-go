@@ -47,7 +47,7 @@ const HistoricalProvisionedRuntimeFields = { ...HistoricalDeviceExecutionAdmissi
   quota: JobRuntimeProjectQuotaSchema.optional(), aggregateCgroupIdentityDigest: Digest.optional(),
   imageManifestDigest: ProvisionedRuntimeFields.imageManifestDigest.optional(), imageConfigDigest: ProvisionedRuntimeFields.imageConfigDigest.optional(),
 }
-function validateProvisionedRuntime(value: { cpuLimit: number; memoryBytes: number; pidsLimit: number; diskBytes: number;
+export function validateProvisionedRuntime(value: { cpuLimit: number; memoryBytes: number; pidsLimit: number; diskBytes: number;
   imageDigest: string } & Partial<z.infer<typeof zProvisionedFields>>, ctx: z.RefinementCtx): void {
   if (!value.deviceLimits || !value.quota) return
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE

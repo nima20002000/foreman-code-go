@@ -1,20 +1,21 @@
 import type pg from 'pg'
-import { JobLogChunkSchema, JobProcessStateSchema, type JobExecution, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import { JobLogChunkSchema, JobProcessStateSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import { type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { DomainError } from '../errors.js'
 import { JobRepository, sameLog, type JobSql } from './repository.js'
 
 export interface JobWorkerFence {
-  attemptId:string; owner:JobExecution['owner']
+  attemptId:string; owner:JobExecutionRecord['owner']
 }
 /** W07 authentication and W08 live ownership checks occur before every mutation. */
 export interface JobWorkerAuthority {
-  verifyPublication(sql:JobSql,execution:JobExecution):Promise<void>
-  require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void>
+  verifyPublication(sql:JobSql,execution:JobExecutionRecord):Promise<void>
+  require(sql:JobSql,execution:JobExecutionRecord,fence:JobWorkerFence):Promise<void>
 }
 export class JobWorkerService {
   private readonly repository=new JobRepository()
   constructor(private readonly pool:pg.Pool,private readonly authority:JobWorkerAuthority) {}
-  private async update<T>(workspaceId:string,id:string,fence:JobWorkerFence,work:(sql:pg.PoolClient,execution:JobExecution)=>Promise<T>):Promise<T> {
+  private async update<T>(workspaceId:string,id:string,fence:JobWorkerFence,work:(sql:pg.PoolClient,execution:JobExecutionRecord)=>Promise<T>):Promise<T> {
     const sql=await this.pool.connect(); let releaseError:Error|undefined
     try {
       await sql.query('begin')
@@ -52,7 +53,7 @@ export class JobWorkerService {
       return {persistedSequence:chunk.sequence,truncated:row.log_truncated}
     })
   }
-  async settleProcess(workspaceId:string,id:string,fence:JobWorkerFence,input:{process:JobExecution['process'];startedAt:string|null;finishedAt:string|null}) {
+  async settleProcess(workspaceId:string,id:string,fence:JobWorkerFence,input:{process:JobExecutionRecord['process'];startedAt:string|null;finishedAt:string|null}) {
     if(input.process.outcome==='succeeded'&&input.process.exitCode!==0) throw new DomainError('JOB_RESULT_INVALID','Successful process evidence must report exit zero.',409)
     const process=JobProcessStateSchema.parse(input.process)
     if(process.phase==='terminal'&&(!process.outcome||!process.processStopped||!input.finishedAt)) throw new DomainError('JOB_TERMINAL_UNCONFIRMED','Terminal process result requires confirmed termination.',409)
@@ -70,7 +71,7 @@ export class JobWorkerService {
       await this.repository.putExecution(sql,execution); return execution
     })
   }
-  async publication(workspaceId:string,id:string,fence:JobWorkerFence,input:{state:JobExecution['publication'];issue:JobExecution['resultIssue']}) {
+  async publication(workspaceId:string,id:string,fence:JobWorkerFence,input:{state:JobExecutionRecord['publication'];issue:JobExecutionRecord['resultIssue']}) {
     return this.update(workspaceId,id,fence,async(sql,execution)=>{
       if(input.state==='complete') {
         if(execution.process.phase!=='terminal') throw new DomainError('JOB_PROCESS_NOT_TERMINAL','Output collection requires quiescent confirmed process evidence.',409)

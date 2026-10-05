@@ -10,6 +10,7 @@ import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/in
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
+import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
 import { workflowJobsMigration } from './workflowJobsMigration.js'
@@ -822,6 +823,7 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  jobSelectionTimeMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

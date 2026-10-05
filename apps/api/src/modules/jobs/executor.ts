@@ -13,7 +13,7 @@ import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema, JobE
 import type { z } from 'zod'
 import { JobVerificationRuntimeMeasurementSchema, type JobVerificationRuntimeMeasurement }
   from '@foreman-code/contracts/job-verification-runtime'
-import { JobVerificationDispatchValiditySchema } from '@foreman-code/contracts/job-verification-policy'
+import { JobVerificationDispatchValiditySchema, type JobNetworkPolicy } from '@foreman-code/contracts/job-verification-policy'
 export { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
@@ -41,7 +41,7 @@ export interface QualifiedJobProfile {
   cgroupV2: true
   filesystemBounded: true
   descendantContainment: true
-  network: 'none'
+  network: 'none' | JobNetworkPolicy
   cpuLimit: number
   memoryBytes: number
   pidsLimit: number
@@ -54,12 +54,12 @@ export function requireVerificationRuntime(
   raw: JobVerificationRuntimeMeasurement,
   runtime: QualifiedJobProfile | null,
   now = Date.now(),
-  dispatchAt = new Date(now).toISOString(),
+  dispatchAt = input.lifecycle.dispatchAt,
 ): JobVerificationRuntimeMeasurement {
   const spec = AcceptedVerificationJobSpecSchema.parse(input)
   const measured = JobVerificationRuntimeMeasurementSchema.parse(raw)
   if (!runtime) throw new Error('The accepted verification has no matching measured offline runtime.')
-  if (Date.parse(dispatchAt) > now || Date.parse(measured.identity.approvalExpiresAt) <= now
+  if (dispatchAt !== spec.lifecycle.dispatchAt || Date.parse(dispatchAt) > now || Date.parse(measured.identity.approvalExpiresAt) <= now
     || Date.parse(measured.expiresAt) <= now) throw new Error('Original verification qualification expired or dispatch changed.')
   const fingerprint = measured.fingerprint
   const digest = createHash('sha256').update(canonicalGraphJson(fingerprint)).digest('hex')
@@ -87,7 +87,8 @@ export function requireVerificationRuntime(
     || runtime.policyId !== fingerprint.profileId || runtime.policyRevision !== fingerprint.profileRevision
     || runtime.imageDigest !== fingerprint.imageDigest || runtime.toolchainDigest !== fingerprint.toolchainDigest
     || runtime.qualificationId !== measured.identity.qualificationId
-    || runtime.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT || runtime.network !== 'none'
+    || runtime.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT
+    || (typeof runtime.network === 'string' ? runtime.network : runtime.network.mode) !== 'none'
     || !runtime.rootless || !runtime.cgroupV2 || !runtime.filesystemBounded || !runtime.descendantContainment
     || !runtime.runtimeVersion || !runtime.ociRuntimeVersion || !runtime.kernelVersion
     || spec.verification.parameters.unitWorkers > suite.maxUnitWorkers

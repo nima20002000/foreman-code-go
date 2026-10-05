@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 import { BYTE_TRANSFER_POLICY, TransferIntentSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { ImmutableTransferSource } from '../../byte-transfer/sender.js'
 import { DomainError } from '../../errors.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
@@ -46,7 +46,7 @@ export class JobOutputRsyncSource {
       throw new DomainError('JOB_OUTPUT_CLOSURE_CONFLICT','Sealed bytes do not belong to the original accepted closed Job.',409)
     return execution
   }
-  async register(execution:JobExecution,rawInput:JobOutputPublicationInput,rawIntent:TransferIntent,capturedBytes:Uint8Array,signal:AbortSignal):Promise<void> {
+  async register(execution:JobExecutionRecord,rawInput:JobOutputPublicationInput,rawIntent:TransferIntent,capturedBytes:Uint8Array,signal:AbortSignal):Promise<void> {
     signal.throwIfAborted()
     const input=JobOutputPublicationInputSchema.parse(rawInput),intent=TransferIntentSchema.parse(rawIntent)
     const status=await this.journal.jobStatus(execution.operationId)

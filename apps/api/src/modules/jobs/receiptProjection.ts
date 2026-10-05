@@ -1,12 +1,12 @@
-import { JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
-import { RemoteJobOperationReceiptSchema, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import { RemoteJobOperationReceiptRecordSchema, type RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
-export interface JobCanonicalOutputVerifier {verifyRequiredOutputs(sql:JobSql,execution:JobExecution):Promise<void>}
+export interface JobCanonicalOutputVerifier {verifyRequiredOutputs(sql:JobSql,execution:JobExecutionRecord):Promise<void>}
 /** Inside the original main owner transaction. Native exit and output delivery remain separate facts. */
-export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecution,raw:RemoteJobOperationReceipt,outputs:JobCanonicalOutputVerifier):Promise<JobExecution> {
-  const execution=JobExecutionSchema.parse(original)
-  const receipt=RemoteJobOperationReceiptSchema.parse(raw)
+export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecutionRecord,raw:RemoteJobOperationReceiptRecord,outputs:JobCanonicalOutputVerifier):Promise<JobExecutionRecord> {
+  const execution=JobExecutionRecordSchema.parse(original)
+  const receipt=RemoteJobOperationReceiptRecordSchema.parse(raw)
   const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
     :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
   if(receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.operationId!==execution.operationId
@@ -40,12 +40,12 @@ export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecution,ra
     if(receipt.phase==='running'||receipt.phase==='start_acknowledged')execution.process.phase='running'
     else if(receipt.phase==='native_entry_attempted')execution.process.phase='preparing'
   }
-  return JobExecutionSchema.parse(execution)
+  return JobExecutionRecordSchema.parse(execution)
 }
 
 /** Manual jobs have no Run graph. Workflow callers enlist the derived state in
  * publishWorkflowJobReceiptLocked before the same transaction mutates this row. */
-export async function projectJobReceiptLocked(sql:JobSql,execution:JobExecution,raw:RemoteJobOperationReceipt,outputs:JobCanonicalOutputVerifier):Promise<void> {
+export async function projectJobReceiptLocked(sql:JobSql,execution:JobExecutionRecord,raw:RemoteJobOperationReceiptRecord,outputs:JobCanonicalOutputVerifier):Promise<void> {
   const next=await deriveJobReceiptLocked(sql,execution,raw,outputs)
   await new JobRepository().putExecution(sql,next)
   Object.assign(execution,next)

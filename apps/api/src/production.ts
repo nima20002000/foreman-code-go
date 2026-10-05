@@ -6,7 +6,10 @@ import { readProductEnvironment } from '@foreman-code/contracts/product-environm
 import { appMcpServerName, isSupportedAppMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
-import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './modules/devices/trustedConnectionHumanAuthority.js'
+import {
+  PostgresTrustedConnectionHumanAuthority,
+  registerTrustedConnectionApprovalRoutes,
+} from './modules/devices/trustedConnectionHumanAuthority.js'
 import { registerTrustedConnectionRoutes } from './modules/devices/trustedConnectionManagement.js'
 import { requirePrincipal } from './modules/access/http.js'
 import { RsyncTransferAuthorizeRequestSchema } from '@foreman-code/contracts/byte-transfer'
@@ -49,7 +52,7 @@ import { WorkspaceBoundLocationService } from './modules/workspace-roots/service
 import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
-import { RemoteJobMainRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobMainRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { JOB_INPUT_NAMESPACE } from './modules/files/jobInputs/service.js'
 import { PostgresWorkflowJobNodeStore, workflowJobStorePublication } from './modules/jobs/workflowStore.js'
 import { createProductionJobs } from './modules/jobs/production.js'
@@ -72,7 +75,11 @@ import { credentialAuthority } from './modules/interactions/wave25/credentialAut
 import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
-import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import {
+  AcceptedHarnessProfileAdmission,
+  AcceptedClaudeProfileAdmission,
+  type AcceptedProfileAuthority,
+} from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
@@ -107,7 +114,11 @@ import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
 import { registerProductionFileStorage } from './modules/files/production.js'
 import { createProductionWorkflowFileContexts } from './modules/runs/remote/workflowNativeFilesProduction.js'
-import { PostgresArtifactPublicationAuthority, PostgresAcceptedArtifactAttemptFence, type NativeArtifactAuthorityPorts } from './modules/runs/remote/nativeArtifactAuthority.js'
+import {
+  PostgresArtifactPublicationAuthority,
+  PostgresAcceptedArtifactAttemptFence,
+  type NativeArtifactAuthorityPorts,
+} from './modules/runs/remote/nativeArtifactAuthority.js'
 import { mountProductionWorkflowArtifacts } from './modules/runs/remote/workflowArtifactProduction.js'
 import { createMainWorkflowArtifactTransferExtension } from './modules/runs/remote/workflowArtifactTransferProduction.js'
 import type { TemporaryFileService } from './modules/files/service.js'
@@ -334,7 +345,7 @@ export function buildProductionApp(
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
-          if (RemoteJobMainRpcRequestSchema.safeParse(payload).success) {
+          if (RemoteJobMainRpcRequestRecordSchema.safeParse(payload).success) {
             if (!jobRuntime) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual main Job application bridge is unavailable.', 503)
             return { payload: await jobRuntime.application.handle(payload, context.binding) }
           }

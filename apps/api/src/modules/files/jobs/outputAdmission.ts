@@ -2,14 +2,19 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { JobOutputAdmissionSchema, JobOutputPublicationInputSchema, type JobOutputAdmission, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
+import {
+  JobOutputAdmissionSchema,
+  JobOutputPublicationInputSchema,
+  type JobOutputAdmission,
+  type JobOutputPublicationInput,
+} from '@foreman-code/contracts/job-output-transfer'
 import { BYTE_TRANSFER_POLICY, TransferIntentSchema, type TransferContext, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { authorizeDevice, DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { fileStateAt, type FileWithRevision } from '@foreman-code/contracts/files'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import type { JobSql } from '../../jobs/repository.js'
 import { commandInputHash, PostgresCommandCoordinator } from '../../commands/postgres.js'
@@ -46,7 +51,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
     return this.frames.run(Object.freeze({...binding}),perform)
   }
   /** Called by the actual canonical allocation/finalization authority, on its SQL transaction. */
-  async assertContext(sql: JobSql, input: Pick<JobOutputPublicationInput,'workspaceId'|'executionId'|'attemptId'|'owner'>, execution: JobExecution) {
+  async assertContext(sql: JobSql, input: Pick<JobOutputPublicationInput,'workspaceId'|'executionId'|'attemptId'|'owner'>, execution: JobExecutionRecord) {
     const target=execution.acceptedSpec.target
     if (target.hostRef.kind!=='device' || !target.registration) throw new DomainError('JOB_OUTPUT_DEVICE_REQUIRED','Remote output admission requires its actual accepted device.',403)
     const binding=this.current(target.hostRef.deviceId)
@@ -63,7 +68,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
     const dispatch=(await sql.query<{intent:unknown;last_receipt:unknown;receipt_sequence:string}>(`select intent,last_receipt,receipt_sequence::text
       from job_dispatch_intents where execution_id=$1 for share`,[execution.id])).rows[0]
     if (!dispatch?.last_receipt) throw new DomainError('JOB_OUTPUT_CLOSURE_MISSING','The original main-projected native closure receipt is missing.',409)
-    const intent=RemoteJobDispatchIntentSchema.parse(dispatch.intent),receipt=RemoteJobOperationReceiptSchema.parse(dispatch.last_receipt)
+    const intent=RemoteJobDispatchIntentSchema.parse(dispatch.intent),receipt=RemoteJobOperationReceiptRecordSchema.parse(dispatch.last_receipt)
     if (!isDeepStrictEqual(receipt.intent,intent) || intent.executionId!==execution.id || intent.attemptId!==input.attemptId
       || intent.operationId!==execution.operationId || intent.bindingHash!==execution.acceptedSpec.bindingHash || !isDeepStrictEqual(intent.owner,input.owner)
       || intent.subject.workspaceId!==execution.workspaceId
@@ -114,7 +119,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
     const result=await sql.query<{result:unknown}>(`select result from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3`,[principalId,OPERATION,input.commandId])
     return result.rows[0]?JobOutputAdmissionSchema.parse(result.rows[0].result):undefined
   }
-  private async match(sql: JobSql, record: JobOutputAdmission, input: JobOutputPublicationInput, execution: JobExecution, facts: Awaited<ReturnType<PostgresJobOutputAdmission['assertContext']>>, allowFinalizedReplay = true) {
+  private async match(sql: JobSql, record: JobOutputAdmission, input: JobOutputPublicationInput, execution: JobExecutionRecord, facts: Awaited<ReturnType<PostgresJobOutputAdmission['assertContext']>>, allowFinalizedReplay = true) {
     if (!isDeepStrictEqual(record.input,input) || record.inputHash!==commandInputHash(input) || record.specDigest!==execution.acceptedSpec.specDigest
       || record.materializationId!==execution.acceptedSpec.source.materializationId || record.materializationDigest!==execution.acceptedSpec.source.materializationDigest
       || record.nativeIdentityDigest!==commandInputHash(facts.receipt.native).slice(7) || record.closureEvidenceDigest!==facts.receipt.terminal!.closureEvidenceDigest
@@ -173,7 +178,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
       return record
     })
   }
-  async resolve(input: JobOutputPublicationInput, execution: JobExecution) {
+  async resolve(input: JobOutputPublicationInput, execution: JobExecutionRecord) {
     const record=await this.requireAdmission(input)
     if(record.input.executionId!==execution.id || record.specDigest!==execution.acceptedSpec.specDigest)throw new DomainError('JOB_OUTPUT_ADMISSION_CONFLICT','Resolver execution differs from canonical admission.',409)
     return {transferId:record.intent.transferId,context:outputTransferContext(this.current(record.intent.deviceId))}

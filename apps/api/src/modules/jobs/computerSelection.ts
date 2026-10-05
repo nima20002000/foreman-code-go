@@ -1,10 +1,15 @@
+import { AutoVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
 import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { AutoJobDefinitionSpecSchema, JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
 import {
-  isAutoJobSpec, AutoJobDefinitionSpecSchema, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
-  jobPolicyRequirements,
-  type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
-  type PreparedJobSpec,
-} from '@foreman-code/contracts/jobs'
+  isAutoJobSpecRecord,
+  ResolvedJobDefinitionSpecRecordSchema,
+  jobPolicyRequirementsRecord,
+  type JobDefinitionRecord,
+  type JobDefinitionSpecRecord,
+  type ResolvedJobDefinitionSpecRecord,
+  type PreparedJobSpecRecord,
+} from '@foreman-code/contracts/job-verification'
 import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -18,8 +23,8 @@ import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type J
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
 export interface JobComputerCandidate {
-  spec: ResolvedJobDefinitionSpec
-  profile: JobRuntimeProfile
+  spec: ResolvedJobDefinitionSpecRecord
+  profile: JobRuntimeProfileRecord
   ready: boolean
   reasons: string[]
   sourceReservation: { scopeId: string; reservedBytes: number }
@@ -30,11 +35,11 @@ export interface JobComputerDiscovery {
 }
 export interface JobComputerInventory {
   candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpec, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
+    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
 }
 type EnrolledCandidate = JobComputerCandidate & { preference: BuildComputerPreference }
 export interface JobComputerClaim {
-  spec: ResolvedJobDefinitionSpec | null
+  spec: ResolvedJobDefinitionSpecRecord | null
   compatibleTargetCount: number
   reasons: JobComputerEligibility['reasons']
   diagnosticCodes: string[]
@@ -56,13 +61,14 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
   if (code === 'JOB_RUNTIME_CONTEXT_CHANGED') return 'runtime_unqualified'
   return 'eligibility_check_failed'
 }
-export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpec): boolean {
-  const common = (spec: JobDefinitionSpec) => ({ source: spec.source, argv: spec.argv,
-    inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null })
+export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpecRecord): boolean {
+  const common = (spec: JobDefinitionSpecRecord) => ({ source: spec.source, argv: spec.argv,
+    inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null,
+    ...('verification' in spec ? { verification: spec.verification } : {}) })
   if (canonical(common(candidate.spec)) !== canonical(common(request))) return false
-  if (!isAutoJobSpec(request)) return canonical(candidate.spec) === canonical(request)
-  return canonical(jobPolicyRequirements(candidate.spec.policy)) === canonical(request.policy)
-    && canonical(candidate.profile.limits) === canonical(request.limits)
+  if (!isAutoJobSpecRecord(request)) return canonical(candidate.spec) === canonical(request)
+  return canonical(jobPolicyRequirementsRecord(candidate.spec.policy)) === canonical(request.policy)
+    && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
@@ -106,13 +112,13 @@ export async function releaseClosedJobComputers(sql: JobSql): Promise<void> {
   await sql.query(`update job_computer_selections s set released_at=clock_timestamp()
     where s.released_at is null and ${closedJobComputerSql}`)
 }
-export async function readJobComputerSelection(sql: JobSql, definition: JobDefinition,
-  identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+export async function readJobComputerSelection(sql: JobSql, definition: JobDefinitionRecord,
+  identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
   const row = (await sql.query<{ spec: unknown; definition_version_id: string; attempt_id: string; operation_id: string }>(
     'select spec,definition_version_id,attempt_id,operation_id from job_computer_selections where execution_id=$1 and workspace_id=$2 for share',
     [identity.executionId, definition.workspaceId])).rows[0]
   if (!row) {
-    if (isAutoJobSpec(definition.spec)) {
+    if (isAutoJobSpecRecord(definition.spec)) {
       throw new DomainError('JOB_COMPUTER_SELECTION_MISSING', 'The original Auto computer selection is missing.', 409)
     }
     return definition.spec
@@ -121,23 +127,23 @@ export async function readJobComputerSelection(sql: JobSql, definition: JobDefin
     || row.operation_id !== identity.operationId) {
     throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'This selection belongs to another Job preparation.', 409)
   }
-  return ResolvedJobDefinitionSpecSchema.parse(row.spec)
+  return ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
 }
 
 export class JobComputerSelection {
   constructor(private readonly settings: BuildComputerSettings, private readonly inventory: JobComputerInventory,
     private readonly workerExecution: WorkerExecutionPolicy) {}
 
-  async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
-    identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+  async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
+    identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
     const claim = await this.claim(sql, principal, definition, identity)
     if (claim.spec) return claim.spec
-    const code = isAutoJobSpec(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
+    const code = isAutoJobSpecRecord(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
     throw new DomainError(code, 'No eligible build computer. Enable builds and check connection, runtime setup and capacity.',
       409, { reasons: claim.reasons, diagnosticCodes: claim.diagnosticCodes })
   }
 
-  async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
+  async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
     identity: JobPreparationIdentity, options: {
       excludedHosts?: ReadonlySet<string>
       placementOverride?: JobPlacementIntent | null
@@ -151,8 +157,9 @@ export class JobComputerSelection {
     }
     let request = definition.spec
     if (options.placementOverride) {
-      request = AutoJobDefinitionSpecSchema.parse({ ...request, target: { kind: 'auto' },
-        policy: isAutoJobSpec(request) ? request.policy : jobPolicyRequirements(request.policy), limits: options.limits })
+      const schema = 'verification' in request ? AutoVerificationJobSpecSchema : AutoJobDefinitionSpecSchema
+      request = schema.parse({ ...request, target: { kind: 'auto' },
+        policy: isAutoJobSpecRecord(request) ? request.policy : jobPolicyRequirementsRecord(request.policy), limits: options.limits })
     }
     const discovery = await this.inventory.candidates(sql, principal, definition.workspaceId, request,
       options.placementOverride ?? undefined)
@@ -198,7 +205,7 @@ export class JobComputerSelection {
         reasons.push('busy')
         continue
       }
-      let mode: 'auto' | 'fixed' = isAutoJobSpec(request) ? 'auto' : 'fixed'
+      let mode: 'auto' | 'fixed' = isAutoJobSpecRecord(request) ? 'auto' : 'fixed'
       if (options.placementOverride?.kind === 'explicit') mode = 'fixed'
       const selection = { mode,
         buildPriority: preference.buildPriority, settingsRevision: preference.revision }
@@ -206,7 +213,7 @@ export class JobComputerSelection {
         (execution_id,workspace_id,definition_version_id,attempt_id,operation_id,host_key,spec,limits,selection,source_scope,source_bytes)
         values($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)`,
       [identity.executionId, definition.workspaceId, definition.versionId, identity.attemptId, identity.operationId,
-        hostKey, JSON.stringify(candidate.spec), JSON.stringify(candidate.profile.limits), JSON.stringify(selection),
+        hostKey, JSON.stringify(candidate.spec), JSON.stringify(jobRuntimeProfileLimits(candidate.profile)), JSON.stringify(selection),
         candidate.sourceReservation.scopeId, candidate.sourceReservation.reservedBytes])
       return { spec: candidate.spec, compatibleTargetCount, reasons: [], diagnosticCodes: [], waitingHosts: [],
         selectedHost: hostKey, exceedsMaximum: false }
@@ -216,7 +223,7 @@ export class JobComputerSelection {
       !candidate.reasons.some(code => jobEligibilityReason(code) === 'authorization_revoked'))
     const normalized = diagnosticCodes.map(jobEligibilityReason)
       .filter(reason => reason !== 'request_exceeds_maximum' || exceedsMaximum)
-      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpec(request) || !authorizedCandidate)
+      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpecRecord(request) || !authorizedCandidate)
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }
@@ -224,7 +231,7 @@ export class JobComputerSelection {
     const capacity = jobComputerCapacity(candidate.profile)
     if (candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes) return false
     return (Object.keys(capacity) as (keyof typeof capacity)[])
-      .every(field => candidate.profile.limits[field] <= capacity[field])
+      .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
   private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<boolean> {
     const storage = (await sql.query<{ bytes: string; materializations: string }>(`select coalesce(sum(bytes),0)::text as bytes,
@@ -239,7 +246,7 @@ export class JobComputerSelection {
     return jobComputerHasCapacity(sql, candidate.spec.target, candidate.profile)
   }
 
-  async prepare(sql: JobSql, definition: JobDefinition, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+  async prepare(sql: JobSql, definition: JobDefinitionRecord, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
     const spec = await readJobComputerSelection(sql, definition, identity)
     this.workerExecution.requireEnabled(spec.target.hostRef)
     await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
@@ -248,13 +255,13 @@ export class JobComputerSelection {
     if (!row || row.released_at) throw new DomainError('JOB_PREPARATION_CLOSED', 'This preparation was closed; create a new Start command.', 409)
     return spec
   }
-  async selection(sql: JobSql, identity: JobPreparationIdentity): Promise<PreparedJobSpec['computerSelection']> {
+  async selection(sql: JobSql, identity: JobPreparationIdentity): Promise<PreparedJobSpecRecord['computerSelection']> {
     const row = (await sql.query<{ selection: unknown }>(
       'select selection from job_computer_selections where execution_id=$1 and attempt_id=$2 and operation_id=$3',
       [identity.executionId, identity.attemptId, identity.operationId])).rows[0]
     return row ? JobComputerSelectionSchema.parse(row.selection) : undefined
   }
-  async validateFixed(sql: JobSql, spec: ResolvedJobDefinitionSpec) {
+  async validateFixed(sql: JobSql, spec: ResolvedJobDefinitionSpecRecord) {
     try {
       this.workerExecution.requireEnabled(spec.target.hostRef)
       await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
@@ -268,7 +275,7 @@ export class JobComputerSelection {
 }
 
 export async function jobComputerHasCapacity(sql: JobSql,
-  target: Pick<ResolvedJobDefinitionSpec['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord): Promise<boolean> {
+  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord): Promise<boolean> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
   const rows = (await sql.query<{ limits: JobRuntimeProfile['limits'] }>(`select limits from job_computer_selections s
     where host_key=$1 and released_at is null and not ${closedJobComputerSql}

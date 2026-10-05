@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
+import {
+  DeviceExecutionAdmissionFields,
+  HistoricalDeviceExecutionAdmissionFields,
+  validateHistoricalDeviceExecutionAdmission,
+} from './deviceResources.js'
 import { JobExecutionSchema, CurrentJobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
@@ -104,6 +108,8 @@ export const RemoteJobOperationReceiptRecordSchema = z.object({
   execution: JobExecutionRecordSchema,
 }).strict()
 export type RemoteJobOperationReceiptRecord = z.infer<typeof RemoteJobOperationReceiptRecordSchema>
+export type RemoteJobOperationStatusRecord = { status: 'known'; receipt: RemoteJobOperationReceiptRecord }
+  | { status: 'unknown'; reason: 'journal_absence_requires_reconciliation' }
 export const RemoteJobExecutionRpcRequestRecordSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('job-dispatch'), intent: RemoteJobDispatchIntentSchema,
     execution: JobExecutionRecordSchema }).strict(),
@@ -118,6 +124,7 @@ export const RemoteJobAcceptedSourceReadoutRecordSchema = z.object({
   ...RemoteJobAcceptedSourceReadoutSchema.shape,
   execution: JobExecutionRecordSchema,
 }).strict()
+export type RemoteJobAcceptedSourceReadoutRecord = z.infer<typeof RemoteJobAcceptedSourceReadoutRecordSchema>
 export const RemoteVerificationJobDispatchRequestSchema = z.object({
   method: z.literal('job-dispatch'), intent: CurrentRemoteJobDispatchIntentSchema,
   execution: VerificationJobExecutionSchema,

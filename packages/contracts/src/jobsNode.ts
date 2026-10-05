@@ -35,6 +35,7 @@ export function acceptedJobSpecDigests(spec: JobAcceptedSpecRecord) {
       preparedDigest: digests.specDigest,
       profile: spec.profile,
       reservationId: spec.reservationId,
+      lifecycle: spec.lifecycle,
       resourcePolicyRevision: spec.resourcePolicyRevision,
       resourcePolicyDigest: spec.resourcePolicyDigest,
       runtimeApprovalId: spec.runtimeApprovalId,

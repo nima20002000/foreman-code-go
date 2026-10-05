@@ -1,3 +1,4 @@
+import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { inflateSync } from 'node:zlib'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
@@ -64,7 +65,7 @@ function verificationRuntimeFixture() {
     aggregateCgroupIdentityDigest: digest, imageManifestDigest: f.profile.imageDigest, imageConfigDigest: f.profile.imageDigest,
     network: f.profile.network, resources,
     approvalConfig: { schemaVersion: 1 as const, revision: 1, approvalLifetimeMs: 3_600_000,
-      review: { reviewedByPrincipalId: 'owner', reviewedAt: now, decisionDigest: digest } }, tools: [],
+      review: { reviewedByPrincipalId: 'owner', reviewedAt: now, decisionDigest: digest } }, tools: [], seedReceiptSha256: digest,
   }
   const profile = { ...f.profile, rootId: baseline.root.binding.rootId, fingerprintDigest: hash(fingerprint),
     approvalExpiresAt: expiry, qualificationExpiresAt: expiry }
@@ -79,7 +80,7 @@ function verificationRuntimeFixture() {
       canonicalProjectRoot: `/approved/source/${f.acceptedBuild.source.materializationId}/tree`,
       canonicalCwd: `/approved/source/${f.acceptedBuild.source.materializationId}/tree` } }
   const spec = AcceptedVerificationJobSpecSchema.parse({ ...f.acceptedBuild, ...f.spec, target, schemaVersion: 2,
-    source: { ...f.acceptedBuild.source }, profile, reservationId: id,
+    source: { ...f.acceptedBuild.source }, profile, reservationId: id, lifecycle: verificationJobLifecycle(now, f.spec.policy),
     resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1 })
   const runtime: QualifiedJobProfile = { ...resources.limits, workspaceLayout: JOB_PRIVATE_GIT_LAYOUT,
     policyId: profile.profileId, policyRevision: profile.profileRevision, imageDigest: profile.imageDigest,

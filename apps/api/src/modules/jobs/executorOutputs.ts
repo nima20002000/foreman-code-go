@@ -18,6 +18,15 @@ export class JobOutputCollectionError extends Error {}
 
 /** Called by W09 only after container/descendant quiescence is positively proven. */
 export async function readDeclaredJobOutputs(root: string, spec: AcceptedJobSpec | AcceptedVerificationJobSpec): Promise<Array<{ path: string; bytes: Buffer }>> {
+  return readJobOutputs(root, spec, 'require-all')
+}
+
+export async function readAvailableVerificationOutputs(root: string, spec: AcceptedVerificationJobSpec) {
+  return readJobOutputs(root, spec, 'retain-available')
+}
+
+async function readJobOutputs(root: string, spec: AcceptedJobSpec | AcceptedVerificationJobSpec,
+  missingReports: 'require-all' | 'retain-available'): Promise<Array<{ path: string; bytes: Buffer }>> {
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(error => { throw new JobOutputCollectionError('Declared Job output root unavailable.', { cause: error }) })
   const outputs: Array<{ path: string; bytes: Buffer }> = []
   let total = 0
@@ -52,7 +61,8 @@ export async function readDeclaredJobOutputs(root: string, spec: AcceptedJobSpec
         total += bytes.length
         outputs.push({ path: output.path, bytes })
       } catch (error) {
-        if (output.required || !(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error
+        if (output.required && missingReports === 'require-all'
+          || !(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error
       } finally {
         await file?.close()
         await Promise.all(directories.map(directory => directory.close()))

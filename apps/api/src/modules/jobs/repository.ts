@@ -1,6 +1,12 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, ResolvedJobDefinitionSpecSchema,
-  type JobDefinition, type JobExecution, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
+import {
+  JobDefinitionRecordSchema,
+  JobExecutionRecordSchema,
+  ResolvedJobDefinitionSpecRecordSchema,
+  type JobDefinitionRecord,
+  type JobExecutionRecord,
+} from '@foreman-code/contracts/job-verification'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
 import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
@@ -45,7 +51,7 @@ export class JobRepository {
         || selection.definition_version_id !== ticket.definition.versionId) {
         throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The reserved computer belongs to another request.', 409)
       }
-      const spec = ResolvedJobDefinitionSpecSchema.parse(selection.spec)
+      const spec = ResolvedJobDefinitionSpecRecordSchema.parse(selection.spec)
       const root = SourceRootRecordSchema.parse(selection.root)
       if (root.binding.workspaceId !== ticket.workspaceId
         || root.selection.rootPolicyId !== spec.target.destination.rootPolicyId
@@ -92,29 +98,29 @@ export class JobRepository {
     return this.putQueueTicket(sql, { ...ticket, state: 'terminal', terminalReason: reason,
       finishedAt: now, waitingReasons: [], queuePosition: null, estimatedStartAt: null })
   }
-  async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinition> {
+  async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinitionRecord> {
     const row = (await sql.query<{ record: unknown }>(`select record from job_definitions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_DEFINITION_NOT_FOUND', 'The job definition was not found in this workspace.', 404)
-    const definition = JobDefinitionSchema.parse(row.record)
+    const definition = JobDefinitionRecordSchema.parse(row.record)
     if (definition.id !== id || definition.workspaceId !== workspaceId) throw new DomainError('JOB_SCOPE_CONFLICT','Job definition scope conflicts with persistence.',409)
     return definition
   }
-  async version(sql:JobSql,workspaceId:string,versionId:string,definitionId:string):Promise<JobDefinition> {
+  async version(sql:JobSql,workspaceId:string,versionId:string,definitionId:string):Promise<JobDefinitionRecord> {
     const row=(await sql.query<{record:unknown}>('select record from job_definition_versions where workspace_id=$1 and id=$2 and definition_id=$3 for share',[workspaceId,versionId,definitionId])).rows[0]
     if(!row)throw new DomainError('JOB_DEFINITION_VERSION_NOT_FOUND','The exact immutable job definition version is missing.',404)
-    const value=JobDefinitionSchema.parse(row.record)
+    const value=JobDefinitionRecordSchema.parse(row.record)
     if(value.workspaceId!==workspaceId||value.id!==definitionId||value.versionId!==versionId)throw new DomainError('JOB_VERSION_PIN_CONFLICT','The persisted job version has conflicting scope.',409)
     return value
   }
-  async execution(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobExecution> {
+  async execution(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobExecutionRecord> {
     const row = (await sql.query<{ record: unknown; accepted_spec: unknown }>(`select record,accepted_spec from job_executions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_NOT_FOUND', 'The execution was not found in this workspace.', 404)
-    const execution = JobExecutionSchema.parse(row.record)
+    const execution = JobExecutionRecordSchema.parse(row.record)
     if (execution.id !== id || execution.workspaceId !== workspaceId || canonical(execution.acceptedSpec) !== canonical(row.accepted_spec)) throw new DomainError('JOB_SCOPE_CONFLICT','Job acceptance conflicts with persistence.',409)
     return execution
   }
-  async putExecution(sql: JobSql, value: JobExecution): Promise<void> {
-    const execution = JobExecutionSchema.parse(value)
+  async putExecution(sql: JobSql, value: JobExecutionRecord): Promise<void> {
+    const execution = JobExecutionRecordSchema.parse(value)
     await sql.query('update job_executions set record=$3::jsonb where workspace_id=$1 and id=$2',[execution.workspaceId, execution.id, JSON.stringify(execution)])
   }
   async logs(sql: JobSql, executionId: string, after: number, limit: number) {

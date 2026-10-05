@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { RemoteJobDispatchIntentSchema, RemoteJobConnectionIdentitySchema } from '@foreman-code/contracts/remote-job-execution'
+import { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
 
 const process = z.object({ pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
 const boundary = z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'), device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict()
@@ -16,5 +17,11 @@ export const JobNativeOwnerSchema = z.object({
   launches: z.array(z.object({ launchId: z.uuid(), processOwner: z.string().min(1).optional(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().nullable(), signal: z.string().nullable() }).strict().nullable(), closed: z.boolean() }).strict()).max(512),
   container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), deadlineAt: z.string().datetime().nullable().default(null), certificate: JobOCICertificateSchema.nullable() }).strict().nullable(),
+  verification: z.object({ context: JobVerificationRepositoryContextSchema,
+    contextPin: z.object({ relativePath: z.literal('verification.json'), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      byteSize: z.number().int().positive().max(1024*1024) }).strict(),
+    reserve: z.object({ parent: z.string().startsWith('/'), name: z.string().min(1), device: z.number().int(),
+      inode: z.number().int(), bytes: z.number().int().positive() }).strict(),
+    finalizedAt: z.string().datetime().nullable() }).strict().optional(),
 }).strict()
 export type JobNativeOwner = z.infer<typeof JobNativeOwnerSchema>

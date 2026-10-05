@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join } from 'node:path'
 import { JOB_PRIVATE_GIT_LAYOUT, verifyPrivateJobRepositoryMounts, type PrivateJobRepositoryMounts } from '../sources/repository.js'
-import type { AcceptedJobSpec, JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobAcceptedSpecRecord, JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 export { JOB_PRIVATE_GIT_LAYOUT }
 export type VerifiedJobGitMounts = PrivateJobRepositoryMounts
 export const JOB_GIT_CONTAINER_DIRECTORY = '/graphql-job-git' as const
@@ -10,8 +10,8 @@ export const JOB_GIT_ENVIRONMENT = Object.freeze({
   GIT_DIR:JOB_GIT_CONTAINER_DIRECTORY,GIT_WORK_TREE:'/workspace',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',
   GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',
 })
-type JobGitSubject = Pick<JobExecution, 'workspaceId' | 'id' | 'attemptId' | 'operationId' | 'owner'> & {
-  acceptedSpec: Pick<AcceptedJobSpec, 'source' | 'target' | 'specDigest' | 'bindingHash'>
+type JobGitSubject = Pick<JobExecutionRecord, 'workspaceId' | 'id' | 'attemptId' | 'operationId' | 'owner'> & {
+  acceptedSpec: Pick<JobAcceptedSpecRecord, 'source' | 'target' | 'specDigest' | 'bindingHash'>
 }
 export function requireJobGitMounts(execution:JobGitSubject,source:{gitMounts?:VerifiedJobGitMounts}):VerifiedJobGitMounts {
   const mounts=source.gitMounts,spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot)
@@ -26,6 +26,6 @@ export function requireJobGitMounts(execution:JobGitSubject,source:{gitMounts?:V
     throw new Error('Original qualified Job Git/scheduler mounts required.')
   return mounts
 }
-export async function verifyJobGitMounts(execution:JobExecution,source:{gitMounts?:VerifiedJobGitMounts}):Promise<void> {
+export async function verifyJobGitMounts(execution:JobExecutionRecord,source:{gitMounts?:VerifiedJobGitMounts}):Promise<void> {
   await verifyPrivateJobRepositoryMounts(execution,requireJobGitMounts(execution,source))
 }

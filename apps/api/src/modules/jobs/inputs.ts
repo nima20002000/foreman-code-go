@@ -2,29 +2,35 @@ import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open,opendir,realpath,type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
-import { JobBuildInputManifestSchema,JobInputDeliveryReceiptSchema,JOB_INPUT_DIRECTORY,type JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
+import {
+  JobBuildInputManifestSchema,
+  JobInputDeliveryReceiptSchema,
+  JOB_INPUT_DIRECTORY,
+  type JobInputDeliveryReceipt,
+} from '@foreman-code/contracts/job-inputs'
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { identity } from '../sources/privateFilesystem.js'
 import { canonical } from './repository.js'
 import type { JobSourcePort } from './executor.js'
 export type VerifiedJobSource=Awaited<ReturnType<JobSourcePort['verify']>>
 /** Supplied only by W09's canonical authorization/transfer/materialization adapter. */
 export interface JobAcceptedInputPort {
-  prepare(execution:JobExecution,source:VerifiedJobSource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>
+  prepare(execution:JobExecutionRecord,source:VerifiedJobSource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>
 }
 export const JOB_INPUT_MANIFEST_CONTAINER_PATH=`/workspace/${JOB_INPUT_DIRECTORY}/manifest.json` as const
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex')
 function deny(message:string):never {throw new Error(`Accepted job inputs rejected: ${message}`)}
 /** Pin checks before native claim. The concrete OCI supervisor also checks the
  * actual retained bytes with verifyJobInputDirectory immediately before create. */
-export function requireJobInputReceipt(execution:JobExecution,source:VerifiedJobSource,raw:unknown):JobInputDeliveryReceipt {
+export function requireJobInputReceipt(execution:JobExecutionRecord,source:VerifiedJobSource,raw:unknown):JobInputDeliveryReceipt {
   const receipt=JobInputDeliveryReceiptSchema.parse(raw),spec=execution.acceptedSpec
   const recipient={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest}
   if(canonical(receipt.recipient)!==canonical(recipient)||receipt.inputSnapshotDigest!==jobInputSnapshotDigest(execution))deny('original execution, source, owner or input snapshot changed')
   if(!source.privateGit||source.privateRepositoryRoot!==spec.target.destination.canonicalProjectRoot||source.directoryIdentityHash!==spec.target.destination.directoryIdentityHash)deny('private source changed')
   if(!Number.isFinite(source.diskQuotaBytes)||source.diskQuotaBytes<=0)deny('qualified input filesystem budget missing')
-  if(receipt.manifestByteSize>4*1024*1024||receipt.files.reduce((sum,file)=>sum+file.byteSize,0)>Math.min(source.diskQuotaBytes,136*1024*1024))deny('accepted input byte budget exceeded')
+  if(receipt.manifestByteSize>4*1024*1024||receipt.files.reduce((sum,file)=>sum+file.byteSize,receipt.verificationContext?.byteSize??0)>Math.min(source.diskQuotaBytes,136*1024*1024))deny('accepted input byte budget exceeded')
+  if (receipt.verificationContext && execution.schemaVersion !== 2) deny('build inputs cannot carry verification context')
   const names=receipt.files.map(file=>file.relativePath)
   if(new Set(names).size!==names.length)deny('duplicate or inconsistent retained file receipts')
   const manifest=receipt.files.find(file=>file.relativePath==='manifest.json')
@@ -63,7 +69,7 @@ async function requireExactInputTree(directory:FileHandle,files:JobInputDelivery
   await walk(directory,'')
 }
 /** Actual OCI entry verifier; it neither downloads bytes nor creates another store. */
-export async function verifyJobInputDirectory(execution:JobExecution,source:VerifiedJobSource,raw:JobInputDeliveryReceipt,signal:AbortSignal):Promise<string> {
+export async function verifyJobInputDirectory(execution:JobExecutionRecord,source:VerifiedJobSource,raw:JobInputDeliveryReceipt,signal:AbortSignal):Promise<string> {
   const receipt=requireJobInputReceipt(execution,source,raw),path=join(source.privateRepositoryRoot,JOB_INPUT_DIRECTORY)
   if(await realpath(source.privateRepositoryRoot)!==source.privateRepositoryRoot)deny('canonical private source required')
   const root=await open(source.privateRepositoryRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW)
@@ -74,10 +80,16 @@ export async function verifyJobInputDirectory(execution:JobExecution,source:Veri
     directory=await open(`/proc/self/fd/${root.fd}/${JOB_INPUT_DIRECTORY}`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW)
     const observed=await identity(directory)
     if(canonical(observed)!==canonical({device:receipt.directory.device,inode:receipt.directory.inode,mountId:receipt.directory.mountId})||observed.device!==rootIdentity.device||observed.mountId!==rootIdentity.mountId)deny('actual input directory identity or bounded filesystem changed')
-    await requireExactInputTree(directory,receipt.files,signal)
+    const physicalFiles = receipt.verificationContext ? [...receipt.files, receipt.verificationContext] : receipt.files
+    await requireExactInputTree(directory,physicalFiles,signal)
+    if (receipt.verificationContext) await readRetainedFile(directory,receipt.verificationContext.relativePath,
+      receipt.verificationContext,signal)
     let manifestBytes:Buffer|undefined,workflowBytes:Buffer|undefined
     for(const file of receipt.files){const bytes=await readRetainedFile(directory,file.relativePath,file,signal,file.relativePath==='manifest.json'||file.relativePath==='workflow-input.json');if(file.relativePath==='manifest.json')manifestBytes=bytes;if(file.relativePath==='workflow-input.json')workflowBytes=bytes}
     const manifest=JobBuildInputManifestSchema.parse(JSON.parse(manifestBytes!.toString('utf8')))
+    if (canonical(manifest.verificationContext ?? null) !== canonical(receipt.verificationContext ?? null)) {
+      deny('verification context pin differs from the retained manifest')
+    }
     if(manifest.inputSnapshotDigest!==receipt.inputSnapshotDigest||canonical(manifest.workflowInput)!==canonical(execution.acceptedSpec.workflowInput)||canonical(JSON.parse(workflowBytes!.toString('utf8')))!==canonical(execution.acceptedSpec.workflowInput))deny('actual accepted workflow JSON changed')
     const declared=new Map(receipt.files.map(file=>[file.relativePath,file])),paths=manifest.files.map(file=>file.relativePath)
     if(new Set(paths).size!==paths.length||paths.includes('manifest.json')||paths.includes('workflow-input.json')||paths.length+2!==receipt.files.length)deny('manifest file set differs from retained receipt')

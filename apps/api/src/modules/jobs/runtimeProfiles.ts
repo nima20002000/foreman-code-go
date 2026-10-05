@@ -246,7 +246,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     await this.authorize(sql,principal,workspaceId)
     const rows=await sql.query<{record:unknown}>('select record from job_runtime_profiles where workspace_id=$1 and record->>\'status\'=\'qualified\' order by id limit 100',[workspaceId])
     const profiles=rows.rows.map(row=>JobRuntimeProfileRecordSchema.parse(row.record)),policies=[]
-    for(const profile of profiles)if(profile.schemaVersion===1&&profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()&&(await this.producer.revalidate(sql,profile)).ready)policies.push(profile.policy)
+    for(const profile of profiles)if(profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()&&(await this.producer.revalidate(sql,profile)).ready)policies.push(jobRuntimeProfilePolicy(profile))
     return policies
   }
   readiness(sql: JobSql, profile: JobRuntimeProfileRecord) {
@@ -265,6 +265,16 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
     const sameNamespace=canonical(profile.root.selection.hostRef)===canonical(root.selection.hostRef)&&canonical(profile.root.registration)===canonical(root.registration)&&profile.root.selection.rootPolicyId===root.selection.rootPolicyId&&profile.root.selection.rootPolicyRevision===root.selection.rootPolicyRevision&&canonical(profile.root.binding.filesystem)===canonical(root.binding.filesystem)&&profile.root.binding.canonicalPath===root.binding.canonicalPath
     if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonical(jobRuntimeProfilePolicy(profile))!==canonical(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
+    if ('verification' in spec) {
+      if (profile.schemaVersion !== 2 || !profile.measurement) throw new DomainError('JOB_RUNTIME_UNQUALIFIED','A verification Job requires its measured verification profile.',409)
+      requireVerificationOwnerReview(profile)
+      const measured = profile.measurement.suites.find(value => value.suite === spec.verification.suite)
+      if (!measured || canonical(measured.resources) !== canonical(spec.verification.resources)
+        || spec.verification.parameters.unitWorkers > measured.maxUnitWorkers
+        || spec.verification.parameters.integrationShards > measured.maxIntegrationShards) {
+        throw new DomainError('JOB_SUITE_UNQUALIFIED','The requested suite or budget has not been measured on this profile.',409)
+      }
+    }
     const current=await this.producer.revalidate(sql,profile)
     if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The qualified runtime context changed.',409,{reasons:current.reasons})
   }

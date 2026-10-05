@@ -15,9 +15,21 @@ import { JobService } from './service.js'
 import type { JobSql } from './repository.js'
 import type { JobDispatchPort } from './ports.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
-import { executeJob, jobSpecDigests, jobSupervisorIdentity, type JobExecutorPorts, type JobSupervisedProcess, type QualifiedJobProfile } from './executor.js'
+import {
+  executeJob,
+  jobSpecDigests,
+  jobSupervisorIdentity,
+  type JobExecutorPorts,
+  type JobSupervisedProcess,
+  type QualifiedJobProfile,
+} from './executor.js'
 import { podmanCreateArgv } from './executorPodman.js'
-import { readDeclaredJobOutputs, reserveVerificationReportSpace, writeVerificationInterruptionReport } from './executorOutputs.js'
+import {
+  readDeclaredJobOutputs,
+  readAvailableVerificationOutputs,
+  reserveVerificationReportSpace,
+  writeVerificationInterruptionReport,
+} from './executorOutputs.js'
 import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import type { RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
@@ -40,7 +52,7 @@ describe('verification interruption reports with real private files, no containe
       const raw = execution()
       const job = VerificationJobExecutionSchema.parse({ ...raw, schemaVersion: 2,
         acceptedSpec: { ...f.acceptedBuild, ...f.spec, schemaVersion: 2,
-          source: f.acceptedBuild.source, profile: f.profile, reservationId: id,
+          source: f.acceptedBuild.source, profile: f.profile, reservationId: id, lifecycle: f.lifecycle,
           resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
           target: { ...f.spec.target, destination: { ...f.spec.target.destination,
             canonicalProjectRoot: source, canonicalCwd: source } } } })
@@ -60,6 +72,12 @@ describe('verification interruption reports with real private files, no containe
       expect((await stat(join(source, job.acceptedSpec.outputs[0]!.path))).ino).toBe(reserve.inode)
       await writeVerificationInterruptionReport({ execution: job, reserve, terminal })
       expect(await readDeclaredJobOutputs(source, job.acceptedSpec)).toEqual(outputs)
+      const incomplete = AcceptedVerificationJobSpecSchema.parse({ ...job.acceptedSpec,
+        policy: { ...job.acceptedSpec.policy, maxOutputBytes: 5120 },
+        outputs: [...job.acceptedSpec.outputs, { path: 'reports/logs.tar.gz', required: true,
+          mediaType: 'application/gzip', kind: 'logs-archive', maxBytes: 1024 }] })
+      await expect(readDeclaredJobOutputs(source, incomplete)).rejects.toThrow()
+      expect(await readAvailableVerificationOutputs(source, incomplete)).toEqual(outputs)
       await expect(writeVerificationInterruptionReport({ execution: job, reserve,
         terminal: { ...terminal, processStopped: false } as unknown as RemoteJobTerminalEvidence })).rejects.toThrow('confirmed closed')
       await expect(writeVerificationInterruptionReport({ execution: job,
@@ -77,7 +95,7 @@ describe('verification interruption reports with real private files, no containe
       await mkdir(join(root, 'reports'))
       await writeFile(join(root, 'reports/summary.json'), Buffer.alloc(4097))
       const spec = AcceptedVerificationJobSpecSchema.parse({ ...f.acceptedBuild, ...f.spec,
-        schemaVersion: 2, source: f.acceptedBuild.source, profile: f.profile, reservationId: id,
+        schemaVersion: 2, source: f.acceptedBuild.source, profile: f.profile, reservationId: id, lifecycle: f.lifecycle,
         resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1 })
       await expect(readDeclaredJobOutputs(root, spec)).rejects.toThrow('budget rejected')
     } finally { await rm(root, { recursive: true, force: true }) }

@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath, statfs } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import type { JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
+import type { JobRuntimeNativeAdmissionRecord } from '@foreman-code/contracts/job-verification-runtime'
 import type { PodmanCommandRunner } from './executorPodman.js'
 
 export interface OCIProcessIdentity { pid: number; startTicks: string; bootId: string }
@@ -17,7 +17,7 @@ export type OCIOwnerScope = {
 } | {
   subject: { kind: 'qualification'; qualificationId: string; profileId: string; profileRevision: number; operationId: string; fingerprint: string }
   /** Actual persisted diagnostic admission; qualification never borrows a Job grant. */
-  admission: JobRuntimeNativeAdmission
+  admission: JobRuntimeNativeAdmissionRecord
   bootId: string
 }
 export interface OCIHostCertificate {

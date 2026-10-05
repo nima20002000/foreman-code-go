@@ -1,16 +1,64 @@
 import { publishWorkflowJobStateReadbackLocked } from './workflowReceiptPublication.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { JobExecutionSchema,type JobExecution,type PreparedJobSpec } from '@foreman-code/contracts/jobs'
-import { AcceptedWorkflowRunV3Schema,AcceptedCurrentNodeResultSchema,GraphDigestSchema,GraphIdSchema,GraphExecutionIdentitySchema,NodeResolutionSchema,RepeatOccurrenceIdentityV1Schema,RepeatExecutionIdentityV1Schema,RepeatGraphExecutionIdentityV3Schema,RepeatOccurrenceV1Schema,RepeatDecisionV1Schema,RepeatDecisionMetadataV1Schema,WorkflowVersionV3Schema,canonicalGraphJson,qualifyRepeatGraphExecution,validateRepeatGraphFactsV3,validateRepeatSuccessorV1,type RepeatGraphFactV3,type WorkflowVersionV3,type RepeatDecisionV1 } from '@foreman-code/contracts/wave25'
+import { JobExecutionRecordSchema, type JobExecutionRecord, type PreparedJobSpecRecord } from '@foreman-code/contracts/job-verification'
+import {
+  AcceptedWorkflowRunV3Schema,
+  AcceptedCurrentNodeResultSchema,
+  GraphDigestSchema,
+  GraphIdSchema,
+  GraphExecutionIdentitySchema,
+  NodeResolutionSchema,
+  RepeatOccurrenceIdentityV1Schema,
+  RepeatExecutionIdentityV1Schema,
+  RepeatGraphExecutionIdentityV3Schema,
+  RepeatOccurrenceV1Schema,
+  RepeatDecisionV1Schema,
+  RepeatDecisionMetadataV1Schema,
+  WorkflowVersionV3Schema,
+  canonicalGraphJson,
+  qualifyRepeatGraphExecution,
+  validateRepeatGraphFactsV3,
+  validateRepeatSuccessorV1,
+  type RepeatGraphFactV3,
+  type WorkflowVersionV3,
+  type RepeatDecisionV1,
+} from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from '../runs/ownership.js'
 import { beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import { openRunGraphPublication } from '../run-graph/publication.js'
 import { canonicalRepeatEffect,canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
 import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
-import { readRepeatAcceptedResultLocked,readRepeatExecutionLocked,type RepeatEffect,type RepeatRepositoryHost,type RepeatLockedHooks } from '../runs/repeatPostgres.js'
+import {
+  readRepeatAcceptedResultLocked,
+  readRepeatExecutionLocked,
+  type RepeatEffect,
+  type RepeatRepositoryHost,
+  type RepeatLockedHooks,
+} from '../runs/repeatPostgres.js'
 import { inactiveRepeatResolution } from '../runs/repeatNode.js'
-import { assertRepeatRef,assertRepeatBodyComplete,blockForNode,decideRepeatAdmission,finalRepeatExport,makeRepeatOccurrence,repeatBlock,repeatConflict,repeatDigest,repeatId,repeatSlotId,repeatSuccessorInput,sameRepeatValue,type RepeatScope,type RepeatNodeRef,type RepeatResolution,type RepeatEntryInput,type RepeatSource,type RepeatInputBinding,type RepeatNodeInput } from '../runs/repeatResolution.js'
+import {
+  assertRepeatRef,
+  assertRepeatBodyComplete,
+  blockForNode,
+  decideRepeatAdmission,
+  finalRepeatExport,
+  makeRepeatOccurrence,
+  repeatBlock,
+  repeatConflict,
+  repeatDigest,
+  repeatId,
+  repeatSlotId,
+  repeatSuccessorInput,
+  sameRepeatValue,
+  type RepeatScope,
+  type RepeatNodeRef,
+  type RepeatResolution,
+  type RepeatEntryInput,
+  type RepeatSource,
+  type RepeatInputBinding,
+  type RepeatNodeInput,
+} from '../runs/repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { visitRepeatNativeAttemptsLocked } from '../runs/repeatNativeAttempts.js'
 import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
@@ -30,7 +78,7 @@ type Context={sql:GraphTransactionSql;scope:RepeatScope;version:WorkflowVersionV
 export interface WorkflowJobStorePublication {
   effect(sql:GraphTransactionSql,owner:RunOwnership,scope:RepeatScope,version:WorkflowVersionV3,effect:RepeatEffect,mutate:()=>Promise<void>,facts:()=>Promise<readonly RepeatGraphFactV3[]>):Promise<void>
   assertReceipt(sql:GraphTransactionSql,scope:RepeatScope,effect:RepeatEffect):Promise<void>
-  observe(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecution):Promise<void>
+  observe(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecutionRecord):Promise<void>
 }
 /** Effects reuse the existing Run head, canonical receipts and repeat ledger. */
 export function workflowJobStorePublication():WorkflowJobStorePublication {
@@ -120,7 +168,7 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
     const bindings:RepeatInputBinding[]=values.map(({source,kind},ordinal)=>({bindingId:repeatId('repeat-binding',executionId,kind,ordinal),recipient:identity,recipientOccurrence:ref.occurrence,inputDigest:digest,source,kind,ordinal}))
     return {input,digest,bindings}
   }
-  private assertExecution(context:Context,ref:RepeatNodeRef,execution:JobExecution,preparation?:WorkflowJobPreparation){
+  private assertExecution(context:Context,ref:RepeatNodeRef,execution:JobExecutionRecord,preparation?:WorkflowJobPreparation){
     const node=this.node(context,ref)
     if(execution.workspaceId!==context.scope.workspaceId||execution.workflow?.runId!==context.scope.runId||execution.workflow.workflowId!==context.scope.workflowId||execution.workflow.nodeId!==ref.nodeId||execution.acceptedSpec.definitionId!==node.jobDefinitionId||execution.acceptedSpec.definitionRevision!==node.jobDefinitionRevision||execution.acceptedSpec.definitionVersionId!==node.jobDefinitionVersionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT')
     if(preparation&&(execution.id!==preparation.executionId||execution.attemptId!==preparation.attemptId||execution.operationId!==preparation.operationId||!sameRepeatValue(execution.acceptedSpec.workflowInput,preparation.input)))repeatConflict('JOB_PREPARATION_PIN_CONFLICT')
@@ -145,24 +193,24 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
     },async()=>[]) // The real pending Job node is captured by the same Run publication below.
     return {kind:'preparation',preparation,ref}
   })}
-  async admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpec):Promise<JobExecution>{return this.transaction(async context=>{
+  async admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpecRecord):Promise<JobExecutionRecord>{return this.transaction(async context=>{
     const node=this.node(context,ref);await this.occurrence(context,ref);const slotId=repeatSlotId(context.scope.runId,ref)
     const stored=(await context.sql.query<{preparation:unknown;bindings:unknown}>('select preparation,bindings from workflow_job_preparations where slot_id=$1 and run_id=$2',[slotId,context.scope.runId])).rows[0]
     if(!stored||!sameRepeatValue(stored.preparation,preparation)||preparation.inputDigest!==repeatDigest(preparation.input,4*1024*1024))repeatConflict('JOB_PREPARATION_PIN_CONFLICT')
     await this.recorded(context,'input.bind',repeatId('job-preparation',preparation.executionId))
     const prior=(await context.sql.query<{execution_id:string}>('select execution_id from run_repeat_executions where slot_id=$1 order by technical_attempt desc limit 1',[slotId])).rows[0]
     if(prior){await this.slot(context,ref,prior.execution_id);const value=await this.jobs.read(context.sql,prior.execution_id);this.assertExecution(context,ref,value,preparation);await this.recorded(context,'input.bind',value.id);return value}
-    let execution:JobExecution|undefined
+    let execution:JobExecutionRecord|undefined
     const bare={kind:'job' as const,workflowNodeId:node.id,executionId:preparation.executionId,jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,attempt:1}
     const bindings=z.array(z.object({bindingId:GraphIdSchema,recipient:GraphExecutionIdentitySchema,recipientOccurrence:RepeatOccurrenceIdentityV1Schema.nullable(),inputDigest:GraphDigestSchema,source:z.union([Source,Entry.shape.carry.unwrap()]),kind:z.enum(['predecessor','external','carry']),ordinal:z.number().int().nonnegative()}).strict()).parse(stored.bindings)
     await this.effect(context,'input.bind',preparation.executionId,{ref,identity:bare,inputDigest:preparation.inputDigest,spec},async()=>{
-      execution=JobExecutionSchema.parse(await this.jobs.admitPrepared(context.sql,ref,preparation,spec));this.assertExecution(context,ref,execution,preparation)
+      execution=JobExecutionRecordSchema.parse(await this.jobs.admitPrepared(context.sql,ref,preparation,spec));this.assertExecution(context,ref,execution,preparation)
       await context.sql.query('insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity) values($1,$2,$3,$4,1,null,$5::jsonb)',[execution.id,context.scope.runId,slotId,ref.occurrence?.occurrenceId??null,JSON.stringify(ref.occurrence?workflowJobIdentity(execution,node,ref.occurrence):bare)])
       for(const binding of bindings){if(!sameRepeatValue(binding.recipient,bare)||binding.inputDigest!==preparation.inputDigest||!sameRepeatValue(binding.recipientOccurrence,ref.occurrence))repeatConflict('JOB_PREPARATION_PIN_CONFLICT');await context.sql.query('insert into run_repeat_bindings(binding_id,run_id,recipient_execution_id,source_execution_id,source_result_digest,input_digest,slot_id,ordinal,record) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[binding.bindingId,context.scope.runId,execution.id,binding.source.execution.executionId,binding.source.acceptedResultDigest,binding.inputDigest,slotId,binding.ordinal,JSON.stringify(binding)])}
     },async()=>[{type:'repeat.execution',execution:{identity:qualifyRepeatGraphExecution(bare,ref.occurrence),inputDigest:preparation.inputDigest,previousExecutionId:null,state:'queued',resultOutcome:null}},...bindings.map(binding=>({type:'repeat.input.bound' as const,binding:{bindingId:binding.bindingId,recipient:qualifyRepeatGraphExecution(bare,ref.occurrence),sender:qualifyRepeatGraphExecution(binding.source.execution,'decisionId' in binding.source?binding.source.execution.occurrence:binding.source.occurrence),acceptedResultDigest:binding.source.acceptedResultDigest,inputDigest:binding.inputDigest,ordinal:binding.ordinal,kind:binding.kind,relationshipId:'relationshipId' in binding.source?binding.source.relationshipId:null,decisionId:'decisionId' in binding.source?binding.source.decisionId:null}}))])
     if(!execution)repeatConflict('JOB_PREPARATION_PIN_CONFLICT');return execution
   })}
-  async observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecution>{return this.transaction(async context=>{this.node(context,ref);await this.slot(context,ref,executionId);const execution=await this.jobs.read(context.sql,executionId);this.assertExecution(context,ref,execution);await this.publication.observe(context.sql,context.scope,execution);return execution})}
+  async observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecutionRecord>{return this.transaction(async context=>{this.node(context,ref);await this.slot(context,ref,executionId);const execution=await this.jobs.read(context.sql,executionId);this.assertExecution(context,ref,execution);await this.publication.observe(context.sql,context.scope,execution);return execution})}
   async acceptJobTerminal(ref:RepeatNodeRef,executionId:string):Promise<RepeatResolution>{return this.transaction(async context=>{
     this.node(context,ref);await this.slot(context,ref,executionId)
     const prior=(await this.resolutions(context,ref.occurrence?.occurrenceId??null)).get(ref.nodeId)

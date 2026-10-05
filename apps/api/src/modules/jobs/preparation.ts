@@ -1,8 +1,15 @@
+import { JobAuthoringChoicesRecordSchema, type JobAuthoringChoicesRecord } from '@foreman-code/contracts/job-verification'
 import {
-  JobExecutionSchema, JobDefinitionSchema, JobAuthoringChoicesSchema, PreparedJobSpecSchema, isAutoJobSpec,
-  type JobAuthoringChoices, type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
-  type JobExecution, type PreparedJobSpec,
-} from '@foreman-code/contracts/jobs'
+  JobExecutionRecordSchema,
+  JobDefinitionRecordSchema,
+  PreparedJobSpecRecordSchema,
+  isAutoJobSpecRecord,
+  type JobDefinitionRecord,
+  type JobDefinitionSpecRecord,
+  type ResolvedJobDefinitionSpecRecord,
+  type JobExecutionRecord,
+  type PreparedJobSpecRecord,
+} from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
@@ -19,22 +26,22 @@ import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 export interface JobPreparationSources {
-  revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution,
+  revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord,
     options?: { requireQualification: boolean }):Promise<void>
   /** Actual W12 computer/root, W09 scoped snapshot and CI-A qualified profile readbacks. No probes/install side effects. */
-  adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
-  choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string):Promise<JobAuthoringChoices>
+  adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord):Promise<void>
+  choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string):Promise<JobAuthoringChoicesRecord>
   /** Real W09 verified private repository materialization, bound to this genuine job/attempt. */
-  materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<PreparedJobSpec>
+  materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}):Promise<PreparedJobSpecRecord>
 }
 
 interface QueuePreparationPorts {
   configuration: JobQueueConfiguration
   placement: JobComputerSelection
-  prepare(principal: ManagementPrincipal, definition: JobDefinition, ticket: JobQueueTicket): Promise<PreparedJobSpec>
-  admit(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
-    prepared: PreparedJobSpec, ticket: JobQueueTicket): Promise<JobExecution>
-  wake(execution: JobExecution): Promise<void>
+  prepare(principal: ManagementPrincipal, definition: JobDefinitionRecord, ticket: JobQueueTicket): Promise<PreparedJobSpecRecord>
+  admit(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
+    prepared: PreparedJobSpecRecord, ticket: JobQueueTicket): Promise<JobExecutionRecord>
+  wake(execution: JobExecutionRecord): Promise<void>
   closePreparation?(ticket: JobQueueTicket): Promise<void>
 }
 
@@ -51,7 +58,7 @@ export class JobQueuePreparation {
     if (!order) return tasks
     const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
     const cleanups: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
-    let recoveries: JobExecution[]
+    let recoveries: JobExecutionRecord[]
     const barriers: { id: string; hosts: string[]; claims: number }[] = []
     try {
       const terminal = await order.connection.query<{ record: unknown }>(`select q.record
@@ -69,7 +76,7 @@ export class JobQueuePreparation {
               where m.operation_id=e.operation_id and m.state<>'closed')
             or exists(select 1 from job_computer_selections s
               where s.execution_id=e.id and s.released_at is null))`)
-      recoveries = accepted.rows.map(row => JobExecutionSchema.parse(row.record))
+      recoveries = accepted.rows.map(row => JobExecutionRecordSchema.parse(row.record))
       for (const pendingTicket of pending) {
         order.assertOwned()
         if (this.work.has(pendingTicket.executionId)) continue
@@ -174,7 +181,7 @@ export class JobQueuePreparation {
       .flatMap(barrier => barrier.hosts))
     let claim
     try {
-      claim = await this.ports.placement.claim(sql, principal, JobDefinitionSchema.parse(ticket.definition), ticket,
+      claim = await this.ports.placement.claim(sql, principal, JobDefinitionRecordSchema.parse(ticket.definition), ticket,
         { excludedHosts: excluded, placementOverride: ticket.placementOverride, limits: ticket.resources.limits })
     } catch (error) {
       if (!(error instanceof DomainError)) throw error
@@ -249,12 +256,12 @@ export class JobQueuePreparation {
   }
 
   private async prepare(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
-    let executionToWake: JobExecution | null
+    let executionToWake: JobExecutionRecord | null
     try {
       const principal = await owner.connection.transaction(sql => this.principal(sql, original))
       await owner.connection.transaction(sql => requireJobPreparationDeadline(sql, 'manual', original.executionId,
         original.definition.spec.policy.preparationTimeoutMs, this.clock().getTime()))
-      const prepared = await this.ports.prepare(principal, JobDefinitionSchema.parse(original.definition), original)
+      const prepared = await this.ports.prepare(principal, JobDefinitionRecordSchema.parse(original.definition), original)
       owner.assertOwned()
       executionToWake = await owner.connection.transaction(async sql => {
         await lockActiveWorkspace(sql, original.workspaceId)
@@ -268,7 +275,7 @@ export class JobQueuePreparation {
         await requireJobPreparationDeadline(sql, 'manual', ticket.executionId,
           ticket.definition.spec.policy.preparationTimeoutMs, this.clock().getTime())
         await this.fence(sql, owner, ticket)
-        const execution = await this.ports.admit(sql, live, JobDefinitionSchema.parse(ticket.definition), prepared, ticket)
+        const execution = await this.ports.admit(sql, live, JobDefinitionRecordSchema.parse(ticket.definition), prepared, ticket)
         await this.repository.putQueueTicket(sql, { ...ticket, state: 'accepted', waitingReasons: [] })
         return execution
       })
@@ -300,18 +307,18 @@ export class JobQueuePreparation {
 /** Source/target/profile authority is drawn from current inventory, never trusted caller attestations. */
 export class JobPreparationService implements JobPreparationPort {
   constructor(private readonly sources:JobPreparationSources) {}
-  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution,
+  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord,
     options?: { requireQualification: boolean }) {
     await this.sources.revalidateAccepted(sql,principal,execution,options)
   }
-  async adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
+  async adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord) {
     await this.sources.adoptFinalBinding(sql,principal,execution)
   }
   async choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string) {
-    return JobAuthoringChoicesSchema.parse(await this.sources.choices(sql,principal,workspaceId))
+    return JobAuthoringChoicesRecordSchema.parse(await this.sources.choices(sql,principal,workspaceId))
   }
-  async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpec) {
-    if (isAutoJobSpec(spec)) return { valid: false, reasons: ['AUTO_SOURCE_VALIDATION_UNAVAILABLE'], sideEffects: false as const }
+  async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpecRecord) {
+    if (isAutoJobSpecRecord(spec)) return { valid: false, reasons: ['AUTO_SOURCE_VALIDATION_UNAVAILABLE'], sideEffects: false as const }
     const choices=await this.choices(sql,principal,workspaceId),reasons:string[]=[]
     const target=choices.targets.find(choice=>canonical(choice.target)===canonical(spec.target))
     if(!target)reasons.push('TARGET_AUTHORITY_CHANGED')
@@ -320,9 +327,9 @@ export class JobPreparationService implements JobPreparationPort {
     if(!choices.policies.some(policy=>canonical(policy)===canonical(spec.policy)))reasons.push('ISOLATION_POLICY_UNAVAILABLE')
     return {valid:reasons.length===0,reasons,sideEffects:false as const}
   }
-  async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpec,identity:{executionId:string;attemptId:string;operationId:string}) {
+  async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}) {
     const ready=await this.validate(sql,principal,workspaceId,spec)
     if(!ready.valid)throw new DomainError('JOB_NOT_READY','Current source, target or isolation authority does not match the saved job.',409,{reasons:ready.reasons})
-    return PreparedJobSpecSchema.parse(await this.sources.materialize(sql,principal,workspaceId,spec,identity))
+    return PreparedJobSpecRecordSchema.parse(await this.sources.materialize(sql,principal,workspaceId,spec,identity))
   }
 }
