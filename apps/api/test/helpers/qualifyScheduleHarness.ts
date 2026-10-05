@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
@@ -93,7 +94,15 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     const submitted = (await service.run(principal, 'http', 'codex')).qualification
     await service.join()
     const result = await repository.find('codex', submitted.version, submitted.binarySha256!, submitted.suiteRevision)
-    if (result?.status !== 'qualified') throw new Error(`Native qualification did not pass: ${result?.failureReason}`)
+    if (result?.status !== 'qualified') {
+      const evidenceDirectory = process.env.ENG03_A_EVIDENCE_DIR
+      if (evidenceDirectory && result) {
+        await writeFile(join(evidenceDirectory, `schedule-qualification-${randomUUID()}.json`),
+          JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 })
+      }
+      const failedChecks = result?.checks.filter(check => !check.passed).map(check => check.id).join(', ')
+      throw new Error(`Native qualification did not pass (${failedChecks || 'no completed checks'}): ${result?.failureReason}`)
+    }
     for (const value of settings) {
       const checked = await runWithReadOnlyQualification(qualifications, () => checks.check(principal, 'http', {
         commandId: randomUUID(), instanceId: value.instanceId, expectedRevision: value.revision, target: value.target,
