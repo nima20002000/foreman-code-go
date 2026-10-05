@@ -37,3 +37,9 @@ test('acceptance rejects empty selections, broad filters and paths outside API t
     assert.throws(() => nativeAcceptanceFiles(args), /explicit API acceptance test paths/)
   }
 })
+
+test('physical transfer and provider cases are selected explicitly as acceptance suites', () => {
+  const files = ['src/modules/byte-transfer/rsync.physical.acceptance.test.ts',
+    'test/codex-app-server.live.acceptance.test.ts']
+  assert.deepEqual(nativeAcceptanceFiles(['--files', ...files]), files)
+})

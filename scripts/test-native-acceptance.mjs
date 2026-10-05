@@ -22,7 +22,7 @@ export function nativeAcceptanceFiles(args) {
   if (args.length === 0) return ['test/eng03-c-native.acceptance.test.ts']
   const [option, ...files] = args
   if (option !== '--files' || files.length === 0 || files.some((file) =>
-    !/^test\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.acceptance\.test\.ts$/.test(file))) {
+    !/^(?:test|src\/modules)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.acceptance\.test\.ts$/.test(file))) {
     throw new Error('Use --files followed by explicit API acceptance test paths.')
   }
   return [...new Set(files)]

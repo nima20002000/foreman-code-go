@@ -1,3 +1,4 @@
+const fixtureGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
@@ -99,7 +100,7 @@ test('verification context binds reviewed seed provenance to committed dependenc
   t.mock.method(Date, 'now', () => f.options.now);
   const repository = join(f.directory, 'repository');
   await mkdir(repository);
-  const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const git = (...args) => execFileSync('git', args, { cwd: repository, env: fixtureGitEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-q');
   const manifests = new Map([
     ['package.json', '{"packageManager":"pnpm@11.27.0"}'],

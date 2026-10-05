@@ -11,7 +11,8 @@ import { readSeedFile, validateSeedReceipt, verifySeedFiles } from '../apps/work
 const controlRoot = 'apps/worker/artifacts/ci-runtime';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export async function buildCiRuntimeContext({ repository, commit = 'HEAD', output, offlineSeed }) {
-  const git = (...args) => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] });
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  const git = (...args) => execFileSync('git', args, { cwd: repository, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
   const captured = git('rev-parse', `${commit}^{commit}`).toString().trim();
   const tree = git('ls-tree', '-rz', '--full-tree', captured).toString().split('\0').filter(Boolean).map(line => {
     const tab = line.indexOf('\t');
