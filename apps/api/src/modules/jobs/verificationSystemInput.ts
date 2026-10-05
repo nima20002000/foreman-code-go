@@ -1,3 +1,4 @@
+import { captureVerificationInventory } from '../../../../../scripts/verification-runner.mjs'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { JobVerificationOfflineSeedReceiptSchema, JobVerificationRepositoryContextSchema }
@@ -41,7 +42,8 @@ export function createVerificationSystemInput(input: {
     await verifyJobGitMounts(execution, source)
     signal.throwIfAborted()
     return JobVerificationRepositoryContextSchema.parse(verificationRepositoryContext({
-      execution, measurement: result.measurement, gitMounts: requireJobGitMounts(execution, source),
+      execution, measurement: result.measurement,
+      requiredPortions: captureVerificationInventory(source.privateRepositoryRoot, execution.acceptedSpec.verification.suite), gitMounts: requireJobGitMounts(execution, source),
       preseedFacts: { lockfileSha256: lockfile.sha256, pnpmVersion: '11.27.0',
         platform: seed.platform.os, architecture: seed.platform.arch,
         provenanceDigest: seed.provenanceDigest, minimumReleaseAgeMinutes: seed.minimumReleaseAge,

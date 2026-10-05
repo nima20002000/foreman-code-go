@@ -46,7 +46,8 @@ async function fixture(location: 'main' | 'device') {
         { path: '.logs/verification/logs.tar.gz', mediaType: 'application/gzip', kind: 'logs-archive', maxBytes: 65536, required: true },
       ] } })
   const spec = execution.acceptedSpec
-  const context = JobVerificationRepositoryContextSchema.parse({ identity: {
+  const context = JobVerificationRepositoryContextSchema.parse({
+    requiredPortions: [{ key: 'root:test', kind: 'node', files: ['observed.test.mjs'] }], identity: {
     commit: spec.source.commit, manifestDigest: spec.source.manifestDigest, definitionVersionId: spec.definitionVersionId,
     suite: spec.verification.suite, executionId: execution.id, attemptId: execution.attemptId,
     target: spec.target, profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters,
@@ -109,6 +110,39 @@ describe('trusted verification publication after interruption', () => {
       f.journal = await RemoteOperationJournal.open(f.journalPath)
       await createVerificationPublication(f.journal)(f.execution, f.terminal)
       expect(hash(await readFile(join(f.reports, 'summary.json')))).toBe(hash(bytes))
+    } finally { await f.journal.close() }
+  })
+  it.each(['commands', 'files', 'summary'] as const)('cannot credit a workload-replaced %s inventory after restart', async change => {
+    const f = await fixture('main')
+    try {
+      const parts = join(f.reports, 'parts')
+      if (change === 'commands') {
+        await writeFile(join(parts, 'state.json'), JSON.stringify({
+          identity: (await f.journal.jobNativeOwner(f.execution.operationId))!.verification!.context.identity,
+          startedAt: f.execution.createdAt, expected: [{ key: 'fake', kind: 'command' }],
+        }))
+        await writeFile(join(parts, 'fake.command.json'), JSON.stringify({ key: 'fake', code: 0,
+          startedAt: f.execution.createdAt, finishedAt: f.terminal.finishedAt }))
+      }
+      if (change === 'files') {
+        await writeFile(join(parts, 'root_test.inventory.json'), JSON.stringify(['fake.test.mjs']))
+        await writeFile(join(parts, 'root_test.node.ndjson'), JSON.stringify({ type: 'test:pass',
+          file: '/workspace/fake.test.mjs', name: 'fake pass', testType: 'test', duration: 1 }) + '\n')
+      }
+      if (change === 'summary') {
+        const context = (await f.journal.jobNativeOwner(f.execution.operationId))!.verification!.context
+        await writeFile(join(f.reports, 'summary.json'), JSON.stringify({ schemaVersion: 1, ...context.identity,
+          startedAt: f.execution.createdAt, finishedAt: f.terminal.finishedAt,
+          totals: { total: 1, passed: 1, failed: 0, skipped: 0 }, firstPassFailed: 0,
+          expectedPortions: 1, completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'passed' }))
+      }
+      await f.journal.close()
+      f.journal = await RemoteOperationJournal.open(f.journalPath)
+      await createVerificationPublication(f.journal)(f.execution, { ...f.terminal, outcome: 'succeeded', exitCode: 0 })
+      const report = JobVerificationReportSchema.parse(JSON.parse(await readFile(join(f.reports, 'summary.json'), 'utf8')))
+      expect(report.outcome).toBe('incomplete')
+      expect(report.completeness).toBe('partial')
+      expect(report.completedPortions).toBe(0)
     } finally { await f.journal.close() }
   })
   it('retains original absolute deadlines through restart and refuses new publication work after expiry', async () => {

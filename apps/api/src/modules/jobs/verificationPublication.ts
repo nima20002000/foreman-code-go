@@ -3,7 +3,7 @@ import { constants, openSync, fstatSync, writeFileSync, fsyncSync, closeSync, re
 import { open, rm, readdir, lstat, realpath, rmdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { expectedPortions, finalizeVerification } from '../../../../../scripts/verify-repository.mjs'
+import { finalizeVerification } from '../../../../../scripts/verification-runner.mjs'
 import { JobVerificationReportSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -38,7 +38,12 @@ export function createVerificationPublication(journal: RemoteOperationJournal) {
         throw error
       })
     const parsed = JobVerificationReportSchema.safeParse(existing)
-    if (parsed.success && parsed.data.finishedAt === terminal.finishedAt
+    const existingStat = await lstat(join(directory, 'summary.json')).catch(error => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (existingStat?.dev === reserve.device && existingStat.ino === reserve.inode
+      && parsed.success && parsed.data.finishedAt === terminal.finishedAt
       && Object.entries(retained.context.identity).every(([key, value]) =>
         isDeepStrictEqual(Reflect.get(parsed.data, key), value))) {
       for (const declaration of execution.acceptedSpec.outputs) {
@@ -89,7 +94,7 @@ export function createVerificationPublication(journal: RemoteOperationJournal) {
         throw error
       }
       state = { identity: retained.context.identity, startedAt: execution.startedAt ?? execution.createdAt,
-        expected: expectedPortions(root, execution.acceptedSpec.verification.suite) }
+        expected: retained.context.requiredPortions }
     }
     let outcome = 'failed'
     if (terminal.outcome === 'succeeded') outcome = 'passed'

@@ -6,7 +6,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
+import { copyVerificationRuntime, preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
@@ -227,4 +227,24 @@ test('readiness rejects conflicting installations and releases despite healthy A
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
+})
+
+test('staged verification runtime imports without invoking a CLI or requiring the source checkout', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-verification-runtime-'))
+  try {
+    await copyVerificationRuntime(new URL('..', import.meta.url).pathname, directory)
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e',
+        'const runtime = await import(process.argv[1]); console.log(typeof runtime.finalizeVerification)',
+        new URL(`file://${join(directory, 'scripts/verification-runner.mjs')}`).href],
+      { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', bytes => { stdout += bytes })
+      child.stderr.on('data', bytes => { stderr += bytes })
+      child.once('error', reject)
+      child.once('exit', code => resolve({ code, stdout, stderr }))
+    })
+    assert.deepEqual(result, { code: 0, stdout: 'function\n', stderr: '' })
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })

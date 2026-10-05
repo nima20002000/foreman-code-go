@@ -1,3 +1,4 @@
+import { captureVerificationInventory } from '../../../../../scripts/verification-runner.mjs'
 import { constants } from 'node:fs'
 import { mkdir, open, readFile, readlink, rm, statfs, writeFile, lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -24,7 +25,7 @@ import { prepareVerificationQualificationSource } from './verificationQualificat
 import { JobProjectQuotaReadbackSchema, readVerificationQuotaPool, verifyJobQuotaOwnership,
   type JobQuotaReader } from './quotaOwnership.js'
 import { JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
-import { jobDigest } from './service.js'
+import { jobDigest } from './digest.js'
 
 const reportFiles = ['summary.json', 'junit.xml', 'vitest.json', 'logs.tar.gz']
 const idle = 'setInterval(()=>{},1000)'
@@ -211,6 +212,7 @@ export async function qualifyVerificationRuntime(input: {
           suite, executionId: candidate.operationId, attemptId: `${candidate.qualificationId}:${suite}`, target,
           profile: profileIdentity, resources: fingerprint.resources,
           parameters: { unitWorkers: JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers, integrationShards: 1 } },
+        requiredPortions: captureVerificationInventory(source.sourceRoot, suite),
         privateGit: source.privateGit, executionTimeoutMs: candidate.profile.spec.policy.executionTimeoutMs,
         cancellationTimeoutMs: Math.max(1, candidate.profile.spec.policy.cancellationGraceMs),
         qualifiedUnitWorkers: JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,

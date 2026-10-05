@@ -1,6 +1,7 @@
+import { logArchive } from '../../../scripts/verification-reports.mjs'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import pg from 'pg'
@@ -59,7 +60,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     execution.acceptedSpec.outputs=[{path:outputPath,required:true,mediaType:'application/json'}]
     if (placementMode === 'verification') {
       const facts = verificationFixture()
-      execution = VerificationJobExecutionRecordSchema.parse({ ...execution, schemaVersion: 2,
+      execution = VerificationJobExecutionSchema.parse({ ...execution, schemaVersion: 2,
         acceptedSpec: { ...execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
           verification: facts.spec.verification, profile: facts.profile, reservationId: randomUUID(),
           lifecycle: verificationJobLifecycle(new Date().toISOString(), facts.spec.policy), outputs: [{ path: outputPath, required: true,
@@ -148,6 +149,30 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     await pool.query("update files set state='expired' where file_id=$1",[p.fileId])
     const expired=await app.inject({method:'GET',url:`${base}/${p.fileId}/revisions/${p.revisionId}/content`,headers:{authorization:`Bearer ${ownerToken}`}})
     expect(expired.statusCode).toBe(410)
+  })
+  it('publishes repetitive generated logs through canonical storage and reads persisted bytes', async () => {
+    await pool.query('update job_fixture_owner set revoked=false')
+    const job = JobExecutionRecordSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID() })
+    const logPath = '.logs/verification/logs.tar.gz'
+    const output = { path: logPath, required: true, mediaType: 'application/gzip',
+      ...(job.schemaVersion === 2 ? { kind: 'logs-archive', maxBytes: 65536 } : {}) }
+    job.acceptedSpec.outputs = [output] as typeof job.acceptedSpec.outputs
+    await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
+      [job.id, job.workspaceId, JSON.stringify(job), JSON.stringify(job.acceptedSpec), 'owner'])
+    const parts = join(root, `logs-${job.id}`)
+    await mkdir(parts)
+    await writeFile(join(parts, 'repetitive.log'), 'same line\n'.repeat(100000))
+    const original = data
+    data = logArchive(parts, 65536)
+    try {
+      const published = await artifacts.publishAccepted({ workspaceId: job.workspaceId,
+        executionId: job.id, attemptId: job.attemptId, owner: job.owner, commandId: randomUUID(),
+        path: logPath, mediaType: 'application/gzip', sha256: digest(data), byteSize: data.length })
+      const owner = await new PostgresAccessService(pool).authenticate(ownerToken)
+      const read = await artifacts.read(pool, owner!, job.workspaceId, job.id,
+        published.artifact.fileId, published.artifact.revisionId, 'mcp')
+      expect(read.bytes).toEqual(data)
+    } finally { data = original }
   })
   if (placementMode === 'verification') {
   it.each(['commit', 'attempt', 'failed', 'skipped', 'partial', 'oversized'] as const)(

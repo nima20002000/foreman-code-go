@@ -1,3 +1,4 @@
+const fixtureGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -31,6 +32,7 @@ function context(suite = 'unit') {
       approvalExpiresAt: '2026-10-05T13:00:00.000Z', qualificationExpiresAt: '2026-10-05T13:00:00.000Z' },
   }, privateGit: { sourceCommit: 'b'.repeat(40), generatedCommit: 'c'.repeat(40),
     repositoryReceiptDigest: digest, configDigest: digest, indexDigest: digest },
+  requiredPortions: [{ key: 'root:install', kind: 'command' }],
   mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
   limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
     logsArchiveBytes: 65536, logBytes: 8192 } }
@@ -52,16 +54,16 @@ test('private HEAD is checked against its generated receipt while reports retain
   const f = fixture()
   try {
     const git = (...args) => execFileSync('git', args, { cwd: f.root,
-      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8' }).trim()
+      env: fixtureGitEnvironment, encoding: 'utf8' }).trim()
     git('init', '--quiet')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
       '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--allow-empty', '-m', 'private snapshot')
     const configuration = context()
     configuration.privateGit.generatedCommit = git('rev-parse', 'HEAD')
     assert.notEqual(configuration.privateGit.generatedCommit, configuration.identity.commit)
-    assert.doesNotThrow(() => verifyPrivateGitHead(f.root, configuration))
+    assert.doesNotThrow(() => verifyPrivateGitHead(f.root, configuration, fixtureGitEnvironment))
     configuration.privateGit.generatedCommit = '0'.repeat(40)
-    assert.throws(() => verifyPrivateGitHead(f.root, configuration), /authenticated receipt/)
+    assert.throws(() => verifyPrivateGitHead(f.root, configuration, fixtureGitEnvironment), /authenticated receipt/)
     configuration.privateGit.sourceCommit = '0'.repeat(40)
     assert.throws(() => validateVerificationContext(configuration), /accepted source commit/)
   } finally { f.close() }
@@ -86,7 +88,8 @@ test('ordinary suites run their full root commands', () => {
   for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build']]) {
     assert.deepEqual(verificationCommand(context(suite)), ['corepack', 'pnpm', script])
   }
-  const install = { ...context('install'), storeDirectory: '/mutable/store', mutableDirectory: '/mutable',
+  const install = { ...context('install'), storeDirectory: '/mutable/store', requiredPortions: [{ key: 'root:install', kind: 'command' }],
+  mutableDirectory: '/mutable',
     preseedReceipt: {} }
   assert.deepEqual(verificationCommand(install), ['corepack', 'pnpm', 'install', '--frozen-lockfile',
     '--offline', '--prod=false', '--store-dir', '/mutable/store'])
@@ -102,7 +105,8 @@ test('missing policy inputs, excessive workers and report reservations fail clos
   tooLarge.identity.resources.reportBytes = 1024
   assert.throws(() => validateVerificationContext(tooLarge), /reservation/)
   assert.throws(() => verificationCommand({ ...context('install'), storeDirectory: undefined }), /private store/)
-  assert.throws(() => verificationCommand({ ...context('install'), mutableDirectory: '/mutable',
+  assert.throws(() => verificationCommand({ ...context('install'), requiredPortions: [{ key: 'root:install', kind: 'command' }],
+  mutableDirectory: '/mutable',
     storeDirectory: '/owner/store', preseedReceipt: {} }), /inside the Job/)
 })
 
@@ -172,7 +176,7 @@ test('finalization emits contract-valid summary, JUnit, Vitest JSON and a binary
   const f = fixture()
   try {
     receipt(f.directory, 'apps/api:build')
-    const configuration = context('build')
+    const configuration = { ...context('build'), requiredPortions: [{ key: 'apps/api:build', kind: 'command' }] }
     const summary = finalizeVerification(configuration, { root: f.root, directory: f.directory,
       state: { startedAt: new Date(Date.now() - 1000).toISOString(), expected: [{ key: 'apps/api:build', kind: 'command' }] },
       terminalOutcome: 'passed', processStopped: true })

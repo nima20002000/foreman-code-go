@@ -35,6 +35,7 @@ describe('immutable job input copies',()=>{
     runtimeApprovalId: '11111111-1111-4111-8111-111111111111', runtimeApprovalRevision: 1 })
   const execution = VerificationJobExecutionSchema.parse({ ...f.execution, schemaVersion: 2, acceptedSpec })
   const context = JobVerificationRepositoryContextSchema.parse({
+    requiredPortions: [{ key: 'root:install', kind: 'command' }],
     identity: { commit: acceptedSpec.source.commit, manifestDigest: acceptedSpec.source.manifestDigest,
       definitionVersionId: acceptedSpec.definitionVersionId, suite: acceptedSpec.verification.suite,
       executionId: execution.id, attemptId: execution.attemptId, target: acceptedSpec.target,

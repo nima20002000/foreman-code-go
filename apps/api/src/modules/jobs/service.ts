@@ -1,3 +1,4 @@
+import { jobDigest } from './digest.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
@@ -42,7 +43,7 @@ import { acceptVerificationSpec } from './verificationAcceptance.js'
 import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import type { JobCancellationRecoveryApply } from '@foreman-code/contracts/job-cancellation-recovery'
 
-export const jobDigest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex')
+export { jobDigest } from './digest.js'
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input)
   if (!result.success) throw new DomainError('INVALID_REQUEST','The request does not match the job contract.',400)

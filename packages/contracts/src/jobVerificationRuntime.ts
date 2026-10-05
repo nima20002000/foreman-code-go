@@ -43,6 +43,12 @@ export const JobVerificationPreseedFactsSchema = z.object({
 export const JobVerificationRepositoryContextSchema = z.object({
   identity: JobVerificationPassSchema.shape.expected,
   privateGit: JobVerificationPrivateGitSchema,
+  requiredPortions: z.array(z.object({ key: IdSchema, kind: z.enum(['command', 'bootstrap', 'vitest', 'node']),
+    files: z.array(z.string().min(1)).min(1).optional() }).strict().superRefine((portion, context) => {
+      if (['vitest', 'node'].includes(portion.kind) && !portion.files) {
+        context.addIssue({ code: 'custom', message: 'Required test portions must retain their pre-launch file inventory.' })
+      }
+    })).min(1),
   executionTimeoutMs: DeviceSafeIntegerSchema.positive(),
   cancellationTimeoutMs: DeviceSafeIntegerSchema.positive(),
   qualifiedUnitWorkers: DeviceSafeIntegerSchema.min(1).max(256),

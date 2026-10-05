@@ -1,3 +1,4 @@
+import { canonical } from './digest.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import {
@@ -129,9 +130,5 @@ export class JobRepository {
     return rows.rows.map(row => JobLogChunkSchema.parse({executionId, attemptId: row.attempt_id, sequence:Number(row.sequence), stream:row.stream, text:row.text, byteSize:row.byte_size, createdAt:row.created_at.toISOString()}))
   }
 }
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(item=>item===undefined?'null':canonical(item)).join(',')}]`
-  if (value && typeof value === 'object') return `{${Object.entries(value).filter(([,item])=>item!==undefined).sort(([a],[b]) => a<b?-1:a>b?1:0).map(([key,item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
-  return JSON.stringify(value)
-}
+export { canonical } from './digest.js'
 export function sameLog(left: JobLogChunk, right: JobLogChunk): boolean { return canonical(left) === canonical(right) }

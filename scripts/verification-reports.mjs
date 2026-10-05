@@ -236,7 +236,7 @@ export function logArchive(directory, maxBytes) {
   if (realpathSync(directory) !== resolve(directory)) throw new Error('Archive directory contains a symlink')
   // Bound the uncompressed input too, so publication cannot allocate an unbounded buffer.
   const entries = []
-  let remaining = Math.max(0, maxBytes - 2048)
+  let remaining = Math.max(0, Math.min(maxBytes, 128 * 1024 * 1024) - 4096)
   let index = 0
   const inventory = { includedFiles: 0, truncatedFiles: 0, omittedFiles: 0, sourceBytes: 0 }
   const visit = (path) => {
@@ -263,7 +263,9 @@ export function logArchive(directory, maxBytes) {
   }
   visit(directory)
   const manifest = tarEntry('archive-index.json', Buffer.from(JSON.stringify(inventory)))
-  const archive = gzipSync(Buffer.concat([manifest, ...entries, Buffer.alloc(1024)]))
+  const tar = Buffer.concat([manifest, ...entries, Buffer.alloc(1024)])
+  let archive = gzipSync(tar)
+  if (tar.length > archive.length * 100) archive = gzipSync(tar, { level: 0 })
   if (archive.length > maxBytes) throw new Error('Log archive exceeds its declared byte limit')
   return archive
 }
