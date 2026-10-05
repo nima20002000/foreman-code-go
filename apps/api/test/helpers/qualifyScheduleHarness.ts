@@ -42,6 +42,21 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     kind: 'native-qualification', root: f.database.directory, registryDirectory,
     schema: f.database.schema, databaseUrl: process.env.TEST_DATABASE_URL!,
   })
+  const startedAt = new Date().toISOString()
+  const phases: { operation: string; event: string; elapsedMs?: number; errorName?: string }[] = []
+  const observe = async <T>(operation: string, action: () => Promise<T>): Promise<T> => {
+    const started = performance.now()
+    phases.push({ operation, event: 'started' })
+    try {
+      const result = await action()
+      phases.push({ operation, event: 'completed', elapsedMs: performance.now() - started })
+      return result
+    } catch (error) {
+      phases.push({ operation, event: 'failed', elapsedMs: performance.now() - started,
+        errorName: error instanceof Error ? error.name : 'unknown' })
+      throw error
+    }
+  }
   const factories = new NativeHarnessFactories({
     codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, openCodeBinary: 'opencode',
     instances: registry.instances, installations: registry.installations,
@@ -53,7 +68,9 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       if (!await processes.closeOwner(recovery.owner)) throw new Error('Native qualification process closure is unconfirmed.')
     },
   })
-  const assertInstallation = factories.assertInstallationUnchanged.bind(factories)
+  const validateInstallation = factories.assertInstallationUnchanged.bind(factories)
+  const assertInstallation: typeof validateInstallation = (...args) =>
+    observe('installed-payload-validation', () => validateInstallation(...args))
   const wrap = (suite: typeof codexQualificationSuite) => withQualificationIdentity(
     withNativeQualificationOwnership(suite, processes, () => {
       const binding = registry.pinDefault(suite.harness)
@@ -66,10 +83,19 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
   const service = new HarnessQualificationService(repository, qualifications, suites,
     { codex: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, opencode: 'opencode' },
     f.commands, defaults, undefined, undefined,
-    (_harness, _binary, timeoutMs) => scopedCompatibilityProbe({ registry: processes,
-      pin: harness => registry.pinDefault(harness),
-      assertInstallation,
-      workingDirectory: f.runtimeRoot, timeoutMs }),
+    (_harness, _binary, timeoutMs) => {
+      const probe = scopedCompatibilityProbe({ registry: processes,
+        pin: harness => registry.pinDefault(harness), assertInstallation,
+        workingDirectory: f.runtimeRoot, timeoutMs })
+      return {
+        inspect: (...args: Parameters<typeof probe.inspect>) =>
+          observe('version-inspection', () => probe.inspect(...args)),
+        probe: (...args: Parameters<typeof probe.probe>) => observe('schema-export', () => probe.probe(...args)),
+        assertUnchanged: (...args: Parameters<typeof probe.assertUnchanged>) =>
+          observe('launcher-validation', () => probe.assertUnchanged(...args)),
+        close: () => observe('diagnostic-cleanup', async () => { await probe.close?.() }),
+      }
+    },
     (_harness, signal) => registry.refreshMain(signal))
   const checks = new HostHarnessInstanceProfileChecks(new HarnessInstanceSettingsRepository(f.database.pool),
     new HostHarnessProfileEvidenceRepository(f.database.pool), f.commands, authority,
@@ -79,8 +105,9 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
   const failures: unknown[] = []
   const cleanupFailures: unknown[] = []
   try {
-    const submitted = (await service.run(principal, 'http', 'codex')).qualification
-    await service.join()
+    const submitted = (await observe('qualification-preparation', () => service.run(principal, 'http', 'codex')))
+      .qualification
+    await observe('qualification-suite', () => service.join())
     const result = await repository.find('codex', submitted.version, submitted.binarySha256!, submitted.suiteRevision)
     if (result?.status !== 'qualified') {
       if (result) {
@@ -115,6 +142,14 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     catch (error) { cleanupFailures.push(error) }
   }
   failures.push(...cleanupFailures)
+  try {
+    await writeNativeAcceptanceEvidence(`schedule-qualification-diagnostics-${randomUUID()}.json`, {
+      startedAt, schema: f.database.schema, registryDirectory, runtime: process.execPath, phases,
+      failed: failures.length > 0, cleanupConfirmed: cleanupFailures.length === 0,
+    })
+  } catch (error) {
+    failures.push(error)
+  }
   if (failures.length === 1) throw failures[0]
   if (failures.length > 1) throw new AggregateError(failures, 'Native schedule qualification or cleanup failed.')
 }
