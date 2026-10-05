@@ -89,7 +89,7 @@ export async function createCodexLiveApplication(binary: string, directory: stri
     return { manager, restored, input, close }
   } catch (error) {
     try { await close() } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Native application setup and cleanup failed.')
+      throw new AggregateError([error, cleanupError], 'Native application setup and cleanup failed.', { cause: cleanupError })
     }
     throw error
   }
