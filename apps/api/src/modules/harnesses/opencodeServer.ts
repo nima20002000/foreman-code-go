@@ -26,7 +26,7 @@ import {
   type PendingNativeInteraction,
 } from '@foreman-code/contracts'
 
-import { HarnessExecutionError } from './errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
 import { openCodeOptions } from './operatorOptions.js'
 import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
@@ -233,6 +233,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {
+      let creationAttempted = false
+      let creationAccepted = false
       try {
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
@@ -243,7 +245,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         await this.assertConfiguration(configuration, directory, combined)
         await this.applyMcpControls(configuration, directory, combined)
         const [providerID, ...model] = configuration.model.split('/')
-        const response = object(await this.mutate(withDirectory('/session', directory), {
+        creationAttempted = true
+        const value = await this.mutate(withDirectory('/session', directory), {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${input.request.executionId}`,
@@ -251,7 +254,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             model: { providerID, id: model.join('/'), variant: configuration.variant },
             permission: nativePolicy(configuration),
           }),
-        }, combined))
+        }, combined)
+        creationAccepted = true
+        const response = object(value)
         if (typeof response.id !== 'string' || !response.id) {
           throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session creation may have succeeded but did not return a native identity.', 'uncertain')
         }
@@ -261,7 +266,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
         return session
-      } catch (error) { return this.cleanupFailedSetup(error) }
+      } catch (error) {
+        const notCreated = !creationAttempted || !creationAccepted
+          && error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
+        return this.cleanupFailedSetup(new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error))
+      }
     })
   }
 
@@ -269,6 +278,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   forkSession(source: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {
+      let creationAttempted = false
+      let creationAccepted = false
       try {
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
@@ -279,9 +290,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.validateReference(source)
         await this.assertConfiguration(configuration, directory, combined)
         await this.options.server.importFileSession?.(source.nativeSessionId, directory, combined)
-        const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
+        creationAttempted = true
+        const value = await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-        }, combined, true, 'OPENCODE_SESSION_NOT_FOUND'))
+        }, combined, true, 'OPENCODE_SESSION_NOT_FOUND')
+        creationAccepted = true
+        const response = object(value)
         if (typeof response.id !== 'string' || !response.id || response.id === source.nativeSessionId) {
           throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session fork may have succeeded but did not return a new native identity.', 'uncertain')
         }
@@ -295,7 +309,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
         return NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: this.providerVersion, nativeSessionId: response.id })
-      } catch (error) { return this.cleanupFailedSetup(error) }
+      } catch (error) {
+        const notCreated = !creationAttempted || !creationAccepted
+          && error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
+        return this.cleanupFailedSetup(new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error))
+      }
     })
   }
 
@@ -1748,7 +1766,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     // Session setup is serialized, including cleanup: another setup cannot be in flight here.
     if (!this.sessions.size) {
       try { await this.disposeUnusedServer() } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Session setup and unused-server cleanup both failed.', { cause: cleanupError })
+        const combined = new AggregateError([error, cleanupError],
+          'Session setup and unused-server cleanup both failed.', { cause: cleanupError })
+        if (error instanceof NativeDeliveryError) {
+          throw new NativeDeliveryError(error.operation, error.delivery, combined, 'pending')
+        }
+        throw combined
       }
     }
     throw error
