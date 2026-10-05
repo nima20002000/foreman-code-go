@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { assertTestPath, completeTestResourceCleanup, createFixtureSchema, createTestDatabase,
+import { assertTestPath, completeTestResourceCleanup, createFixtureDatabase, createFixtureSchema,
   dropFixtureDatabase, ownedTestDatabaseUrl, ownedTestPath, registerTestResourceCleanup,
   testAdminPool, testEnvironment } from './test-resources.mjs'
 import { stopGroup } from './integration-process.mjs'
@@ -75,7 +75,12 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   let cleanupId
   const record = { name: null, created: false, exitCode: null, removed: false }
   try {
-    resource = await createTestDatabase(admin, invocation)
+    const name = `graphql_native_${randomUUID().replaceAll('-', '')}_test`
+    const parent = new Pool({ connectionString: parentUrl, max: 1 })
+    try { await createFixtureDatabase(parent, name) } finally { await parent.end() }
+    const database = new URL(parentUrl)
+    database.pathname = `/${name}`
+    resource = { ...invocation, name, databaseUrl: database.toString() }
     record.name = resource.name
     record.created = true
     cleanupId = registerTestResourceCleanup(invocation,
