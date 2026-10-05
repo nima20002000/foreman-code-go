@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), '..')
 const require = createRequire(import.meta.url)
@@ -228,7 +229,7 @@ function outputHash(kind) {
 function freshBuild(kind) {
   // The API build also probes installed harness binaries and environment.
   // Those can change without any source or output change, so always run it.
-  if (kind === 'api') return { fresh: false, stamp: null }
+  if (kind === 'api' || process.env.GRAPHQL_VERIFICATION_ROOT === root) return { fresh: false, stamp: null }
   if (!outputs[kind]) return { fresh: false, stamp: null }
   const signature = inputHash(kind)
   const stamp = join(root, '.logs', `heavy-build-${kind}.json`)
@@ -265,6 +266,9 @@ async function main() {
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
   const command = process.argv.slice(divider + 1)
+  const reported = process.env.GRAPHQL_VERIFICATION_ROOT === root
+    && (buildKind || command[0] === 'vitest' || command[0] === 'tsc' || command[0] === 'eslint'
+      || (command[0].endsWith('/node') || command[0] === 'node') && command.includes('--test'))
   const inheritedToken = readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN')
   const inherited = [readJson(join(active, 'owner.json')), ...(existsSync(running) ? slotRecords() : [])].find((record) => inheritedToken && record?.token === inheritedToken)
   const nested = inherited?.token && readProductEnvironment(process.env, 'HEAVY_JOB_COMMON') === common && readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN') === inherited.token
@@ -272,6 +276,12 @@ async function main() {
   if (nested) {
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] ${buildKind} build is current in this worktree`); return }
+    if (reported) {
+      const { runVerificationCommand } = await import('./verification-reports.mjs')
+      process.exitCode = await runVerificationCommand(command, { root, cwd: process.cwd(), env: process.env,
+        script: process.env.npm_lifecycle_event })
+      return
+    }
     const child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: process.env })
     process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve(code ?? (signal ? 128 + (signal === 'SIGINT' ? 2 : 15) : 1))) })
     if (buildKind && process.exitCode === 0) stampBuild(buildKind, freshness)
@@ -309,7 +319,11 @@ async function main() {
     mkdirSync(tempPath)
     writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, FOREMAN_CODE_HEAVY_BASE_TMPDIR: baseTmp, FOREMAN_CODE_HEAVY_JOB_COMMON: common, FOREMAN_CODE_HEAVY_JOB_TOKEN: token, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
-    child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
+    const launch = reported
+      ? [process.execPath, fileURLToPath(new URL('./verification-reports.mjs', import.meta.url)), '__command',
+        root, process.cwd(), process.env.npm_lifecycle_event, ...command]
+      : command
+    child = spawn(launch[0], launch.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
     for (const path of [join(active, 'owner.json'), join(running, ticket), ticketPath, join(tempPath, 'owner.json')]) {
       const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, phase: 'running', ...([join(active, 'owner.json'), join(running, ticket)].includes(path) ? { tempPath } : {}) }))
