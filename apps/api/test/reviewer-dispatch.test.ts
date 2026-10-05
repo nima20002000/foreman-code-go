@@ -251,6 +251,50 @@ async function enqueue(f: ReturnType<typeof fixture>) {
   return f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
 }
 
+for (const source of ['callback', 'event'] as const) test(`persists the reviewer turn from its ${source} before native proof capture`, async () => {
+  const f = fixture()
+  const capturedTurns: Array<string | undefined> = []
+  f.runtime.captureReviewNative = (executionId, reference, job, lane, original) => {
+    if (original.type === 'event' && original.event.type === 'turn.started') {
+      capturedTurns.push(f.coordination.lane.currentTurnOrMessageId)
+    }
+    return f.coordination.captureNative(executionId, reference, job, lane, original)
+  }
+  f.manager.startTurn = async function* (_reference, input) {
+    if (source === 'callback') await input.onSubmitted?.('native-turn')
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    yield endEvent()
+  }
+  await enqueue(f)
+  await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.deepEqual(capturedTurns, ['native-turn'])
+})
+
+test('publishes the reviewer acknowledgement after native proof becomes available', async () => {
+  const f = fixture()
+  const transition = f.coordination.transitionReviewJob.bind(f.coordination)
+  f.coordination.transitionReviewJob = async (id, token, state, fields) => {
+    const result = await transition(id, token, state, fields)
+    if (state === 'acknowledged' && f.coordination.nativeEvents.length === 0) {
+      // Production defers public acknowledgement until the original native event is committed.
+      f.coordination.job = { ...result, state: 'submitted' }
+      delete f.coordination.job.acknowledgedAt
+      return clone(f.coordination.job)
+    }
+    return result
+  }
+  f.manager.startTurn = async function* (_reference, input) {
+    await input.onSubmitted?.('native-turn')
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    yield endEvent()
+  }
+  await enqueue(f)
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.ok(result?.acknowledgedAt)
+})
+
 async function remoteReviewerFixture() {
   const root = await mkdtemp(join(tmpdir(), 'remote-reviewer-'))
   const path = join(root, 'journal')
@@ -757,6 +801,7 @@ for (const state of ['submitted', 'acknowledged', 'uncertain', 'blocked_disconne
       leaseExpiresAt: new Date(Date.now() - 100).toISOString(), leaseToken: 'old' }
     f.coordination.pending = false
     f.coordination.lane.observedStatus = 'uncertain'
+    f.coordination.lane.correlationId = job.correlationId
     f.manager.reconcile = async (_session, correlation) => {
       assert.equal(correlation, job.correlationId)
       return history([startEvent(job.correlationId), endEvent()])

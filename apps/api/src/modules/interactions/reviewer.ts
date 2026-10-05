@@ -201,16 +201,20 @@ export class ReviewerDispatcher {
           })
           return job
         }
+        const recordProviderTurn = async (providerId: string) => {
+          await this.coordination.acknowledgeLaneTurn(lane.fence, job.correlationId, providerId)
+          lane.providerId = providerId
+        }
         const acknowledge = async (providerId: string) => {
           await check()
           workSignal.throwIfAborted()
           tracker.acknowledge(providerId)
           if (tracker.snapshot().identityConflict) throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT',
             'The review received conflicting native submission identities. It will not be replayed.', 409)
-          lane.providerId = providerId
-          if (!acknowledged || !job.providerTurnOrMessageId) {
+          await recordProviderTurn(providerId)
+          acknowledged = true
+          if (!job.acknowledgedAt || !job.providerTurnOrMessageId) {
             await transition('acknowledged', { providerTurnOrMessageId: providerId })
-            acknowledged = true
             lane.observedStatus = 'busy'
           }
         }
@@ -304,7 +308,7 @@ export class ReviewerDispatcher {
               const evidence = tracker.snapshot()
               if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
                 message: 'The review has conflicting native identities. No further native response will be sent.' })
-              if (evidence.providerId) lane.providerId = evidence.providerId
+              if (evidence.providerId) await recordProviderTurn(evidence.providerId)
               // pending() is the provider's current request, not a transcript scan.
               // Inspect while consuming the stream: an approval can block its next event forever.
               const pending = await lane.guard.wait(manager.pending(session, workSignal), workSignal)
@@ -334,7 +338,7 @@ export class ReviewerDispatcher {
           delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
           tracker.observeHistory(trackedHistory)
           const observedProviderId = tracker.snapshot().providerId
-          if (observedProviderId) lane.providerId = observedProviderId
+          if (observedProviderId) await recordProviderTurn(observedProviderId)
           const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
             { type: 'history', history: originalHistory })
           for (const event of normalizedEvents) {
