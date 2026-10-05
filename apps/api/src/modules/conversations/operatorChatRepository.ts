@@ -737,14 +737,16 @@ export class PostgresOperatorConversationRepository {
     const row = (await this.pool.query<{
       terminal_observation: OperatorTerminal['observation']
       native_closure_state: OperatorTerminal['closureState']
-      payload: { terminalHistory?: NativeHistory; terminalHistoryPersisted?: boolean }
-    }>(`select t.terminal_observation,t.native_closure_state,t.payload from operator_conversation_turns t
+      terminal_history: NativeHistory | null
+      terminal_history_persisted: boolean
+    }>(`select t.terminal_observation,t.native_closure_state,t.terminal_history,t.terminal_history_persisted
+      from operator_conversation_turns t
       join operator_conversations c on c.id=t.conversation_id and c.active_request_id=t.request_id
       where t.conversation_id=$1 and t.request_id=$2 and t.terminal_observation is not null`, [id, requestId])).rows[0]
     if (!row) return undefined
     return { observation: { ...row.terminal_observation, result: ExecutionResultSchema.parse(row.terminal_observation.result) },
-      closureState: row.native_closure_state, historyPersisted: row.payload.terminalHistoryPersisted === true,
-      ...(row.payload.terminalHistory ? { history: row.payload.terminalHistory } : {}) }
+      closureState: row.native_closure_state, historyPersisted: row.terminal_history_persisted,
+      ...(row.terminal_history ? { history: row.terminal_history } : {}) }
   }
 
   async journalTerminal(id: string, requestId: string, result: ExecutionResult,
@@ -769,8 +771,7 @@ export class PostgresOperatorConversationRepository {
         'nativeTurnId',active_native_turn_id,'nativeSubmission',payload->'nativeSubmission') as observation
       from owned
     ) update operator_conversation_turns t set terminal_observation=o.observation,
-      payload=case when $5::jsonb is null or t.payload ? 'terminalHistory' then t.payload
-        else t.payload || jsonb_build_object('terminalHistory',$5::jsonb) end,
+      terminal_history=coalesce(t.terminal_history,$5::jsonb),
       native_closure_state=coalesce(t.native_closure_state,'observed') from observed o
       where t.conversation_id=o.id and t.request_id=$2
         and (t.terminal_observation is null or t.terminal_observation=o.observation)
@@ -784,7 +785,7 @@ export class PostgresOperatorConversationRepository {
 
   async terminalHistoryPersisted(id: string, requestId: string): Promise<boolean> {
     return (await this.pool.query(`update operator_conversation_turns t
-      set payload=t.payload || '{"terminalHistoryPersisted":true}'::jsonb
+      set terminal_history_persisted=true
       from operator_conversations c where c.id=t.conversation_id and c.active_request_id=t.request_id
         and c.id=$1 and t.request_id=$2 and t.terminal_observation is not null returning t.request_id`,
     [id, requestId])).rowCount === 1
@@ -812,7 +813,7 @@ export class PostgresOperatorConversationRepository {
       if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
       const terminal = (await client.query<{ matches: boolean }>(`select
         (terminal_observation is null and $6::text='accepted') or (native_closure_state='closed'
-          and (not (payload ? 'terminalHistory') or payload->>'terminalHistoryPersisted'='true')
+          and (terminal_history is null or terminal_history_persisted)
           and terminal_observation->'result'=$3::jsonb
           and (terminal_observation->>'nativeMessageId') is not distinct from $4::text
           and (terminal_observation->>'retryable')::boolean=$5) as matches

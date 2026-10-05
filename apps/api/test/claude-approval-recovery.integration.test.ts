@@ -250,11 +250,13 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
           expect(state.activeRequestId).toBeNull()
           expect(state.messages).toContainEqual(expect.objectContaining({ content: 'Tool completed after approval.' }))
           expect(state.activities).toContainEqual(expect.objectContaining({ kind: 'file_read', status: 'completed' }))
-          const saved = (await pool.query(`select terminal_observation,native_closure_state,payload
+          const saved = (await pool.query(`select terminal_observation,native_closure_state,terminal_history,terminal_history_persisted
             from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, 'model-request'])).rows[0]
           expect(saved.native_closure_state).toBe('closed')
           expect(saved.terminal_observation.result.outcome).toBe('succeeded')
-          expect(saved.payload.terminalHistoryPersisted).toBe(true)
+          expect(saved.terminal_history_persisted).toBe(true)
+          expect(saved.terminal_history).toMatchObject({ correlationId: `operator:${id}:model-request`,
+            terminalResult: { outcome: 'succeeded' } })
           if (scenario === 'restart-after-terminal') {
             expect(closeRecoveredRuntime).toHaveBeenCalledTimes(1)
             expect(runtimes).toHaveLength(1)
