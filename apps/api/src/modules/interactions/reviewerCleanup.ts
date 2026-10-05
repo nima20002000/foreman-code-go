@@ -1,7 +1,6 @@
 import type { NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
-import { harnessProfile } from '../harnesses/qualification/profiles.js'
 import { reviewTurnEvidence } from './reviewerEvidence.js'
 
 function object(value: unknown): Record<string, unknown> {
@@ -24,10 +23,8 @@ export function reviewOwnsPermission(
       && typeof callback.toolUseId === 'string' && callback.toolUseId.length > 0
       && typeof callback.attemptId === 'string' && callback.attemptId.length > 0
   }
-  const profile = harnessProfile(session.harness, session.providerVersion)
-  if (profile === null) return false
   if (session.harness === 'codex') return request.turn.nativeTurnId === providerId
-  if (profile !== 'opencode-1.18.31' || request.nativeRequestType !== 'permission.asked') return false
+  if (request.nativeRequestType !== 'permission.asked') return false
   const permission = object(request.request)
   const messageId = object(permission.tool).messageID
   if (permission.id !== request.turn.nativeRequestId || permission.sessionID !== session.nativeSessionId

@@ -12,7 +12,7 @@ export const child = (overrides: Partial<RunSubagent> = {}) => RunSubagentSchema
   name: 'Research', status: 'running', evidence: 'confirmed',
   firstObservedAt: timestamp, startedAt: timestamp, finishedAt: null, lastObservedAt: timestamp,
   coverage: { transcript: 'partial', tools: 'partial', gaps: true },
-  capabilities: subagentCapabilities('codex-multi-agent-v2', '0.154.0'), ...overrides,
+  capabilities: subagentCapabilities('codex-multi-agent-v2'), ...overrides,
 })
 export const detail = (record = child()) => ({ subagent: record, availableActions: { sendInput: false, interrupt: false, blockedReason: 'NO_QUALIFIED_CONTROL' } })
 export const message = (id = 'message-1', text = 'Child answer') => RunSubagentMessageSchema.parse({

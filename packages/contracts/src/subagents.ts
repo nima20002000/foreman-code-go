@@ -89,14 +89,12 @@ export type RunSubagentCommandReceipt = z.infer<typeof RunSubagentCommandReceipt
 export const SUBAGENT_MCP_TOOLS = ['run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1',
   'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1'] as const
 
-/** OpenCode 1.18.31 idle input is covered by the native control qualification and authenticated MCP regression. */
-export function subagentCapabilities(mode: SubagentNativeMode, version: string): SubagentCapabilities {
+/** Native research support follows the observed mode contract. No app qualification follows from transport types or observed text. */
+export function subagentCapabilities(mode: SubagentNativeMode): SubagentCapabilities {
   const unverified = { support: 'unverified', qualification: 'unverified' } as const
   const observed = { support: 'supported', qualification: 'unverified' } as const
-  const codexMode = mode === 'codex-collab' || mode === 'codex-multi-agent-v2'
-  const codex = codexMode && ['0.154.0', '0.156.1'].includes(version.replace(/^codex-cli\s+/, ''))
-  const opencode = mode === 'opencode-task' && ['1.18.31', '1.18.33'].includes(version)
-  const qualifiedOpenCode = mode === 'opencode-task' && version === '1.18.31'
+  const codex = mode === 'codex-collab' || mode === 'codex-multi-agent-v2'
+  const opencode = mode === 'opencode-task'
   // Claude's probe did not preserve exact CLI identity; the app candidate remains behind its authority qualification.
   const observation = codex || opencode ? observed : unverified
   let sendInput: SubagentCapabilities['sendInput'] = unverified
@@ -104,8 +102,6 @@ export function subagentCapabilities(mode: SubagentNativeMode, version: string):
     sendInput = observed
   } else if (mode === 'claude-agent') {
     sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CLAUDE_DIRECT_INPUT_UNSUPPORTED' }
-  } else if (qualifiedOpenCode) {
-    sendInput = { support: 'supported', qualification: 'passed' }
   } else if (opencode) {
     sendInput = observed
   }

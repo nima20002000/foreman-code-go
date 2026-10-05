@@ -939,7 +939,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     // Workflow allocations own one root. Never guess among shared sessions or
     // advertise active-turn steering for OpenCode's session-wide prompt API.
     if (child.provider !== 'opencode' || child.nativeMode !== 'opencode-task' || this.sessions.size !== 1
-      || child.parentAgentId !== this.options.ownerAgentId || child.profile.providerVersion !== this.healthVersion
+      || child.parentAgentId !== this.options.ownerAgentId
       || !['pending', 'running', 'waiting', 'completed'].includes(child.status) || !child.native.childSessionId) return undefined
     const [root, state] = [...this.sessions.entries()][0]!
     const target = child.native.childSessionId, generation = this.generation
@@ -1449,12 +1449,6 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     try { checkOpenCodeSchema(document) } catch (error) {
       throw new HarnessExecutionError('OPENCODE_CONTRACT_UNSUPPORTED',
         `OpenCode ${health.version} does not satisfy ${error instanceof Error ? error.message : 'server API schema'}.`)
-    }
-    const paths = object(document.paths)
-    for (const path of ['/session', '/session/status', '/session/{sessionID}', '/session/{sessionID}/message',
-      '/session/{sessionID}/message/{messageID}', '/session/{sessionID}/prompt_async', '/session/{sessionID}/abort',
-      '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']) {
-      if (!(path in paths)) throw new HarnessExecutionError('OPENCODE_SERVER_SCHEMA_UNQUALIFIED', `OpenCode ${health.version} does not satisfy the server API contract: missing ${path}.`)
     }
     for (const state of this.sessions.values()) {
       if (state.turn?.files && state.turn.generation !== generation) {

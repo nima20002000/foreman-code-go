@@ -58,7 +58,7 @@ export async function applySubagentChanges(sql: GraphSqlClient, context: Subagen
           profile: context.profile, name: change.name ?? null, status: change.status, evidence: change.status === 'unknown' ? 'reconciling' : 'confirmed',
           firstObservedAt: event.occurredAt, startedAt: change.status === 'running' ? event.occurredAt : null,
           finishedAt: terminal(change.status) ? event.occurredAt : null, lastObservedAt: event.occurredAt,
-          coverage: { transcript: 'unavailable', tools: 'unavailable', gaps: true }, capabilities: subagentCapabilities(change.nativeMode, context.profile.providerVersion) })
+          coverage: { transcript: 'unavailable', tools: 'unavailable', gaps: true }, capabilities: subagentCapabilities(change.nativeMode) })
         await sql.query(`insert into run_subagents(id,run_id,parent_execution_id,native_mode,parent_native_session_id,provider_child_id,parent_subagent_id,revision,record)
           values($1,$2,$3,$4,$5,$6,$7,1,$8::jsonb)`, [id, context.runId, context.parentExecutionId, change.nativeMode, change.parentSessionId, change.childId, parent?.id ?? null, JSON.stringify(child)])
       }

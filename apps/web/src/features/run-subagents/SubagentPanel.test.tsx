@@ -25,7 +25,8 @@ function mount() {
   return { client, close, ...rendered }
 }
 function qualified() {
-  const capabilities = subagentCapabilities('opencode-task', '1.18.31')
+  const capabilities = subagentCapabilities('opencode-task')
+  capabilities.sendInput = { support: 'supported', qualification: 'passed' }
   capabilities.interrupt = { support: 'supported', qualification: 'passed' }
   return { subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }

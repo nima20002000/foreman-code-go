@@ -772,3 +772,15 @@ it('identifies the observed OpenCode version and missing server API contract', a
       && error.message.includes('OpenCode 2.0.0') && error.message.includes('/permission/{requestID}/reply'))
   } finally { await native.dispose() }
 })
+
+it('reports the version and missing cleanup route through configuration qualification', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  delete server.paths['/question/{requestID}/reject']
+  const native = manager(server)
+  try {
+    await assert.rejects(native.qualifyConfiguration(configuration(), '/workspace/project'), error => error instanceof Error
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('/question/{requestID}/reject'))
+  } finally { await native.dispose() }
+})

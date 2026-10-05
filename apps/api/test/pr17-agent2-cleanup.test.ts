@@ -246,3 +246,19 @@ describe('Claude review cleanup uses actual SDK message and callback ownership',
     assert.ok((await h.run()).cleanup?.completedAt)
   })
 })
+
+it('cleans up an owned permission whose saved Codex version is absent from release records', async () => {
+  const saved = { ...session, providerVersion: 'codex-cli 0.158.0' }
+  const h = harness()
+  const pending = PendingNativeInteractionSchema.parse({ session: saved,
+    turn: { nativeTurnId: 'review-turn', nativeRequestId: 'saved-version-permission' },
+    nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [],
+  })
+  h.input.session = saved
+  h.input.pending = [pending]
+  assert.equal(reviewOwnsPermission(saved, 'review-turn', pending, history()), true)
+  const result = await h.run()
+  assert.equal(result.cleanup?.interruptState, 'acknowledged')
+  assert(h.calls.includes('cancel:review-turn'))
+  assert.equal(result.cleanup?.nativeState, 'pending')
+})

@@ -44,6 +44,10 @@ export function openCodeSchema() {
     ['/session', 'post'], ['/session/{sessionID}', 'get'], ['/session/{sessionID}/message', 'get'],
     ['/session/{sessionID}/prompt_async', 'post'], ['/session/{sessionID}/abort', 'post'],
     ['/permission/{requestID}/reply', 'post'], ['/mcp', 'get'],
+      ['/session/status', 'get'], ['/session/{sessionID}/message/{messageID}', 'get'],
+      ['/permission', 'get'], ['/question', 'get'], ['/question/{requestID}/reject', 'post'],
+      ['/session/{sessionID}/fork', 'post'], ['/session/{sessionID}/children', 'get'],
+      ['/mcp/{name}/connect', 'post'], ['/mcp/{name}/disconnect', 'post'],
   ]) paths[path!] = { [method!]: { operationId: `${path}:${method}`, responses: { '200': {} } } }
   const body = (properties: Record<string, unknown>) => ({ content: { 'application/json': { schema: { type: 'object', properties } } } })
   paths['/config']!.get!.responses = { '200': body({ model: { type: 'string' }, agent: { type: 'object' }, permission: { type: 'object' }, mcp: { type: 'object' }, plugin: { type: 'array' }, compaction: { type: 'object' } }) }

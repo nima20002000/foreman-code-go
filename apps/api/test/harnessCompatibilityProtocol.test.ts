@@ -46,6 +46,12 @@ describe('model-free command and schema diagnostics', () => {
     delete broken.paths['/permission/{requestID}/reply']
     expect(() => checkOpenCodeSchema(broken)).toThrow()
   })
+  it.each(['/session/status', '/question/{requestID}/reject', '/session/{sessionID}/message/{messageID}'])(
+    'names a missing OpenCode reconciliation or cleanup contract: %s', path => {
+      const broken = openCodeSchema()
+      delete broken.paths[path]
+      expect(() => checkOpenCodeSchema(broken)).toThrow(path)
+    })
   it('rejects external refs and empty/deep exports instead of guessing compatibility', () => {
     const broken = openCodeSchema()
     broken.paths['/session']!.post!.requestBody = { $ref: 'https://example.invalid/schema' }

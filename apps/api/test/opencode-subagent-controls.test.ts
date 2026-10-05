@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { subagentCapabilities, type RunSubagent, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
-import { configuration, FixtureServer, manager, sessionFor } from './opencode-fixtures.js'
+import { configuration, FixtureServer, json, manager, request, sessionFor } from './opencode-fixtures.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 
 // Transport fixtures are not live native qualification evidence.
@@ -10,7 +10,7 @@ const child = (parent: string): RunSubagent => ({ schemaVersion: 1, id: 'child',
   provider: 'opencode', nativeMode: 'opencode-task', native: { parentSessionId: parent, childSessionId: 'ses_child' },
   profile: { deviceId: 'main', harnessInstanceId: 'config-opencode', providerVersion: '1.18.31' }, name: 'Child', status: 'waiting', evidence: 'confirmed',
   firstObservedAt: '2026-10-04T00:00:00.000Z', lastObservedAt: '2026-10-04T00:00:00.000Z', startedAt: null, finishedAt: null,
-  coverage: { transcript: 'partial', tools: 'partial', gaps: true }, capabilities: subagentCapabilities('opencode-task', '1.18.31') })
+  coverage: { transcript: 'partial', tools: 'partial', gaps: true }, capabilities: subagentCapabilities('opencode-task') })
 const receipt = (): RunSubagentCommandReceipt => ({ schemaVersion: 1, id: 'receipt', principalId: 'principal', operation: 'run_subagent_input_v1',
   commandId: 'command', workspaceId: 'workspace-1', runId: 'run-1', subagentId: 'child', expectedRevision: '1', nativeGeneration: 'captured',
   nativeTurnId: null, nativeCorrelationId: 'msg_child_command', state: 'dispatching', acceptedAt: '2026-10-04T00:00:00.000Z', updatedAt: '2026-10-04T00:00:00.000Z' })
@@ -168,4 +168,20 @@ describe('OpenCode exact-parent child control transport', () => {
       expect(await active.reconcile!({ ...receipt(), nativeCorrelationId: 'msg_absent' })).toBe('uncertain')
     } finally { await f.native.dispose() }
   })
+})
+
+it('keeps owned historical child controls available after a compatible server upgrade', async () => {
+  const f = await fixture()
+  await f.native.dispose()
+  f.server.expectedVersion = '2.0.0'
+  f.server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  const native = manager(f.server)
+  try {
+    await native.attachSession(f.session, { request: request() })
+    const lease = native.subagentControl(f.record, () => {})
+    expect(lease?.sendInput).toBeDefined()
+    await lease!.sendInput!(receipt(), 'Follow up after upgrade')
+    expect(f.server.calls.some(call => call.path.includes('/session/ses_child/prompt_async'))).toBe(true)
+    expect(f.record.profile.providerVersion).toBe('1.18.31')
+  } finally { await native.dispose() }
 })
