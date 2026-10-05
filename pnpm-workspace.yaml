@@ -4,6 +4,8 @@ packages:
 
 autoInstallPeers: false
 sharedWorkspaceLockfile: true
+# Native qualification pins inode metadata; another install must not change it.
+packageImportMethod: clone-or-copy
 minimumReleaseAge: 2880
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
