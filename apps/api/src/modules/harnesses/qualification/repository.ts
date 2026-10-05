@@ -1,6 +1,14 @@
 import type pg from 'pg'
+import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { type CompatibilityHarness } from '@foreman-code/contracts'
 import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-code/contracts/harness-qualification'
+
+export async function readHostHarnessMeasurements(sql: GraphSqlClient, harness: CompatibilityHarness,
+  binarySha256: string, suiteRevision: string): Promise<{ qualification: HarnessQualification; evidence: unknown }[]> {
+  const result = await sql.query(`select qualification,evidence from host_harness_measurements
+    where harness=$1 and binary_sha256=$2 and suite_revision=$3 for share`, [harness, binarySha256, suiteRevision])
+  return result.rows.map(row => ({ qualification: HarnessQualificationSchema.parse(row.qualification), evidence: row.evidence }))
+}
 
 export class HarnessQualificationRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -18,13 +26,6 @@ export class HarnessQualificationRepository {
     return result.rows[0] ? this.parse(result.rows[0] as Record<string, unknown>) : null
   }
 
-  async measured(harness: CompatibilityHarness, binarySha256: string, suiteRevision: string,
-    client: Pick<pg.Pool, 'query'> = this.pool): Promise<{ qualification: HarnessQualification; evidence: unknown }[]> {
-    const result = await client.query(`select qualification,evidence from host_harness_measurements
-      where harness=$1 and binary_sha256=$2 and suite_revision=$3`, [harness, binarySha256, suiteRevision])
-    return result.rows.map(row => ({ qualification: HarnessQualificationSchema.parse(row.qualification), evidence: row.evidence }))
-  }
-
   async save(record: HarnessQualification, evidence: Record<string, unknown> = {}, client?: pg.ClientBase): Promise<void> {
     await (client ?? this.pool).query(`with saved as (insert into harness_qualifications
       (harness, version, binary_sha256, suite_revision, profile, status, checks, evidence, failure_reason, started_at, checked_at)
@@ -33,10 +34,11 @@ export class HarnessQualificationRepository {
       profile=excluded.profile, status=excluded.status, checks=excluded.checks, evidence=excluded.evidence,
       failure_reason=excluded.failure_reason, started_at=excluded.started_at, checked_at=excluded.checked_at
       returning evidence)
-      insert into host_harness_measurements(identity,harness,binary_sha256,suite_revision,qualification,evidence)
-      select evidence->'qualificationIdentity',$1,$3,$4,$12::jsonb,evidence from saved
+      insert into host_harness_measurements(identity_hash,harness,binary_sha256,suite_revision,qualification,evidence)
+      select encode(sha256(convert_to((evidence->'qualificationIdentity')::text,'utf8')),'hex'),
+        $1,$3,$4,$12::jsonb,evidence from saved
       where jsonb_typeof(evidence->'qualificationIdentity')='object'
-      on conflict(identity) do update set qualification=excluded.qualification,evidence=excluded.evidence`, [
+      on conflict(identity_hash) do update set qualification=excluded.qualification,evidence=excluded.evidence`, [
       record.harness, record.version, record.binarySha256, record.suiteRevision, record.profile,
       record.status === 'qualified' ? 'passed' : record.status, JSON.stringify(record.checks), JSON.stringify(evidence),
       record.failureReason, record.startedAt, record.checkedAt, JSON.stringify(record),

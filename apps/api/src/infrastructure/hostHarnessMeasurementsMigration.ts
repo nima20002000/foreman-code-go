@@ -1,7 +1,7 @@
 /** Binary compatibility is shared; native host measurements retain their own identity and result. */
 export const hostHarnessMeasurementsMigration = { version: 285209, sql: `
   create table host_harness_measurements (
-    identity jsonb primary key,
+    identity_hash text primary key,
     harness text not null,
     binary_sha256 text not null,
     suite_revision text not null,
@@ -10,7 +10,8 @@ export const hostHarnessMeasurementsMigration = { version: 285209, sql: `
   );
   create index host_harness_measurements_binary on host_harness_measurements(harness,binary_sha256,suite_revision);
   insert into host_harness_measurements
-    select evidence->'qualificationIdentity',harness,binary_sha256,suite_revision,
+    select encode(sha256(convert_to((evidence->'qualificationIdentity')::text,'utf8')),'hex'),
+      harness,binary_sha256,suite_revision,
       jsonb_build_object('harness',harness,'version',version,'binarySha256',binary_sha256,
         'suiteRevision',suite_revision,'profile',profile,'status',case when status='passed' then 'qualified' else status end,
         'checks',checks,'failureReason',failure_reason,'startedAt',started_at,'checkedAt',checked_at),evidence

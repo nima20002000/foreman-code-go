@@ -1,3 +1,4 @@
+import { readHostHarnessMeasurements } from '../harnesses/qualification/repository.js'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema,
   PinnedHarnessSelectionSchema, type HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { z } from 'zod'
@@ -78,10 +79,8 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable('worker_qualification_missing')
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
-    const measured = await sql.query<{ qualification: { status: string; version: string }; evidence: unknown }>(`select qualification,evidence from host_harness_measurements
-      where harness=$1 and binary_sha256=$2 and suite_revision=$3 for share`,
-    [harness, binarySha256, suites[harness]])
-    const matching = measured.rows.filter(row => row.qualification.status === 'qualified'
+    const measured = await readHostHarnessMeasurements(sql, harness, binarySha256, suites[harness])
+    const matching = measured.filter(row => row.qualification.status === 'qualified'
       && measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
     if (matching.length !== 1) unavailable('main_qualification_identity_missing')
     installation.observedVersion = matching[0]!.qualification.version
