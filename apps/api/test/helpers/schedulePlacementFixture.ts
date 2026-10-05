@@ -96,7 +96,8 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
   const workflow = await f.workflows.get(writer.principal, f.scope.workspaceId, f.scope.workflowId)
   const graph = structuredClone(f.fixture.version.definition)
   for (const node of graph.nodes) {
-    const instance = harness.settings.find(item => item.instanceId === `instance-${node.agentId}`)!
+    const configurationIndex = f.fixture.configurations.findIndex(item => item.agentId === node.agentId)
+    const instance = harness.settings[configurationIndex]!
     node.placement = { schemaVersion: 1, ...selection, projectRoot: policy.canonicalProjectRoot,
       cwdPolicy: 'project-root', relativeCwd: '', instanceId: instance.instanceId,
       instanceRevision: instance.instanceRevision, harnessInstallationId: instance.target.harnessInstallationId,

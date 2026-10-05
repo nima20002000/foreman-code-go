@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { ScheduleGetResultSchema, ScheduleSaveResultSchema } from '@graphql/contracts/schedules'
@@ -126,6 +127,34 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
     expect(await sch11DomainState(f)).toEqual(before)
     expect(await f.history()).toEqual([])
     expect(await f.current()).toEqual(saved)
+    expect(await f.countRuns()).toBe(0)
+  }, 30_000)
+
+  it('persists installation removal as a rejection after complete discovery and restart', async () => {
+    const placement = await schedulePlacementFixture(f)
+    const saved = await placement.save()
+    const selected = placement.harness.settings[0]!
+    await placement.harness.changeBinary(join(database.directory, 'removed-codex'))
+    placement.restart()
+    await placement.recover()
+    expect(placement.harness.registry.installations.list().some(installation =>
+      installation.harnessInstallationId === selected.target.harnessInstallationId)).toBe(false)
+    expect(() => placement.harness.registry.pinOverride(selected))
+      .toThrow(expect.objectContaining({ code: 'HARNESS_INSTALLATION_CHANGED' }))
+    f.time.now = saved.nextOccurrenceAt!
+    const dispatcher = () => f.dispatcher(async (principal, input, schedule) => {
+      await admitRepeatRun(database.pool, f.locations, principal, 'schedule', input,
+        { ...repeatStartPublication, placementAdmission: placement.producer }, { schedule })
+    })
+    await dispatcher().dispatch(saved)
+    const history = await f.history()
+    expect(history).toEqual([expect.objectContaining({ dueAt: saved.nextOccurrenceAt,
+      status: 'rejected', reason: 'workflow_not_executable' })])
+    expect((await f.current())?.nextOccurrenceAt).toBeNull()
+    placement.restart()
+    await placement.recover()
+    await dispatcher().dispatch(saved)
+    expect(await f.history()).toEqual(history)
     expect(await f.countRuns()).toBe(0)
   }, 30_000)
 

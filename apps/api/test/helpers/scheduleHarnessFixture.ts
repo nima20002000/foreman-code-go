@@ -19,8 +19,9 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
   const profiles = new HostHarnessProfileEvidenceRepository(pool)
   const defaults = new PostgresSettingsRepository(pool)
   const binary = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js')
+  const binaries = { codexBinary: binary, openCodeBinary: 'opencode' }
   const createRegistry = () => new ProductionHarnessRegistry(pool,
-    { codexBinary: binary, openCodeBinary: 'opencode' }, client => defaults.getManagedHarnessDefaults(client),
+    binaries, client => defaults.getManagedHarnessDefaults(client),
     profiles, () => null)
   let registry = createRegistry()
   await registry.initialize(mainId)
@@ -41,7 +42,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
   const settings: HostHarnessOverride[] = []
   for (const configuration of f.fixture.configurations) {
     settings.push((await service.save(principal, 'http', { commandId: randomUUID(),
-      instanceId: `instance-${configuration.agentId}`, expectedRevision: 0, enabled: true,
+      instanceId: randomUUID(), expectedRevision: 0, enabled: true,
       presetId: 'local-default:codex', configuration: configuration.harness,
       target: { hostRef: installation.hostRef, applicationInstallationId: mainId,
         harnessInstallationId: installation.harnessInstallationId,
@@ -59,6 +60,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
     },
     restart: () => { registry.stop(); registry = createRegistry() },
     recover: () => registry.initialize(mainId),
+    changeBinary: (codexBinary: string) => { binaries.codexBinary = codexBinary; return registry.refreshMain() },
     qualify: () => qualifyScheduleHarness(f, principal, registry, settings, authority),
   }
 }
