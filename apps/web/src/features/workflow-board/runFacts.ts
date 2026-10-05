@@ -9,7 +9,7 @@ import { useWorkflowBoard } from './context'
 
 /** Cache-only subscriber: no Query observer with a competing queryFn. Only
  * CurrentRunObserver owns current-state fetching and invalidation/refetch work. */
-export function useSelectedRunRecord(): RepeatGraphCurrentV3 | undefined {
+export function useSelectedRunQueryState() {
   const scope = useWorkflowBoard()?.run, cache = useQueryClient(), generation = sessionGeneration()
   const { workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion } = scope ?? {}
   const key = useMemo(() => workspaceId && workflowId && runId && workflowVersionId && executionSemanticsVersion === 3
@@ -17,7 +17,10 @@ export function useSelectedRunRecord(): RepeatGraphCurrentV3 | undefined {
     [workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion, generation])
   const subscribe = useCallback((notify: () => void) => cache.getQueryCache().subscribe(notify), [cache])
   const snapshot = useCallback(() => key ? cache.getQueryState<RepeatGraphCurrentV3>(key) : undefined, [cache, key])
-  const state = useSyncExternalStore(subscribe, snapshot, () => undefined)
+  return useSyncExternalStore(subscribe, snapshot, () => undefined)
+}
+export function useSelectedRunRecord(): RepeatGraphCurrentV3 | undefined {
+  const state = useSelectedRunQueryState()
   return state?.status === 'error' || state?.fetchStatus === 'paused' ? undefined : state?.data
 }
 export type RunNodeView = { state: AgentNodeState; label: string; activity?: string; inRun: boolean }
