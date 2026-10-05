@@ -20,6 +20,7 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
   try {
     await check(fixture)
   } catch (error) {
+    console.error('Remote review production failure', error)
     console.error('Remote review production error codes', fixture.failures())
     try {
       await fixture.close()
