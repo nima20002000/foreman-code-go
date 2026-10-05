@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.18] - 2026-10-05
+
+### Fixed
+
+- Keep real native workflow acceptance storage under a validated private location, independent of shared job temporary directories.
+- Use supported Codex test models and medium reasoning with explicit overrides, without changing product defaults.
+- Give workflow agents return-routing templates from accepted request IDs to reduce copying errors while retaining exact backend validation.
+
 ## [0.0.17] - 2026-10-05
 
 ### Fixed
