@@ -12,7 +12,10 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { OperatorChatService, PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChat.js'
+import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
+import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -57,7 +60,16 @@ it.each(['management', 'denied-management', 'files'] as const)(
         configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'read-only', tools: [tool],
         permissionRules: [{ tool, effect: 'ask' }], instructions: '',
         mcpServers: scenario === 'files' ? {} : { graphql: { type: 'http', url: endpoint } } }
-      await operators.update(harness, (await operators.ensure()).configuration.id)
+      const mainId = randomUUID()
+      const selection = { instanceId: randomUUID(), instanceRevision: 'profile-1', target: {
+        hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+        harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload',
+      } }
+      const settings = new PostgresFoundationSettingsRepository(pool)
+      const defaults = await settings.getAgentDefaults()
+      await settings.updateAgentDefaults({ ...defaults.value,
+        operator: { ...defaults.value.operator, harness, harnessProfileSelection: selection },
+      }, defaults.revision)
       const configuration = (await operators.ensure()).configuration
       const conversation = await repository.create(configuration.operatorId, configuration, owner.principal.id)
       const requestId = randomUUID()
@@ -78,19 +90,27 @@ it.each(['management', 'denied-management', 'files'] as const)(
         workingDirectory: directory, environment: { agentId: configuration.operatorId, variables: {} } }
       const f = productionClaudeFixture('operator', undefined, endpoint, scenario === 'files' ? productionFileTools(app) : undefined,
         { database: pool, binding: { kind: 'operator', conversationId: conversation.id, repository }, start, sdk: transport.sdk })
+      const nativeAuthority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test' }),
+        directory, endpoint, manager => f.factories.inspector(manager), async (manager, configuration, environment, signal) => {
+          expect(manager).toBe(f.manager)
+          const scoped = { ...start, configuration, environment }
+          const token = environment.variables.GRAPHQL_MCP_TOKEN!
+          const delegate = await access.authenticate(token)
+          expect(delegate.id).not.toBe(owner.principal.id)
+          expect(delegate.grants.flatMap(grant => grant.actions)).not.toContain('operator_chat:write')
+          await f.manager.refreshInspectionCredentials(scoped, { graphql: { type: 'http', url: endpoint,
+            headers: { Authorization: `Bearer ${token}` } } }, signal)
+        })
       const chat: OperatorChatService = new OperatorChatService(repository, operators, () => f.manager, directory, {
-        current: id => access.currentOperator(id), assertConfiguration() {},
+        current: id => nativeAuthority.current(id), assertConfiguration: value => nativeAuthority.assertConfiguration(value),
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint, checkedAt: new Date().toISOString() }),
-        prepare: async () => {
-          await f.manager.prepareInspection(start)
+        prepare: async (manager, configuration, conversationId, principalId, signal) => {
+          await f.manager.prepareInspection(start, signal)
           if (scenario !== 'files') {
-            const scoped = { ...start, environment: { agentId: configuration.operatorId, variables: { GRAPHQL_MCP_TOKEN: owner.token } } }
-            await f.manager.refreshInspectionCredentials(scoped, { graphql: { type: 'http', url: endpoint,
-              headers: { Authorization: `Bearer ${owner.token}` } } })
-            return scoped.environment
+            return nativeAuthority.prepare(manager, configuration, conversationId, principalId, signal)
           }
           return start.environment
-        }, release: async () => {},
+        }, release: id => nativeAuthority.release(id),
       })
       try {
         await chat.send(conversation.id, { requestId, content: 'Call the configured tool' }, owner.principal)
@@ -144,6 +164,10 @@ it.each(['management', 'denied-management', 'files'] as const)(
             [conversation.id])).rows[0]?.result
           expect(receipt).toMatchObject({ status: 'completed', providerAcknowledgment: { semantic: 'approve_once' } })
         }
+        const credentials = (await pool.query(`select p.revoked_at from operator_chat_credentials c
+          join management_principals p on p.id=c.principal_id where c.conversation_id=$1`, [conversation.id])).rows
+        expect(credentials).toHaveLength(scenario === 'files' ? 0 : 1)
+        expect(credentials.every(row => row.revoked_at !== null)).toBe(true)
       } finally {
         try { await chat.shutdown() } finally { await app.close() }
       }

@@ -34,7 +34,9 @@ const createdAt = '2026-10-01T00:00:00.000Z'
 export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService,
   runtime?: { database: pg.Pool; binding: ClaudeDomainBinding; start: NativeSessionStart; sdk: ClaudeSdkClient }) {
   const kind = surface === 'selected-run' ? 'agent' : surface
-  const target = { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
+  const selection = runtime?.start.kind === 'operator' ? runtime.start.configuration.harnessProfileSelection
+    : runtime?.start.request.configuration.harnessProfileSelection
+  const target = selection?.target ?? { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
     configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
@@ -43,7 +45,8 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)
     : defaultHarness
   if (harness.harness !== 'claude') throw new Error('The production fixture requires a Claude configuration.')
-  const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: 'profile-1', revision: 1,
+  const override: HostHarnessOverride = { instanceId: selection?.instanceId ?? 'recorded-profile',
+    instanceRevision: selection?.instanceRevision ?? 'profile-1', revision: 1,
     target, presetId: 'recorded', enabled: true, driverId: 'claude', configuration: harness, configurationFingerprint: 'recorded-config', qualification: 'qualified' }
   const pin = { sdkVersion: '0.3.284', sdkIntegrity: 'recorded-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64),
     profilePath: harness.configDirectory, configRevision: 'profile-1' }
