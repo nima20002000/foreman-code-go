@@ -91,7 +91,8 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     }
     const content = operation.mode === 'append' ? (prior?.content ?? '') + operation.text : operation.text
     const provenance: Provenance = { ...identity, ...(fence.nativeSubmission ? { nativeSubmission: fence.nativeSubmission } : {}), final: operation.final, ...(source ? { source } : {}) }
-    if (prior && content === prior.content && operation.final === alreadyFinal) {
+    if (prior && content === prior.content && operation.final === alreadyFinal
+      && JSON.stringify(operation.truncation) === JSON.stringify(prior.record.truncation)) {
       if (source && (comparableNative || comparableTransport)) await client.query(`update operator_conversation_messages set text_provenance=$3::jsonb
         where conversation_id=$1 and native_message_id=$2`, [conversationId, nativeId, JSON.stringify(provenance)])
       await client.query('commit'); return result('ignored')
@@ -104,7 +105,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       activityNative: { harness: row.harness, sessionId: identity.sessionId, ...(identity.generation ? { generation: identity.generation } : {}), ...(identity.turnId ? { turnId: identity.turnId } : {}),
         itemId: identity.itemId, ...(identity.partId ? { partId: identity.partId } : {}), ...(identity.parentId ? { parentItemId: identity.parentId } : {}) },
       role: identity.channel === 'user' ? 'user' : 'assistant', activityChannel: identity.channel, content, nativeMessageId: nativeId,
-      nativeMessageComplete: operation.final, ...(identity.parentId ? { nativeParentMessageId: identity.parentId } : {}),
+      nativeMessageComplete: operation.final, ...(operation.truncation ? { truncation: operation.truncation } : {}), ...(identity.parentId ? { nativeParentMessageId: identity.parentId } : {}),
       afterActivitySequence: boundary, createdAt: existing.createdAt ?? now, updatedAt: now })
     const record = { ...message, ...(attachmentRefs ? { attachmentRefs } : {}), ...(publicationRefs ? { publicationRefs } : {}) }
     const written = (await client.query<{ revision: string }>(`insert into operator_conversation_messages

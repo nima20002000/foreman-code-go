@@ -1,3 +1,4 @@
+import { TextTruncationSchema } from './activityText.js';
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
@@ -823,6 +824,7 @@ export const MessageSchema = z
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
     nativeMessageComplete: z.boolean().optional(),
+    truncation: TextTruncationSchema.optional(),
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),

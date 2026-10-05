@@ -1,3 +1,4 @@
+import { TextTruncationSchema, type TextTruncation } from '@graphql/contracts/activity-text'
 import type { NativeHarnessEvent } from '@graphql/contracts'
 
 type ObjectValue = Record<string, unknown>
@@ -42,7 +43,7 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
 }
 
 export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode' | 'claude'):
-  { id: string; text: string; parentMessageId?: string; complete?: boolean } | undefined {
+  { id: string; text: string; parentMessageId?: string; complete?: boolean; truncation?: TextTruncation } | undefined {
   if (event.payload.subagentNativeId || event.type === 'native.unlinked_notification') return undefined
   if (harness === 'claude' && event.type === 'claude.text' && !event.payload.parentToolUseId
     && event.payload.operation === 'replace' && typeof event.payload.itemId === 'string'
@@ -50,7 +51,8 @@ export function completedNativeAssistantMessage(event: NativeHarnessEvent, harne
     const parentMessageId = typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined
     // Without block-parent identity, a provisional snapshot cannot use the terminal-message path.
     if (!parentMessageId && event.payload.final !== true) return undefined
-    return { id: event.payload.itemId, text: event.payload.text, complete: event.payload.final === true,
+    const truncation = TextTruncationSchema.optional().parse(event.payload.truncation)
+    return { ...(truncation ? { truncation } : {}), id: event.payload.itemId, text: event.payload.text, complete: event.payload.final === true,
       ...(parentMessageId ? { parentMessageId } : {}) }
   }
   if (harness === 'codex' && event.type === 'item.completed') {

@@ -1064,7 +1064,10 @@ export class AgentChatService {
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
     if (!message) return true
     if (await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
-      message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined)) {
+      message.parentMessageId || message.truncation ? {
+        ...(message.parentMessageId ? { parentMessageId: message.parentMessageId } : {}),
+        ...(message.truncation ? { truncation: message.truncation } : {}), complete: message.complete === true,
+      } : undefined)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
       return true
     }

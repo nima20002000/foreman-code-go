@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { createStreamFixture } from './claude-streams.testSupport.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
@@ -1279,6 +1280,49 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () => {
+  it('preserves truncation in persisted messages, HTTP, SSE data and authenticated MCP', async () => {
+    const f = createStreamFixture({ workingDirectory: '/tmp/graphql-test-operator' })
+    await operators.update({ harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/profile',
+      permissionMode: 'default', sandbox: 'read-only', tools: ['Read'], permissionRules: [], instructions: '', mcpServers: {},
+    }, (await operators.ensure()).configuration.id)
+    chat = new OperatorChatService(repository, operators, () => f.manager, '/tmp/graphql-test-operator', authority)
+    const conversation = await chat.create(owner)
+    const reader = await access.issue({ name: 'truncation reader', audience: 'operator',
+      grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as OperatorServices } })
+    const streamed: unknown[] = []
+    const unsubscribe = chat.events.subscribe(conversation.id, event => { if (event.type === 'delta') streamed.push(event.data) })
+    try {
+      await chat.send(conversation.id, { requestId: 'truncated', content: 'Return a long answer' }, owner)
+      await vi.waitFor(() => expect(f.queries).toHaveLength(1))
+      const query = f.queries[0]!
+      const message = (await query.messages.next()).value!
+      await query.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session',
+        claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+      const text = 'é'.repeat(24_010)
+      await query.frames.offer(f.frame({ type: 'assistant', uuid: 'truncated-answer', message: { id: 'answer',
+        content: [{ type: 'text', text }] } }, message.uuid))
+      await query.frames.offer(f.frame({ type: 'result', uuid: 'terminal', subtype: 'success', is_error: false, result: 'done' }, message.uuid))
+      await waitFor(async () => !(await chat.get(conversation.id, owner)).activeRequestId)
+      const truncation = { truncated: true, originalBytes: Buffer.byteLength(text) }
+      const stored = (await pool.query("select record from operator_conversation_messages where conversation_id=$1 and role='assistant'",
+        [conversation.id])).rows[0]?.record
+      expect(stored).toMatchObject({ content: 'é'.repeat(24_000), truncation })
+      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}`,
+        headers: { authorization: `Bearer ${reader.token}` } })
+      expect(http.statusCode).toBe(200)
+      expect(http.json().messages).toContainEqual(expect.objectContaining({ content: stored.content, truncation }))
+      const mcp = await graphRpc(app, reader.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+      expect(mcp.result?.isError).not.toBe(true)
+      expect((graphRpcValue(mcp.result) as OperatorConversationState).messages)
+        .toContainEqual(expect.objectContaining({ content: stored.content, truncation }))
+      expect(streamed).toContainEqual(expect.objectContaining({ activityChange: expect.objectContaining({
+        change: expect.objectContaining({ text: stored.content, truncation }),
+      }) }))
+    } finally { unsubscribe(); await app.close(); await f.manager.dispose?.() }
+  })
+
   it('persists the bounded prefix and terminal result after message storage pauses both event queues', async () => {
     const harness = { harness: 'claude' as const, model: 'fixture', authMode: 'subscription' as const,
       configDirectory: '/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,

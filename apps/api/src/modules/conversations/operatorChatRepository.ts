@@ -1,3 +1,4 @@
+import type { TextTruncation } from '@graphql/contracts/activity-text'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
 
@@ -662,7 +663,7 @@ export class PostgresOperatorConversationRepository {
   }
   /** Codex messages are immutable; OpenCode public parts keep their first position while streaming. */
   async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
-    nativePart?: { parentMessageId: string; complete: boolean }, precedingActivityId?: string | null): Promise<boolean> {
+    nativePart?: { parentMessageId?: string; complete: boolean; truncation?: TextTruncation }, precedingActivityId?: string | null): Promise<boolean> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -688,16 +689,19 @@ export class PostgresOperatorConversationRepository {
             throw new DomainError('NATIVE_MESSAGE_CONFLICT', 'A completed provider message changed after persistence.', 409)
           }
           // A late incomplete snapshot must never replace a completed part.
-          if (precedingActivityId === undefined || existing.afterActivitySequence === activity) { await client.query('commit'); return false }
+          if ((precedingActivityId === undefined || existing.afterActivitySequence === activity)
+            && JSON.stringify(existing.truncation) === JSON.stringify(nativePart?.truncation)) { await client.query('commit'); return false }
         } else if (nativePart && !nativePart.complete && !content.startsWith(existing.content)) {
           await client.query('commit'); return false // Older partial snapshot; await complete native evidence.
         }
         const mutable = existing.nativeMessageComplete === false
         const message = MessageSchema.parse({ ...existing,
           ...(mutable ? { content, nativeMessageComplete: nativePart?.complete ?? true } : {}),
+          ...(nativePart?.truncation ? { truncation: nativePart.truncation } : {}),
           afterActivitySequence: activity, updatedAt: new Date().toISOString() })
         if (message.content === existing.content && message.nativeMessageComplete === existing.nativeMessageComplete
-          && message.afterActivitySequence === existing.afterActivitySequence) { await client.query('commit'); return false }
+          && message.afterActivitySequence === existing.afterActivitySequence
+          && JSON.stringify(message.truncation) === JSON.stringify(existing.truncation)) { await client.query('commit'); return false }
         await client.query(`update operator_conversation_messages set content=$3,record=$4::jsonb,
           text_provenance=case when $5::boolean and text_provenance is not null then jsonb_set(text_provenance,'{final}','true'::jsonb) else text_provenance end
           where conversation_id=$1 and native_message_id=$2`,
@@ -706,7 +710,8 @@ export class PostgresOperatorConversationRepository {
         const now = new Date().toISOString()
         const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,
           nativeMessageId, afterActivitySequence: activity,
-          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : { nativeMessageComplete: true }),
+          ...(nativePart ? { ...(nativePart.parentMessageId ? { nativeParentMessageId: nativePart.parentMessageId } : {}),
+            ...(nativePart.truncation ? { truncation: nativePart.truncation } : {}), nativeMessageComplete: nativePart.complete } : { nativeMessageComplete: true }),
           createdAt: now, updatedAt: now })
         await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
           values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
