@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
   nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
@@ -75,6 +76,16 @@ test('acceptance rejects empty selections, broad filters and paths outside API t
     ['--files', 'test/../opencode.acceptance.test.ts'], ['--testNamePattern', 'qualification']]) {
     assert.throws(() => nativeAcceptanceFiles(args), /explicit API acceptance test paths/)
   }
+})
+
+test('the root acceptance command forwards file selectors before building or opening a database', () => {
+  const result = spawnSync('corepack', ['pnpm', 'test:acceptance', '--files', '../outside.acceptance.test.ts'], {
+    cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 20_000,
+    env: { ...process.env, ENG03_A_TEST_DATABASE_URL: 'postgresql://fixture@203.0.113.1:5432/native_test' },
+  })
+  assert.equal(result.error, undefined)
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /explicit API acceptance test paths/)
 })
 
 test('physical transfer and provider cases are selected explicitly as acceptance suites', () => {
