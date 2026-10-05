@@ -68,6 +68,8 @@ it('keeps a Main measurement when a Worker qualifies the same native binary', as
     expect(await repository.find('codex', record.version, record.binarySha256!, record.suiteRevision)).toEqual(workerRecord)
     const replacement = { ...record, status: 'failed' as const, failureReason: 'Native check failed',
       checks: [{ id: 'native-turn', passed: false, detail: null }], checkedAt: '2026-10-05T00:00:03.000Z' }
+    await repository.save(replacement, { purpose: 'explicit-host-qualification', target: { deviceId: 'worker' } })
+    expect((await read()).qualification).toEqual(record)
     await repository.save(replacement, { qualificationIdentity: identity })
     await expect(read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
       details: { reason: 'main_qualification_identity_missing' } })

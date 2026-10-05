@@ -86,17 +86,23 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     installation.observedVersion = matching[0]!.qualification.version
     measuredQualification = matching[0]!.qualification
   }
-  const rows = await sql.query<Record<string, unknown>>(`select * from harness_qualifications where harness=$1 and version=$2
-    and binary_sha256=$3 and suite_revision=$4 and status='passed' order by checked_at desc limit 1 for share`,
+  let selectedQualification = measuredQualification ?? profileProof.completedNativeQualification?.record
+  if (!selectedQualification) {
+    const rows = await sql.query<Record<string, unknown>>(`select * from harness_qualifications where harness=$1 and version=$2
+      and binary_sha256=$3 and suite_revision=$4 and status='passed' order by checked_at desc limit 1 for share`,
     [payload.driverId, installation.observedVersion, binarySha256, suites[harness]])
-  const row = rows.rows[0]
-  if (!row) unavailable('binary_qualification_missing')
-  const qualification = HarnessQualificationSchema.parse(measuredQualification
-    ?? profileProof.completedNativeQualification?.record ?? { harness: row!.harness, version: row!.version,
-    binarySha256: row!.binary_sha256, suiteRevision: row!.suite_revision, profile: row!.profile, status: 'qualified',
-    checks: row!.checks, failureReason: row!.failure_reason,
-    startedAt: row!.started_at instanceof Date ? row!.started_at.toISOString() : row!.started_at,
-    checkedAt: row!.checked_at instanceof Date ? row!.checked_at.toISOString() : row!.checked_at })
+    const row = rows.rows[0]
+    if (!row) return unavailable('binary_qualification_missing')
+    selectedQualification = { harness: row.harness, version: row.version,
+      binarySha256: row.binary_sha256, suiteRevision: row.suite_revision, profile: row.profile, status: 'qualified',
+      checks: row.checks, failureReason: row.failure_reason,
+      startedAt: row.started_at instanceof Date ? row.started_at.toISOString() : row.started_at,
+      checkedAt: row.checked_at instanceof Date ? row.checked_at.toISOString() : row.checked_at }
+  }
+  const qualification = HarnessQualificationSchema.parse(selectedQualification)
+  if (qualification.status !== 'qualified' || qualification.harness !== harness
+    || qualification.binarySha256 !== binarySha256 || qualification.version !== installation.observedVersion
+    || qualification.suiteRevision !== suites[harness]) return unavailable('binary_qualification_missing')
   if (qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable('qualification_checks_failed')
   if (payload.profileProofDigest && payload.profileProofDigest !== placementDigest(profileProof)
     || payload.qualificationDigest && payload.qualificationDigest !== placementDigest(qualification)) unavailable('accepted_qualification_changed')
