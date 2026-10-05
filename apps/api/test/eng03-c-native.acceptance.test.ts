@@ -15,8 +15,26 @@ import type { SingleWriterSessionManager } from '../src/modules/interactions/ses
 import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../src/modules/runs/repeatResolution.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
-import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
+import { nativeAcceptanceBinaries, runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
+
+describe('acceptance Job binary configuration', () => {
+  it('denies missing in-image binaries instead of selecting owner installations', () => {
+    for (const environment of [
+      { GRAPHQL_VERIFICATION_ROOT: '/source' },
+      { GRAPHQL_VERIFICATION_ROOT: '/source', ENG03_A_CODEX_BINARY: '/opt/codex' },
+      { GRAPHQL_VERIFICATION_ROOT: '/source', ENG03_A_OPENCODE_BINARY: '/opt/opencode' },
+    ]) {
+      expect(() => nativeAcceptanceBinaries(environment)).toThrow('explicitly qualified in-image')
+    }
+  })
+
+  it('retains both explicitly qualified binary paths', () => {
+    expect(nativeAcceptanceBinaries({ GRAPHQL_VERIFICATION_ROOT: '/source',
+      ENG03_A_CODEX_BINARY: '/opt/codex', ENG03_A_OPENCODE_BINARY: '/opt/opencode' }))
+      .toEqual({ codexBinary: '/opt/codex', openCodeBinary: '/opt/opencode' })
+  })
+})
 
 async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000

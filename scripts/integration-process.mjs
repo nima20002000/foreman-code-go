@@ -52,13 +52,14 @@ export async function stopGroup(pgid, { signal = 'SIGTERM', graceMs = 5000 } = {
 
 export function integrationProcessProgress() {
   const started = Date.now()
-  return { started, lastOutputAt: started, bytes: 0 }
+  return { started, lastOutputAt: started, bytes: 0, loggedBytes: 0 }
 }
 
 function updateProgress(log, progress) {
   const bytes = statSync(log).size
-  if (bytes !== progress.bytes) {
-    progress.bytes = bytes
+  if (bytes !== progress.loggedBytes) {
+    progress.loggedBytes = bytes
+    progress.bytes = Math.max(progress.bytes, bytes)
     progress.lastOutputAt = Date.now()
   }
 }

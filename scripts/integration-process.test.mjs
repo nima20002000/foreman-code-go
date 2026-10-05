@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { groupUsed, integrationProcessProgress, stopGroup, superviseIntegrationProcess,
   waitForIntegrationProcess } from './integration-process.mjs'
+import { boundedLog } from './verification-reports.mjs'
 import { fullRunExitCode, scheduleFiles } from './test-integration.mjs'
 
 function loggedChild(log, script) {
@@ -254,6 +255,36 @@ test('external interruption clears the watchdog without being mislabeled as a ti
     assert.equal(child.listenerCount('exit'), 0)
   } finally {
     await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+
+test('bounded log retention does not mistake continuing output for an idle process', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-bounded-progress-'))
+  const log = join(directory, 'bounded.log')
+  const output = boundedLog(log, 10)
+  const progress = integrationProcessProgress()
+  const child = spawn(process.execPath, ['-e',
+    "let count = 0; const timer = setInterval(() => { console.log('still running'); if (++count === 8) { clearInterval(timer); } }, 40)"],
+  { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const record = (chunk) => {
+    output.write(chunk)
+    progress.bytes += chunk.length
+    progress.lastOutputAt = Date.now()
+  }
+  child.stdout.on('data', record)
+  child.stderr.on('data', record)
+  try {
+    const result = await waitForIntegrationProcess(child, { log, progress, idleTimeoutMs: 200,
+      fileTimeoutMs: 2000, pollIntervalMs: 20, graceMs: 100 })
+    assert.equal(result.code, 0)
+    assert.equal(result.timedOut, false)
+    assert.equal(statSync(log).size, 10)
+    assert.ok(progress.bytes > 10)
+  } finally {
+    await stopGroup(child.pid, { graceMs: 100 })
+    output.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

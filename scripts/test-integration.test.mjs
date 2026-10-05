@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -290,4 +290,61 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     rmSync(legacy)
     assert.equal(hasHeavyJobAdmission(environment, common), true)
   } finally { rmSync(common, { recursive: true, force: true }) }
+})
+
+
+test('machine reports keep first-pass failures after a successful fresh-DB diagnostic', () => {
+  const failed = { file: 'a', code: 1, complete: true, report: {
+    totals: { total: 2, passed: 1, failed: 1, skipped: 0 }, files: [] } }
+  const retest = { file: 'a', code: 0, complete: true, report: {
+    totals: { total: 2, passed: 2, failed: 0, skipped: 0 }, files: [] } }
+  const report = integrationReport(['a'], [failed], [retest], {
+    startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:01:00.000Z',
+    interrupted: null, diagnostic: false, processStopped: true })
+  assert.equal(report.outcome, 'failed')
+  assert.equal(report.firstPassFailed, 1)
+  assert.equal(report.totals.failed, 1)
+  assert.equal(report.retests[0].totals.failed, 0)
+})
+
+test('missing JSON, unexecuted files and interruption retain an honest partial report', () => {
+  const firstPass = [{ file: 'a', code: 0, complete: true,
+    report: { totals: { total: 2, passed: 2, failed: 0, skipped: 0 }, files: [] } },
+  { file: 'b', code: 1, complete: false, reportError: 'missing JSON' }]
+  const settings = { startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:01:00.000Z',
+    interrupted: null, diagnostic: false, processStopped: true }
+  const partial = integrationReport(['a', 'b', 'c'], firstPass, [], settings)
+  assert.equal(partial.outcome, 'incomplete')
+  assert.equal(partial.completeness, 'partial')
+  assert.equal(partial.completedPortions, 1)
+  assert.equal(partial.files[2].reason, 'not executed')
+  assert.equal(partial.totals.passed, 2)
+  const cancelled = integrationReport(['a', 'b', 'c'], firstPass, [], { ...settings, interrupted: 'SIGTERM' })
+  assert.equal(cancelled.outcome, 'cancelled')
+  assert.equal(cancelled.totals.passed, 2)
+})
+
+test('skipped cases and diagnostic resumes cannot satisfy a complete integration gate', () => {
+  const firstPass = [{ file: 'a', code: 0, complete: true,
+    report: { totals: { total: 2, passed: 1, failed: 0, skipped: 1 }, files: [] } }]
+  const settings = { startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:01:00.000Z',
+    interrupted: null, diagnostic: false, processStopped: true }
+  const full = integrationReport(['a'], firstPass, [], settings)
+  assert.equal(full.outcome, 'failed')
+  assert.equal(full.disallowedSkipped, 1)
+  const diagnostic = integrationReport(['a'], firstPass, [], { ...settings, diagnostic: true })
+  assert.equal(diagnostic.outcome, 'incomplete')
+  assert.equal(diagnostic.completeness, 'partial')
+})
+
+
+test('Job integration shards require and respect both reservation and qualification', () => {
+  assert.equal(reservedIntegrationShards({}), 12)
+  const job = { GRAPHQL_VERIFICATION_ROOT: '/source',
+    GRAPHQL_VERIFICATION_INTEGRATION_SHARDS: '1', GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS: '1' }
+  assert.equal(reservedIntegrationShards(job), 1)
+  assert.throws(() => reservedIntegrationShards({ GRAPHQL_VERIFICATION_ROOT: '/source' }), /require reserved/)
+  assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
+  assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_VERIFICATION_INTEGRATION_SHARDS: '2',
+    GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
 })

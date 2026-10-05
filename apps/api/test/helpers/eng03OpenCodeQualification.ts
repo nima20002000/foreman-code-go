@@ -21,10 +21,17 @@ import { clearQualificationGate, installQualificationGate } from '../../src/modu
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
 export async function qualifyEng03OpenCode() {
+  if (process.env.GRAPHQL_VERIFICATION_ROOT
+    && (!process.env.ENG03_A_CODEX_BINARY || !process.env.ENG03_A_OPENCODE_BINARY)) {
+    throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
+  }
   const configured = process.env.ENG03_A_TEST_DATABASE_URL
   assert.ok(configured)
   const url = new URL(configured)
-  assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname.includes('test'))
+  assert.ok(['postgres:', 'postgresql:'].includes(url.protocol)
+    && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    && /(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(url.pathname.slice(1)))
+    && !url.search && !url.hash)
   const schema = `native_qualification_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString: configured, max: 1 })
   await admin.query(`create schema ${schema}`)
