@@ -24,6 +24,10 @@ canonical receipt checks from other transaction work. These spans include SQL
 and validation CPU time; compare them with their nested SQL spans to distinguish
 database waits from validation work.
 
+`native.history_replay` reports how many semantic frames in a complete captured
+history already have matching committed raw bytes, graph receipts, and the
+current native binding. Their new full-history proof and commit checks still run.
+
 Spans overlap. Do not add their durations as elapsed Run time: a healthy wrapper
 can wait for a provider while heartbeats and persistence proceed concurrently.
 For a critical-path breakdown, merge interval ranges, compare native output and
