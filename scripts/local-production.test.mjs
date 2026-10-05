@@ -46,6 +46,61 @@ test('updates retain operator settings separately from installer isolation setti
   }
 })
 
+test('first migration and later updates preserve quoted, escaped and multiline operator values', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-escaped-settings-'))
+  const path = join(directory, 'operator.json')
+  const envFile = join(directory, 'production.env')
+  const owned = { HOST: '127.0.0.1', GRAPHQL_PRODUCTION_DB_PASSWORD: 'a'.repeat(64) }
+  const settings = {
+    CODEX_BINARY: '/opt/native "qualified"/codex',
+    OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
+    PROVIDER_API_KEY: " space\\slash\"quote'single$literal`tick\nsecond line\\ ",
+    LITERAL_NEWLINE: '\\n',
+    TRAILING_BACKSLASH: 'end\\',
+    EMPTY_SETTING: '',
+  }
+  const validate = environment => {
+    for (const [key, value] of Object.entries(settings)) assert.equal(environment[key], value)
+    assert.equal(environment.HOST, owned.HOST)
+  }
+  try {
+    await publish(envFile, renderEnvironment({ ...settings, ...owned }))
+    const previous = await readEnvironment(envFile)
+    assert.deepEqual(previous, { ...settings, ...owned })
+    const migrated = await preserveOperatorConfiguration(path, previous, owned, validate)
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), settings)
+    await publish(envFile, renderEnvironment(migrated))
+    assert.deepEqual(await readEnvironment(envFile), { ...settings, ...owned })
+    const updated = await preserveOperatorConfiguration(path, await readEnvironment(envFile),
+      { ...owned, GRAPHQL_LOCAL_PRODUCTION: '1' }, validate)
+    await publish(envFile, renderEnvironment(updated))
+    assert.deepEqual(await readEnvironment(envFile), { ...settings, ...owned, GRAPHQL_LOCAL_PRODUCTION: '1' })
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), settings)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('environment migration reads systemd quoting, continuations and duplicate assignments', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-environment-'))
+  const path = join(directory, 'production.env')
+  try {
+    await writeFile(path, [
+      '# ignored comment', '; also ignored', 'HOST=first', 'HOST = 127.0.0.1  ',
+      'UNQUOTED=path\\ with\\ spaces\\\\suffix', "SINGLE='literal\\path\nnext line'",
+      'DOUBLE="quote\\\" slash\\\\ dollar\\$ tick\\` other\\q"',
+      'CONTINUED=one\\\ntwo', 'QUOTED_CONTINUED="one\\\ntwo"', 'EMPTY=',
+    ].join('\n'))
+    assert.deepEqual(await readEnvironment(path), {
+      HOST: '127.0.0.1', UNQUOTED: 'path with spaces\\suffix', SINGLE: 'literal\\path\nnext line',
+      DOUBLE: 'quote" slash\\ dollar$ tick` other\\q', CONTINUED: 'onetwo',
+      QUOTED_CONTINUED: 'onetwo', EMPTY: '',
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('concurrent publishers expose one complete file and clean their exclusive temporary files', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-publish-'))
   const target = join(directory, 'environment')

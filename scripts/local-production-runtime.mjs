@@ -3,7 +3,6 @@ import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'no
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-import { parseEnv } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 
 export async function publish(path, content, mode = 0o600) {
@@ -38,9 +37,66 @@ export async function withInstallationLock(path, action) {
   }
 }
 
+function environmentValue(content, start) {
+  let value = ''
+  let mode = 'leading'
+  let trailingWhitespace
+  let offset = start
+  for (; offset < content.length; offset += 1) {
+    const character = content[offset]
+    const quoted = mode === 'single' || mode === 'double'
+    if (quoted) {
+      const quote = mode === 'single' ? "'" : '"'
+      if (character === quote) {
+        mode = 'leading'
+      } else if (mode === 'double' && character === '\\') {
+        const escaped = content[++offset]
+        if (escaped !== undefined && escaped !== '\n') {
+          value += '"\\`$'.includes(escaped) ? escaped : `\\${escaped}`
+        }
+      } else {
+        value += character
+      }
+      continue
+    }
+    if (character === '\n') break
+    if (mode === 'leading') {
+      if (' \t\r'.includes(character)) continue
+      if (character === "'" || character === '"') {
+        mode = character === "'" ? 'single' : 'double'
+        continue
+      }
+      mode = 'unquoted'
+    }
+    if (character === '\\') {
+      trailingWhitespace = undefined
+      const escaped = content[++offset]
+      if (escaped !== undefined && escaped !== '\n') value += escaped
+    } else {
+      if (' \t\r'.includes(character)) trailingWhitespace ??= value.length
+      else trailingWhitespace = undefined
+      value += character
+    }
+  }
+  if (mode === 'unquoted' && trailingWhitespace !== undefined) value = value.slice(0, trailingWhitespace)
+  return { value, end: offset }
+}
+
+function parseEnvironment(content) {
+  const assignments = /(?:^|\n)[ \t\r]*([A-Za-z_][A-Za-z0-9_]*)[ \t\r]*=/g
+  const entries = []
+  for (let match = assignments.exec(content); match; match = assignments.exec(content)) {
+    const parsed = environmentValue(content, assignments.lastIndex)
+    entries.push([match[1], parsed.value])
+    assignments.lastIndex = parsed.end
+  }
+  return Object.fromEntries(entries)
+}
+
 export async function readEnvironment(path) {
   try {
-    return parseEnv(await readFile(path, 'utf8'))
+    // production.env is an EnvironmentFile, whose quoting differs from dotenv.
+    return parseEnvironment(await readFile(path, 'utf8'))
   } catch (error) {
     if (error.code === 'ENOENT') return undefined
     throw error

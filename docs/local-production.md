@@ -65,7 +65,9 @@ volume. Back up the database and workspace/upload files before updates.
 
 Updates preserve operator settings in `operator.json`, a JSON object of environment
 variable names and string values. Existing settings in `production.env` are copied
-there on the first update. Edit `operator.json`, then rerun the installer. Binary
+there on the first update. Migration reads the same systemd quoting as service
+activation, preserving quotes, backslashes and multiline values. Edit
+`operator.json`, then rerun the installer. Binary
 overrides, harness rollout choices and API/database timeouts are validated before
 activation. Host, ports, database credentials, storage isolation and other
 installer-owned settings stay in `production.env`; do not edit that generated file.
@@ -108,7 +110,9 @@ service regression through the heavy-job queue:
 corepack pnpm test:production:installed
 ```
 
-This uses the installed compiled release and authenticated Operator MCP. It tests
+This uses the installed compiled release and authenticated Operator MCP. It also
+checks configuration migration and updates against actual systemd environment
+values in a temporary service. It tests
 an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
 a failed first database activation followed by automatic recovery, a production
 PostgreSQL container restart, and recovery after killing the API's

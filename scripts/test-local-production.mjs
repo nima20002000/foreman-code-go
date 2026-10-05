@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
-import { publish, readEnvironment, readProductionIdentity, renderEnvironment, waitForProductionReady,
+import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity,
+  renderEnvironment, waitForProductionReady,
   withInstallationLock } from './local-production-runtime.mjs'
 
 const execute = promisify(execFile)
@@ -64,6 +65,44 @@ async function recoverFailedDatabaseStartup(environment, ready) {
   }
 }
 
+async function qualifyEnvironmentMigration(release) {
+  const directory = await mkdtemp(join(config, 'environment-regression-'))
+  const envFile = join(directory, 'production.env')
+  const operatorFile = join(directory, 'operator.json')
+  const settings = {
+    CODEX_BINARY: '/opt/native "qualified"/codex',
+    OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
+    OPENAI_API_KEY: "test-only\\secret\"quote'single$literal`tick\nsecond line\\",
+    HARNESS_TIMEOUT_MS: '600000',
+  }
+  const owned = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
+    DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production' }
+  const { loadConfig } = await import(pathToFileURL(join(release, 'apps/api/dist/config.js')))
+  const readEffective = async () => {
+    const code = 'const keys = JSON.parse(process.argv[1]); '
+      + 'console.log(JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
+    const { stdout } = await execute('/usr/bin/systemd-run', ['--user', '--wait', '--pipe', '--collect', '--quiet',
+      `--unit=graphql-environment-regression-${randomUUID()}`, `--property=EnvironmentFile=${envFile}`,
+      join(release, 'node'), '-e', code, JSON.stringify(Object.keys(settings))], { timeout: 30_000 })
+    return JSON.parse(stdout)
+  }
+  try {
+    await publish(envFile, renderEnvironment({ ...settings, ...owned }))
+    assert.deepEqual(await readEffective(), settings, 'Initial settings must match the actual systemd environment')
+    const migrated = await preserveOperatorConfiguration(operatorFile, await readEnvironment(envFile), owned, loadConfig)
+    assert.equal(loadConfig(migrated).harnesses.codexBinary, settings.CODEX_BINARY)
+    assert.equal(loadConfig(migrated).harnesses.openCodeBinary, settings.OPENCODE_BINARY)
+    assert.deepEqual(JSON.parse(await readFile(operatorFile, 'utf8')), settings)
+    await publish(envFile, renderEnvironment(migrated))
+    assert.deepEqual(await readEffective(), settings, 'Migration must preserve effective settings')
+    const updated = await preserveOperatorConfiguration(operatorFile, await readEnvironment(envFile), owned, loadConfig)
+    await publish(envFile, renderEnvironment(updated))
+    assert.deepEqual(await readEffective(), settings, 'Update must preserve effective settings')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
 async function main() {
   const environment = await readEnvironment(join(config, 'production.env'))
   assert.equal(environment?.GRAPHQL_LOCAL_PRODUCTION, '1', 'Install the compiled local production release first')
@@ -85,6 +124,7 @@ async function main() {
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
   const ready = () => waitForProductionReady({ origin, expected })
   await ready()
+  await qualifyEnvironmentMigration(release)
   assert.equal(await systemctl('show', '--property=Delegate', '--value', unit), 'yes')
   assert.equal(await systemctl('show', '--property=Restart', '--value', unit), 'always')
   const pool = new Pool({ connectionString: environment.DATABASE_URL, max: 2, query_timeout: 10_000 })
