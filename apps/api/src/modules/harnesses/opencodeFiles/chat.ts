@@ -38,6 +38,8 @@ export interface OpenCodeChatFileBinding {
 }
 
 export interface OpenCodeChatFiles {
+  /** Reclaim registered materializations only after their original native process is confirmed closed. */
+  recover?(signal: AbortSignal): Promise<void>
   /** Return undefined only when the accepted turn has no file-tool context.
    * Agent turns need a context for inherited references even without attachments.
    * An unavailable reader/host/listener for a file-enabled turn must THROW.

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import Fastify from 'fastify'
@@ -39,7 +39,7 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
 
   // Native protocol, namespace checks, disk bytes, admissions and file services
   // use the production implementations. No model inference is needed to prepare inputs.
-  async function fixture(attachments: 'none' | 'image') {
+  async function fixture(attachments: 'none' | 'image', recoverCleanup = false) {
     const attach = attachments === 'image'
     const root = join(directory, randomUUID())
     const workspace = join(root, 'workspace')
@@ -124,6 +124,33 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
       await expect(prepareOpenCodeChatFiles(runtime, { ...identity, ownerAgentId: randomUUID() }, server,
         'graphql', AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: 'FILE_ADMISSION_MISMATCH' })
       await server.assertFileSourceIsolation!(files.bytes.root, AbortSignal.timeout(10_000))
+      if (recoverCleanup) {
+        const turnRoot = dirname(dirname(fileURLToPath(turn!.inputs.imageParts[0]!.url)))
+        await mkdir(join(turnRoot, 'extracted', 'nested'), { recursive: true })
+        await writeFile(join(turnRoot, 'extracted', 'nested', 'leftover'), 'owned residue')
+        const held = `${turnRoot}-held`
+        await rename(turnRoot, held)
+        await mkdir(turnRoot)
+        await writeFile(join(turnRoot, 'foreign'), 'keep foreign bytes')
+        await expect(turn!.finish('definite_rejection', AbortSignal.timeout(10_000))).rejects.toThrow()
+        await allocation.manager.dispose()
+        const fresh = factories.allocate({ harness: 'opencode', role: 'agent-chat', workingDirectory: workspace,
+          ownerAgentId: node.agentId, appMcpAccess: 'none',
+          chatFiles: native => productionOpenCodeChatFiles(() => app, database.pool, config,
+            initial.conversationId, native, '127.0.0.1') })
+        try {
+          await expect(fresh.manager.createSession({ request: input }, AbortSignal.timeout(30_000))).rejects.toThrow()
+          expect(await readFile(join(turnRoot, 'foreign'), 'utf8')).toBe('keep foreign bytes')
+          await rm(turnRoot, { recursive: true })
+          await rename(held, turnRoot)
+          await fresh.manager.createSession({ request: input }, AbortSignal.timeout(30_000))
+          await expect(readFile(join(turnRoot, 'extracted', 'nested', 'leftover'))).rejects.toMatchObject({ code: 'ENOENT' })
+          expect(await readdir(join(files.bytes.root, 'opencode-file-cleanup'))).toEqual([])
+          turn = undefined
+        } finally {
+          await fresh.manager.dispose()
+        }
+      }
     } finally {
       try {
         await turn?.finish('definite_rejection', AbortSignal.timeout(10_000))
@@ -137,6 +164,9 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
     }
   }
 
+  it('recovers deferred cleanup in a fresh native manager after confirmed closure and preserves replacement paths', async () => {
+    await fixture('image', true)
+  })
   it('prepares plain chat with inherited references using an API-owned vault', async () => {
     await fixture('none')
   })

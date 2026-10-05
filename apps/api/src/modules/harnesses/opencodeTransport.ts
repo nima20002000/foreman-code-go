@@ -1,7 +1,7 @@
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { registeredNativeProcess, spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -96,7 +96,9 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 export class ManagedOpenCodeServer implements OpenCodeServerController {
   expectedVersion = ''
   readonly ownedFileRoot: string | undefined
-  get processRecovery(): NativeProcessRecovery | undefined { return this.options.processRecovery }
+  get processRecovery(): NativeProcessRecovery | undefined {
+    return this.child ? registeredNativeProcess(this.child) : undefined
+  }
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
