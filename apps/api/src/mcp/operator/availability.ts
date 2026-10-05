@@ -135,6 +135,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
+  if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
   if (name === 'workspace_storage_folders_list' || name === 'workspace_storage_folder_delete') {
     result[0]!.scope = 'global'
     result.push({ action: 'workspace_locations:read', scope: 'global' })

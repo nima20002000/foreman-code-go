@@ -1,4 +1,5 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
+import { withInteractionResponse } from '@foreman-code/contracts'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
@@ -826,10 +827,12 @@ export class OperatorChatService {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
     let providerAcknowledgment: ChatResponseAcknowledgment | undefined
-    const acceptedControl = acceptedOperatorResponseControl(await this.get(id, principal), input.requestId, input.nativeRequestId, input.optionId)
+    const acceptedControl = acceptedOperatorResponseControl(await this.get(id, principal), input.requestId,
+      input.nativeRequestId, input.optionId, input.response)
     const key = input.commandId ?? `operator-respond:${commandInputHash([id, input.requestId, input.nativeRequestId]).slice(7)}`
     return this.receipts().execute(principal, source, id, key,
-      { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },
+      { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId,
+        ...(input.response !== undefined ? { response: input.response } : {}) },
       (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt, (proof) => { providerAcknowledgment = proof }),
       () => this.controlRead(id, principal, 'operator_chat:respond'), acceptedControl, () => providerAcknowledgment)
   }
@@ -841,10 +844,11 @@ export class OperatorChatService {
     await this.control(id, async () => {
       const row = await this.repository.active(id)
       const pending = row?.pending_interaction
-      const option = pending?.responseOptions.find((item) => item.optionId === input.optionId)
-      if (!row || row.active_request_id !== input.requestId || row.pending_interaction?.turn.nativeRequestId !== input.nativeRequestId || !option) {
+      const offered = pending?.responseOptions.find((item) => item.optionId === input.optionId)
+      if (!row || row.active_request_id !== input.requestId || row.pending_interaction?.turn.nativeRequestId !== input.nativeRequestId || !offered) {
         throw new DomainError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'This approval is no longer offered for this turn.', 409)
       }
+      const option = withInteractionResponse(offered, input.response)
       const configuration = await this.repository.configuration(row.operator_configuration_version_id)
       if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
       const owner = await this.authority.current(row.owner_principal_id!)

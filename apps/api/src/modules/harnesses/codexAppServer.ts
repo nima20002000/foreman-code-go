@@ -34,7 +34,7 @@ import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
-import { translateCodexInteraction, unsupportedCodexInteraction } from './codexInteractions.js'
+import { resolveCodexInteractionResponse, translateCodexInteraction, unsupportedCodexInteraction } from './codexInteractions.js'
 import { CodexChildControls } from './codexChildControls.js'
 import type { RunSubagent } from '@graphql/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
@@ -442,7 +442,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
       mcpDetection: true,
       supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile',
-        'mcp_tool_call_approval_question', 'mcp_confirmation'],
+        'mcp_tool_call_approval_question', 'mcp_confirmation', 'tool_user_input', 'mcp_elicitation'],
       interactionSupport: CODEX_INTERACTION_SUPPORT,
     })
   }
@@ -1084,11 +1084,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
     }
     signal?.throwIfAborted()
+    const nativeResponse = resolveCodexInteractionResponse(stored, option)
     // Synchronous reservation prevents two competing responses from both writing.
     waiting.delivery = 'submitting'
     waiting.selectedOptionId = stored.option.optionId
     try {
-      await runtime.transport.respond(waiting.requestId, waiting.method, stored.nativeResponse)
+      await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
       if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
         waiting.delivery = 'submitted'
         this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId, semantic: stored.option.semantic })

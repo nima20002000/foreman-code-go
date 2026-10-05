@@ -241,6 +241,7 @@ export const CancelQueuedAgentChatTurnRequestSchema = z.object({ requestId: IdSc
 /** POST .../conversations/:conversationId/responses — native approval/user-input reply. */
 export const RespondAgentChatInteractionRequestSchema = z.object({
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
+  response: z.json().optional(),
 }).strict();
 export const AgentChatStateResponseSchema = z.object({ state: AgentChatStateSchema }).strict();
 

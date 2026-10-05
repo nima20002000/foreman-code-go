@@ -36,7 +36,7 @@ export const AcceptedChatResponseControlSchema = z.object({
   native: z.object({ harness: z.string().min(1), providerVersion: z.string().min(1).optional(), sessionId: z.string().min(1),
     turnId: z.string().min(1).optional(), messageId: z.string().min(1).optional(), generation: z.string().min(1).optional(),
     requestId: z.string().min(1), requestType: z.string().min(1) }).strict(),
-  choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1) }).strict(),
+  choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1), response: z.json().optional() }).strict(),
 }).strict().superRefine((value, context) => {
   const native = value.native
   if (native.harness === 'claude') {

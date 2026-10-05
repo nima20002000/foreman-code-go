@@ -1,5 +1,7 @@
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
+import { NativeInteractionInputSchema } from './interactionInput.js';
+export * from './interactionInput.js';
 export * from './nativeInteractionSupport.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
@@ -492,6 +494,8 @@ export const ApprovalResponseOptionSchema = z.object({
   affectsOtherPendingRequests: z.boolean(),
   interruptsCurrentTurn: z.boolean(),
   mutatesPersistentPolicy: z.boolean(),
+  input: NativeInteractionInputSchema.optional(),
+  response: z.json().optional(),
 }).strict();
 export type ApprovalResponseOption = z.infer<typeof ApprovalResponseOptionSchema>;
 
@@ -1559,6 +1563,7 @@ export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema, c
 export const RespondOperatorInteractionRequestSchema = z.object({
   commandId: z.string().min(8).max(200).optional(),
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
+  response: z.json().optional(),
 }).strict();
 export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">
   & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
@@ -1591,6 +1596,7 @@ export const ListInteractionsResponseSchema = z.object({
 }).strict();
 export const RespondToInteractionRequestSchema = z.object({
   interactionId: IdSchema, optionId: IdSchema, expectedRevision: z.number().int().nonnegative(),
+  response: z.json().optional(),
 }).strict();
 export const RespondToInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema, replayed: z.boolean() }).strict();
 

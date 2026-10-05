@@ -1,6 +1,7 @@
 import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
-import type { DurableInteraction } from '@foreman-code/contracts'
+import { withInteractionResponse, type DurableInteraction, type InteractionResponseValue } from '@foreman-code/contracts'
+import { requireAuthorization } from '../../access/policy.js'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
 import type { InteractionNativeRuntime } from '../runtimePorts.js'
 import type { InteractionResponder } from '../service.js'
@@ -34,8 +35,11 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   const claim = await deps.repository.delivery.claim(id, randomUUID(), reconcileOnly)
   if (!claim) return read(deps, id)
   const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
-  const option = current.responseOptions.find((item) => item.optionId === current.selectedOptionId)
-  if (!option) return fail('INTERACTION_OPTION_INVALID')
+  const offered = current.responseOptions.find((item) => item.optionId === current.selectedOptionId)
+  if (!offered) return fail('INTERACTION_OPTION_INVALID')
+  const response = current.nativeResponse
+  const values = response && typeof response === 'object' && !Array.isArray(response) ? response.response : undefined
+  const option = withInteractionResponse(offered, values)
   const expectedSession = { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId }
   if (claim.mode === 'reconcile') {
     let result: NativeDeliveryOutcome = { state: 'uncertain' }
@@ -106,9 +110,12 @@ export async function resumeApproval(deps: ApprovalRuntimeDependencies, interact
   await deps.repository.delivery.finishGraphResume(claim, error)
 }
 export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,
-  input: { interactionId: string; optionId: string; expectedRevision: number }, options: InteractionResponseOptions = {}) {
+  input: { interactionId: string; optionId: string; expectedRevision: number; response?: InteractionResponseValue },
+  options: InteractionResponseOptions = {}) {
   const current = await read(deps, input.interactionId)
-  if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind === 'user')) return fail('INTERACTION_ACCESS_DENIED')
+  if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind !== 'orchestrator')) {
+    return fail('INTERACTION_ACCESS_DENIED')
+  }
   if (responder.kind === 'orchestrator') {
     if (responder.beforeCommit) return fail('APPROVAL_RAW_AUDIT_CALLBACK_REJECTED')
     if (responder.authority.agentId !== responder.principal.agentId || responder.authority.workspaceId !== current.workspaceId
@@ -119,6 +126,10 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
   if (current.status === 'pending') {
     if (responder.kind === 'user') {
       if (!canUserInteract(responder.principal, 'interactions:respond', current)) return fail('INTERACTION_ACCESS_DENIED')
+    } else if (responder.kind === 'operator') {
+      if (responder.principal.audience !== 'operator') return fail('INTERACTION_ACCESS_DENIED')
+      requireAuthorization(responder.principal, 'interactions:read', current)
+      requireAuthorization(responder.principal, 'interactions:respond', current)
     } else requireRespondableInteraction(responder.principal, current)
     if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
     assertInteractionResponseActive(options.signal)
@@ -130,8 +141,11 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
     }
     assertInteractionResponseActive(options.signal)
   }
+  const selected = withInteractionResponse(option, input.response)
   const decided = await deps.repository.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
-    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic,
+      ...(selected.response !== undefined ? { response: selected.response } : {}) },
+    ...(responder.kind === 'operator' && responder.source ? { source: responder.source } : {}),
     ...(options.signal ? { signal: options.signal } : {}) })
   const delivered = await deliverApproval(deps, current.id)
   await resumeApproval(deps, delivered)

@@ -22,7 +22,10 @@ export function registerOperatorControlTools(server: McpServer, context: Operato
     state: await chat.cancel(conversationId, request.requestId, context.principal, request.commandId, 'mcp'),
   })))
   if (operatorToolAvailable(context, 'operator_chat_respond')) server.registerTool('operator_chat_respond', {
-    description: 'Answer the exact qualified native request in your Operator conversation using offered nativeRequestId and optionId plus active model requestId from operator_chat_get. Check responseAvailability.available and its message first. Reuse commandId and identical input after response loss; without commandId the exact native question has one deterministic receipt. An uncertain response is never resent. Requires operator_chat:respond and operator_chat:read.',
+    description: 'Answer the pending native request in your Operator conversation using offered nativeRequestId and '
+      + 'optionId plus active model requestId from operator_chat_get. For questions and forms, supply response matching '
+      + 'the option input schema. Check responseAvailability.available and its message first. Reuse commandId and '
+      + 'identical input after response loss. An uncertain response is never resent. Requires operator_chat:respond and operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1), request: RespondOperatorInteractionRequestSchema }).strict(),
     outputSchema: CancelOperatorTurnResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

@@ -1,5 +1,6 @@
 import type { AgentChatState } from '@foreman-code/contracts/agent-chat'
-import type { OperatorConversationState, PendingNativeInteraction } from '@foreman-code/contracts'
+import { withInteractionResponse, type OperatorConversationState, type PendingNativeInteraction,
+  type InteractionResponseValue } from '@foreman-code/contracts'
 import { AcceptedChatResponseControlSchema, type AcceptedChatResponseControl } from '@foreman-code/contracts/interaction-activity'
 
 function responseNative(pending: PendingNativeInteraction): AcceptedChatResponseControl['native'] {
@@ -11,7 +12,8 @@ function responseNative(pending: PendingNativeInteraction): AcceptedChatResponse
 }
 
 /** Capture only an offered, exact persisted request choice; receipt replay keeps its original metadata. */
-export function acceptedResponseControl(state: AgentChatState, nativeRequestId: string, optionId: string): AcceptedChatResponseControl | undefined {
+export function acceptedResponseControl(state: AgentChatState, nativeRequestId: string, optionId: string,
+  response?: InteractionResponseValue): AcceptedChatResponseControl | undefined {
   const pending = state.pendingInteraction, active = state.activeTurn, conversation = state.conversation, scope = state.activitySnapshot?.scope
   const option = pending?.responseOptions.find((candidate) => candidate.optionId === optionId)
   if (!pending || !active || !conversation || !scope || !option || pending.turn.nativeRequestId !== nativeRequestId
@@ -21,18 +23,22 @@ export function acceptedResponseControl(state: AgentChatState, nativeRequestId: 
     const submission = state.turns.find((turn) => turn.requestId === active.requestId)?.nativeSubmission
     if (!submission || submission.nativeSessionId !== pending.session.nativeSessionId || submission.nativeMessageId !== pending.turn.nativeMessageId) return undefined
   }
+  const selected = withInteractionResponse(option, response)
   return AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: conversation.id,
     modelRequestId: active.requestId, scope, native: responseNative(pending),
-    choice: { optionId: option.optionId, semantic: option.semantic } })
+    choice: { optionId: option.optionId, semantic: option.semantic,
+      ...(selected.response !== undefined ? { response: selected.response } : {}) } })
 }
 
 export function acceptedOperatorResponseControl(state: OperatorConversationState, requestId: string, nativeRequestId: string,
-  optionId: string): AcceptedChatResponseControl | undefined {
+  optionId: string, response?: InteractionResponseValue): AcceptedChatResponseControl | undefined {
   const pending = state.pendingInteraction, scope = state.activitySnapshot?.scope
   const option = pending?.responseOptions.find((choice) => choice.optionId === optionId)
   if (!pending || !option || state.activeRequestId !== requestId || pending.turn.nativeRequestId !== nativeRequestId || !scope) return undefined
   if (pending.session.harness === 'claude' && (!state.nativeSubmission || state.nativeSubmission.nativeSessionId !== pending.session.nativeSessionId
     || state.nativeSubmission.nativeMessageId !== pending.turn.nativeMessageId)) return undefined
+  const selected = withInteractionResponse(option, response)
   return AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: state.conversation.id,
-    modelRequestId: requestId, scope, native: responseNative(pending), choice: { optionId: option.optionId, semantic: option.semantic } })
+    modelRequestId: requestId, scope, native: responseNative(pending), choice: { optionId: option.optionId, semantic: option.semantic,
+      ...(selected.response !== undefined ? { response: selected.response } : {}) } })
 }

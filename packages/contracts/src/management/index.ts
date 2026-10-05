@@ -616,7 +616,9 @@ export const ManagedInteractionPageSchema = z.object({
   pendingCount: z.number().int().nonnegative().optional(),
   pendingByWorkflow: z.record(z.string(), z.number().int().nonnegative()).optional(),
 }).strict();
-export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, activity: InteractionActivityProjectionSchema.optional(), review: ReviewStatusSchema.optional() }).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema,
+  activity: InteractionActivityProjectionSchema.optional(), review: ReviewStatusSchema.optional(),
+  canRespond: z.boolean().optional() }).strict();
 
 /** Deployment capability, separate from the candidate-only A0 schema. False
  * stays literal until native admission AND durable repeat edit intents qualify.
@@ -744,7 +746,7 @@ export const OperatorToolNameSchema = z.enum([
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_start", "run_stop",
   "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1", "run_subagent_input_v1", "run_subagent_interrupt_v1",
-  "interaction_list", "interaction_get",
+  "interaction_list", "interaction_get", "interaction_respond",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 

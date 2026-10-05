@@ -3,6 +3,7 @@ import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-co
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { requireRespondableInteraction } from '../../access/appPolicy.js'
 import { canUserInteract } from '../../access/userPolicy.js'
+import { requireAuthorization } from '../../access/policy.js'
 import { assertWave25WorkerBinding } from './credentialAuthority.js'
 import { fail, type ApprovalContext } from './context.js'
 
@@ -17,6 +18,11 @@ export async function lockPrincipal(sql: GraphTransactionSql, snapshot: Manageme
   const principal = ManagementPrincipalSchema.parse({ id: row.id, name: row.name, audience: row.audience,
     ...(row.agent_id ? { agentId: row.agent_id } : {}), grants: row.grants, expiresAt: row.expires_at.toISOString(), revokedAt: null })
   if (interaction.approval.handler === 'user') {
+    if (principal.audience === 'operator' && snapshot.audience === 'operator') {
+      requireAuthorization(principal, 'interactions:read', interaction)
+      requireAuthorization(principal, 'interactions:respond', interaction)
+      return principal
+    }
     // The local browser owner is an operator principal that the user-interaction
     // route projects as a User with interaction grants. Re-apply that same
     // projection to the freshly locked (live, unrevoked) row.

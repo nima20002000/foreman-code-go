@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { normalizeCodexNotification, type CodexNotificationEnvelope } from '../src/modules/harnesses/codexNormalization.js'
 import { codexNormalizationEnvelopes, codexNormalizationTranscript } from './fixtures/codex-normalization-transcript.js'
-import { codexRequestKey, translateCodexInteraction } from '../src/modules/harnesses/codexInteractions.js'
+import { codexRequestKey, translateCodexInteraction, resolveCodexInteractionResponse } from '../src/modules/harnesses/codexInteractions.js'
 
 const owner = { threadId: 'root', turnId: 'parent-turn', runtimeGeneration: 3, terminal: false }
 const envelope = (method: string, params: CodexNotificationEnvelope['params'], runtimeGeneration = 3): CodexNotificationEnvelope => ({
@@ -77,9 +77,20 @@ describe('Codex approval translation', () => {
     const policy = approval('item/commandExecution/requestApproval', { availableDecisions: [{ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['ls'] } }] })!
     expect(policy.pending.responseOptions[0]).toMatchObject({ semantic: 'persistent_policy_change', persistence: 'persistent_config', mutatesPersistentPolicy: true })
   })
-  it('never treats generic questions or nonempty elicitation forms as grants', () => {
-    expect(approval('item/tool/requestUserInput', { isBlocking: true, questions: [{ id: 'generic', header: 'Continue?', options: [{ label: 'Allow' }] }] })).toBeUndefined()
-    expect(approval('mcpServer/elicitation/request', { mode: 'form', requestedSchema: { type: 'object', properties: { secret: { type: 'string' } } } })).toBeUndefined()
+  it('retains generic questions and form schemas for an explicit validated response', () => {
+    const question = approval('item/tool/requestUserInput', { isBlocking: false, questions: [{
+      id: 'generic', header: 'Continue?', question: 'Choose the next step',
+      options: [{ label: 'Allow', description: '' }],
+    }] })!
+    const option = question.pending.responseOptions[0]!
+    expect(option).toMatchObject({ input: { kind: 'questions' }, mutatesPersistentPolicy: false,
+      affectsOtherPendingRequests: false, persistence: 'request' })
+    expect(resolveCodexInteractionResponse(question.responses.get(option.optionId)!, { ...option,
+      response: { generic: { answers: ['Allow'] } } })).toEqual({ answers: { generic: { answers: ['Allow'] } } })
+    const form = approval('mcpServer/elicitation/request', { mode: 'form', requestedSchema: {
+      type: 'object', properties: { secret: { type: 'string' } }, required: ['secret'],
+    } })!
+    expect(form.pending.responseOptions[0]).toMatchObject({ input: { kind: 'form', schema: { required: ['secret'] } } })
     expect(approval('mcpServer/elicitation/request', { mode: 'form', requestedSchema: { type: 'object', properties: {} } })?.pending.responseOptions
       .map((option) => option.semantic)).toEqual(['approve_once', 'reject', 'cancel'])
   })

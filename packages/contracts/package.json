@@ -295,6 +295,7 @@
     "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@cfworker/json-schema": "4.1.1",
     "zod": "4.6.3"
   },
   "devDependencies": {

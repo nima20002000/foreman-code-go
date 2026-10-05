@@ -233,7 +233,9 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
           : await agentChatApi.interrupt(workspaceId, command.conversationId,
             { requestId: command.requestId, ...(command.expectedNativeTurnId ? { expectedNativeTurnId: command.expectedNativeTurnId } : {}) })
           : command.kind === 'cancel' ? await agentChatApi.cancelQueued(workspaceId, command.conversationId, command.turnRequestId, { requestId: command.requestId })
-            : await agentChatApi.respond(workspaceId, command.conversationId, { requestId: command.requestId, nativeRequestId: command.nativeRequestId, optionId: command.optionId })
+            : await agentChatApi.respond(workspaceId, command.conversationId, { requestId: command.requestId,
+              nativeRequestId: command.nativeRequestId, optionId: command.optionId,
+              ...(command.response !== undefined ? { response: command.response } : {}) })
       if (!matches(result.state)
         || command.kind !== 'send' && result.state.conversation?.id !== command.conversationId
         || command.kind === 'send' && (!('turn' in result) || (result as { turn: { requestId: string } }).turn.requestId !== command.input.requestId
@@ -315,11 +317,12 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     if (blocked('agent_chat:cancel') || !state?.conversation || state.turns.find((turn) => turn.requestId === turnRequestId)?.delivery !== 'queued') return
     runCommand(() => ({ kind: 'cancel', conversationId: state.conversation!.id, requestId: `agent-chat-cancel-${crypto.randomUUID()}`, turnRequestId }))
   }
-  const respond = (optionId: string) => {
+  const respond = (optionId: string, response?: Extract<AgentChatCommand, { kind: 'respond' }>['response']) => {
     if (blocked('agent_chat:respond') || !state?.conversation || !approvalReplyAvailable(state)
       || !state.pendingInteraction?.responseOptions.some((option) => option.optionId === optionId)) return
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
-      nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId }))
+      nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId,
+      ...(response !== undefined ? { response } : {}) }))
   }
   return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }

@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server'
+import { RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@graphql/contracts'
 import {
   InteractionGetInputSchema,
   InteractionSummaryInputSchema, InteractionSummaryResultSchema,
@@ -29,4 +30,11 @@ export function registerInteractionTools(server: McpServer, context: OperatorReq
     inputSchema: InteractionGetInputSchema, outputSchema: ManagedInteractionSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'interaction_get', () => service.get(context.principal, input.interactionId)))
+  if (operatorToolAvailable(context, 'interaction_respond')) server.registerTool('interaction_respond', {
+    description: 'Respond to a user-handled native interaction using its offered option and revision. '
+      + 'For questions or forms, supply response matching the option input schema. Requires scoped read and respond grants. '
+      + 'Designated Orchestrator interactions remain assigned to their bound reviewer.',
+    inputSchema: RespondToInteractionRequestSchema, outputSchema: RespondToInteractionResponseSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'interaction_respond', () => service.respond(context.principal, input, 'mcp')))
 }

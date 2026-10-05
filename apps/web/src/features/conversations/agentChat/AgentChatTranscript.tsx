@@ -7,6 +7,7 @@ import type { Message } from '@foreman-code/contracts'
 import { Badge, Button, MessageBubble } from '../../../shared/ui/nocturne'
 import { OperatorActivityList } from '../../operator-chat/OperatorActivityList'
 import { OperatorApprovalCard } from '../../operator-chat/OperatorApprovalCard'
+import type { InteractionResponseValue } from '@graphql/contracts'
 import { ConversationHistory } from '../ConversationHistory'
 import { ConversationViewport } from '../ConversationViewport'
 import { approvalReplyAvailable, deliveryLabels, intentLabels, mergeChatMessages } from './model'
@@ -19,7 +20,8 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
   state: AgentChatState; name: string; commands: AgentChatCommandRecord[]; history: ReturnType<typeof useAgentChat>['history']
   notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
   onRefresh?(): void; refreshing?: boolean
-  onCancel(requestId: string): void; onRespond(optionId: string): void; onSendAgain(content: string, attachments?: MessageAttachmentRef[]): void
+  onCancel(requestId: string): void; onRespond(optionId: string, response?: InteractionResponseValue): void;
+  onSendAgain(content: string, attachments?: MessageAttachmentRef[]): void
 }) {
   const id = state.conversation?.id
   const messages = mergeChatMessages(...[...(history.data?.pages.flatMap((batch) => batch.pages) ?? [])].reverse().map((page) => page.messages), state.messages).filter((message) => message.activityChannel !== 'reasoning')

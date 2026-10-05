@@ -516,8 +516,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               approval={(onBrowse) => <><ChatDecisionReceipts snapshot={conversation.activitySnapshot} pending={selected.isFetching} onRefresh={() => { void selected.refetch() }} />
                 {requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
                 disabled={Boolean(archived || !conversation.responseAvailability?.available || conversation.responseAvailability && (conversation.responseAvailability.nativeRequestId !== conversation.pendingInteraction?.turn.nativeRequestId || conversation.responseAvailability.nativeSessionId !== conversation.pendingInteraction?.session.nativeSessionId || conversation.responseAvailability.nativeRequestType !== conversation.pendingInteraction?.nativeRequestType) || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
-                onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
-                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : null}</>} />
+                onSelect={(optionId, response) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
+                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId,
+                    ...(response !== undefined ? { response } : {}) } })} /> : null}</>} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
               {conversation.pendingInteraction && !conversation.responseAvailability?.available ? <p role="status">{conversation.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.'}</p> : null}

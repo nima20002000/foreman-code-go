@@ -1,4 +1,5 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
+import { withInteractionResponse } from '@foreman-code/contracts'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
@@ -684,7 +685,8 @@ export class AgentChatService {
       const input = RespondAgentChatInteractionRequestSchema.parse(value)
       await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
       let providerAcknowledgment: ChatResponseAcknowledgment | undefined
-      const acceptedControl = acceptedResponseControl(await this.readConversation(principal, workspaceId, id), input.nativeRequestId, input.optionId)
+      const acceptedControl = acceptedResponseControl(await this.readConversation(principal, workspaceId, id),
+        input.nativeRequestId, input.optionId, input.response)
       return this.commands.execute(principal, source, id, input.requestId, { kind: 'respond', workspaceId, ...input }, async (markDispatchAttempt) => {
         await this.control(id, async () => {
           const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
@@ -693,8 +695,9 @@ export class AgentChatService {
           if (!pending || pending.turn.nativeRequestId !== input.nativeRequestId || !runtime?.session || !row.active_request_id) {
             throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
           }
-          const option = pending.responseOptions.find((entry) => entry.optionId === input.optionId)
-          if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
+          const offered = pending.responseOptions.find((entry) => entry.optionId === input.optionId)
+          if (!offered) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
+          const option = withInteractionResponse(offered, input.response)
           const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
           markDispatchAttempt()
           await runtime.manager.respond(runtime.session, input.nativeRequestId, option, signal)

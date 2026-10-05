@@ -57,7 +57,9 @@ export function registerAgentChatTools(server: McpServer, context: OperatorReque
   }, async ({ workspaceId, conversationId, turnRequestId, ...request }) => invokeOperatorTool(context, 'agent_chat_cancel_queued',
     async () => ({ state: await chat.cancelQueued(context.principal, workspaceId, conversationId, turnRequestId, request, 'mcp') })))
   if (operatorToolAvailable(context, 'agent_chat_respond')) server.registerTool('agent_chat_respond', {
-    description: 'Answer the pending native approval or input request in an Agent chat with one of its offered options. Reuse requestId with the same choice after a lost response; uncertain delivery is never resent. Requires agent_chat:respond and agent_chat:read.',
+    description: 'Answer the pending native approval or input request in an Agent chat with an offered option. '
+      + 'For questions and forms, supply response matching the option input schema. Reuse requestId with the same '
+      + 'choice and response after a lost response; uncertain delivery is never resent. Requires agent_chat:respond and agent_chat:read.',
     inputSchema: RespondAgentChatInteractionRequestSchema.extend({ workspaceId: workspace, conversationId: conversation }),
     outputSchema: AgentChatStateResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

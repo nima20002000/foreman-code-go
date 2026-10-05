@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings,
-  type OperatorConversationState } from '@graphql/contracts'
+  type OperatorConversationState, type InteractionResponseValue } from '@graphql/contracts'
 import type { AgentChatState, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
@@ -39,6 +39,9 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   let writer: Client
   let denied: Client
   let reader: Client
+  let writerToken: string
+  let readerToken: string
+  let access: PostgresAccessService
   let context: SendAgentChatMessageRequest['context']
   let workspaceId: string
   let operatorFiles: CodexChatFiles | undefined
@@ -67,17 +70,19 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     const node = saved.version.definition.nodes[0]!
     workspaceId = saved.scope.workspaceId
     context = { workflowId: saved.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
-    const access = new PostgresAccessService(database.pool)
+    access = new PostgresAccessService(database.pool)
     const issued = await access.issue({ name: 'Delivery writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: {}, actions: [
-        'agent_chat:read', 'agent_chat:write', 'agent_chat:cancel',
-        'operator_chat:read', 'operator_chat:write', 'operator_chat:cancel',
+        'agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond',
+        'operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond',
       ] }] })
     const deniedAccess = await access.issue({ name: 'Other workspace', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: { workspaceIds: ['other-workspace'] },
         actions: ['agent_chat:read', 'agent_chat:write'] }] })
     const readerAccess = await access.issue({ name: 'Delivery reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: {}, actions: ['operator_chat:read'] }] })
+    writerToken = issued.token
+    readerToken = readerAccess.token
     const agentOwners = new Map<string, NativeHarnessSessionManager>()
     factory = (id) => {
       let owner = agentOwners.get(id)
@@ -606,4 +611,151 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     assert.equal((await native.wire('thread/start')).length, 1)
     assert.equal((await native.wire('turn/start')).length, 1)
   })
+  for (const kind of ['questions', 'form'] as const) {
+    it(`Agent ${kind} responses validate through HTTP and MCP, persist, and never replay native input`, async () => {
+      const admitted = await sendAgent({ ...request('input-turn', null), content: 'wait' })
+      const id = admitted.state.conversation!.id
+      const active = await until(async () => {
+        const current = await readAgent()
+        return current.activeTurn?.nativeTurnId && current.conversation?.nativeSession ? current : undefined
+      })
+      const params = kind === 'questions' ? {
+        itemId: 'questions', isBlocking: true, autoResolutionMs: null,
+        questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',
+          isOther: true, isSecret: true, options: null }],
+      } : { mode: 'form', serverName: 'app', message: 'Enter details', _meta: null,
+        requestedSchema: { type: 'object', additionalProperties: false,
+          properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
+      const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
+      await emit(native.directory, { id: 5101, method, params: {
+        threadId: active.conversation!.nativeSession!.nativeSessionId, turnId: active.activeTurn!.nativeTurnId, ...params,
+      } })
+      const pending = await until(async () => (await readAgent()).pendingInteraction)
+      const response: InteractionResponseValue = kind === 'questions'
+        ? { answer: { answers: ['User-entered answer'] } } : { count: 2 }
+      const input = { requestId: 'input-response', nativeRequestId: pending.turn.nativeRequestId!,
+        optionId: pending.responseOptions[0]!.optionId, response }
+      const responses = async () => (await calls(native.directory)).filter((entry) => {
+        const wire = entry.wire as { id?: number; result?: unknown } | undefined
+        return wire?.id === 5101 && wire.result
+      })
+      assert.equal((await responses()).length, 0)
+      const refusal = await denied.callTool({ name: 'agent_chat_respond', arguments: {
+        workspaceId, conversationId: id, ...input,
+      } }).catch(() => ({ isError: true }))
+      assert.equal(refusal.isError, true)
+      const invalid = await app.inject({ method: 'POST',
+        url: `/api/workspaces/${workspaceId}/agent-chat/conversations/${id}/responses`,
+        headers: { authorization: `Bearer ${writerToken}` }, payload: { ...input, response: {} } })
+      assert.equal(invalid.statusCode, 400)
+      assert.equal((await responses()).length, 0)
+      assert.equal((await readAgent()).pendingInteraction?.turn.nativeRequestId, pending.turn.nativeRequestId)
+      const valid = await writer.callTool({ name: 'agent_chat_respond', arguments: {
+        workspaceId, conversationId: id, ...input,
+      } })
+      assert.notEqual(valid.isError, true, JSON.stringify(valid))
+      const receipt = (await database.pool.query(`select result from management_command_receipts
+        where operation='agent_chat_control' and command_id=$1`, [input.requestId])).rows[0]!
+      assert.deepEqual(receipt.result.acceptedControl.choice.response, response)
+      assert.equal(receipt.result.status, 'completed')
+      assert.equal(receipt.result.providerAcknowledgment, undefined)
+      const state = (valid.structuredContent as { state: AgentChatState }).state
+      const activity = state.activitySnapshot
+      const decisions = [...(activity?.pendingInteractions ?? []),
+        ...(activity?.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : []) ?? [])]
+        .filter((item) => item.native?.requestId === input.nativeRequestId && item.answerRecorded)
+      assert(decisions.length > 0)
+      assert(decisions.every((item) => !item.providerAcknowledged))
+      const replay = await writer.callTool({ name: 'agent_chat_respond', arguments: {
+        workspaceId, conversationId: id, ...input,
+      } })
+      assert.notEqual(replay.isError, true, JSON.stringify(replay))
+      assert.equal((await responses()).length, 1)
+      const conflict = await writer.callTool({ name: 'agent_chat_respond', arguments: {
+        workspaceId, conversationId: id, ...input,
+        response: kind === 'questions' ? { answer: { answers: ['Different answer'] } } : { count: 3 },
+      } })
+      assert.equal(conflict.isError, true)
+      assert.equal((await responses()).length, 1)
+      const nativeResponse = (await responses())[0]!.wire as { result: unknown }
+      assert.deepEqual(nativeResponse.result, kind === 'questions' ? { answers: response }
+        : { action: 'accept', content: response, _meta: null })
+    })
+
+    it(`Operator ${kind} responses deny read-only callers and preserve HTTP/MCP readback after service restart`, async () => {
+      const id = await createOperator()
+      await sendOperator(id, 'input-turn', 'wait')
+      const submission = await until(async () => (await readOperator(id)).nativeSubmission)
+      assert(submission.kind === 'turn')
+      const params = kind === 'questions' ? {
+        itemId: 'questions', isBlocking: true, autoResolutionMs: null,
+        questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',
+          isOther: true, isSecret: false, options: null }],
+      } : { mode: 'form', serverName: 'app', message: 'Enter details', _meta: null,
+        requestedSchema: { type: 'object', additionalProperties: false,
+          properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
+      const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
+      await emit(native.directory, { id: 5102, method, params: {
+        threadId: submission.nativeSessionId, turnId: submission.nativeTurnId, ...params,
+      } })
+      const pending = await until(async () => (await readOperator(id)).pendingInteraction)
+      const response: InteractionResponseValue = kind === 'questions'
+        ? { answer: { answers: ['User-entered answer'] } } : { count: 2 }
+      const input = { commandId: 'input-response', requestId: 'input-turn', nativeRequestId: pending.turn.nativeRequestId!,
+        optionId: pending.responseOptions[0]!.optionId, response }
+      const responses = async () => (await calls(native.directory)).filter((entry) => {
+        const wire = entry.wire as { id?: number; result?: unknown } | undefined
+        return wire?.id === 5102 && wire.result
+      })
+      const deniedHttp = await app.inject({ method: 'POST', url: `/api/operator/conversations/${id}/responses`,
+        headers: { authorization: `Bearer ${readerToken}` }, payload: input })
+      assert.equal(deniedHttp.statusCode, 403)
+      const deniedMcp = await reader.callTool({ name: 'operator_chat_respond', arguments: {
+        conversationId: id, request: input,
+      } }).catch(() => ({ isError: true }))
+      assert.equal(deniedMcp.isError, true)
+      const invalid = await writer.callTool({ name: 'operator_chat_respond', arguments: {
+        conversationId: id, request: { ...input, response: {} },
+      } })
+      assert.equal(invalid.isError, true)
+      assert.equal((await responses()).length, 0)
+      const accepted = await app.inject({ method: 'POST', url: `/api/operator/conversations/${id}/responses`,
+        headers: { authorization: `Bearer ${writerToken}` }, payload: input })
+      assert.equal(accepted.statusCode, 200, accepted.body)
+      const receipt = (await database.pool.query(`select result from management_command_receipts
+        where operation='operator_chat_control' and command_id=$1`, [input.commandId])).rows[0]!
+      assert.deepEqual(receipt.result.acceptedControl.choice.response, response)
+      assert.equal(receipt.result.status, 'completed')
+      assert.equal(receipt.result.providerAcknowledgment, undefined)
+      const activity = (accepted.json().state as OperatorConversationState).activitySnapshot
+      const decisions = [...(activity?.pendingInteractions ?? []),
+        ...(activity?.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : []) ?? [])]
+        .filter((item) => item.native?.requestId === input.nativeRequestId && item.answerRecorded)
+      assert(decisions.length > 0)
+      assert(decisions.every((item) => !item.providerAcknowledged))
+      await operatorChat.shutdown()
+      operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
+        resolver, native.directory, authority)
+      services.operatorChat = operatorChat
+      await app.close()
+      app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined },
+        checkpoints: { ping: async () => undefined } }, operator: { access, services } })
+      const origin = await app.listen({ host: '127.0.0.1', port: 0 })
+      const restarted = new Client({ name: 'restarted-input-response', version: '1' })
+      clients.push(restarted)
+      await restarted.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
+        authProvider: { token: async () => writerToken },
+      }))
+      const replay = await restarted.callTool({ name: 'operator_chat_respond', arguments: {
+        conversationId: id, request: input,
+      } })
+      assert.notEqual(replay.isError, true, JSON.stringify(replay))
+      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${id}`,
+        headers: { authorization: `Bearer ${writerToken}` } })
+      assert.equal(http.statusCode, 200)
+      assert.equal((await responses()).length, 1)
+      assert.deepEqual((await database.pool.query(`select result from management_command_receipts
+        where operation='operator_chat_control' and command_id=$1`, [input.commandId])).rows[0]!.result, receipt.result)
+    })
+  }
 })
