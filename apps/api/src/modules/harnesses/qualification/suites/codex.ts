@@ -8,16 +8,20 @@ import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 import { protocolFromBundle } from '../../codexProtocol.js'
 import { CodexStdioTransport, type RpcRequest } from '../../codexStdioTransport.js'
 import { codexFileDynamicTools } from '../../codexFiles/index.js'
+import { markdownReadText } from '../../../files/tools/markdownReadText.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from '../../appMcpLauncher.js'
 import { runCommand } from '../../process.js'
 import { inheritedAgentEnvironment } from '../../secrets.js'
 import { collectChecks, modelCheck, nonempty, object, requireCondition, type Check } from './checks.js'
 
 const bundleName = 'codex_app_server_protocol.schemas.json'
-const response = (value: unknown) => ({ success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] })
+const response = (value: unknown, text?: string) => ({ success: true,
+  contentItems: [{ type: 'inputText', text: JSON.stringify(value) },
+    ...(text === undefined ? [] : [{ type: 'inputText', text }])],
+})
 
 export const codexQualificationSuite: QualificationSuite = {
-  harness: 'codex', revision: 'codex-live-4',
+  harness: 'codex', revision: 'codex-live-5',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const environment = inheritedAgentEnvironment()
@@ -85,9 +89,10 @@ export const codexQualificationSuite: QualificationSuite = {
         requireCondition(source.equals(sourceBytes), 'Fixture Markdown changed.')
         const bytes = source.subarray(fileInput.offset, fileInput.offset + fileInput.length)
         toolRead = true
-        await transport.respond(request.id, request.method, response({ status: 'ready', file: sourceFile, revision: sourceRevision,
+        const result = { status: 'ready' as const, file: sourceFile, revision: sourceRevision,
           readAt: new Date().toISOString(), offset: fileInput.offset, byteLength: bytes.length,
-          contentBase64: bytes.toString('base64'), eof: fileInput.offset + bytes.length === source.length }))
+          contentBase64: bytes.toString('base64'), eof: fileInput.offset + bytes.length === source.length }
+        await transport.respond(request.id, request.method, response(result, markdownReadText(result)))
       } else if (params.tool === 'files_publish_result' && toolRead) {
         const fileInput = AgentFilePublishInputSchema.parse(args)
         requireCondition(fileInput.artifactId === 'qualification-result' && fileInput.filename === 'qualification-result.md'

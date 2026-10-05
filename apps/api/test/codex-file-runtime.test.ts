@@ -3,6 +3,7 @@ import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type { NativeSessionReference } from '@foreman-code/contracts'
+import { AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import type { CodexChatFileAdmission } from '../src/modules/harnesses/codexFiles/production.js'
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
@@ -134,6 +135,26 @@ describe.skipIf(process.platform === 'win32')('FIL-08a: real Codex manager file 
     await finish(f.directory, session.nativeSessionId); await result
     assert.equal(ports.tokens.size, 0)
     assert(ports.events.indexOf('revoke') < ports.events.indexOf('host:close'))
+  })
+
+  it('returns pinned Markdown bytes and exact text through the native callback', async () => {
+    const session = await manager.createSession(source)
+    const running = begin(session)
+    await until(async () => ports.events.includes('issue:ready'))
+    const result = await sendTool(session, 'read-markdown', 'files_read', {
+      ...sourceRef, offset: 0, length: 65536,
+    })
+    assert.equal(result?.success, true)
+    const content = result!.contentItems as Array<{ type: string; text: string }>
+    const read = AgentFileReadResultSchema.parse(JSON.parse(content[0]!.text))
+    assert.equal(read.status, 'ready')
+    if (read.status !== 'ready') throw new Error('Expected authorized Markdown bytes.')
+    assert.equal(read.file.fileId, sourceRef.fileId)
+    assert.equal(read.revision.revisionId, sourceRef.revisionId)
+    assert.deepEqual(content[1], { type: 'inputText', text: '# Attached document\n' })
+    assert.equal(Buffer.from(read.contentBase64, 'base64').toString('utf8'), content[1]!.text)
+    await finish(f.directory, session.nativeSessionId)
+    await running
   })
 
   it('dispatches copy/publish and adopts only into the originating message; duplicate calls do not republish', async () => {

@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream'
 import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
+import { markdownReadText } from '../../files/tools/markdownReadText.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import { warnCodexFileError } from './runtime.js'
 import type {
@@ -240,7 +241,7 @@ export class CodexFileTurn {
       case 'files.read': {
         const result = this.#dependencies.parseRead(arguments_, await files.read(token, arguments_))
         if (result.status === 'ready') this.documentRevision(result)
-        return textResult(result)
+        return textResult(result, markdownReadText(result))
       }
       case 'files.write_working_copy':
       case 'files.apply_format_edit': {

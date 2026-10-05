@@ -24,7 +24,7 @@ const schemas = {
 } satisfies Record<FileToolOperation, z.ZodType>
 const descriptions: Record<FileToolOperation, string> = {
   'files.list': 'List a bounded metadata manifest in an authorized file scope. No file contents.',
-  'files.read': 'Read a bounded byte range from the exact fileId and revisionId. Never follows a newer revision.',
+  'files.read': 'Read a bounded byte range from the exact fileId and revisionId. Markdown includes UTF-8 text alongside the base64 bytes. Never follows a newer revision.',
   'files.create_working_copy': 'Create a detached temporary working copy in this conversation. Edit it with the file edit tools.',
   'files.publish_result': 'Publish a completed working copy as a new immutable temporary file in this turn. Does not replace a source or permanent reference.',
   'files.write_working_copy': 'Replace the bytes of an owned working copy. Supply canonical base64 and an optional base revision.',
