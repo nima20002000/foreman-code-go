@@ -198,7 +198,9 @@ interface Prepared {
 }
 interface Creation {
   identity: string
-  status: 'creating' | 'uncertain' | 'ready'
+  status: 'creating' | 'uncertain' | 'ready' | 'rejected'
+  source?: NativeSessionReference
+  rejection?: unknown
   promise?: Promise<NativeSessionReference>
   session?: NativeSessionReference
   transport?: CodexTransport
@@ -478,34 +480,59 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    return this.beginCreation(source, { signal })
+  }
+
+  private async beginCreation(source: NativeSessionStart,
+    options: { forkSource?: NativeSessionReference; signal?: AbortSignal | undefined }): Promise<NativeSessionReference> {
+    const { forkSource, signal } = options
     this.shutdownController.signal.throwIfAborted()
     const input = structuredClone(source)
+    if (forkSource && input.kind !== 'operator') input.instructionsDelivered = true
     const key = this.creationKey(input)
-    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
+    const identity = this.creationIdentity(input, forkSource)
     const existing = this.creations.get(key)
     if (existing) {
       if (existing.identity !== identity) throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The creation correlation belongs to a different accepted session.')
       if (existing.session) return structuredClone(existing.session)
+      if (existing.status === 'rejected') return this.rejectCreation(existing)
       if (existing.status === 'uncertain') throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'A native thread may already exist for this creation correlation; do not create another one.')
       return structuredClone(await existing.promise!)
     }
     if (this.creations.size >= 128) throw new HarnessExecutionError('CODEX_CREATION_LIMIT', 'Resolve or close existing sessions before creating more.')
-    const creation: Creation = { identity, status: 'creating' }
+    const creation: Creation = { identity, status: 'creating', ...(forkSource ? { source: structuredClone(forkSource) } : {}) }
     this.creations.set(key, creation)
     creation.promise = this.create(input, creation, key, signal)
     return structuredClone(await creation.promise)
   }
 
   /** Retrieve an identity learned from a late thread/start response without replaying it. */
-  async reconcileSessionCreation(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+  async reconcileSessionCreation(input: NativeSessionStart, signal?: AbortSignal,
+    forkSource?: NativeSessionReference): Promise<NativeSessionReference> {
     signal?.throwIfAborted()
     this.shutdownController.signal.throwIfAborted()
     const creation = this.creations.get(this.creationKey(input))
-    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
-    if (!creation || creation.identity !== identity || !creation.session) {
+    const identity = this.creationIdentity(input, forkSource)
+    if (!creation || creation.identity !== identity) {
+      throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
+    }
+    if (creation.status === 'rejected') return this.rejectCreation(creation)
+    if (!creation.session) {
       throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
     }
     return structuredClone(creation.session)
+  }
+
+  private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
+    return canonical({ binding: binding(input), configuration: accepted(input),
+      environment: input.environment ?? null, source: source ?? null })
+  }
+
+  private async rejectCreation(creation: Creation): Promise<never> {
+    try { await creation.transport?.close() } catch (error) {
+      throw new NativeDeliveryError('session_creation', 'not_sent', error, 'pending')
+    }
+    throw new NativeDeliveryError('session_creation', 'not_sent', creation.rejection)
   }
 
   private creationKey(input: NativeSessionStart): string {
@@ -520,8 +547,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     let expiration: NodeJS.Timeout | undefined
     let creationAttempted = false
     let creationAccepted = false
+    const method = creation.source ? 'thread/fork' : 'thread/start'
     try {
       const prepared = await this.prepareInput(input, signal)
+      if (creation.source) {
+        this.assertSessionVersion(creation.source)
+        if (prepared.qualified.providerVersion !== creation.source.providerVersion) {
+          throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
+        }
+      }
       candidate = await this.transport(prepared, 0, signal)
       creation.transport = candidate.transport
       const publish = async (value: unknown): Promise<NativeSessionReference> => {
@@ -529,6 +563,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.shutdownController.signal.throwIfAborted()
         const response = object(value, 'CODEX_THREAD_START_INVALID')
         const thread = this.validateThreadResponse(prepared, response)
+        if (thread.id === creation.source?.nativeSessionId) {
+          throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
+        }
         const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
         if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
         const runtime = this.runtime(prepared, session, candidate!.transport)
@@ -540,25 +577,31 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         creation.status = 'ready'
         creation.session = session
         this.dependencies.cancelTimer(expiration)
-        this.record(runtime, 'thread.started', { threadId: session.nativeSessionId })
+        this.record(runtime, creation.source ? 'thread.forked' : 'thread.started', {
+          threadId: session.nativeSessionId,
+          ...(creation.source ? { sourceThreadId: creation.source.nativeSessionId } : {}),
+        })
         return session
       }
       const params = {
-        ...threadParameters(prepared), ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+        ...threadParameters(prepared, Boolean(creation.source && this.chatFiles)),
+        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+        ...(creation.source ? { threadId: creation.source.nativeSessionId, excludeTurns: true } : {}),
         // Codex persists declarations at thread/start; thread/resume cannot add
         // them when a text-first Operator later switches to a file-only manager.
         // Declarations grant no access: handlers still require an admitted file
         // turn and its durable ACK, never the credentialed text-mode process.
-        ...(this.chatFiles || prepared.input.kind === 'operator'
+        ...(!creation.source && (this.chatFiles || prepared.input.kind === 'operator')
           ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
-          : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+          : !creation.source && this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
       }
       creationAttempted = true
-      const result = await candidate.transport.request('thread/start', params, signal, (value, error) => {
+      const result = await candidate.transport.request(method, params, signal, (value, error) => {
         void (async () => {
           if (error) {
             this.dependencies.cancelTimer(expiration)
-            this.creations.delete(key)
+            creation.status = 'rejected'
+            creation.rejection = error
             await candidate!.transport.close()
           } else await publish(value)
         })().catch(() => { void candidate!.transport.close().catch(() => undefined) })
@@ -566,7 +609,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return await publish(result)
     } catch (error) {
       const notCreated = !creationAttempted || !creationAccepted && error instanceof CodexRpcError
-        && error.method === 'thread/start' && !error.uncertain
+        && error.method === method && !error.uncertain
       if (!notCreated && isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
         creation.status = 'uncertain'
         // Keep a bounded late-response window. Expiry never authorizes a retry.
@@ -576,9 +619,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       } else {
         try { await candidate?.transport.close() }
         catch (cleanupError) {
-          creation.status = 'uncertain'
-          throw new NativeDeliveryError('session_creation', 'unknown',
-            new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError }))
+          creation.status = notCreated ? 'rejected' : 'uncertain'
+          if (notCreated) creation.rejection = error
+          throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown',
+            new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError }), 'pending')
         }
         if (notCreated) this.creations.delete(key)
         else creation.status = 'uncertain'
@@ -896,7 +940,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const cause = operationFailure
         ? new AggregateError([operationFailure, error], 'Native turn failed and resource cleanup is unconfirmed.', { cause: error })
         : error
-      throw new NativeDeliveryError('turn_submission', 'unknown', cause)
+      throw new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', cause, 'pending')
     } finally {
       signal?.removeEventListener('abort', abort)
       runtime.streamActive = false
@@ -979,45 +1023,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   /** `thread/fork` copies the source history into a new thread; the source thread is never written. */
   async forkSession(source: NativeSessionReference, value: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    let candidate: Awaited<ReturnType<CodexAppServerSessionManager['transport']>> | undefined
-    let creationAttempted = false
-    let creationAccepted = false
-    try {
-      this.assertSessionVersion(source)
-      signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
-      const input = structuredClone(value)
-      if (input.kind !== 'operator') input.instructionsDelivered = true
-      const prepared = await this.prepareInput(input, signal)
-      if (prepared.qualified.providerVersion !== source.providerVersion) {
-        throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
-      }
-      candidate = await this.transport(prepared, 0, signal)
-      const params = {
-        ...threadParameters(prepared, Boolean(this.chatFiles)), threadId: source.nativeSessionId, excludeTurns: true,
-        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
-      }
-      creationAttempted = true
-      const responseValue = await candidate.transport.request('thread/fork', params, signal)
-      creationAccepted = true
-      const response = object(responseValue, 'CODEX_THREAD_FORK_INVALID')
-      const thread = this.validateThreadResponse(prepared, response)
-      if (thread.id === source.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
-      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
-      if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
-      const runtime = this.runtime(prepared, session, candidate.transport)
-      await candidate.activate(runtime)
-      this.runtimes.set(session.nativeSessionId, runtime)
-      this.record(runtime, 'thread.forked', { threadId: session.nativeSessionId, sourceThreadId: source.nativeSessionId })
-      return session
-    } catch (error) {
-      const notCreated = !creationAttempted || !creationAccepted && error instanceof CodexRpcError
-        && error.method === 'thread/fork' && !error.uncertain
-      try { await candidate?.transport.close() } catch (cleanupError) {
-        throw new NativeDeliveryError('session_creation', 'unknown',
-          new AggregateError([error, cleanupError], 'Native fork cleanup is unconfirmed.', { cause: cleanupError }))
-      }
-      throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error)
-    }
+    return this.beginCreation(value, { forkSource: source, signal })
   }
 
   async pending(session: NativeSessionReference): Promise<PendingNativeInteraction | undefined> {
@@ -1851,7 +1857,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         } else if (runtime.nativeOutput) await this.finishTurnResources(runtime)
         runtime.phase = 'active'
         this.record(runtime, 'turn.started', { threadId: runtime.session.nativeSessionId, turnId, clientCorrelationId: starting.correlationId })
-        this.applyTurn(runtime, turn)
+        this.applyTurn(runtime, { ...turn, status: 'inProgress' })
         admitted = true
       } catch (error) {
         runtime.phase = 'uncertain'
@@ -1874,6 +1880,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           }
         }
       }
+      if (admitted && !runtime.disposed && turn.status !== 'inProgress') this.applyTurn(runtime, turn)
       if (starting.cancelRequested && !runtime.terminalResult) await this.interrupt(runtime)
     })()
     starting.acknowledgement = acknowledgement
@@ -2030,6 +2037,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         }
       }
       if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
+      if (turn.status !== 'inProgress' && text(value.id)) {
+        const fingerprint = itemNotificationKey(runtime.generation, 'item/completed', turn.id, value.id, value.type)
+        if (!runtime.seenNotifications.has(fingerprint)) {
+          runtime.seenNotifications.add(fingerprint)
+          this.record(runtime, 'item.completed', {
+            threadId: runtime.session.nativeSessionId, turnId: turn.id, item: value,
+          })
+        }
+      }
       runtime.lastAgentMessage = value.text
       runtime.lastAgentMessageId = text(value.id)
       if (value.phase === 'final_answer') {

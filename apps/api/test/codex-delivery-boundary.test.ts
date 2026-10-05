@@ -156,7 +156,8 @@ describe('Codex creation and prompt write boundaries', () => {
         })), (error: unknown) => {
           assert(error instanceof NativeDeliveryError)
           assert.equal(error.operation, 'turn_submission')
-          assert.equal(error.delivery, 'unknown')
+          assert.equal(error.delivery, 'not_sent')
+          assert.equal(error.cleanup, 'pending')
           assert(error.cause instanceof AggregateError)
           assert(error.cause.errors[0] instanceof NativeDeliveryError)
           assert.equal(error.cause.errors[0].delivery, 'not_sent')
@@ -200,5 +201,42 @@ describe('Codex creation and prompt write boundaries', () => {
     assert.equal((await f.wire('turn/start')).length, 0)
     await admitted.manager.dispose!()
     await assert.rejects(admitted.manager.reconcileSessionCreation!(source))
+  })
+
+  it('retains a late definitive creation rejection until cleanup and reconciliation', async () => {
+    const manager = f.makeManager()
+    const source = chatInput(f.directory)
+    await f.flag('late-reject-thread-start')
+    await assert.rejects(manager.createSession(source), boundary('session_creation', 'unknown'))
+    await until(async () => {
+      try { await manager.reconcileSessionCreation(source) } catch (error) {
+        return boundary('session_creation', 'not_sent')(error) || undefined
+      }
+      return undefined
+    })
+    await assert.rejects(manager.reconcileSessionCreation(source), boundary('session_creation', 'not_sent'))
+    assert.equal((await f.wire('thread/start')).length, 1)
+    assert.equal((await f.wire('turn/start')).length, 0)
+  })
+
+  it('recovers one late fork only for the original source and accepted configuration', async () => {
+    const manager = f.makeManager()
+    const source = await manager.createSession(chatInput(f.directory))
+    const forkInput = { ...chatInput(f.directory), correlationId: 'fork-creation', instructionsDelivered: true }
+    await f.flag('late-thread-fork')
+    await assert.rejects(manager.forkSession(source, forkInput), boundary('session_creation', 'unknown'))
+    await assert.rejects(manager.forkSession(source, forkInput), /may already exist/)
+    const fork = await until(async () => {
+      try { return await manager.reconcileSessionCreation(forkInput, new AbortController().signal, source) } catch { return undefined }
+    })
+    assert.notEqual(fork.nativeSessionId, source.nativeSessionId)
+    await assert.rejects(manager.reconcileSessionCreation(forkInput))
+    await assert.rejects(manager.reconcileSessionCreation(forkInput, new AbortController().signal,
+      { ...source, nativeSessionId: 'another-source' }))
+    await assert.rejects(manager.reconcileSessionCreation({ ...forkInput, request: {
+      ...forkInput.request, configuration: { ...forkInput.request.configuration, id: 'another-configuration' },
+    } }, new AbortController().signal, source))
+    assert.equal((await f.wire('thread/fork')).length, 1)
+    assert.equal((await f.wire('turn/start')).length, 0)
   })
 })

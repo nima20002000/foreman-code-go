@@ -98,14 +98,14 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   // Keep provider capabilities observable through the original port. OpenCode
   // has no exact-turn steering; Codex has no paged server-history primitive.
   if (harness === 'codex') {
-    manager.reconcileSessionCreation = async (start, signal) => {
+    manager.reconcileSessionCreation = async (start, signal, forkSource) => {
       signal?.throwIfAborted()
       lifetime.signal.throwIfAborted()
       const current = allocation?.manager
       if (!current?.reconcileSessionCreation) {
         throw new DomainError('HARNESS_CREATION_UNCONFIRMED', 'The original native creation is not available.', 409)
       }
-      const session = await current.reconcileSessionCreation(start, signal)
+      const session = await current.reconcileSessionCreation(start, signal, forkSource)
       signal?.throwIfAborted()
       lifetime.signal.throwIfAborted()
       return session

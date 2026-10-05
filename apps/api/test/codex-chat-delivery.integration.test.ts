@@ -13,7 +13,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { OperatorChatService, type OperatorChatAuthority, type NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
-import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { nativeCorrelation, PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
@@ -21,7 +21,12 @@ import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
-import { calls, until } from './fixtures/codex-test-helpers.js'
+import { agentMessage, calls, emit, state, until } from './fixtures/codex-test-helpers.js'
+import { prepareCodexFileTurn } from '../src/modules/harnesses/codexFiles/index.js'
+import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
+import { nativeNonSubmission } from '../src/modules/conversations/nativeNonSubmission.js'
+import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { FixtureServer, configuration as openCodeConfiguration, advanced as openCodeAdvanced } from './opencode-fixtures.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -37,6 +42,12 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   let context: SendAgentChatMessageRequest['context']
   let workspaceId: string
   let operatorFiles: CodexChatFiles | undefined
+  let agentFiles: CodexChatFiles | undefined
+  let factory: AgentChatManagerFactory
+  let resolver: NativeManagerResolver
+  let authority: OperatorChatAuthority
+  let services: OperatorServices
+  let openCodeServer: FixtureServer | undefined
   const clients: Client[] = []
   const settings = { ...operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex), harness: 'codex' as const,
     model: 'test-model', reasoningEffort: 'low' as const, serviceTier: 'standard' as const }
@@ -45,6 +56,8 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     database = await agent3Database()
     native = await deliveryFixture()
     operatorFiles = undefined
+    agentFiles = undefined
+    openCodeServer = undefined
     const fixture = makeCurrentWorkflowFixture(`delivery-${randomUUID()}`, 'single')
     fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
       ...configuration, harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'test-model',
@@ -66,10 +79,10 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     const readerAccess = await access.issue({ name: 'Delivery reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: {}, actions: ['operator_chat:read'] }] })
     const agentOwners = new Map<string, NativeHarnessSessionManager>()
-    const factory: AgentChatManagerFactory = (id) => {
+    factory = (id) => {
       let owner = agentOwners.get(id)
       if (!owner) {
-        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager() })).manager
+        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(agentFiles) })).manager
         agentOwners.set(id, owner)
       }
       return owner
@@ -82,16 +95,22 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       executionPages: () => { throw new Error('No Run source in this fixture.') },
     }, factory, database.directory)
     const operatorOwners = new Map<string, NativeHarnessSessionManager>()
-    const resolver: NativeManagerResolver = (_configuration, id) => {
+    resolver = (configuration, id) => {
       let owner = operatorOwners.get(id)
       if (!owner) {
-        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
+        if (configuration.harness.harness === 'opencode') {
+          assert(openCodeServer)
+          const server = openCodeServer
+          owner = createAdmittedNativeManager('opencode', async () => ({
+            manager: new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId, appMcpAccess: 'none' }),
+          })).manager
+        } else owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
         operatorOwners.set(id, owner)
       }
       return owner
     }
     resolver.release = (id) => { operatorOwners.delete(id) }
-    const authority: OperatorChatAuthority = {
+    authority = {
       current: (id) => access.currentOperator(id),
       assertConfiguration() {},
       setup: async (manager) => ({ harness: manager.harness, status: 'configured',
@@ -101,9 +120,10 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     }
     operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
       resolver, native.directory, authority)
+    services = { agentChat, operatorChat, commands: new PostgresCommandCoordinator(database.pool) } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined },
       checkpoints: { ping: async () => undefined } }, operator: { access,
-      services: { agentChat, operatorChat, commands: new PostgresCommandCoordinator(database.pool) } as unknown as OperatorServices } })
+      services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'codex-delivery', version: '1' })
@@ -155,6 +175,209 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     const result = await writer.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
     return result.structuredContent as OperatorConversationState
+  }
+
+  function restartAgentService() {
+    agentChat = new AgentChatService(database.pool, repository, messages, new PostgresWorkflowRepository(database.pool), {
+      getForWorkspace: async () => { throw new Error('No Run source in this fixture.') },
+      executionPages: () => { throw new Error('No Run source in this fixture.') },
+    }, factory, database.directory)
+    services.agentChat = agentChat
+  }
+
+  it('Operator retires actual OpenCode MCP preflight failure and retries after confirmed cleanup', async () => {
+    openCodeServer = new FixtureServer()
+    const harness = openCodeConfiguration()
+    harness.advanced = { ...openCodeAdvanced(), mcp: { ...openCodeAdvanced().mcp, serverEnabled: { missing: true } } }
+    const id = await createOperator()
+    const refused = await writer.callTool({ name: 'operator_chat_send', arguments: {
+      conversationId: id, request: { requestId: 'opencode-preflight', content: 'A user message',
+        settings: operatorChatSettings(harness) },
+    } })
+    assert.notEqual(refused.isError, true, JSON.stringify(refused))
+    await until(async () => (await readOperator(id)).turnState === 'error' || undefined)
+    const row = (await messages.active(id))!
+    assert.equal(row.active_request_id, null)
+    assert.equal(row.native_session_id, null)
+    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 0)
+    assert(openCodeServer.disposals > 0)
+    const receipt = (await database.pool.query(`select result,retryable from operator_conversation_turns
+      where conversation_id=$1 and request_id=$2`, [id, 'opencode-preflight'])).rows[0]
+    assert.equal(receipt.result.error.code, 'OPENCODE_MCP_SERVER_NOT_CONFIGURED')
+    assert.equal(receipt.retryable, true)
+    openCodeServer.onPrompt = (sessionId) => {
+      openCodeServer!.complete(nativeCorrelation(id, 'opencode-retry'), 'Retry completed', sessionId)
+    }
+    const retry = await writer.callTool({ name: 'operator_chat_send', arguments: {
+      conversationId: id, request: { requestId: 'opencode-retry', content: 'Retry',
+        settings: operatorChatSettings(openCodeConfiguration()) },
+    } })
+    assert.notEqual(retry.isError, true, JSON.stringify(retry))
+    await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
+    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
+    assert.equal(openCodeServer.calls.filter((call) => call.path.includes('/prompt_async')).length, 1)
+    assert.equal((await readOperator(id)).messages.filter((message) => message.role === 'assistant').at(-1)?.content,
+      'Retry completed')
+  })
+
+  for (const kind of ['agent', 'operator'] as const) {
+    it(`${kind} recovers every completed assistant item after startup persistence fails without resending`, async () => {
+      await native.flag('hold-turn-start-ack')
+      await database.pool.query(`create function fail_native_turn_identity() returns trigger language plpgsql as $$
+        begin
+          if new.active_phase='submitted' and old.active_phase is distinct from 'submitted' then
+            raise exception 'Native identity persistence fault';
+          end if;
+          return new;
+        end $$`)
+      await database.pool.query(`create trigger fail_native_turn_identity before update on operator_conversations
+        for each row execute function fail_native_turn_identity()`)
+      const id = kind === 'agent' ? (await sendAgent({ ...request('retained', null), content: 'wait' })).state.conversation!.id
+        : await createOperator()
+      if (kind === 'operator') await sendOperator(id, 'retained', 'wait')
+      const nativeRequest = await until(async () => (await native.wire('turn/start'))[0])
+      const sessionId = String((nativeRequest.params as { threadId: string }).threadId)
+      const turn = (await state(native.directory, sessionId)).turns[0]!
+      const commentary = agentMessage('commentary', 'Before the final answer', 'commentary')
+      const answer = agentMessage('answer', 'The final answer')
+      const params = { threadId: sessionId, turnId: turn.id }
+      await emit(native.directory, { method: 'item/started', params: {
+        ...params, startedAtMs: 1, item: { ...commentary, text: '' },
+      } })
+      await emit(native.directory, { method: 'item/agentMessage/delta', params: {
+        ...params, itemId: commentary.id, delta: commentary.text,
+      } })
+      await emit(native.directory, { method: 'item/completed', params: {
+        ...params, completedAtMs: 2, item: commentary,
+      } })
+      await emit(native.directory, { id: nativeRequest.id, result: { turn } })
+      await until(async () => kind === 'agent'
+        ? (await repository.turn(id, 'retained'))?.delivery === 'unknown' || undefined
+        : (await readOperator(id)).turnState === 'uncertain' || undefined)
+      assert(Array.isArray(turn.items))
+      await emit(native.directory, { method: 'turn/completed', params: { threadId: sessionId, turn: {
+        ...turn, status: 'completed', completedAt: 3, items: [...turn.items, commentary, answer],
+      } } })
+      await until(async () => (await state(native.directory, sessionId)).turns[0]!.status === 'completed' || undefined)
+      await database.pool.query('drop trigger fail_native_turn_identity on operator_conversations')
+      await until(async () => {
+        if (kind === 'agent') {
+          await agentChat.recover()
+          return (await repository.turn(id, 'retained'))?.delivery === 'completed' || undefined
+        }
+        await operatorChat.reconcileActive()
+        return (await readOperator(id)).turnState === 'idle' || undefined
+      })
+      const readback = kind === 'agent' ? await readAgent() : await readOperator(id)
+      assert.deepEqual(readback.messages.filter((message) => message.role === 'assistant').map((message) => message.content),
+        [commentary.text, answer.text])
+      assert.equal((await native.wire('turn/start')).length, 1)
+    })
+
+    it(`${kind} retains a late definitive creation rejection, cleans up, and permits explicit retry`, async () => {
+      await native.flag('late-reject-thread-start')
+      const id = kind === 'agent' ? (await sendAgent(request('late-rejected', null))).state.conversation!.id
+        : await createOperator()
+      if (kind === 'operator') await sendOperator(id, 'late-rejected')
+      await until(async () => kind === 'agent'
+        ? (await repository.turn(id, 'late-rejected'))?.delivery === 'unknown' || undefined
+        : (await readOperator(id)).turnState === 'uncertain' || undefined)
+      await until(async () => {
+        if (kind === 'agent') {
+          await agentChat.recover()
+          return (await repository.turn(id, 'late-rejected'))?.delivery === 'failed' || undefined
+        }
+        await operatorChat.reconcileActive()
+        return (await readOperator(id)).turnState === 'error' || undefined
+      })
+      assert.equal((await native.wire('thread/start')).length, 1)
+      assert.equal((await native.wire('turn/start')).length, 0)
+      if (kind === 'agent') {
+        assert.equal((await repository.get(id))!.record.sessionCreation, undefined)
+        assert.equal((await readAgent()).availability.canSend, true)
+      } else assert.equal((await readOperator(id)).activeRequestId, null)
+      await native.unflag('late-reject-thread-start')
+      if (kind === 'agent') {
+        await sendAgent(request('retry', id))
+        await until(async () => (await repository.turn(id, 'retry'))?.delivery === 'completed' || undefined)
+      } else {
+        await sendOperator(id, 'retry')
+        await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
+      }
+      assert.equal((await native.wire('thread/start')).length, 2)
+      assert.equal((await native.wire('turn/start')).length, 1)
+    })
+
+    for (const restart of [false, true]) {
+      it(`${kind} settles a known unsent attachment after cleanup retry${restart ? ' across restart' : ''}`, async () => {
+        const ports = filePorts()
+        let cleanupFails = true
+        let preparationFails = true
+        let rechecks = 0
+        const files: CodexChatFiles = {
+          prepare: async ({ session, signal }) => prepareCodexFileTurn({
+            ownerPrincipalId: 'owner-a', scope: fileScope, nativeSessionId: session.nativeSessionId,
+            admissionId: 'input-admission', executionHostId: 'execution-host-a', projectMode: 'read', allowMutation: false,
+            allowedTools: ['files.list', 'files.read'], expiresAt: new Date(Date.now() + 60_000), attachments: [sourceRef],
+          }, { ...ports.dependencies, files: ports.files, source: {
+            ...ports.dependencies.source, recheck: async () => {
+              rechecks++
+              if (preparationFails && rechecks === 2) throw new Error('Attachment disappeared before submission.')
+              return ports.dependencies.source.recheck()
+            },
+          }, host: { ...ports.host, close: async () => {
+            if (cleanupFails) throw new Error('Host closure is unconfirmed.')
+            await ports.host.close()
+          } } }, signal),
+        }
+        if (kind === 'agent') agentFiles = files
+        else operatorFiles = files
+        const id = kind === 'agent' ? (await sendAgent(request('unsent', null))).state.conversation!.id
+          : await createOperator()
+        if (kind === 'operator') await sendOperator(id, 'unsent')
+        try {
+          await until(async () => {
+            const row = kind === 'agent' ? await repository.get(id) : await messages.active(id)
+            return row && nativeNonSubmission(row.record, 'unsent') || undefined
+          })
+          assert.equal((await native.wire('turn/start')).length, 0)
+          if (kind === 'agent') assert.equal((await readAgent()).availability.canSend, false)
+          else assert.equal((await readOperator(id)).activeRequestId, 'unsent')
+        } finally { cleanupFails = false }
+        if (restart) {
+          if (kind === 'agent') {
+            await agentChat.shutdown()
+            restartAgentService()
+          } else {
+            await operatorChat.shutdown()
+            operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
+              resolver, native.directory, authority)
+            services.operatorChat = operatorChat
+          }
+        }
+        await until(async () => {
+          if (kind === 'agent') {
+            await agentChat.recover()
+            return (await repository.turn(id, 'unsent'))?.delivery === 'failed' || undefined
+          }
+          await operatorChat.reconcileActive()
+          return (await readOperator(id)).turnState === 'error' || undefined
+        })
+        assert(ports.events.includes('host:close'))
+        assert.equal((await native.wire('turn/start')).length, 0)
+        assert.equal((await native.wire('thread/read')).length, 0)
+        preparationFails = false
+        if (kind === 'agent') {
+          await sendAgent(request('retry', id))
+          await until(async () => (await repository.turn(id, 'retry'))?.delivery === 'completed' || undefined)
+        } else {
+          await sendOperator(id, 'retry')
+          await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
+        }
+        assert.equal((await native.wire('thread/start')).length, 1)
+        assert.equal((await native.wire('turn/start')).length, 1)
+      })
+    }
   }
 
   for (const fault of ['auth', 'model', 'initialize'] as const) {

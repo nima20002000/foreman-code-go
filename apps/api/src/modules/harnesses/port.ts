@@ -135,7 +135,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   /** Look up the original creation only; never launches a process or sends another creation request. */
-  reconcileSessionCreation?(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
+  reconcileSessionCreation?(input: NativeSessionStart, signal?: AbortSignal,
+    forkSource?: NativeSessionReference): Promise<NativeSessionReference>
   /** Verify and rebind a persisted provider identity; never create a replacement session. */
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>

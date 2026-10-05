@@ -16,6 +16,7 @@ export class NativeDeliveryError extends HarnessExecutionError {
     readonly operation: 'session_creation' | 'turn_submission',
     readonly delivery: 'not_sent' | 'unknown',
     cause: unknown,
+    readonly cleanup: 'confirmed' | 'pending' = 'confirmed',
   ) {
     const result = cause instanceof HarnessExecutionError ? cause.result : undefined
     const code = result?.error?.code ?? (cause && typeof cause === 'object' && 'code' in cause

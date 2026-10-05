@@ -26,6 +26,7 @@ import { PostgresOperatorActivityRepository } from './operatorActivityRepository
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
+import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -616,6 +617,11 @@ export class PostgresOperatorConversationRepository {
     await this.pool.query(`update operator_conversations set turn_state='uncertain',last_error=$3,revision=revision+1,updated_at=now()
       where id=$1 and active_request_id=$2`, [id, requestId, message])
   }
+
+  recordNonSubmission(id: string, requestId: string, operation: NativeNonSubmission['operation'],
+    result: ExecutionResult): Promise<boolean> {
+    return recordNativeNonSubmission(this.pool, id, requestId, operation, result)
+  }
   async pending(id: string, requestId: string, value?: PendingNativeInteraction): Promise<void> {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,
       response_delivery=case when $3::jsonb is null then null
@@ -727,7 +733,8 @@ export class PostgresOperatorConversationRepository {
       await client.query('update operator_conversation_turns set result=$3::jsonb,retryable=$4 where conversation_id=$1 and request_id=$2',
         [id, requestId, JSON.stringify(result), retryable])
       await client.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,
-        cancel_requested=false,pending_interaction=null,response_delivery=null,last_result=$3::jsonb,last_error=$4,
+        record=record - 'nativeNonSubmission',cancel_requested=false,pending_interaction=null,
+        response_delivery=null,last_result=$3::jsonb,last_error=$4,
         turn_state=$5,revision=revision+1,updated_at=now() where id=$1 and active_request_id=$2`,
       [id, requestId, JSON.stringify(result), result.error?.message ?? null, result.outcome === 'failed' ? 'error' : 'idle'])
       await client.query('commit')

@@ -1,5 +1,6 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
+import { nativeNonSubmission } from './nativeNonSubmission.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
 import { reconcileKnownActivities } from './reconcileKnownActivities.js'
@@ -848,6 +849,9 @@ export class AgentChatService {
       } catch (error) {
         // Binding/activation failure after successful creation must never authorize a replacement.
         if (!runtime.session && (!creationRequested || definiteNonCreation(error, row))) {
+          if (!await this.repository.recordNonSubmission(row.id, row.active_request_id!, 'session_creation', failure(error))) {
+            throw new Error('Non-creation ownership was lost.')
+          }
           await this.release(row.id) // A cleanup failure keeps the original durable fence.
           throw new RejectedSessionCreation(error)
         }
@@ -1044,7 +1048,10 @@ export class AgentChatService {
       }
       if (!submitted && !initialOffered && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
         const current = await this.repository.get(id)
-        if (error instanceof NativeDeliveryError && nativeErrorCode(error) === 'CODEX_APP_SERVER_DISCONNECTED') {
+        if (error instanceof NativeDeliveryError && error.delivery === 'not_sent') {
+          if (!await this.repository.recordNonSubmission(id, turn.requestId, error.operation, failure(error))) {
+            throw new Error('Non-submission ownership was lost.')
+          }
           await this.release(id)
         }
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
@@ -1161,7 +1168,22 @@ export class AgentChatService {
       || runtime.retiring || runtime.disposal) return false
     if (input.kind === 'operator' || input.correlationId !== agentChatCorrelation(row.id, requestId)
       || input.request.configuration.id !== row.agent_configuration_version_id) return false
-    const session = runtime.session ?? await runtime.manager.reconcileSessionCreation?.(input, this.lifetime.signal)
+    const source = row.record.origin.kind === 'run_execution'
+      ? { harness: row.harness, providerVersion: await this.sourceProviderVersion(row.record.origin, runtime),
+          nativeSessionId: row.record.origin.sourceNativeSessionId }
+      : undefined
+    let session: NativeSessionReference | undefined
+    try {
+      session = runtime.session ?? await runtime.manager.reconcileSessionCreation?.(input, this.lifetime.signal, source)
+    } catch (error) {
+      if (!definiteNonCreation(error, row)) throw error
+      if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
+        throw new Error('Non-creation ownership was lost.')
+      }
+      await this.release(row.id)
+      await this.settle(row.id, requestId, failure(error), undefined, true)
+      return true
+    }
     if (!session || session.harness !== row.harness) return false
     this.lifetime.signal.throwIfAborted()
     if (this.runtimes.get(row.id) !== runtime || runtime.retiring || runtime.disposal) return false
@@ -1204,6 +1226,14 @@ export class AgentChatService {
       }
       const correlationId = agentChatCorrelation(id, recoveryRequestId)
       try {
+        const nonSubmission = requestId && nativeNonSubmission(row.record, requestId)
+        if (nonSubmission) {
+          await this.release(id)
+          await this.settle(id, nonSubmission.requestId,
+            row.cancel_requested ? { outcome: 'canceled' } : nonSubmission.result, undefined,
+            nonSubmission.operation === 'session_creation')
+          return
+        }
         if (!row.native_session_id) {
           if (await this.recoverCreation(row)) return
           if (this.runtimes.has(id)) {

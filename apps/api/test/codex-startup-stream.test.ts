@@ -12,7 +12,7 @@ import { normalizeCodexNotification } from '../src/modules/harnesses/codexNormal
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { isObject, type JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import {
-  calls, collect, emit, fixture, fixtureQualification, input, state, until, type Fixture,
+  agentMessage, calls, collect, emit, fixture, fixtureQualification, input, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
 
 // Qualification is isolated; startup, admission, normalization and stdio use the real implementation.
@@ -71,7 +71,7 @@ describe.skipIf(process.platform === 'win32')('Codex assistant text across start
     })
     const params = { threadId: session.nativeSessionId, turnId: nativeTurn.id }
     await emit(f.directory, { method: 'item/started', params: {
-      ...params, item: { id: 'answer', type: 'agentMessage', text: '', phase: 'final_answer' },
+      ...params, startedAtMs: 1, item: agentMessage('answer', ''),
     } })
     await emit(f.directory, { method: 'item/agentMessage/delta', params: {
       ...params, itemId: 'answer', delta: 'Retained text',
@@ -138,8 +138,8 @@ describe.skipIf(process.platform === 'win32')('Codex assistant text across start
         })
         const turnId = String(nativeTurn.id)
         assert(Array.isArray(nativeTurn.items))
-        const commentary = { id: 'commentary-item', type: 'agentMessage', text: 'Plan ready', phase: 'commentary' }
-        const answer = { id: 'answer-item', type: 'agentMessage', text: 'Hello world', phase: 'final_answer' }
+        const commentary = agentMessage('commentary-item', 'Plan ready', 'commentary')
+        const answer = agentMessage('answer-item', 'Hello world')
         const notification = (method: string, params: JsonObject) => ({
           method, params: { threadId: session.nativeSessionId, turnId, ...params },
         })

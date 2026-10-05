@@ -1,4 +1,5 @@
 import type { NativeMessageSubmission } from '../harnesses/port.js'
+import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
@@ -48,6 +49,7 @@ export interface AgentConversationRow {
     sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
+    nativeNonSubmission?: NativeNonSubmission
     startupReceipt?: { requestId: string; nativeSessionId: string }
   }
   created_at: Date
@@ -384,6 +386,11 @@ export class PostgresAgentChatRepository {
         and not (record ? 'sessionCreation')`, [id, requestId])).rowCount === 1
   }
 
+  recordNonSubmission(id: string, requestId: string, operation: NativeNonSubmission['operation'],
+    result: ExecutionResult): Promise<boolean> {
+    return recordNativeNonSubmission(this.pool, id, requestId, operation, result)
+  }
+
   async bindSession(id: string, providerVersion: string, nativeSessionId: string): Promise<void> {
     const bound = await this.pool.query(`update operator_conversations set provider_version=$2,native_session_id=$3,revision=revision+1,updated_at=now()
       where id=$1 and kind='agent' and (native_session_id is null or native_session_id=$3)`, [id, providerVersion, nativeSessionId])
@@ -569,7 +576,8 @@ export class PostgresAgentChatRepository {
         record=jsonb_set(record,'{status}',to_jsonb(case when record->>'kind'='thinking' then case when $3 then 'canceled' else 'completed' end else 'unknown' end::text))
         where conversation_id=$1 and request_id=$2 and record->>'status' in ('pending','running')`, [id, requestId, result.outcome === 'canceled'])
       await client.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,
-        cancel_requested=false,pending_interaction=null,turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
+        record=record - 'nativeNonSubmission',cancel_requested=false,pending_interaction=null,
+        turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
         where id=$1`, [id, result.outcome === 'failed' ? 'error' : 'idle', result.error?.message ?? null, JSON.stringify(result)])
       await client.query('commit')
       return true

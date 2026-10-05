@@ -1,5 +1,6 @@
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
+import { nativeNonSubmission } from './nativeNonSubmission.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
@@ -668,6 +669,10 @@ export class OperatorChatService {
         await this.control(id, async () => {
           const current = await this.repository.active(id)
           if (!current || current.active_request_id !== input.requestId) return
+          if (error instanceof NativeDeliveryError && error.delivery === 'not_sent'
+            && !await this.repository.recordNonSubmission(id, input.requestId, error.operation, failure(error))) {
+            throw new Error('Non-submission ownership was lost.')
+          }
           await this.complete(id, input.requestId, current.cancel_requested ? { outcome: 'canceled' } : failure(error),
             undefined, !current.cancel_requested)
         })
@@ -929,6 +934,12 @@ export class OperatorChatService {
         try {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
           if (this.tasks.has(row.id)) return
+          const nonSubmission = nativeNonSubmission(row.record, requestId)
+          if (nonSubmission) {
+            await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : nonSubmission.result,
+              undefined, !row.cancel_requested)
+            return
+          }
           if (row.active_phase === 'accepted' || row.active_phase === 'ready') {
             await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
               : failure(new Error('The server stopped before native submission. Retry the same request.')), undefined, !row.cancel_requested)
@@ -942,7 +953,17 @@ export class OperatorChatService {
             }
             const creationInput = resident.creationInput
             if (!resident.session && creationInput && resident.manager.reconcileSessionCreation) {
-              resident.session = await resident.manager.reconcileSessionCreation(creationInput, this.lifetime.signal)
+              try {
+                resident.session = await resident.manager.reconcileSessionCreation(creationInput, this.lifetime.signal)
+              } catch (error) {
+                if (!definiteCreationFailure(error)) throw error
+                if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
+                  throw new Error('Non-creation ownership was lost.')
+                }
+                await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : failure(error),
+                  undefined, !row.cancel_requested)
+                return
+              }
             }
             this.lifetime.signal.throwIfAborted()
             if (this.runtimes.get(row.id) !== resident || resident.disposal
