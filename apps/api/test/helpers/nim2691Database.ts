@@ -17,7 +17,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   let pool: pg.Pool | undefined
   let directory: string | undefined
   let created = false
-  let failure: { error: unknown } | undefined
+  let outcome: { value: T } | { error: unknown }
   try {
     await admin.connect()
     assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
@@ -27,23 +27,23 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
     directory = await privateFixtureDirectory('workflow-native-')
     assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
-    return await work(pool, directory, url.toString())
+    outcome = { value: await work(pool, directory, url.toString()) }
   } catch (error) {
-    failure = { error }
-    throw error
-  } finally {
-    const cleanupErrors: unknown[] = []
-    try { await pool?.end() }
-    catch (error) { cleanupErrors.push(error) }
-    try { if (created) await admin.query(`drop database "${name}"`) }
-    catch (error) { cleanupErrors.push(error) }
-    try { await admin.end() }
-    catch (error) { cleanupErrors.push(error) }
-    try { if (directory) await rm(directory, { recursive: true, force: true }) }
-    catch (error) { cleanupErrors.push(error) }
-    if (cleanupErrors.length) {
-      if (failure) cleanupErrors.unshift(failure.error)
-      throw new AggregateError(cleanupErrors, 'Task database execution or cleanup failed.')
-    }
+    outcome = { error }
   }
+  const cleanupErrors: unknown[] = []
+  try { await pool?.end() }
+  catch (error) { cleanupErrors.push(error) }
+  try { if (created) await admin.query(`drop database "${name}"`) }
+  catch (error) { cleanupErrors.push(error) }
+  try { await admin.end() }
+  catch (error) { cleanupErrors.push(error) }
+  try { if (directory) await rm(directory, { recursive: true, force: true }) }
+  catch (error) { cleanupErrors.push(error) }
+  if (cleanupErrors.length) {
+    if ('error' in outcome) cleanupErrors.unshift(outcome.error)
+    throw new AggregateError(cleanupErrors, 'Task database execution or cleanup failed.')
+  }
+  if ('error' in outcome) throw outcome.error
+  return outcome.value
 }

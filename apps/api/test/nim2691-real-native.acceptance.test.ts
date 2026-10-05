@@ -198,7 +198,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       let artifactBoundary: pg.PoolClient | undefined
       let failure: { error: unknown } | undefined
       let cleanupRun: { workspaceId: string; id: string; token: string } | undefined
-      try {
+      const verify = async () => {
         await database.migrate()
         await checkpoints.setup()
         const settings = new PostgresSettingsRepository(pool)
@@ -895,7 +895,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           from worker_credential_bindings b join management_principals p on p.id=b.principal_id
           where b.run_id=$1 and p.revoked_at is null`, [runId])).rows[0]
         expect(Number(liveCredentials?.count)).toBe(0)
-      } catch (error) {
+      }
+      try { await verify() }
+      catch (error) {
         failure = { error }
         const directory = process.env.ENG03_A_EVIDENCE_DIR
         if (directory) {
@@ -912,49 +914,47 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
             console.info('Private native workflow failure evidence:', path)
           } catch (evidenceError) {
-            throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', {
-              cause: evidenceError,
-            })
+            failure = { error: new AggregateError([error, evidenceError],
+              'Native failure evidence could not be retained.', { cause: error }) }
           }
         }
-        throw error
-      } finally {
-        executionObserver.mockRestore()
-        sessionObserver.mockRestore()
-        cancellationObserver.mockRestore()
-        const cleanupErrors: unknown[] = []
-        if (artifactBoundary) {
-          try { await artifactBoundary.query('rollback') }
-          catch (error) { cleanupErrors.push(error) }
-          finally { artifactBoundary.release() }
-        }
-        if (failure && cleanupRun && app) {
-          try {
-            const current = (await pool.query<{ execution_state: string }>(
-              'select execution_state from runs where id=$1', [cleanupRun.id])).rows[0]
-            if (current && current.execution_state !== 'completed') {
-              const stopped = await app.inject({ method: 'POST',
-                headers: { host: 'localhost', authorization: `Bearer ${cleanupRun.token}` },
-                url: `/api/management/workspaces/${cleanupRun.workspaceId}/runs/${cleanupRun.id}/stop`,
-                payload: { workspaceId: cleanupRun.workspaceId, runId: cleanupRun.id, commandId: randomUUID() } })
-              if (stopped.statusCode !== 200) throw new Error(`Owned native cleanup Stop failed: ${stopped.body}`)
-            }
-          } catch (error) { cleanupErrors.push(error) }
-        }
-        const clients = await Promise.allSettled(mcpClients.map(client => client.close()))
-        for (const result of clients) if (result.status === 'rejected') cleanupErrors.push(result.reason)
-        try { await production?.shutdown() }
-        catch (error) { cleanupErrors.push(error) }
-        try { await production?.drainShutdown() }
-        catch (error) { cleanupErrors.push(error) }
-        const resources = await Promise.allSettled([checkpoints.close(), database.close()])
-        for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
-        if (cleanupErrors.length) {
-          if (failure) cleanupErrors.unshift(failure.error)
-          throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.')
-        }
-        await rm(directory, { recursive: true, force: true })
       }
+      executionObserver.mockRestore()
+      sessionObserver.mockRestore()
+      cancellationObserver.mockRestore()
+      const cleanupErrors: unknown[] = []
+      if (artifactBoundary) {
+        try { await artifactBoundary.query('rollback') }
+        catch (error) { cleanupErrors.push(error) }
+        finally { artifactBoundary.release() }
+      }
+      if (failure && cleanupRun && app) {
+        try {
+          const current = (await pool.query<{ execution_state: string }>(
+            'select execution_state from runs where id=$1', [cleanupRun.id])).rows[0]
+          if (current && current.execution_state !== 'completed') {
+            const stopped = await app.inject({ method: 'POST',
+              headers: { host: 'localhost', authorization: `Bearer ${cleanupRun.token}` },
+              url: `/api/management/workspaces/${cleanupRun.workspaceId}/runs/${cleanupRun.id}/stop`,
+              payload: { workspaceId: cleanupRun.workspaceId, runId: cleanupRun.id, commandId: randomUUID() } })
+            if (stopped.statusCode !== 200) throw new Error(`Owned native cleanup Stop failed: ${stopped.body}`)
+          }
+        } catch (error) { cleanupErrors.push(error) }
+      }
+      const clients = await Promise.allSettled(mcpClients.map(client => client.close()))
+      for (const result of clients) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+      try { await production?.shutdown() }
+      catch (error) { cleanupErrors.push(error) }
+      try { await production?.drainShutdown() }
+      catch (error) { cleanupErrors.push(error) }
+      const resources = await Promise.allSettled([checkpoints.close(), database.close()])
+      for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+      if (cleanupErrors.length) {
+        if (failure) cleanupErrors.unshift(failure.error)
+        throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.')
+      }
+      await rm(directory, { recursive: true, force: true })
+      if (failure) throw failure.error
     })
   }, 600000)
 })
