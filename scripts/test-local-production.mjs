@@ -73,10 +73,12 @@ async function qualifyEnvironmentMigration(release) {
     CODEX_BINARY: '/opt/native "qualified"/codex',
     OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
     OPENAI_API_KEY: "test-only\\secret\"quote'single$literal`tick\nsecond line\\",
+    OPENROUTER_API_KEY: 'test-only-provider-credential',
     HARNESS_TIMEOUT_MS: '600000',
   }
   const owned = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
-    DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production' }
+    DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production',
+    GRAPHQL_PRODUCTION_DB_PASSWORD: 'test-only-database-credential' }
   const { loadConfig } = await import(pathToFileURL(join(release, 'apps/api/dist/config.js')))
   const readEffective = async () => {
     const code = 'const keys = JSON.parse(process.argv[1]); '
@@ -98,6 +100,18 @@ async function qualifyEnvironmentMigration(release) {
     const updated = await preserveOperatorConfiguration(operatorFile, await readEnvironment(envFile), owned, loadConfig)
     await publish(envFile, renderEnvironment(updated))
     assert.deepEqual(await readEffective(), settings, 'Update must preserve effective settings')
+    const module = pathToFileURL(join(release, 'apps/api/dist/modules/harnesses/secrets.js')).href
+    const code = `const { inheritedAgentEnvironment } = await import(${JSON.stringify(module)});\n`
+      + 'const native = inheritedAgentEnvironment();\n'
+      + 'console.log(JSON.stringify({ providerCredentialDelivered: !!process.env.OPENROUTER_API_KEY\n'
+      + '&& native.OPENROUTER_API_KEY === process.env.OPENROUTER_API_KEY,\n'
+      + 'databaseCredentialRemoved: !Object.hasOwn(native, "GRAPHQL_PRODUCTION_DB_PASSWORD")\n'
+      + '&& !Object.hasOwn(native, "DATABASE_URL") }));'
+    const { stdout } = await execute('/usr/bin/systemd-run', ['--user', '--wait', '--pipe', '--collect', '--quiet',
+      '--expand-environment=no', `--unit=graphql-native-environment-regression-${randomUUID()}`,
+      `--property=EnvironmentFile=${envFile}`, join(release, 'node'), '--input-type=module', '-e', code],
+    { timeout: 30_000 })
+    assert.deepEqual(JSON.parse(stdout), { providerCredentialDelivered: true, databaseCredentialRemoved: true })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

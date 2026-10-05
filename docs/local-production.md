@@ -87,6 +87,23 @@ One OS file lock serializes the complete installation, including migration,
 activation and readiness. Readiness verifies the database installation identity
 and selected compiled release before opening Chrome.
 
+Native harnesses use the desktop user's existing login files. The service keeps
+that user's `HOME`; without explicit XDG overrides, OpenCode reads its normal
+`~/.local/share/opencode/auth.json` and `~/.config/opencode` configuration. The
+installer keeps its cache separate and does not copy login files or change
+harness sandbox permissions.
+
+For an environment-based provider credential, explicitly add the provider's
+variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,
+then rerun `production:install`. This is an OS-owner setting, outside Operator
+MCP; the file and generated service environment remain 0600. Provider credentials
+reach native subprocesses, while database credentials and unscoped application
+tokens are excluded. Never put credentials in the checkout or qualification logs.
+An HTTP 401 from a particular provider requires fixing that provider's native
+login or explicit credential; qualification remains required. Supported model
+selection through Settings or revision-checked `harness_defaults_update` MCP
+does not authenticate another provider or bypass its qualification.
+
 Operations:
 
 ```sh
