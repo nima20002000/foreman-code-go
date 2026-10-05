@@ -94,7 +94,8 @@ it('reports storage failure and sends no native control without a durable identi
   await act(async () => {
     await expect(mounted.result.current.change({ kind: 'compact' })).rejects.toThrow('Control storage is full')
   })
-  expect(mounted.result.current.mutation.isError).toBe(true)
+  await waitFor(() => expect(mounted.result.current.mutation.isError).toBe(true))
+  expect(mounted.result.current.mutation.error?.message).toBe('Control storage is full')
   expect(change).not.toHaveBeenCalled()
 })
 
