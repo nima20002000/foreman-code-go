@@ -267,10 +267,18 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const runs = new PostgresRunRepository(livePool, workflows, locations,
         { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
       const appendNativeEvent = runs.appendNativeEvent.bind(runs)
+      const pendingNativeEvents = new Map<string, { executionId: string; type: string; sequence: number; startedAt: string }>()
       runs.appendNativeEvent = async (...args) => {
         const began = performance.now()
+        const event = args[0]
+        const pendingKey = `${event.executionId}:${event.connectionId ?? ''}:${event.sequence}`
+        pendingNativeEvents.set(pendingKey, { executionId: event.executionId, type: event.type,
+          sequence: event.sequence, startedAt: new Date().toISOString() })
+        evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
         try { return await appendNativeEvent(...args) }
         finally {
+          pendingNativeEvents.delete(pendingKey)
+          evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
           const stats = (evidence.nativeEventPersistence ??= { count: 0, totalMs: 0, maxMs: 0 }) as {
             count: number; totalMs: number; maxMs: number
           }
