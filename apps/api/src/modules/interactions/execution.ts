@@ -1057,6 +1057,8 @@ export class ApprovalExecutionCoordinator {
       return { manager: resolved.manager, session, signal: owned.controller.signal }
     } catch (error) {
       const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
+      componentLogger('harness').warn({ err: safe.error(error), executionId: execution.id },
+        'workflow approval attachment failed')
       if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw safe.error(error)
       resolved.markFailed?.()
       owned.failed = true
