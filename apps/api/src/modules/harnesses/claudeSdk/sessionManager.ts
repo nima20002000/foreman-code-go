@@ -1,3 +1,4 @@
+import { sessionStartDirectory, sessionStartOwner, sessionStartCorrelation } from '../sessionStart.js'
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { z } from 'zod'
@@ -441,7 +442,7 @@ export function createClaudeNativeSessionManager(options: {
   async function prepareRuntime(start: NativeSessionStart, signal?: AbortSignal): Promise<Runtime> {
     signal?.throwIfAborted()
     if (disposed) throw new HarnessExecutionError('CLAUDE_MANAGER_DISPOSED', 'Claude manager is disposed.')
-    const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
+    const cwd = sessionStartDirectory(start)
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Inspection differs from the pinned working directory.')
     const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(canonicalStart(start))
@@ -480,7 +481,7 @@ export function createClaudeNativeSessionManager(options: {
   async function open(start: NativeSessionStart, resume?: NativeSessionReference, signal?: AbortSignal, initial?: { turn: Turn; onSessionObserved(session: NativeSessionReference): Promise<void> }): Promise<NativeSessionReference> {
     if (disposed) throw new HarnessExecutionError('CLAUDE_MANAGER_DISPOSED', 'Claude manager is disposed.')
     qualified(resume ? 'resume' : 'basicTurns')
-    const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
+    const cwd = sessionStartDirectory(start)
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Claude working directory differs from the pinned scope.')
     const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(canonicalStart(start))
@@ -918,7 +919,7 @@ export function createClaudeNativeSessionManager(options: {
       const withoutCredentials = (value: NativeSessionStart): string => {
         const variables = { ...value.environment?.variables }
         for (const key of [...APP_MCP_TOKEN_NAMES, ...(options.credentialEnvironmentVariables ?? [])]) delete variables[key]
-        const agentId = value.environment?.agentId ?? (value.kind === 'operator' ? value.configuration.operatorId : value.request.configuration.agentId)
+        const agentId = value.environment?.agentId ?? sessionStartOwner(value)
         return JSON.stringify({ ...value, environment: { agentId, variables } })
       }
       const original = JSON.parse(inspected.identity) as NativeSessionStart
@@ -1186,9 +1187,10 @@ export function createClaudeNativeSessionManager(options: {
     async forkSession(source, start, signal) {
       qualified('fork')
       signal?.throwIfAborted()
-      const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
+      const cwd = sessionStartDirectory(start)
       if (cwd !== options.scope.cwd || source.harness !== harness || source.providerVersion !== options.qualification.cliVersion) throw new HarnessExecutionError('CLAUDE_FORK_SCOPE_MISMATCH', 'Claude fork scope differs from the pinned source.')
-      const key = start.kind === 'operator' ? start.correlationId : start.request.executionId
+      const key = sessionStartCorrelation(start)
+      if (!key) throw new HarnessExecutionError('CLAUDE_CORRELATION_REQUIRED', 'Native fork requires its admitted correlation.')
       const identity = JSON.stringify({ source, start })
       const previous = forks.get(key)
       if (previous) {

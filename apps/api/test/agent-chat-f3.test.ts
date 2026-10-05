@@ -237,11 +237,14 @@ describe('F3 native availability and ownership', () => {
       }
       assert.deepEqual(f.native.calls.map((call) => call.kind), [mode]); assert.equal(f.native.prompts.length, 0)
       const input = f.native.calls[0]!.input
-      assert.equal(input.environment, undefined); assert.notEqual(input.kind, 'operator')
-      if (input.kind !== 'operator') {
-        assert.equal(input.request.runId, 'agent-chat:conversation-f3')
-        assert.equal(input.request.configuration.harness.harness, 'codex')
-        assert.deepEqual(input.request.configuration, before)
+      assert.equal(input.environment, undefined); assert.equal(input.kind, 'agent-chat')
+      if (input.kind === 'agent-chat') {
+        assert.equal(input.conversationId, 'conversation-f3')
+        assert.equal(input.workflowNodeId, f.context.workflowNodeId)
+        assert.equal(input.workflowId, f.context.workflowId)
+        assert.equal(input.configuration.harness.harness, 'codex')
+        assert.deepEqual(input.configuration, before)
+        assert.equal('request' in input, false)
       }
       assert.deepEqual(f.configuration, before)
       const state = await f.chat.readConversation(principal, f.context.workspaceId, f.repository.row!.id)

@@ -1,3 +1,4 @@
+import { sessionStartDirectory } from './modules/harnesses/sessionStart.js'
 import { recoverPersistedClaudeCompaction } from './modules/harnesses/claudeSdk/recoverCompaction.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
@@ -852,7 +853,7 @@ export function buildProductionApp(
           agentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
           harness: configuration.harness })
       const common = { selection, configured: selection.instance, role: 'diagnostics' as const,
-        workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory,
+        workingDirectory: sessionStartDirectory(start),
         ownerAgentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
         appMcpAccess: 'none' as const,
         ...(accepted ? { revalidateSelection: (effectSignal?: AbortSignal) => selectedProfiles.revalidate(

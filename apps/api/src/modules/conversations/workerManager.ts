@@ -1,3 +1,4 @@
+import { sessionStartConfiguration, sessionStartDirectory } from '../harnesses/sessionStart.js'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -80,12 +81,18 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     if (!this.session || !isDeepStrictEqual(this.session, session)) conflict('This manager does not own the addressed native session.')
   }
   private startFields(start: NativeSessionStart) {
-    const configuration = start.kind === 'operator' ? start.configuration : start.request.configuration
-    const workingDirectory = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
-    const roleMatches = this.options.binding.owner.kind === 'operator' ? start.kind === 'operator' : start.kind !== 'operator'
+    const configuration = sessionStartConfiguration(start)
+    const workingDirectory = sessionStartDirectory(start)
+    const roleMatches = this.options.binding.owner.kind === 'operator' ? start.kind === 'operator' : start.kind === 'agent-chat'
     if (!roleMatches || commandInputHash(configuration) !== this.options.binding.owner.configurationHash
       || workingDirectory !== this.options.binding.workingDirectory || !start.correlationId) {
       conflict('The native startup differs from its saved conversation admission.')
+    }
+    const owner = this.options.binding.owner
+    if (owner.kind === 'agent' && (start.kind !== 'agent-chat'
+      || start.conversationId !== owner.conversationId || start.workflowId !== owner.workflowId
+      || start.workflowNodeId !== owner.workflowNodeId)) {
+      conflict('The native startup belongs to another node conversation.')
     }
     const environment = start.environment
     const ownerId = this.options.binding.owner.kind === 'operator'

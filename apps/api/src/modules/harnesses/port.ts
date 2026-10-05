@@ -14,6 +14,7 @@ import type {
   NativeSessionReference,
   PendingNativeInteraction,
   OperatorConfigurationVersion,
+  AgentConfigurationVersion,
 } from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
@@ -60,7 +61,21 @@ export interface OperatorNativeSessionStart {
   environment?: ChildProcessEnvironment
 }
 
-export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
+export interface AgentChatNativeSessionStart {
+  kind: 'agent-chat'
+  conversationId: string
+  workflowId: string
+  workflowNodeId: string
+  correlationId: string
+  configuration: AgentConfigurationVersion
+  workingDirectory: string
+  nativeTurnId?: string
+  environment?: ChildProcessEnvironment
+  instructionsDelivered?: boolean
+  sessionPreferences?: SessionPreferences
+}
+
+export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart | AgentChatNativeSessionStart
 
 
 export interface NativeCompactInput {

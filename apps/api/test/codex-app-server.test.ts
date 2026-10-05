@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { WorkflowNativeSessionStart, AgentChatNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { ThreadItem, Turn } from '../src/modules/harnesses/codexMethodTypes.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -194,6 +194,26 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await rm(f.directory, { recursive: true, force: true })
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+  })
+
+  it('owns two node chats independently with one Agent configuration and no workflow execution descriptor', async () => {
+    const chats = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')
+    managers.push(chats)
+    const first: AgentChatNativeSessionStart = { kind: 'agent-chat', conversationId: 'node-chat-one',
+      workflowId: 'saved-workflow', workflowNodeId: 'first-node', correlationId: 'same-request',
+      configuration: source.request.configuration, workingDirectory: f.directory }
+    const second = { ...first, conversationId: 'node-chat-two', workflowNodeId: 'second-node' }
+    const one = await chats.createSession(first)
+    const two = await chats.createSession(second)
+    assert.notEqual(one.nativeSessionId, two.nativeSessionId)
+    assert.deepEqual(await chats.createSession(first), one)
+    await assert.rejects(chats.attachSession(one, second), errorCode('CODEX_SESSION_OWNER_MISMATCH'))
+    const starts = await wire('thread/start')
+    assert.equal(starts.length, 2)
+    for (const frame of starts) {
+      assert.equal((frame.params as JsonObject).sandbox, codex().sandbox)
+      assert.equal((frame.params as JsonObject).cwd, f.directory)
+    }
   })
 
   it('releases the native fence when dispatch metadata cannot be saved before sending', async () => {

@@ -1,5 +1,6 @@
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
+import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner, sessionStartCorrelation } from './sessionStart.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { SessionPreferencesSchema, type SessionPreferences } from '@foreman-code/contracts'
 import { codexCollaborationMode, codexCompactionNotification, codexContextSnapshot } from './codexSessionControls.js'
@@ -260,23 +261,23 @@ export interface CodexQualificationEvidence {
 function advanced(value: CodexHarnessConfiguration): CodexAdvancedConfiguration {
   return value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
 }
-function accepted(input: NativeSessionStart) {
-  return input.kind === 'operator' ? input.configuration : input.request.configuration
-}
+function accepted(input: NativeSessionStart) { return sessionStartConfiguration(input) }
 function ownerId(input: NativeSessionStart): string {
-  return input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
+  return sessionStartOwner(input)
 }
 function binding(input: NativeSessionStart): string {
-  return input.kind === 'operator'
-    ? canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
-    : canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
+  if (input.kind === 'operator') return canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
+  if (input.kind === 'agent-chat') return canonical({ kind: input.kind, conversationId: input.conversationId,
+    ownerId: ownerId(input), workspaceId: input.configuration.workspaceId,
+    workflowId: input.workflowId, workflowNodeId: input.workflowNodeId, cwd: input.workingDirectory })
+  return canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
       runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
 }
 /** App-owned developer instructions: the accepted configuration's pinned bundle, never the live catalog.
  * Native base instructions stay Codex's own. Earlier accepted configurations keep their system prompt only. */
 function instructions(input: NativeSessionStart): string | null {
   if (input.kind === 'operator') return agentInstructionBundle(input.configuration)?.text ?? null
-  const configuration = input.request.configuration
+  const configuration = input.kind === 'agent-chat' ? input.configuration : input.request.configuration
   if (configuration.instructionDelivery !== 'native-v1') return configuration.prompt.system ?? null
   return agentInstructionBundle(configuration)?.text ?? null
 }
@@ -307,7 +308,7 @@ function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: 
   if (input.environment && input.environment.agentId !== ownerId(input)) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The scoped process environment belongs to another Agent.')
   }
-  if (input.kind !== 'operator' && input.request.workspaceId !== input.request.configuration.workspaceId) {
+  if (isWorkflowStart(input) && input.request.workspaceId !== input.request.configuration.workspaceId) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The accepted configuration belongs to another workspace.')
   }
   const token = requiredVariable && isSupportedAppMcpTokenName(requiredVariable)
@@ -580,7 +581,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private creationKey(input: NativeSessionStart): string {
-    const correlation = input.correlationId ?? (input.kind === 'operator' ? undefined : input.request.executionId)
+    const correlation = sessionStartCorrelation(input)
     if (!correlation) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Session creation requires a stable correlation ID.')
     return canonical([binding(input), correlation])
   }
@@ -1889,7 +1890,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }
     const harnessConfiguration = configuration(input)
-    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    const workingDirectory = sessionStartDirectory(input)
     const environment = io.environment(input.environment)
     const qualified = await io.qualify(binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)
@@ -1922,7 +1923,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
-      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
+      if (!isWorkflowStart(input) || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
         throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
       }
       codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion)

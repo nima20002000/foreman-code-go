@@ -48,7 +48,7 @@ import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { NativeDeliveryError, NativeTurnNotActiveError } from '../harnesses/errors.js'
-import type { NativeHarnessSessionManager, NativeSessionStart, WorkflowNativeSessionStart, NativeMessageSubmission } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeSessionStart, AgentChatNativeSessionStart, NativeMessageSubmission } from '../harnesses/port.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { legacySkillPrompt } from '../skills/instructions.js'
@@ -921,17 +921,12 @@ export class AgentChatService {
     this.tasks.set(id, task)
   }
 
-  private startInput(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, delivered: boolean): WorkflowNativeSessionStart {
-    // Native adapter descriptor only. The chat conversation id stands in for execution/Run binding; no Run row exists for it.
-    // No environment/credential is borrowed from a workflow or issued for chat. Its App MCP entry is disabled at native launch.
+  private startInput(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, delivered: boolean): AgentChatNativeSessionStart {
     return {
-      kind: 'workflow', correlationId, instructionsDelivered: delivered,
+      kind: 'agent-chat', conversationId: row.id, workflowId: row.workflow_id,
+      workflowNodeId: row.workflow_node_id, configuration,
+      workingDirectory: row.record.workingDirectory, correlationId, instructionsDelivered: delivered,
       ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
-      request: {
-        executionId: `agent-chat:${row.id}`, runId: `agent-chat:${row.id}`, workspaceId: row.workspace_id, workflowNodeId: row.workflow_node_id,
-        workingDirectory: row.record.workingDirectory, runtimeDirectory: row.record.runtimeDirectory || this.runtimeDirectory(row.id),
-        configuration, input: {},
-      },
     }
   }
   private runtimeDirectory(id: string) { return join(resolve(this.runtimeRoot), 'agent-chat', id) }

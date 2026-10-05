@@ -1,3 +1,4 @@
+import { sessionStartConfiguration, sessionStartDirectory, sessionStartCorrelation } from './sessionStart.js'
 import { openCodeCompactionResult, openCodeContextSnapshot, openCodeSessionAgent } from './opencodeSessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@foreman-code/contracts'
 import type { NativeCompactInput } from './port.js'
@@ -244,7 +245,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       let creationAccepted = false
       try {
         combined.throwIfAborted()
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
@@ -256,7 +257,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const value = await this.mutate(withDirectory('/session', directory), {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${input.request.executionId}`,
+            title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${sessionStartCorrelation(input)}`,
             agent: configuration.nativeAgent,
             model: { providerID, id: model.join('/'), variant: configuration.variant },
             permission: nativePolicy(configuration),
@@ -289,7 +290,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       let creationAccepted = false
       try {
         combined.throwIfAborted()
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
@@ -332,7 +333,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         if (this.sessions.has(session.nativeSessionId)) {
           throw new HarnessExecutionError('OPENCODE_SESSION_ALREADY_ATTACHED', 'This manager already owns that session; attaching must not discard its writer state.')
         }
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
@@ -447,7 +448,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const combined = this.signal(signal)
     await this.ready(combined)
     this.validateReference(session)
-    const directory = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
+    const directory = sessionStartDirectory(start)
     const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
     this.verifyAttachedSession(native, session.nativeSessionId, directory, this.configuration(start))
     return this.compactionFromHistory(session, directory, control, combined)
@@ -1695,7 +1696,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private configuration(input: NativeSessionStart): OpenCodeHarnessConfiguration {
-    const configuration = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
+    const configuration = sessionStartConfiguration(input).harness
     if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a different harness configuration.')
     const parsed = OpenCodeHarnessConfigurationSchema.safeParse(configuration)
     if (!parsed.success) throw new HarnessExecutionError('OPENCODE_CONFIGURATION_INVALID', 'The accepted OpenCode settings are invalid or contain conflicting permission modes.')
@@ -2015,7 +2016,7 @@ function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, gener
 
 /** Resolved before any native side effect, so invalid pinned instructions fail before task work. */
 function sessionInstructions(input: NativeSessionStart): AgentInstructionBundle | undefined {
-  return agentInstructionBundle(input.kind === 'operator' ? input.configuration : input.request.configuration)
+  return agentInstructionBundle(sessionStartConfiguration(input))
 }
 /** A reused correlation must match both task text and the accepted instruction identity. */
 function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined, fileIdentity?: string): string {

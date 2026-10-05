@@ -245,7 +245,7 @@ describe('F2 Agent chat native recovery', () => {
       assert.equal(repository.row.record.startupDelivered, true)
       assert.deepEqual(repository.row.record.startupReceipt, { requestId: 'first', nativeSessionId: session.nativeSessionId })
       assert.deepEqual(f.native.prompts.map((input) => input.prompt), ['content-queued'])
-      assert.equal(f.native.attached[0]?.kind, 'workflow')
+      assert.equal(f.native.attached[0]?.kind, 'agent-chat')
       const attached = f.native.attached[0]!
       assert.equal('instructionsDelivered' in attached && attached.instructionsDelivered, true)
     })

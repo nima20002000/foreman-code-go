@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../../harnesses/sessionStart.js'
 import { CompactionStateSchema, ContextSnapshotSchema, SessionControlCapabilitiesSchema, SessionPreferencesSchema, type ContextSnapshot, type SessionPreferences } from '@foreman-code/contracts'
 import type { NativeCompactInput } from '../../harnesses/port.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -134,7 +135,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async createSession(input: NativeSessionStart, signal?: AbortSignal) {
-    if (input.kind === 'operator') throw new Error('Remote proxy owns workflow execution only')
+    if (!isWorkflowStart(input)) throw new Error('Remote proxy owns workflow execution only')
     if (input.environment && (input.environment.agentId !== this.options.configuration.agentId || Object.keys(input.environment.variables).some(key => key !== 'GRAPHQL_MCP_TOKEN'))) throw new Error('Only the exact scoped main application lease may cross the worker carrier')
     const token = input.environment?.variables.GRAPHQL_MCP_TOKEN
     const applicationAccess = token ? { kind: 'scoped-worker-mcp', token, executionId: this.intent.executionId, agentId: this.options.configuration.agentId, operationId: this.intent.operationId, attemptId: this.intent.attemptId, bindingHash: this.intent.bindingHash } : undefined
@@ -148,7 +149,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     return value.session
   }
   async attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal) {
-    if (input.kind === 'operator' || input.request.executionId !== this.intent.executionId
+    if (!isWorkflowStart(input) || input.request.executionId !== this.intent.executionId
       || input.correlationId !== `execution:${this.intent.executionId}` || session.harness !== this.harness) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
     // Attachment is observation of this exact original session; worker recovery must already have proven/rebound it.
