@@ -124,7 +124,9 @@ it.each(['environment', 'installation', 'payload', 'disabled'])('keeps %s checks
 it.each([true, false])('uses the latest measurement after a native instance revision changes, passed=%s', async passed => {
   const f = fixture()
   const newer = structuredClone(f.records[0]!)
-  newer.evidence.qualificationIdentity.selection.instanceRevision = '2'
+  newer.evidence.qualificationIdentity.selection = {
+    ...newer.evidence.qualificationIdentity.selection, instanceRevision: '2',
+  }
   newer.checked_at = new Date(newer.checked_at.getTime() + 1_000)
   newer.checks[0]!.passed = passed
   f.records.push(newer)
