@@ -103,7 +103,11 @@ describe('verification records at qualification and Job transport boundaries', (
       approvalConfig: fingerprint.approvalConfig, createdAt: requestedAt, updatedAt: requestedAt,
       spec: { rootId: fingerprint.root.binding.rootId, bindingRevision: fingerprint.root.binding.bindingRevision,
         resources: fingerprint.resources, policy: jobPolicyRequirementsRecord(verificationFixture().spec.policy),
-        suites: measured.suites.map(suite => suite.suite), approvalConfig: fingerprint.approvalConfig } })
+        suites: measured.suites.map(suite => suite.suite),
+        approvalConfig: { approvalLifetimeMs: fingerprint.approvalConfig.approvalLifetimeMs } } })
+    expect(profile.approvalConfig).toEqual(fingerprint.approvalConfig)
+    expect(JobVerificationProfileSchema.safeParse({ ...profile, spec: { ...profile.spec,
+      approvalConfig: fingerprint.approvalConfig } }).success).toBe(false)
     const candidate = { qualificationId: id, operationId: id, approvalId: id, fingerprint, profile,
       approvedAt: measured.approvedAt,
       findmntBinary: '/usr/bin/findmnt', findmntBinarySha256: digest, backingFile: null, backingBytes: null,
