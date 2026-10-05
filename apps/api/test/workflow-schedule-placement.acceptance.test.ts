@@ -55,7 +55,7 @@ describe('native scheduled placement recovery', () => {
   it('admits a pending Once once after restart, inventory recovery and native qualification', async () => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
     fixture.configurations[0]!.harness = { harness: 'codex', model: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
-      reasoningEffort: 'low', serviceTier: 'standard', sandbox: 'read-only' }
+      reasoningEffort: 'medium', serviceTier: 'standard', sandbox: 'read-only' }
     const f = await sch11Fixture(database, undefined, fixture)
     const placement = await schedulePlacementFixture(f)
     const dispatch = () => f.dispatcher(async (principal, input, schedule) => {
