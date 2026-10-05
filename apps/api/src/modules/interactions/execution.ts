@@ -24,6 +24,7 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/po
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
@@ -1532,6 +1533,9 @@ export class ApprovalExecutionCoordinator {
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
         && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+      componentLogger('engine').error({ executionId: execution.id, runId: execution.runId, err: error,
+        code: error instanceof HarnessExecutionError ? error.result.error?.code : undefined },
+      'native observation failed before cleanup')
       if (execution.state === 'completed' && !signal.aborted) {
         input.owner.assertOwned()
         throw error
