@@ -23,6 +23,7 @@ export interface WorkerConversationAllocation {
     applicationAccess?: { kind: 'operator-chat-mcp'; token: string } }): Promise<NativeSessionStart>
   nativeOwner(session: NativeSessionReference): Promise<RemoteNativeIdentity>
   close(): Promise<void>
+  deliverClaudeCredential?(token: string, signal: AbortSignal): Promise<void>
 }
 export interface WorkerConversationHostPorts {
   journal: WorkerConversationJournal
@@ -307,6 +308,17 @@ export class WorkerConversationHost {
     const request = WorkerConversationRpcRequestSchema.parse(raw)
     await this.authorize(request, connection, signal)
     if (request.method === 'conversation.status') return { receipt: await this.ports.journal.read(request.binding) }
+    if (request.method === 'conversation.release-preparation') {
+      const record = await this.ports.journal.read(request.binding)
+      if (record?.session || record?.turns.length) unavailable('A prepared owner cannot close an admitted model message.')
+      const resident = this.residents.get(request.binding.owner.conversationId)
+      if (resident) {
+        if (!isDeepStrictEqual(resident.binding, request.binding)) unavailable('The prepared native owner changed.')
+        await resident.allocation.close()
+        this.residents.delete(request.binding.owner.conversationId)
+      }
+      return { acknowledged: true }
+    }
     if (request.method === 'conversation.compact-read') return this.readCompaction(request, connection, signal)
     if (request.method === 'conversation.inspect-entry') {
       const resident = await this.allocate(request, connection, signal)
@@ -320,6 +332,15 @@ export class WorkerConversationHost {
         ...(request.inspection.phase ? { phase: request.inspection.phase } : {}), signal })
     }
     if (request.method === 'conversation.open') return this.open(request, connection, signal)
+    if (request.method === 'conversation.refresh-mcp') {
+      const resident = await this.allocate(request, connection, signal)
+      if (!resident.allocation.deliverClaudeCredential || request.binding.harness !== 'claude') {
+        unavailable('This native owner has no scoped Claude credential delivery.')
+      }
+      await resident.allocation.deliverClaudeCredential(request.applicationAccess.token, signal)
+      await this.authorize(request, connection, signal)
+      return { acknowledged: true }
+    }
     if (request.method === 'conversation.capabilities' || request.method === 'conversation.inspect-mcp') {
       const resident = await this.allocate(request, connection, signal)
       return request.method === 'conversation.capabilities' ? resident.allocation.manager.capabilities(signal)

@@ -33,6 +33,7 @@ const reads = new Set(['conversation.status', 'conversation.history', 'conversat
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
   'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
   'conversation.response-reconcile', 'conversation.response-availability'])
+reads.add('conversation.release-preparation')
 interface OwnerRow {
   id: string; kind: 'operator' | 'agent'; workspace_id: string | null; workflow_id: string | null
   workflow_node_id: string | null; agent_id: string | null; owner_principal_id: string | null
@@ -61,6 +62,8 @@ export function createProductionWorkerConversations(input: {
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
+  const credentials = new WeakMap<NativeHarnessSessionManager, (
+    token: string, signal: AbortSignal) => Promise<unknown>>()
   const row = async (conversationId: string) => {
     const result = (await input.pool.query<OwnerRow>(`select c.*,t.payload from operator_conversations c
       left join operator_conversation_turns t on t.conversation_id=c.id and t.request_id=c.active_request_id
@@ -242,11 +245,18 @@ export function createProductionWorkerConversations(input: {
       }
     }
     inspectors.set(admitted.manager, admitted.inspector)
+    if (configuration.harness.harness === 'claude' && kind === 'operator' && options.appMcpAccess === 'scoped') {
+      credentials.set(admitted.manager, async (token, signal) => {
+        const manager = await admitted.actual(signal)
+        return manager.deliverClaudeCredential(token, signal)
+      })
+    }
     return admitted.manager
   }
   const mcp = new MainWorkerConversationMcp({ pool: input.pool, access: input.access, operators: input.operators,
     profiles: input.profiles, claudeProfiles: input.claudeProfiles, bridge,
     current: deviceId => input.endpoint().captureRequest(deviceId, 'execution-v1')?.binding, forward: input.mcpForward })
   return { create, bridge, mcp, inspector: (manager: NativeHarnessSessionManager) => inspectors.get(manager),
+    deliverClaudeCredential: (manager: NativeHarnessSessionManager) => credentials.get(manager),
     close: () => bridge.close() }
 }

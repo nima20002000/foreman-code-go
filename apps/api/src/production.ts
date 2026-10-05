@@ -944,13 +944,17 @@ export function buildProductionApp(
       const serverName = appMcpServerName(servers)
       const configured = servers[serverName]
       const token = readProductEnvironment(environment.variables, 'MCP_TOKEN')
-      if (!claude || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
-      await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
-        ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
-        [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } },
-      }, signal)
-      const checked = await new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint).preflight({
-        harness: 'claude', runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory, signal,
+      const worker = workerChats!.deliverClaudeCredential(manager)
+      if ((!claude && !worker) || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
+      if (worker) await worker(token, signal)
+      else if (claude) await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
+          ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
+          [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } },
+        }, signal)
+      const context = manager.mcpInspectionContext ? await manager.mcpInspectionContext(signal)
+        : { runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory }
+      const checked = await new McpDetectionService(workerChats!.inspector(manager) ?? nativeFactories.inspector(manager), appMcpEndpoint).preflight({
+        harness: 'claude', ...context, signal,
       })
       if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Claude did not acknowledge the scoped Operator credential on its current query.', 409)
     },

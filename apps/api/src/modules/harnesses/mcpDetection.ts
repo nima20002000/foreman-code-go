@@ -5,6 +5,8 @@ import {
   type McpDetection,
   type McpCredentialArrangement,
   type ScopedMcpDetection,
+  type PairedMcpEndpoint,
+  PairedMcpEndpointSchema,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 
@@ -33,6 +35,7 @@ export type NativeMcpCredentialArrangement =
 export interface NativeMcpEntryEvidence {
   /** The managed launcher routes to the owning app instance; no fixed endpoint is configured. */
   automaticEndpoint?: boolean
+  pairedEndpoint?: PairedMcpEndpoint
   name: string
   transport: 'streamable-http' | 'sse' | 'stdio' | 'unknown'
   endpoint?: string
@@ -143,7 +146,12 @@ export class McpDetectionService {
         && entry !== undefined && isSupportedAppMcpServerName(entry.name)
       const automatic = entry?.automaticEndpoint === true && entry.transport === 'stdio' && nameMatches
         && isSupportedAppMcpServerName(this.serverName)
-      const matches = entry ? automatic || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
+      const pairedResult = PairedMcpEndpointSchema.safeParse(entry?.pairedEndpoint)
+      const paired = pairedResult.success ? pairedResult.data : undefined
+      const pairedMatches = Boolean(paired && input.harness === 'claude' && `device:${paired.deviceId}` === input.runnerId
+        && endpointMatches(paired.configuredEndpoint, this.expectedEndpoint)
+        && endpointMatches(entry?.endpoint, paired.nativeEndpoint))
+      const matches = entry ? automatic || pairedMatches || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
       const arrangement = entry?.credentialArrangement
       const credentialVariable = arrangement?.kind === 'environment_variable'
         ? arrangement.environmentVariable : entry?.credentialEnvironmentVariable
@@ -154,7 +162,7 @@ export class McpDetectionService {
       const headerMatches = Boolean(acknowledgement && input.harness === 'claude'
         && entry?.transport === 'streamable-http' && entry.status === 'connected'
         && acknowledgement.source === 'sdk_set_mcp_servers' && acknowledgement.serverName === entry?.name && nameMatches
-        && endpointMatches(acknowledgement.endpoint, this.expectedEndpoint)
+        && endpointMatches(acknowledgement.endpoint, pairedMatches ? paired!.nativeEndpoint : this.expectedEndpoint)
         && matches && evidence.generation && acknowledgement.generation === evidence.generation
         && evidence.authorizationScope && acknowledgement.authorizationScope === evidence.authorizationScope)
       const credentialArrangement: McpCredentialArrangement = environmentMatches

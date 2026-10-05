@@ -45,6 +45,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private context: ContextSnapshot | null = null
   private applied: SessionPreferences | null = null
   private readonly leases = new Set<ReturnType<MainWorkerConversationBridge['capture']>>()
+  private credentialLease: ReturnType<MainWorkerConversationBridge['capture']> | undefined
+  private preparationActive = false
   private readonly lifetime = new AbortController()
 
   constructor(private readonly options: ManagerOptions) { this.harness = options.binding.harness }
@@ -63,6 +65,10 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private release(lease: ReturnType<MainWorkerConversationBridge['capture']>) {
     lease.close()
     this.leases.delete(lease)
+  }
+  private releaseCredential() {
+    if (this.credentialLease) this.release(this.credentialLease)
+    this.credentialLease = undefined
   }
   private async request(input: Record<string, unknown>, signal?: AbortSignal) {
     const lease = this.capture(this.frame(input))
@@ -128,6 +134,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       }
       this.session = structuredClone(session)
       await this.options.observeSession?.(session)
+      this.releaseCredential()
     } })
     try {
       const receipt = this.adopt(await lease.request(signal))
@@ -145,10 +152,12 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async configureSessionPreferences(preferences: SessionPreferences) { this.preferences = SessionPreferencesSchema.parse(preferences) }
   async capabilities(signal?: AbortSignal) {
+    this.preparationActive = true
     return NativeHarnessCapabilitiesSchema.parse(await this.request({ method: 'conversation.capabilities',
       configuration: this.options.configuration }, signal))
   }
   async inspectMcp(signal?: AbortSignal) {
+    this.preparationActive = true
     return McpDetectionSchema.parse(await this.request({ method: 'conversation.inspect-mcp', configuration: this.options.configuration }, signal))
   }
   async mcpInspectionContext(signal?: AbortSignal) {
@@ -157,12 +166,22 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     return { runnerId: `device:${this.options.channel.binding.deviceId}`, workingDirectory: this.options.binding.workingDirectory }
   }
   readonly inspector: NativeMcpInspector = { inspect: async input => {
+    this.preparationActive = true
     const value = WorkerMcpInspectionSchema.parse(await this.request({
     method: 'conversation.inspect-entry', configuration: this.options.configuration,
     inspection: { harness: input.harness, runnerId: input.runnerId, workingDirectory: input.workingDirectory,
       serverName: input.serverName, ...(input.phase ? { phase: input.phase } : {}) },
     }, input.signal))
     const entry = value.entry
+    if (entry?.pairedEndpoint) {
+      const host = this.options.binding.profile.target.hostRef
+      const harness = this.options.configuration.harness
+      const configured = harness.harness === 'claude' ? harness.mcpServers[entry.name] : undefined
+      if (host.kind !== 'device' || entry.pairedEndpoint.mainId !== host.mainId
+        || entry.pairedEndpoint.deviceId !== host.deviceId || configured?.type !== 'http'
+        || configured.url !== entry.pairedEndpoint.configuredEndpoint
+        || entry.endpoint !== entry.pairedEndpoint.nativeEndpoint) conflict('The paired MCP route differs from this saved profile.')
+    }
     return { harness: value.harness, providerVersion: value.providerVersion, runnerId: value.runnerId,
       workingDirectory: value.workingDirectory, inspectedAt: value.inspectedAt,
       ...(value.generation !== undefined ? { generation: value.generation } : {}),
@@ -170,6 +189,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       ...(entry ? { entry: { name: entry.name, transport: entry.transport,
         ...(entry.automaticEndpoint !== undefined ? { automaticEndpoint: entry.automaticEndpoint } : {}),
         ...(entry.endpoint !== undefined ? { endpoint: entry.endpoint } : {}),
+        ...(entry.pairedEndpoint ? { pairedEndpoint: entry.pairedEndpoint } : {}),
         ...(entry.enabled !== undefined ? { enabled: entry.enabled } : {}),
         ...(entry.credentialEnvironmentVariable !== undefined ? { credentialEnvironmentVariable: entry.credentialEnvironmentVariable } : {}),
         ...(entry.credentialArrangement ? { credentialArrangement: entry.credentialArrangement } : {}),
@@ -182,6 +202,24 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }
   } }
 
+  async deliverClaudeCredential(token: string, signal: AbortSignal) {
+    if (this.harness !== 'claude' || this.options.binding.owner.kind !== 'operator'
+      || this.options.binding.appMcpAccess !== 'scoped') conflict('This manager has no scoped Claude Operator credential.')
+    this.preparationActive = true
+    const lease = this.capture(this.frame({
+      method: 'conversation.refresh-mcp', configuration: this.options.configuration,
+      applicationAccess: { kind: 'operator-chat-mcp', token },
+    }))
+    try {
+      const result = z.object({ acknowledged: z.literal(true) }).strict().parse(await lease.request(signal))
+      this.releaseCredential()
+      // Before native SID persistence, the normal credential relay needs its live startup admission.
+      if (this.session) this.release(lease)
+      else this.credentialLease = lease
+      return result
+    } catch (error) { this.release(lease); throw error }
+  }
+
   private async *stream(frame: WorkerConversationRpcRequest, input: NativeTurnInput,
     initial: NativeInitialTurnInput | undefined, signal?: AbortSignal) {
     const lease = this.capture(frame, {
@@ -190,6 +228,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         await initial.onSessionObserved(session)
         this.session = structuredClone(session)
         await this.options.observeSession?.(session)
+        this.releaseCredential()
       },
       submitted: async (_correlationId, identity) => {
         if (identity.nativeTurnId) await input.onSubmitted?.(identity.nativeTurnId)
@@ -380,7 +419,12 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async closeForRestart(session: NativeSessionReference) { this.assertSession(session); await this.dispose() }
   async dispose() {
+    if (this.preparationActive && !this.session && !this.lifetime.signal.aborted) {
+      await this.request({ method: 'conversation.release-preparation' })
+      this.preparationActive = false
+    }
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'Main detached its worker conversation observer.', 503))
     for (const lease of this.leases) this.release(lease)
+    this.credentialLease = undefined
   }
 }

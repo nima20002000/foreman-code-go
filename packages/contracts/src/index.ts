@@ -15,6 +15,7 @@ import { z } from "zod";
 import { McpCredentialArrangementSchema } from './mcpDetection.js';
 export { McpCredentialArrangementSchema } from './mcpDetection.js';
 export type { McpCredentialArrangement } from './mcpDetection.js';
+export { PairedMcpEndpointSchema, type PairedMcpEndpoint } from './mcpDetection.js';
 import { FileWithRevisionSchema, MessageAttachmentFields, MessageAttachmentRefsSchema } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";

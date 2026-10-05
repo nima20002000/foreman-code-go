@@ -11,6 +11,7 @@ import {
 } from './index.js'
 import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
+import { PairedMcpEndpointSchema } from './mcpDetection.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -110,6 +111,9 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.initial-turn'), ...binding, ...prompt, operationId: id,
     configuration: WorkerConversationConfigurationSchema, applicationAccess: applicationAccess.optional() }).strict(),
   z.object({ method: z.literal('conversation.start-turn'), ...native, ...prompt }).strict(),
+  z.object({ method: z.literal('conversation.refresh-mcp'), ...binding,
+    configuration: WorkerConversationConfigurationSchema, applicationAccess }).strict(),
+  z.object({ method: z.literal('conversation.release-preparation'), ...binding }).strict(),
   z.object({ method: z.enum(['conversation.history', 'conversation.reconcile']), ...native,
     correlationId: id.optional(), before: id.optional() }).strict(),
   z.object({ method: z.enum(['conversation.capabilities', 'conversation.inspect-mcp']), ...binding,
@@ -190,6 +194,7 @@ export const WorkerMcpInspectionSchema = z.object({
   workingDirectory: directory, inspectedAt: z.iso.datetime(), generation: id.optional(), authorizationScope: id.optional(),
   entry: z.object({ name: id, transport: z.enum(['streamable-http', 'sse', 'stdio', 'unknown']),
     automaticEndpoint: z.boolean().optional(), endpoint: z.string().optional(), enabled: z.boolean().optional(),
+    pairedEndpoint: PairedMcpEndpointSchema.optional(),
     credentialEnvironmentVariable: id.optional(),
     credentialArrangement: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('environment_variable'), environmentVariable: id }).strict(),

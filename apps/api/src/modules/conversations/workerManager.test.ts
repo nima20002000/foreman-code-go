@@ -10,6 +10,7 @@ import { WorkerConversationManager } from './workerManager.js'
 import { MainWorkerConversationBridge } from './workerBridge.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
+import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 
 it('carries Plan and context through the issued-request bridge without creating a Run or another session', async () => {
   const f = workerConversationFixture()
@@ -139,4 +140,25 @@ it('maps the admitted Main startup directory to the actual selected worker direc
       .rejects.toThrow('startup differs')
     expect(requests).toHaveLength(1)
   } finally { await manager.dispose(); bridge.close() }
+})
+
+it('retains a pre-message credential admission until the prepared owner is disposed', async () => {
+  const f = workerConversationFixture('operator', 'claude')
+  const configuration = f.configuration
+  const binding = f.binding
+  const bridge = new MainWorkerConversationBridge()
+  const requests: WorkerConversationRpcRequest[] = []
+  const manager = new WorkerConversationManager({ binding, configuration, bridge,
+    current: async () => {}, channel: { binding: f.connection, request: async payload => {
+      requests.push(payload as WorkerConversationRpcRequest)
+      return { payload: { acknowledged: true } }
+    } } })
+  await manager.deliverClaudeCredential('recorded-scoped-token', AbortSignal.timeout(1000))
+  const request = requests[0]!
+  const callback = { method: 'conversation.authorize', binding, admissionId: request.admissionId, request }
+  expect(await bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).toEqual({ authorized: true })
+  await manager.dispose()
+  expect(requests.map(value => value.method)).toEqual(['conversation.refresh-mcp', 'conversation.release-preparation'])
+  await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
+  bridge.close()
 })

@@ -8,6 +8,8 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { installedClaudeSdkEntrypoint } from '../src/modules/harnesses/claudeSdk/currentPin.js'
 import { installedClaudeProfilePin } from '../src/modules/harnesses/claudeSdk/installedProfilePin.js'
+import { createInstalledClaudeConversationProfile } from '../src/modules/conversations/installedClaudeConversationProfile.js'
+import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectInstalledClaude } from '../src/modules/harnesses/installedClaudeInspection.js'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
 
@@ -101,5 +103,20 @@ describe('installed worker Claude metadata and saved profile admission', () => {
       expect(() => installedClaudeProfilePin(value, binding, changed)).toThrow('current native check')
     }
     expect(() => installedClaudeProfilePin(value, binding, null)).toThrow('current native check')
+    const operator = OperatorConfigurationVersionSchema.parse({ id: 'configuration', operatorId: 'operator', version: 1,
+      harness: configuration, harnessProfileSelection: { instanceId: value.instanceId,
+        instanceRevision: value.instanceRevision, target: value.target },
+      contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString() })
+    const facts = { installation: target.installation, override: value, profile: proof, qualification: null }
+    let current = f.input.binding
+    const reader = createInstalledClaudeConversationProfile({ configuration: operator, connection: current,
+      binding: { harness: 'claude', profile: operator.harnessProfileSelection!, workingDirectory: f.root, appMcpAccess: 'none',
+        owner: { kind: 'operator', operatorId: operator.operatorId, conversationId: randomUUID(),
+          configurationVersionId: operator.id, configurationHash: commandInputHash(operator) } },
+      current: () => current, signal: f.input.signal,
+      inspect: signal => inspectInstalledClaude({ ...f.input, binding: current, signal }), readFacts: async () => facts })
+    expect((await reader.capture()).accepted.currentBinding.pin).toEqual(pin)
+    current = { ...current, authorizationRevision: 2 }
+    await expect(reader.capture()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
   })
 })

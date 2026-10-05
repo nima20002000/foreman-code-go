@@ -130,6 +130,21 @@ function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
 
+it('closes an unused prepared owner without closing a conversation that has admitted native input', async () => {
+  const f = await setup('claude')
+  const allocate = f.ports.allocate
+  const close = vi.fn(async () => {})
+  f.ports.allocate = async (...args) => ({ ...await allocate(...args), close })
+  await f.request({ method: 'conversation.capabilities', configuration: f.configuration })
+  expect(await f.request({ method: 'conversation.release-preparation' })).toEqual({ acknowledged: true })
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(f.manager.creates).toBe(0)
+  await f.request(f.open)
+  await expect(f.request({ method: 'conversation.release-preparation' })).rejects.toThrow('cannot close an admitted model message')
+  expect(close).toHaveBeenCalledTimes(1)
+  expect((await f.journal.conversations.read(f.binding))?.closed).toBe(false)
+})
+
 for (const harness of ['codex', 'claude', 'opencode'] as const) {
   it(`forwards native Plan, preferences and separate usage through the ${harness} adapter port`, async () => {
     const f = await setup(harness)

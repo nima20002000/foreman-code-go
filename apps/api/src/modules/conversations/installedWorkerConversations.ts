@@ -33,6 +33,7 @@ import { workerConversationCallbacks } from './workerCallbacks.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
 import { WorkerConversationHost, type WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
+import { allocateInstalledWorkerClaude } from './installedWorkerClaude.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -64,6 +65,10 @@ export async function createInstalledWorkerConversations(input: {
   const allocate = async (binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read'): Promise<WorkerConversationAllocation> => {
     const harness = binding.harness
+    if (harness === 'claude') return allocateInstalledWorkerClaude({ binding, configuration, connection, purpose,
+      stateDirectory: input.stateDirectory, selection: input.configuration, launcher: selected.appMcpLauncher,
+      current: input.current, source, callbacks, approvedRoots: input.approvedRoots, registry: input.registry,
+      request: input.request, signal: input.signal })
     if (harness !== 'codex' && harness !== 'opencode') unavailable('The installed native selection does not support this driver.')
     if (harness === 'opencode' && !selected.opencode) unavailable('The installed OpenCode selection is missing.')
     const inspect = harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode

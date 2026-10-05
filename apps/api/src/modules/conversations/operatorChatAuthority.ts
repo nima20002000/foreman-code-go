@@ -74,11 +74,15 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const entry = inspected.entry
     if (!entry) return { ...result, status: 'setup_required' }
     const automatic = entry.automaticEndpoint === true && entry.transport === 'stdio'
+    const paired = manager.harness === 'claude' && entry.pairedEndpoint !== undefined
+      && `device:${entry.pairedEndpoint.deviceId}` === context.runnerId
+      && entry.pairedEndpoint.configuredEndpoint === this.endpoint
+      && entry.pairedEndpoint.nativeEndpoint === entry.endpoint && entry.transport === 'streamable-http'
     const configured = isSupportedAppMcpServerName(entry.name) && entry.enabled !== false && entry.status !== 'disabled'
-      && (automatic || entry.endpoint === this.endpoint && entry.transport === 'streamable-http')
+      && (automatic || paired || entry.endpoint === this.endpoint && entry.transport === 'streamable-http')
       && (manager.harness === 'claude' ? Boolean(this.deliverClaudeCredential)
         : isSupportedAppMcpTokenName(entry.credentialEnvironmentVariable))
-    return { ...result, status: configured ? 'configured' : 'setup_required', routing: automatic ? 'automatic' : 'fixed' }
+    return { ...result, status: configured ? 'configured' : 'setup_required', routing: automatic || paired ? 'automatic' : 'fixed' }
   }
 
   async prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { McpDetectionService, type NativeMcpInspectionEvidence } from './mcpDetection.js'
+import { randomUUID } from 'node:crypto'
 
 const endpoint = 'http://127.0.0.1:3000/mcp'
 const input = { harness: 'claude' as const, runnerId: 'runner', workingDirectory: '/workspace' }
@@ -16,6 +17,29 @@ async function inspect(value: NativeMcpInspectionEvidence) {
   return new McpDetectionService({ inspect: async () => value }, endpoint, 'graphql').inspect(input)
 }
 describe('scoped MCP credential mechanism evidence', () => {
+  it('accepts a paired worker relay only with its matching SDK acknowledgement and configured Main endpoint', async () => {
+    const deviceId = randomUUID()
+    const scoped = { ...input, runnerId: `device:${deviceId}` }
+    const value = evidence()
+    value.runnerId = scoped.runnerId
+    const entry = value.entry!
+    const arrangement = entry.credentialArrangement!
+    if (arrangement.kind !== 'scoped_http_header') throw new Error('Header fixture required')
+    entry.endpoint = 'http://127.0.0.1:40215/mcp'
+    entry.pairedEndpoint = { mainId: randomUUID(), deviceId, configuredEndpoint: endpoint, nativeEndpoint: entry.endpoint }
+    arrangement.acknowledgement.endpoint = entry.endpoint
+    const inspect = () => new McpDetectionService({ inspect: async () => value }, endpoint).inspect(scoped)
+    expect((await inspect()).detection).toMatchObject({ state: 'connected', endpointMatches: true,
+      credentialArrangement: { kind: 'scoped_http_header' } })
+    entry.pairedEndpoint.configuredEndpoint = `${endpoint}/foreign`
+    expect((await inspect()).detection.state).toBe('misconfigured')
+    entry.pairedEndpoint.configuredEndpoint = endpoint
+    entry.pairedEndpoint.deviceId = randomUUID()
+    expect((await inspect()).detection.state).toBe('misconfigured')
+    entry.pairedEndpoint.deviceId = deviceId
+    arrangement.acknowledgement.generation = 'another-query'
+    expect((await inspect()).detection.state).toBe('misconfigured')
+  })
   it('accepts the owned SDK header ACK only for current scope, generation, endpoint and health', async () => {
     const result = await inspect(evidence())
     expect(result.detection).toMatchObject({ state: 'connected', credentialEnvironmentVariable: null,
