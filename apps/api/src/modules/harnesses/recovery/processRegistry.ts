@@ -594,6 +594,13 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   return child
 }
 
+/** Persist the registration that owns this child, including its exact launch generation. */
+export function registeredNativeProcess(child: ChildProcess): NativeProcessRecovery | undefined {
+  const registration = owned.get(child)
+  if (!registration) return undefined
+  return { root: registration.scope.root, owner: registration.scope.owner, launchId: registration.id }
+}
+
 /** A guardian cleanup signal is not the native outcome. Missing receipts retain
  * the actual wrapper failure; retirement/empty containment never implies success. */
 export function nativeProcessExit(child: ChildProcess, fallback: NativeProcessExit): NativeProcessExit {

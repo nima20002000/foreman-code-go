@@ -1,8 +1,10 @@
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
-import { randomBytes } from 'node:crypto'
+import { registeredNativeProcess, spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
@@ -16,6 +18,7 @@ import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, 
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 import { OpenCodeVaultIsolation } from './opencodeFiles/isolation.js'
+import { OpenCodeConversationStorage } from './opencodeFiles/conversationStorage.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -37,6 +40,11 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  readonly ownedFileRoot?: string | undefined
+  readonly ownedSessionRoot?: string | undefined
+  bindFileConversation?(conversationId: string): void
+  importFileSession?(sessionId: string, directory: string, signal: AbortSignal): Promise<void>
+  readonly processRecovery?: NativeProcessRecovery | undefined
   assertFileSourceIsolation?(root: string, signal: AbortSignal): Promise<void>
   /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
   readonly residentGeneration?: number | undefined
@@ -67,6 +75,8 @@ export interface ManagedOpenCodeServerOptions {
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
   protectedFileStorageRoot?: string
+  managedFileRoot?: string
+  nativeStorage?: { root: string; owner: string }
   /** One budget for version probing, spawning, readiness and health, not per stage. */
   startupTimeoutMs?: number
 }
@@ -90,6 +100,10 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
   expectedVersion = ''
+  readonly ownedFileRoot: string | undefined
+  get processRecovery(): NativeProcessRecovery | undefined {
+    return this.child ? registeredNativeProcess(this.child) : undefined
+  }
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -105,8 +119,14 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private readonly stops = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>()
   private references: Readonly<Record<string, string>> = {}
   private fileIsolation: OpenCodeVaultIsolation | undefined
+  private conversationId: string | undefined
+  private conversationStorage: OpenCodeConversationStorage | undefined
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
+    this.ownedFileRoot = options.managedFileRoot ? join(options.managedFileRoot, randomUUID()) : undefined
+    if (options.nativeStorage) {
+      this.conversationStorage = new OpenCodeConversationStorage(options.nativeStorage.root, options.nativeStorage.owner)
+    }
     this.advancedConfiguration = options.advancedConfiguration
     this.desiredEnvironment = this.validateEnvironment(options.environment)
     if (options.pure !== undefined && options.advancedConfiguration
@@ -120,6 +140,20 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
   get nativePid(): number | undefined { return this.child?.pid }
+  get ownedSessionRoot(): string | undefined { return this.conversationStorage?.owned }
+  bindFileConversation(conversationId: string): void {
+    if (this.conversationId === conversationId) return
+    if (this.conversationId || this.child || !this.options.managedFileRoot) {
+      throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED',
+        'Bind native storage to its conversation before launching the file host.')
+    }
+    this.conversationId = conversationId
+    this.conversationStorage = new OpenCodeConversationStorage(
+      this.options.nativeStorage?.root ?? join(dirname(this.options.managedFileRoot), 'opencode-sessions'), conversationId)
+  }
+  async importFileSession(sessionId: string, directory: string, signal: AbortSignal): Promise<void> {
+    await this.conversationStorage?.importSession(sessionId, directory, signal)
+  }
   async assertFileSourceIsolation(root: string, signal: AbortSignal): Promise<void> {
     if (!this.fileIsolation || this.fileIsolation.root !== root || this.residentGeneration === undefined) {
       throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED', 'The resident OpenCode process has no isolated file host.')
@@ -363,8 +397,17 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
+      if (this.ownedFileRoot) await mkdir(this.ownedFileRoot, { recursive: true, mode: 0o700 })
+      const hiddenStorage = await this.conversationStorage?.prepare(environment)
       this.fileIsolation = this.options.protectedFileStorageRoot
-        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot) : undefined
+        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot,
+          this.options.managedFileRoot && this.ownedFileRoot
+            ? { root: this.options.managedFileRoot, owned: this.ownedFileRoot } : undefined,
+          this.conversationStorage && hiddenStorage
+            ? { root: this.conversationStorage.root, owned: this.conversationStorage.owned,
+              database: this.conversationStorage.database, hidden: hiddenStorage }
+            : undefined)
+        : undefined
       const launch = this.fileIsolation
         ? await this.fileIsolation.launch({ binary: this.options.binary, args,
           workingDirectory: this.options.workingDirectory, environment }, abort.signal)

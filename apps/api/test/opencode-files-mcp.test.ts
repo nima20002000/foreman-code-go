@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@foreman-code/contracts/files'
 import { DomainError } from '../src/modules/errors.js'
 import { registerFileToolsMcp } from '../src/modules/files/tools/mcp.js'
+import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import { createOpenCodeFileMcpFacade } from '../src/modules/harnesses/opencodeFiles/facade.js'
 import { LocalOpenCodeExecutionFiles } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { OpenCodeFileTurn } from '../src/modules/harnesses/opencodeFiles/turn.js'
@@ -71,7 +72,10 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     vi.spyOn(f.sessions, 'issueForAcceptedSession').mockImplementation(async (context, expiry) => {
       token = await issue(context, expiry); return token
     })
+    const context: FileToolContext = { ...f.context, nativeSessionId: 'opencode-test', turnId: randomUUID(),
+      allowedTools: [...f.context.allowedTools, 'files.write_working_copy', 'files.apply_format_edit'] }
     const host = new LocalOpenCodeExecutionFiles({ executionHostId: 'fixture-host', root, maxFileBytes: MAX_FILE_BYTES,
+      preserveVersion: (input, signal) => f.service.preserveAccepted(context, input, signal),
       async assertSourceIsolation() { /* MemoryBytes contains every source; there are no filesystem source paths. */ } })
     const native = {
       expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
@@ -99,8 +103,7 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     }
     try {
       const source = await f.upload()
-      await turn.prepare({ context: { ...f.context, nativeSessionId: 'opencode-test', turnId: randomUUID(),
-        allowedTools: [...f.context.allowedTools, 'files.write_working_copy', 'files.apply_format_edit'] },
+      await turn.prepare({ context,
         attachments: [], mode: 'write', directory: root, executionHostId: 'fixture-host',
         expiresAt: new Date(f.clock().getTime() + 3_600_000) }, AbortSignal.timeout(10_000))
       const copy = await call('files.create_working_copy', { commandId: randomUUID(), source, destination: f.scope })
@@ -154,6 +157,32 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
       const permanent = await call('files.publish_result', { ...input, commandId: randomUUID(),
         scope: { kind: 'workspace_reference', workspaceId: 'workspace-a' } })
       expect(permanent.body.result.isError).toBe(true)
+      const retained = await call('files.create_working_copy', {
+        commandId: randomUUID(), source, destination: f.scope,
+      })
+      const retainedId = retained.body.result.structuredContent.value.artifactId
+      const retainedPath = await turn.workingCopyLocation(token, retainedId)
+      const writer = await open(retainedPath, 'r+')
+      try {
+        const edit = await call('files.write_working_copy', { artifactId: retainedId,
+          contentBase64: Buffer.from('# MCP edit\n').toString('base64') })
+        expect(edit.body.result.isError).not.toBe(true)
+        await writer.truncate(0)
+        await writer.write(Buffer.from('# displaced native edit\n'), 0,
+          Buffer.byteLength('# displaced native edit\n'), 0)
+        const result = await call('files.publish_result', { ...input, artifactId: retainedId, commandId: randomUUID() })
+        expect(result.body.result.isError).not.toBe(true)
+        const contents: string[] = []
+        for (const ref of await turn.publications()) {
+          const read = await call('files.read', ref)
+          expect(read.body.result.isError).not.toBe(true)
+          contents.push(Buffer.from(read.body.result.structuredContent.contentBase64, 'base64').toString())
+        }
+        expect(contents).toContain('# MCP edit\n')
+        expect(contents).toContain('# displaced native edit\n')
+      } finally {
+        await writer.close()
+      }
       f.denyWrites()
       const denied = await call('files.publish_result', { ...input, commandId: randomUUID() })
       expect(denied.body.result.isError).toBe(true)

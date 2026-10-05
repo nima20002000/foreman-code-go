@@ -38,6 +38,8 @@ export interface OpenCodeChatFileBinding {
 }
 
 export interface OpenCodeChatFiles {
+  /** Reclaim registered materializations only after their original native process is confirmed closed. */
+  recover?(signal: AbortSignal, retainedTurnIds: ReadonlySet<string>): Promise<void>
   /** Return undefined only when the accepted turn has no file-tool context.
    * Agent turns need a context for inherited references even without attachments.
    * An unavailable reader/host/listener for a file-enabled turn must THROW.
@@ -52,6 +54,7 @@ export class OpenCodeManagedFileTurn {
     readonly bridge: OpenCodeFileTurn,
     readonly inputs: PreparedOpenCodeFiles,
     private readonly unmount: () => Promise<void>,
+    readonly nativeTurnId: string,
   ) {}
 
   private async close(operation: () => Promise<void>): Promise<void> {
@@ -113,7 +116,7 @@ export async function prepareOpenCodeChatFiles(runtime: OpenCodeChatFiles,
   const unmount = await binding.mount(createOpenCodeFileMcpFacade(binding.options.service, () => bridge))
   try {
     const inputs = await bridge.prepareInputs(admission, binding.read, signal)
-    return new OpenCodeManagedFileTurn(bridge, inputs, unmount)
+    return new OpenCodeManagedFileTurn(bridge, inputs, unmount, identity.nativeTurnId)
   } catch (error) {
     const errors: unknown[] = [error]
     try { await bridge.retryCleanup(AbortSignal.timeout(10_000)) } catch (cleanup) { errors.push(cleanup) }

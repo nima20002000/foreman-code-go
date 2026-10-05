@@ -601,6 +601,7 @@ export class OpenCodeFileTurn {
   }
 
   private async release(signal: AbortSignal): Promise<void> {
+    this.publicationsAdopted = false
     if (!this.closed) {
       await this.revokeReady()
       if (this.connected && this.serverName) {

@@ -17,7 +17,8 @@ export class OpenCodeVaultIsolation {
   private readonly nonce = randomUUID()
   private verified = false
 
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, private readonly materializations?: { root: string; owned: string },
+    private readonly storage?: { root: string; owned: string; hidden: string[]; database?: string }) {}
 
   async launch(input: { binary: string; args: string[]; workingDirectory: string; environment: NodeJS.ProcessEnv },
     signal: AbortSignal) {
@@ -34,8 +35,51 @@ export class OpenCodeVaultIsolation {
     } finally {
       await directory.close()
     }
-    this.ancestors = []
-    for (let parent = dirname(this.root); parent !== '/'; parent = dirname(parent)) this.ancestors.unshift(parent)
+    const ancestors = new Set<string>()
+    const protectedRoots = [this.root, ...(this.materializations ? [this.materializations.root] : []),
+      ...(this.storage ? [this.storage.root, ...this.storage.hidden,
+        ...(this.storage.database ? [this.storage.database] : [])] : [])]
+    for (const protectedRoot of protectedRoots) {
+      for (let parent = dirname(protectedRoot); parent !== '/'; parent = dirname(parent)) ancestors.add(parent)
+    }
+    const masked = new Set([this.root, ...(this.materializations ? [this.materializations.root] : []),
+      ...(this.storage ? [this.storage.root, ...this.storage.hidden] : [])])
+    this.ancestors = [...ancestors].filter(path => !masked.has(path))
+      .sort((a, b) => a.split('/').length - b.split('/').length)
+    const storageAncestors = this.ancestors.filter(path => this.storage && path.startsWith(`${this.storage.owned}/`))
+    const outerAncestors = this.ancestors.filter(path => !storageAncestors.includes(path)
+      && path !== this.storage?.owned)
+    let materialized: { dev: number; ino: number } | undefined
+    if (this.materializations) {
+      checkFileCondition(dirname(this.materializations.owned) === this.materializations.root
+        && isAbsolute(this.materializations.root) && normalize(this.materializations.root) === this.materializations.root,
+      'FILE_SOURCE_ISOLATION_REQUIRED', 'Materialized files require one registered native owner directory.')
+      const owned = await openDirectory(this.materializations.owned)
+      try {
+        const stat = await owned.stat()
+        materialized = { dev: stat.dev, ino: stat.ino }
+      } finally {
+        await owned.close()
+      }
+    }
+    let stored: { dev: number; ino: number } | undefined
+    if (this.storage) {
+      checkFileCondition(dirname(this.storage.owned) === this.storage.root,
+        'FILE_SOURCE_ISOLATION_REQUIRED', 'Native storage requires one conversation owner directory.')
+      const owned = await openDirectory(this.storage.owned)
+      try {
+        const stat = await owned.stat()
+        stored = { dev: stat.dev, ino: stat.ino }
+      } finally {
+        await owned.close()
+      }
+    }
+    const hiddenMounts: string[] = []
+    for (const path of this.storage?.hidden ?? []) {
+      const stat = await lstat(path)
+      hiddenMounts.push(...(stat.isDirectory() ? ['--tmpfs', path, '--remount-ro', path]
+        : ['--ro-bind', '/dev/null', path]))
+    }
     const directories = []
     for (const path of this.ancestors) {
       const parent = await openDirectory(path)
@@ -56,15 +100,29 @@ export class OpenCodeVaultIsolation {
     for (const name of ['mnt', 'pid', 'user']) namespaces[name] = await readlink(`/proc/self/ns/${name}`)
     const hostInput = JSON.stringify({ binary: input.binary, args: input.args, workingDirectory: input.workingDirectory,
       root: this.root, source: this.source,
-      ancestors: this.ancestors, directories, namespaces, nonce: this.nonce })
+      ancestors: this.ancestors, directories, namespaces, nonce: this.nonce,
+      materializations: this.materializations, materialized, storage: this.storage, stored })
     return { binary: launcher, args: [
       '--unshare-user', '--unshare-pid', '--unshare-ipc', '--disable-userns', '--assert-userns-disabled',
       '--as-pid-1', '--die-with-parent', '--cap-drop', 'ALL',
       '--bind', '/', '/',
       // Mountpoints cannot be renamed to reveal a replacement vault at the old path.
-      ...this.ancestors.flatMap((parent) => ['--bind', parent, parent]),
+      ...outerAncestors.flatMap((parent) => ['--bind', parent, parent]),
       '--proc', '/proc', '--dev', '/dev', '--setenv', 'PATH', environment.PATH ?? '',
       '--tmpfs', this.root, '--remount-ro', this.root,
+      ...(this.materializations ? [
+        '--tmpfs', this.materializations.root,
+        '--bind', this.materializations.owned, this.materializations.owned,
+        '--remount-ro', this.materializations.root,
+      ] : []),
+      ...hiddenMounts,
+      ...(this.storage ? [
+        '--tmpfs', this.storage.root,
+        '--bind', this.storage.owned, this.storage.owned,
+        '--remount-ro', this.storage.root,
+        ...storageAncestors.flatMap(parent => ['--bind', parent, parent]),
+        ...(this.storage.database ? ['--bind', this.storage.database, this.storage.database] : []),
+      ] : []),
       '--', process.execPath, '-e', openCodeIsolationHost, hostInput,
     ] }
   }

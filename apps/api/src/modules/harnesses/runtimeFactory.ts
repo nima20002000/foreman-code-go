@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
 import { createAdmittedNativeManager } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
@@ -79,6 +80,7 @@ export class NativeHarnessFactories {
     codexBinary: string
     openCodeBinary: string
     openCodeFileStorageRoot?: string
+    workspaceRoot?: string
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -245,8 +247,12 @@ export class NativeHarnessFactories {
       const options: ManagedOpenCodeServerOptions = {
         binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
+        ...(this.config.openCodeFileStorageRoot
+          ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot,
+            nativeStorage: { root: join(this.config.workspaceRoot ?? input.workingDirectory, 'opencode-sessions'),
+              owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
         ...(input.chatFiles && this.config.openCodeFileStorageRoot
-          ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot } : {}),
+          ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
