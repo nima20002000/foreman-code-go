@@ -277,7 +277,8 @@ export async function runCommand(
   else if (args[0] === 'login') operation = 'authentication'
   else if (args[1] === 'generate-json-schema') operation = 'schema'
   else if (args[0] === 'debug') operation = 'models'
-  else if (args[0] === 'mcp') operation = 'mcp_configuration'
+  else if (args[0] === 'mcp' && args[1] === 'get') operation = 'mcp_get'
+  else if (args[0] === 'mcp' && args[1] === 'list') operation = 'mcp_list'
   const result = await timeRuntimeOperation('harness', 'process.command', () =>
     runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped,
     ...(options.recovery ? { recovery: options.recovery } : {}), ...(environment ? { environment } : {}) }, async (child, secrets) => {
