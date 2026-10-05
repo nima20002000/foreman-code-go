@@ -9,4 +9,9 @@ describe.skipIf(!postgresEnabled)('native process local-human isolation', { time
       undefined, { expectedAgentId: input.owner, beforeSpawn: async () => ({ agentId: input.owner,
         variables: { GRAPHQL_MCP_TOKEN: input.token } }) }, { recovery: input.recovery }))
   })
+  it('denies an independently launched restricted MCP client with Authorization omitted', async () => {
+    await nativeHttpIsolation(input => runCommand(process.execPath, ['-e', input.script], input.directory,
+      undefined, { expectedAgentId: input.owner, beforeSpawn: async () => ({ agentId: input.owner,
+        variables: { GRAPHQL_MCP_TOKEN: input.token } }) }))
+  })
 })
