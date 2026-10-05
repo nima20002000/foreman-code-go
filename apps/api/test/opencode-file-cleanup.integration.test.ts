@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -28,6 +28,7 @@ import type { FileMcpService } from '../src/modules/files/tools/mcp.js'
 import { PostgresFileToolRepository } from '../src/modules/files/tools/postgres.js'
 import { AgentFileToolService } from '../src/modules/files/tools/service.js'
 import type { OpenCodeChatFiles } from '../src/modules/harnesses/opencodeFiles/chat.js'
+import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from '../src/modules/harnesses/opencodeFiles/cleanup.js'
 import { LocalOpenCodeExecutionFiles } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from '../src/modules/harnesses/opencodeFiles/postgres.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
@@ -167,8 +168,13 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
           adoptPublished: (binding) => adoptOpenCodePublications(pool, binding),
           async mount(facade) {
             await mkdir(root, { mode: 0o700 })
+            const owned = await ownOpenCodeDirectory(root)
             facades.set(identity.nativeTurnId, facade)
-            return async () => { facades.delete(identity.nativeTurnId); await rmdir(root) }
+            return async () => {
+              facades.delete(identity.nativeTurnId)
+              host.assertReleased()
+              await cleanupOpenCodeDirectory(owned)
+            }
           },
         }
       } }
@@ -212,6 +218,9 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
         const firstRoot = roots.get(firstId)!
         const directories = await readdir(firstRoot)
         const inputDirectory = join(firstRoot, directories[0]!)
+        await writeFile(join(firstRoot, 'root-backup.md'), 'root editor backup')
+        await mkdir(join(firstRoot, 'root-extraction', 'nested'), { recursive: true })
+        await writeFile(join(firstRoot, 'root-extraction', 'nested', 'data'), 'root extraction')
         await writeFile(join(inputDirectory, 'input.md.bak'), 'editor backup')
         await mkdir(join(inputDirectory, 'extracted', 'nested'), { recursive: true })
         await writeFile(join(inputDirectory, 'extracted', 'nested', 'temp.md'), 'temporary bytes')
