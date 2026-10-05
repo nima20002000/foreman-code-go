@@ -8,6 +8,8 @@ import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@foreman-code/contracts/jobs'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
+import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { WorkerConversationJournal } from '../../conversations/workerJournal.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
@@ -20,7 +22,7 @@ import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } fr
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), nativeControls: z.array(z.object({ operationId: z.string(), requestId: z.string(), inputHash: z.string(), native: RemoteNativeIdentitySchema, state: CompactionStateSchema }).strict()).default([]), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+const JournalSchema = z.object({ schemaVersion: z.literal(1), conversations: z.array(WorkerConversationReceiptSchema).default([]), nativeControls: z.array(z.object({ operationId: z.string(), requestId: z.string(), inputHash: z.string(), native: RemoteNativeIdentitySchema, state: CompactionStateSchema }).strict()).default([]), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
@@ -32,7 +34,18 @@ export class RemoteOperationJournal {
   private closed = false
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
-  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
+  readonly conversations: WorkerConversationJournal
+  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>,
+    private readonly capacity: number, private readonly lock: FileHandle) {
+    this.conversations = new WorkerConversationJournal({
+      read: async () => {
+        await this.tail
+        if (this.closed || this.faulted) throw new Error('Journal unavailable: recovery required')
+        return structuredClone(this.data.conversations)
+      },
+      change: apply => this.change(data => apply(data.conversations)),
+    }, capacity)
+  }
   static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number } = {}) {
     const capacity = options.capacity ?? 1000
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Invalid journal capacity')
@@ -49,9 +62,9 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, nativeControls: [], receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
+        data = { schemaVersion: 1, conversations: [], nativeControls: [], receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
-      if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
+      if (data.receipts.length + data.qualificationReceipts.length + data.conversations.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
       await journal.persist(data)
       return journal
@@ -82,6 +95,9 @@ export class RemoteOperationJournal {
       if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
       const next = structuredClone(this.data)
       const result = apply(next)
+      if (next.receipts.length + next.qualificationReceipts.length + next.conversations.length > this.capacity) {
+        throw new Error('Journal full: explicit retention disposition required')
+      }
       try { await this.persist(next) } catch (error) { this.faulted = true; throw error }
       this.data = next
       return structuredClone(result)
