@@ -2,7 +2,7 @@ import { publicationSignal } from './publicationSignal.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
-import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js'
+import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, ownedTestPath, removeFixtureDirectory } from './testResources.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -62,7 +62,7 @@ import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { configureNativeAcceptanceMcp } from './nativeAcceptanceMcp.js'
-import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { archiveNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
 import { runCommand as runNativeCommand } from '../../src/modules/harnesses/process.js'
 import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
@@ -756,7 +756,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     if (evidence.error || evidence.startError || cleanupErrors.length) {
       console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
     }
-    await close(() => writeNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence)))
+    await close(async () => {
+      await writeFile(ownedTestPath(artifactPath), JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2), { mode: 0o600 })
+      await archiveNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence))
+    })
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
     if (!cleanupErrors.length && !keepRuntime) {
       await close(async () => {
