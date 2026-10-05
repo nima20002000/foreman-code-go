@@ -163,18 +163,12 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(within(dialog).queryByRole('button', { name: 'Upload workflow file' })).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Choose workflow file')).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
-    await choose(user, runs, 'run-b')
-    expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
-    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
-    await choose(user, runs, 'run-a')
-    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
-    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
   })
 
-  it('keeps the saved graph and chat selection together across A, B, A', async () => {
+  it.each([320, 1024])('keeps the saved graph and chat selection together across A, B, A at %spx', async (width) => {
     const user = userEvent.setup()
+    vi.stubGlobal('innerWidth', width)
     installBoardHistory()
     await mountBoard()
     const board = await screen.findByRole('region', { name: 'Selected Run board' })
@@ -183,6 +177,12 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
+    if (width === 320) {
+      await user.click(within(controls).getByRole('button', { name: 'Files' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Files' })
+      await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
+      await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    }
     await choose(user, runs, 'run-b')
     expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
@@ -190,6 +190,7 @@ describe('FIL-17 + SCH selected Board', () => {
     await choose(user, runs, 'run-a')
     expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
   })
 
   it('keeps same-named Operator file cards bound to chats A and B while a Board is open', async () => {
