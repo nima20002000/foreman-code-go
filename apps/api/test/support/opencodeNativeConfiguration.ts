@@ -25,7 +25,7 @@ export async function nativeConfigurationFixture(options: {
   const workspaceRoot = join(directory, 'workspace')
   const vault = join(directory, 'vault')
   if (options.files) await mkdir(workspaceRoot, { mode: 0o700 })
-  const model = Fastify()
+  const model = Fastify({ bodyLimit: 32 * 1024 * 1024 })
   const calls: NativeModelCall[] = []
   model.post('/v1/chat/completions', async (request, reply) => {
     const body = request.body as (typeof calls)[number]
@@ -57,7 +57,9 @@ export async function nativeConfigurationFixture(options: {
       provider: { fixture: { npm: '@ai-sdk/openai-compatible', name: 'Configuration fixture',
         options: { baseURL: `${origin}/v1`, apiKey: 'loopback-fixture' },
         models: Object.fromEntries(['parent', 'child'].map(name => [name, {
-          name, limit: { context: 1_000_000, output: 1000 }, modalities: { input: ['text', 'image'], output: ['text'] }, variants: { focused: { temperature: 0.1 }, default: { temperature: 0.2 } },
+          name, limit: { context: 1_000_000, output: 1000 },
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          variants: { focused: { temperature: 0.1 }, default: { temperature: 0.2 } },
         }])),
       } },
       agent: {
