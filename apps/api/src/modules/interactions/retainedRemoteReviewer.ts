@@ -8,6 +8,27 @@ import { remoteReviewerPolicy, assertRemoteReviewerReceipt } from '../placement/
 import { requireReviewerCredential } from './reviewerCredential.js'
 import { DomainError } from '../errors.js'
 
+/** Resource ownership only: expiry does not prove that the native process released its source. */
+export async function hasRetainedRemoteReviewerSource(sql: GraphSqlClient, execution: HarnessExecution): Promise<boolean> {
+  if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded' || !execution.nativeSessionId) return false
+  const row = (await sql.query<{ owned: boolean }>(`select exists(
+    select 1 from remote_execution_receipts r
+    join execution_dispatch_intents i using(operation_id)
+    join execution_native_closures c on c.execution_id=i.execution_id
+    join execution_native_sessions s on s.execution_id=i.execution_id
+    where i.execution_id=$1 and r.receipt#>>'{intent,executionId}'=$1
+      and r.receipt#>>'{intent,runId}'=$3
+      and r.receipt->'retainedReviewer' is not null and r.receipt->'terminal' is null
+      and r.receipt#>>'{native,sessionId}'=$2 and s.reference->>'nativeSessionId'=$2
+      and r.receipt#>'{retainedReviewer,result}'=$4::jsonb
+      and c.closed_at is null and c.detached_at is null
+      and (c.expected_reference is null or c.expected_reference=s.reference)
+      and not exists(select 1 from execution_native_closures newer
+        where newer.execution_id=c.execution_id and newer.generation>c.generation)
+    ) as owned`, [execution.id, execution.nativeSessionId, execution.runId, JSON.stringify(execution.result)])).rows[0]
+  return row?.owned === true
+}
+
 export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecution) {
   const placement = await readExecutionPlacement(sql, execution.id)
   if (placement?.hostRef.kind !== 'device') return undefined

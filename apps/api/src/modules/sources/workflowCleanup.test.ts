@@ -5,7 +5,7 @@ import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions/workflowClosure.js'
-import { readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
+import { hasRetainedRemoteReviewerSource, readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from './workflowCleanup.js'
 import { PostgresSourceService } from './service.js'
 
@@ -13,7 +13,9 @@ vi.mock('../interactions/workflowClosure.js', () => ({
   readWorkflowClosure: vi.fn(),
   readUnboundWorkflowClosure: vi.fn(),
 }))
-vi.mock('../interactions/retainedRemoteReviewer.js', () => ({ readRetainedRemoteReviewer: vi.fn() }))
+vi.mock('../interactions/retainedRemoteReviewer.js', () => ({
+  readRetainedRemoteReviewer: vi.fn(), hasRetainedRemoteReviewerSource: vi.fn(),
+}))
 beforeEach(() => vi.resetAllMocks())
 
 function fixture(bound: boolean, state: 'completed' | 'starting' = 'completed') {
@@ -92,6 +94,18 @@ it('retains the source claim for a verified original reviewer, then requires phy
   expect(f.sources.confirmClosed).not.toHaveBeenCalled()
   expect(f.report).not.toHaveBeenCalled()
   vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+})
+
+it('keeps the original source when Main retention authority expires before physical closure', async () => {
+  const f = remoteSourceFixture()
+  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
   await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
 })
