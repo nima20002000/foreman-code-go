@@ -141,6 +141,7 @@ async function buildPrivateSourceRepository(input: {
       const repository = await openChildDirectory(reservation, 'repository')
       let configDigest: string
       try {
+        await protectGeneratedRepositoryEntries(repository, ['config', 'index', 'HEAD', 'refs'], signal)
         const config = await open(anchored(repository, 'config'), constants.O_RDONLY | constants.O_NOFOLLOW)
         try { configDigest = sourceSha256(await config.readFile()) } finally { await config.close() }
       } finally { await repository.close() }
@@ -153,6 +154,31 @@ async function buildPrivateSourceRepository(input: {
     } finally { await reservation.close() }
   } finally { await owner.close() }
   return { workTree, gitDirectory, generatedCommit, sourceCommit: manifest.git?.commit ?? null }
+}
+
+/** Git inherits the host umask; protect fresh metadata before publishing its receipt. */
+async function protectGeneratedRepositoryEntries(directory: FileHandle, names: readonly string[], signal: AbortSignal) {
+  const parent = await identity(directory)
+  for (const name of names) {
+    signal.throwIfAborted()
+    const entry = await open(anchored(directory, name),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const metadata = await entry.stat()
+      const filesystem = await identity(entry)
+      if (metadata.uid !== process.getuid?.() || filesystem.device !== parent.device
+        || filesystem.mountId !== parent.mountId
+        || (!metadata.isDirectory() && (!metadata.isFile() || metadata.nlink !== 1))) {
+        throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Generated private Git metadata changed.')
+      }
+      await entry.chmod(metadata.isDirectory() ? 0o700 : 0o600)
+      if (metadata.isDirectory()) {
+        await protectGeneratedRepositoryEntries(entry, await readdir(anchored(entry)), signal)
+      }
+      await entry.sync()
+    } finally { await entry.close() }
+  }
+  await directory.sync()
 }
 
 /** Verify only the retained original repository. Missing receipts fail closed;
