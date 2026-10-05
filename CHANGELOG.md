@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.21] - 2026-10-05
+
+### Fixed
+
+- Reuse the reviewed native MCP launcher for local production's automatic credential routing, while keeping production data separate.
+- Transition managed launchers from the previous production directory without changing native commands, credential references, tool policies, approvals or disabled flags.
+- Preserve launcher registrations across older and concurrent writers, and recover interrupted or lost transitions from the retained managed installation.
+- Keep unused routing folders intact without recognizing an uninstalled or unmanaged launcher.
+
+### Changed
+
+- Scope OpenCode live qualification to its approval case so Codex-only cases can run independently, retaining each provider's qualification and original assertions and deadlines.
+- Use explicit verification subject models without changing user defaults: interim Codex gpt-5.6-luna with medium reasoning and Claude Haiku when selected.
+- Native laptop gate: untested on Claude/OpenCode (laptops are Codex-only). Desktop production installation and native recovery verification remain required separately.
+
 ## [0.0.20] - 2026-10-05
 
 ### Fixed
