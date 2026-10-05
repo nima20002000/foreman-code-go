@@ -157,6 +157,12 @@ export function createProductionWorkerConversations(input: {
           || 'agentId' in configuration && (live.workspace_id !== configuration.workspaceId || live.agent_id !== configuration.agentId)) {
           unavailable('The original conversation configuration changed.')
         }
+        if (live.worker_conversation_binding) {
+          const savedBinding = WorkerConversationBindingSchema.parse(live.worker_conversation_binding)
+          if (!isDeepStrictEqual(savedBinding, originalBinding) && !isDeepStrictEqual(savedBinding, binding)) {
+            unavailable('The persisted worker conversation owner changed.')
+          }
+        }
         if ('agentId' in configuration && directoryBinding) {
           if (!isDeepStrictEqual(live.record.directoryBinding, directoryBinding)) unavailable('The saved node directory changed.')
           await revalidateAgentChatDirectory(input.pool, configuration, directoryBinding, binding.workingDirectory)
