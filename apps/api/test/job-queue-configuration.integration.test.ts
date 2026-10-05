@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { chmod, link, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { JobBuildQueueConfiguration, JobQueueTicket } from '@graphql/contracts/job-admission'
 import { ResolvedJobDefinitionSpecSchema } from '@graphql/contracts/jobs'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -19,7 +19,7 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
   let database: Awaited<ReturnType<typeof agent3Database>>
   let principal: Awaited<ReturnType<PostgresAccessService['issue']>>['principal']
   const services: JobService[] = []
-  beforeAll(async () => {
+  beforeEach(async () => {
     database = await agent3Database()
     const access = new PostgresAccessService(database.pool)
     principal = (await access.issue({ name: 'Queue configuration fixture', audience: 'operator',
@@ -29,8 +29,8 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
         'sources:read', 'source_roots:read',
       ] }] })).principal
   }, 60000)
-  afterAll(async () => {
-    await Promise.allSettled(services.map(service => service.closeQueue()))
+  afterEach(async () => {
+    await Promise.allSettled(services.splice(0).map(service => service.closeQueue()))
     vi.restoreAllMocks()
     await database?.close()
   })

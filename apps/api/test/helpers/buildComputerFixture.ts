@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
 import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
-import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@graphql/contracts/jobs'
+import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, isAutoJobSpec } from '@graphql/contracts/jobs'
 import type { JobComputerCandidate } from '../../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../../src/modules/settings/buildComputers.js'
 import { jobSpec } from './jobFixture.js'
@@ -17,6 +17,7 @@ import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecutio
 import { JobComputerSelection, releaseClosedJobComputers } from '../../src/modules/jobs/computerSelection.js'
 import { PostgresSourceReservations } from '../../src/modules/sources/reservations.js'
 import { JobService } from '../../src/modules/jobs/service.js'
+import { canonical } from '../../src/modules/jobs/repository.js'
 import { JobWorkerService } from '../../src/modules/jobs/worker.js'
 import type { JobQueueConfiguration } from '../../src/modules/jobs/ports.js'
 
@@ -119,7 +120,8 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
   const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,
     _workspaceId: string, spec: import('@graphql/contracts/jobs').JobDefinitionSpec) => ({ candidates: computers.map(computer => ({
       ...computer.candidate, spec: { ...computer.candidate.spec, argv: spec.argv },
-    })), diagnosticCodes: [] })) }
+    })).filter(candidate => isAutoJobSpec(spec) || canonical(candidate.spec.target) === canonical(spec.target)),
+    diagnosticCodes: [] })) }
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   const placement = new JobComputerSelection(settings, inventory, workerExecution)
   const reservations = new PostgresSourceReservations()
@@ -179,7 +181,9 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
         startedAt: execution.createdAt, finishedAt: new Date().toISOString(),
       })
     }
-    await worker.publication(workspaceId, executionId, fence, { state: 'complete', issue: null })
+    if (execution.publication !== 'complete') {
+      await worker.publication(workspaceId, executionId, fence, { state: 'complete', issue: null })
+    }
     await pool.query("update source_execution_materializations set state='closed' where execution_id=$1", [executionId])
     const reservation = (await pool.query<{ record: import('../../src/modules/sources/reservations.js').SourceReservation }>(
       "select record from source_storage_reservations where owner_kind='materialization' and owner_id=$1",

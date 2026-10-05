@@ -25,9 +25,14 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
   beforeAll(async()=>{
     database=await agent3Database()
     access=new PostgresAccessService(database.pool)
-    writer=await access.issue({name:'CI writer fixture',audience:'operator',expiresAt:new Date(Date.now()+3600000),grants:[{actions:['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','capabilities:read','settings:read','settings:update'],scope:{}}]})
-    queue = await buildQueueFixture(database.pool, writer.principal)
-    workspaceId = queue.workspaceId
+    workspaceId = randomUUID()
+    await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+      [workspaceId, JSON.stringify({ id: workspaceId, name: 'Scoped queue persistence' })])
+    writer=await access.issue({name:'CI writer fixture',audience:'operator',expiresAt:new Date(Date.now()+3600000),grants:[
+      {actions:['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','capabilities:read'],scope:{workspaceIds:[workspaceId]}},
+      {actions:['settings:read','settings:update'],scope:{}},
+    ]})
+    queue = await buildQueueFixture(database.pool, writer.principal, { workspaceId })
     queue.online()
     jobs = queue.jobs
     const commands = queue.commands

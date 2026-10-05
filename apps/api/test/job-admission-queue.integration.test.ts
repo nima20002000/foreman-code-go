@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { JobDefinition } from '@graphql/contracts/jobs'
 import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema } from '@graphql/contracts/job-admission'
@@ -26,7 +26,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
   const services: JobService[] = []
   const apps: ReturnType<typeof buildApp>[] = []
   const clients: Client[] = []
-  beforeAll(async () => {
+  beforeEach(async () => {
     database = await agent3Database()
     access = new PostgresAccessService(database.pool)
     writer = await access.issue({ name: 'Queue writer', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
@@ -35,10 +35,10 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     reader = await access.issue({ name: 'Queue reader', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
       grants: [{ actions: ['jobs:read', 'capabilities:read'], scope: {} }] })
   }, 60000)
-  afterAll(async () => {
-    await Promise.allSettled(clients.map(client => client.close()))
-    await Promise.allSettled(apps.map(app => app.close()))
-    await Promise.allSettled(services.map(service => service.closeQueue()))
+  afterEach(async () => {
+    await Promise.allSettled(clients.splice(0).map(client => client.close()))
+    await Promise.allSettled(apps.splice(0).map(app => app.close()))
+    await Promise.allSettled(services.splice(0).map(service => service.closeQueue()))
     await database?.close()
   })
   async function fixture(options: Parameters<typeof buildQueueFixture>[2] = {}) {

@@ -46,6 +46,7 @@ import type { SourceMaterializationRecord } from '@graphql/contracts/source-admi
 describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>, app: ReturnType<typeof buildApp>, address: string, directory: string
   let access: PostgresAccessService, sources: PostgresSourceService, journal: RemoteOperationJournal
+  let jobs: JobService
   let writer: Awaited<ReturnType<PostgresAccessService['issue']>>, reader: Awaited<ReturnType<PostgresAccessService['issue']>>
   const workspaceId = `source-reconcile-${randomUUID()}`, clients: Client[] = [], commandsToReconcile: string[] = []
   let root: ReturnType<typeof SourceRootRecordSchema.parse>, definitionId: string, worker: SourceOperationWorkerService, binding: DeviceSessionBinding
@@ -132,7 +133,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     spec.target={...spec.target,mainId,mainInstallationId:mainId,hostRef:root.selection.hostRef,registration:root.registration,
       destination:{...spec.target.destination,canonicalProjectRoot:namespace,canonicalCwd:namespace,managedRuntimeRoot:runtime,rootPolicyId:policyId,attestationId:root.attestationId,attestationHash:root.attestationDigest}}
     spec.policy.preparationTimeoutMs=600000
-    const jobs = new JobService(database.pool,commands,{
+    jobs = new JobService(database.pool,commands,{
       workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }),
       preparation:{choices:async()=>({targets:[],sources:[],policies:[]}),validate:async()=>({valid:true,reasons:[],sideEffects:false}),
       revalidateAccepted:async()=>{},adoptFinalBinding:async()=>{},accept:async(_sql,principal,_workspace,_spec,identity)=>{
@@ -148,6 +149,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     expect(save.statusCode).toBe(200);definitionId=save.json().definition.id
     for(let i=0;i<2;i++) {
       const commandId=randomUUID();commandsToReconcile.push(commandId)
+      // Retained preparations use the original domain path; HTTP retries preserve that identity.
+      await expect(jobs.start(writer.principal, 'http', workspaceId,
+        { commandId, definitionId, expectedRevision: 1 })).rejects.toBeInstanceOf(DomainError)
       const result=await start(commandId);expect(result.statusCode).toBeGreaterThanOrEqual(400)
     }
   },60000)
@@ -160,7 +164,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   const start=(commandId:string)=>app.inject({method:'POST',url:`/api/management/workspaces/${workspaceId}/jobs/executions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId,definitionId,expectedRevision:1}})
   async function client(token:string) {const value=new Client({name:'source-reconciliation-fixture',version:'1'});clients.push(value);await value.connect(new StreamableHTTPClientTransport(new URL('/mcp',address),{requestInit:{headers:{authorization:`Bearer ${token}`}}}));return value}
   it('reproduces capacity exhaustion, preserves failed evidence, audits HTTP/MCP cleanup and frees active slots',async()=>{
-    const exhausted=await start(randomUUID());expect(exhausted.statusCode,JSON.stringify(exhausted.json())).toBe(409);expect(exhausted.json().error.code).toBe('SOURCE_CAPACITY')
+    const exhaustedCommand = randomUUID()
+    await expect(jobs.start(writer.principal, 'http', workspaceId,
+      { commandId: exhaustedCommand, definitionId, expectedRevision: 1 }))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', status: 409 })
+    const exhausted=await start(exhaustedCommand);expect(exhausted.statusCode,JSON.stringify(exhausted.json())).toBe(409);expect(exhausted.json().error.code).toBe('SOURCE_CAPACITY')
     const rows=(await database.pool.query<{operation_id:string}>('select operation_id from job_preparations where workspace_id=$1 and command_id=any($2) order by created_at',[workspaceId,commandsToReconcile])).rows
     expect(rows).toHaveLength(2)
     const operator=await client(writer.token)
@@ -204,7 +212,10 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   it('keeps capacity and evidence while the original Start command is live, then reconciles its recorded failure',async()=>{
     let entered!:()=>void,release!:()=>void
     const started=new Promise<void>(resolve=>{entered=resolve}),released=new Promise<void>(resolve=>{release=resolve})
-    pause={entered,released};const startCommand=randomUUID(),pending=start(startCommand)
+    pause={entered,released};const startCommand=randomUUID()
+    const pending = expect(jobs.start(writer.principal, 'http', workspaceId,
+      { commandId: startCommand, definitionId, expectedRevision: 1 }))
+      .rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503 })
     try {
       await started
       const row=(await database.pool.query<{operation_id:string}>('select operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,startCommand])).rows[0]!
@@ -212,7 +223,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const result=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${writer.token}`},payload:command})
       expect(result.statusCode).toBe(409);expect(result.json().error.code).toBe('SOURCE_PREPARATION_ACTIVE')
       expect((await sources.preparationGet(reader.principal,'http',{workspaceId,operationId:row.operation_id})).reservationState).toBe('owned')
-      release();pause=null;expect((await pending).statusCode).toBe(503)
+      release();pause=null;await pending
+      expect((await start(startCommand)).statusCode).toBe(503)
       const closed=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${writer.token}`},payload:command})
       expect(closed.statusCode,JSON.stringify(closed.json())).toBe(200);expect(closed.json().value.reservationState).toBe('retained')
     } finally {release();pause=null;await pending}

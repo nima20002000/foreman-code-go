@@ -14,16 +14,16 @@ import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { sourceSha256 } from '../src/modules/sources/manifest.js'
 import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { retainedJobFixture } from './helpers/retainedJobFixture.js'
 import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
 import { jobRuntimeMetadataFixture } from './helpers/jobRuntimeMetadataFixture.js'
 
 describe.skipIf(!postgresEnabled)('canonical build candidate inventory', () => {
-  let database: Awaited<ReturnType<typeof agent3Database>>
+  let database: Awaited<ReturnType<typeof currentDatabase>>
   let principal: Awaited<ReturnType<PostgresAccessService['issue']>>['principal']
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await currentDatabase()
     principal = (await new PostgresAccessService(database.pool).issue({ name: 'Inventory writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {}, actions: [
         'jobs:start', 'jobs:read', 'jobs:cancel', 'job_definitions:read', 'job_definitions:write',

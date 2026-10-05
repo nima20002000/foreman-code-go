@@ -9,14 +9,14 @@ import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { RemoteJobExecutionHost } from '../src/modules/runs/remote/jobExecutionHost.js'
 import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { retainedJobFixture } from './helpers/retainedJobFixture.js'
 
 describe.skipIf(!postgresEnabled)('production Job closure and retained-attempt recovery', () => {
-  let database: Awaited<ReturnType<typeof agent3Database>>
+  let database: Awaited<ReturnType<typeof currentDatabase>>
   let principal: Awaited<ReturnType<PostgresAccessService['issue']>>['principal']
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await currentDatabase()
     principal = (await new PostgresAccessService(database.pool).issue({ name: 'Recovery writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {}, actions: [
         'jobs:start', 'jobs:read', 'jobs:cancel', 'job_definitions:read', 'job_definitions:write',
