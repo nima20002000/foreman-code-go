@@ -6,6 +6,34 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
+export function localProductionEnvironment(desktopHome, password) {
+  const current = join(desktopHome, '.local/lib/graphql-production/current')
+  const state = join(desktopHome, '.local/state/graphql-production')
+  const data = join(desktopHome, '.local/share/graphql-production')
+  return {
+    NODE_ENV: 'production',
+    FOREMAN_CODE_LOCAL_PRODUCTION: '1',
+    HOST: '127.0.0.1',
+    PORT: '3041',
+    DATABASE_URL: `postgresql://graphql_production:${password}@127.0.0.1:55440/graphql_production`,
+    // Existing database units invoke Compose directly with this spelling.
+    GRAPHQL_PRODUCTION_DB_PASSWORD: password,
+    FOREMAN_CODE_BROWSER_ORIGIN: 'http://127.0.0.1:3041',
+    FOREMAN_CODE_WEB_DIST: join(current, 'apps/web/dist'),
+    WORKSPACE_STORAGE_ROOT: join(data, 'workspaces'),
+    FILE_STORAGE_ROOT: join(data, 'files'),
+    HARNESS_WORKSPACE_ROOT: join(state, 'runs'),
+    // Native entries use one reviewed launcher; each credential selects its own app.
+    FOREMAN_CODE_APP_MCP_DIRECTORY: join(desktopHome, '.local/share/graphql/mcp'),
+    LOG_DIR: join(state, 'logs'),
+    XDG_CACHE_HOME: join(state, 'cache'),
+    LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph',
+    FOREMAN_CODE_DEV_BROWSER_ACCESS: '0',
+    NODE_OPTIONS: '',
+    NODE_PATH: '',
+  }
+}
+
 export async function deployProductionApi(run, destination) {
   const failures = []
   try {

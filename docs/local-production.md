@@ -53,9 +53,17 @@ Production storage is independent of development and tests:
 | Credentials | `~/.config/graphql-production/production.env` (0600) |
 | Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
-| Runs/MCP routes/cache | `~/.local/state/graphql-production/{runs,mcp,cache}` |
+| Runs/cache | `~/.local/state/graphql-production/{runs,cache}` |
+| Managed MCP launcher/routes | `~/.local/share/graphql/mcp/` (shared launcher; credential-scoped routes) |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
+
+The service uses the existing reviewed native MCP launcher so upgrading does not
+rewrite native connections or their tool, approval and disabled policies. Its
+shared routing index contains only credential digests, loopback endpoints,
+expiry times and app process IDs. Each credential routes to its issuing app;
+the endpoint still validates its grants and scope. Production database, files,
+workspaces and execution state remain separate from development and tests.
 
 The Jobs view and Operator MCP use the same persistent build queue in this
 installation. Its reviewed Main configuration belongs at
