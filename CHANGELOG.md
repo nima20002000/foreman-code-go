@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.13] - 2026-10-05
+
+### Added
+
+- Show the latest scheduled attempt, safe outcome guidance and an accepted Run link in the schedule dialog.
+
+### Changed
+
+- Dispatch independent schedules with bounded concurrency and recover missed occurrences in immediate batches.
+- Bound Start preparation, reuse validated preflight across short-interval retries and refresh open schedule readback without replacing edits.
+- Isolate installed package files across worktrees so parallel installs cannot change native executable identity metadata during qualification.
+
+### Fixed
+
+- Preserve pending and exhausted occurrence cursors when unchanged enabled settings are saved or enabled again, including elapsed Once saves in the UI and Operator MCP.
+- Default Once to the next device-local calendar date across daylight-saving changes.
+- Record stale roots, harness instances, removed installations, unavailable sources and revoked devices as immediate scheduling rejections while retrying temporary inventory gaps.
+- Restore saved harness selections after restart and check their persisted revisions before accepting a scheduled Run.
+- Keep the installed Node runtime stable during native acceptance isolation and qualify scheduled placement using its persisted model defaults.
+- Return decoded Markdown alongside pinned bytes in Codex file callbacks and live qualification, with fresh qualification suite evidence.
+
+### Security
+
+- Retain cancellation and authorization fences through Start preparation and placement checks; log safe application and device classifications with workflow context without exposing native output or credentials.
+
 ## [0.0.12] - 2026-10-05
 
 ### Fixed
