@@ -599,7 +599,7 @@ export class ApprovalExecutionCoordinator {
   ) {
     const { signal, purpose, enterNative, restartOwner } = options
     restartOwner?.assertOwned()
-    const recoveredEnvironment = restartOwner && resolved.manager.recoverEnvironment?.()
+    const recoveredEnvironment = restartOwner && await resolved.manager.recoverEnvironment?.(signal)
     if (restartOwner && resolved.manager.recoverEnvironment && !recoveredEnvironment) throw new HarnessExecutionError(
       'NATIVE_PROCESS_RECOVERY_UNAVAILABLE', 'The original native process has no verified restart environment.', false)
     if (this.workflowClosures) {

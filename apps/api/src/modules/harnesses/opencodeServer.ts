@@ -30,7 +30,8 @@ import { HarnessExecutionError, NativeDeliveryError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
 import { openCodeOptions } from './operatorOptions.js'
 import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
-import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
+import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeOutputCallCapture,
+  NativeSessionStart, NativeTurnInput } from './port.js'
 import {
   boundedMapSet, boundedSetAdd, configurationPermissionRules, digest, eventSessionId, failure,
   nativeMessageId, nativePolicy, normalizedHistory, object, openCodeTimestamp, OpenCodeTurnHistory,
@@ -46,7 +47,11 @@ import { redactKnownSecrets } from './secrets.js'
 import { OpenCodeNativeAutoReplies, usesOpenCodeNativeAuto } from './opencodeNativeAuto.js'
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgement.js'
-import type { NativeResponseJournal } from './recovery/responseJournal.js'
+import type { NativeOutputAutoApprovalRecord, NativeResponseJournal } from './recovery/responseJournal.js'
+import { bootIdentity, processIdentity } from './recovery/linuxIdentity.js'
+import { captureOpenCodeNativeOutput } from './openCodeNativeOutputCapture.js'
+import { nativeOpenCodeMcpToolName } from './openCodePermissionPolicy.js'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@graphql/contracts/worker-native-output'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
@@ -95,6 +100,8 @@ interface SessionState {
   responsesInFlight: Set<string>
   responsesUncertain: Set<string>
   autoReplies: OpenCodeNativeAutoReplies
+  outputAutoApprovals: Map<string, { generation: number; rootTurnId: string;
+    approval: NonNullable<NativeOutputCallCapture['nativeAutoApproval']> }>
   directory: string
   configuration: OpenCodeHarnessConfiguration
   /** The accepted configuration's pinned app instructions, sent as system on every new turn. */
@@ -192,6 +199,84 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   recoverEnvironment(): ChildProcessEnvironment | undefined {
     return this.options.server.recoverEnvironment?.()
+  }
+
+  async captureNativeOutputCall(session: NativeSessionReference, toolName: string, args: unknown,
+    signal?: AbortSignal): Promise<NativeOutputCallCapture> {
+    const ownedSignal = this.signal(signal)
+    const combined = AbortSignal.any([ownedSignal, AbortSignal.timeout(30_000)])
+    const state = this.requireSession(session)
+    const generation = this.generation
+    const rootTurnId = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
+    const resident = this.options.server.requestResident
+    const assertCurrent = () => {
+      ownedSignal.throwIfAborted()
+      const currentRoot = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
+      if (!rootTurnId || !resident || this.sessions.get(session.nativeSessionId) !== state
+        || currentRoot !== rootTurnId || state.turn?.terminalResult
+        || state.turn && state.turn.generation !== generation
+        || session.harness !== 'opencode' || session.providerVersion !== this.providerVersion
+        || this.generation !== generation || this.readyGeneration !== generation
+        || this.options.server.residentGeneration !== generation
+        || this.options.server.ownerAgentId !== this.options.ownerAgentId
+        || this.options.server.credentialEnvironmentFingerprint !== this.boundEnvironmentFingerprint) {
+        throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'The original native output process is no longer current.')
+      }
+    }
+    assertCurrent()
+    return captureOpenCodeNativeOutput({ session, rootTurnId: rootTurnId!, agentName: state.configuration.nativeAgent,
+      toolName, args, assertCurrent,
+      read: async path => {
+        combined.throwIfAborted()
+        assertCurrent()
+        const response = await resident!.call(this.options.server, withDirectory(path, state.directory), combined, generation)
+        if (!response?.ok) {
+          await response?.body?.cancel()
+          throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'The original native output inspection failed.')
+        }
+        const value = this.sanitize(await readJson(response, combined))
+        const nextCursor = response.headers.get('x-next-cursor')
+        if (nextCursor && nextCursor.length > 1024) throw new Error('Native output history cursor exceeds its limit.')
+        assertCurrent()
+        return { value, ...(nextCursor ? { nextCursor } : {}) }
+      },
+      verifySession: native => this.verifyAttachedSession(native, session.nativeSessionId, state.directory, state.configuration),
+      autoApproval: (assistantMessageId, callId) => {
+        const saved = state.outputAutoApprovals.get(JSON.stringify([assistantMessageId, callId]))
+        if (saved?.generation === generation && saved.rootTurnId === rootTurnId) return saved.approval
+        const nativeProcess = this.nativeOutputProcess(generation)
+        return nativeProcess && this.options.responseJournal?.readNativeOutputAutoApproval(
+          session, rootTurnId!, assistantMessageId, callId, nativeProcess)
+      },
+    })
+  }
+
+  private nativeOutputProcess(generation: number): NativeOutputAutoApprovalRecord['process'] | undefined {
+    const pid = this.options.server.nativePid
+    const identity = pid && processIdentity(pid)
+    return identity ? { bootId: bootIdentity(), pid: identity.pid, startTicks: identity.startTicks, generation } : undefined
+  }
+
+  private recordOutputAutoApproval(session: NativeSessionReference, state: SessionState,
+    request: NativePermissionRequest, generation: number, rootTurnId: string | undefined): void {
+    if (!rootTurnId || request.sessionID !== session.nativeSessionId || !request.tool
+      || !isDeepStrictEqual(request.patterns, ['*'])
+      || !Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).some(name => nativeOpenCodeMcpToolName(name) === request.permission)) return
+    if (typeof request.tool.messageID !== 'string' || !request.tool.messageID
+      || typeof request.tool.callID !== 'string' || !request.tool.callID) throw new HarnessExecutionError(
+      'OPENCODE_NATIVE_AUTO_REPLY_UNCONFIRMED', 'The automatic native request has no matching tool identity.')
+    if (generation !== this.generation || this.sessions.get(session.nativeSessionId) !== state) throw new HarnessExecutionError(
+      'OPENCODE_NATIVE_AUTO_REPLY_UNCONFIRMED', 'The automatic native reply belongs to an obsolete process.')
+    const approval = { nativeRequestId: request.id, nativeSessionId: request.sessionID, permission: request.permission,
+      patterns: [...request.patterns], assistantMessageId: request.tool.messageID, callId: request.tool.callID, reply: 'once' as const }
+    const nativeProcess = this.nativeOutputProcess(generation)
+    if (this.options.responseJournal) {
+      if (!nativeProcess || this.options.server.residentGeneration !== generation) throw new HarnessExecutionError(
+        'OPENCODE_NATIVE_AUTO_REPLY_UNCONFIRMED', 'The automatic native reply has no current process identity.')
+      this.options.responseJournal.recordNativeOutputAutoApproval({ session, rootTurnId, process: nativeProcess, approval })
+    }
+    boundedMapSet(state.outputAutoApprovals, JSON.stringify([approval.assistantMessageId, approval.callId]),
+      { generation, rootTurnId, approval })
   }
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -703,9 +788,15 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return state.autoReplies.consume(
       (current) => this.ownedPermissions(session, current),
       async (request, current) => {
-        await this.mutate(withDirectory(`/permission/${encodeURIComponent(request.id)}/reply`, state.directory), {
+        const generation = this.generation
+        const rootTurnId = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
+        const original = structuredClone(request)
+        const result = await this.mutate(withDirectory(`/permission/${encodeURIComponent(request.id)}/reply`, state.directory), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'once' }),
         }, current)
+        if (result !== true) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_ACK_INVALID',
+          'The provider did not confirm the automatic native response.', 'uncertain')
+        this.recordOutputAutoApproval(session, state, original, generation, rootTurnId)
       }, signal,
     )
   }
@@ -1893,8 +1984,25 @@ function turnDigest(prompt: string, instructions: AgentInstructionBundle | undef
   return digest(fileIdentity ? JSON.stringify([legacy, fileIdentity]) : legacy)
 }
 function newState(directory: string, configuration: OpenCodeHarnessConfiguration, instructions: AgentInstructionBundle | undefined): SessionState {
-  return { connectionId: randomUUID(), responsesInFlight: new Set(), responsesUncertain: new Set(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
-    partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
+  return {
+    connectionId: randomUUID(),
+    responsesInFlight: new Set(),
+    responsesUncertain: new Set(),
+    autoReplies: new OpenCodeNativeAutoReplies(),
+    outputAutoApprovals: new Map(),
+    directory,
+    configuration,
+    instructions,
+    events: [],
+    eventBytes: 0,
+    eventIds: new Set(),
+    pendingIds: new Set(),
+    historyIds: new Set(),
+    partTypes: new Map(),
+    ownedIds: new Map(),
+    sequence: 0,
+    turn: undefined,
+  }
 }
 function withDirectory(path: string, directory: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(directory)}`

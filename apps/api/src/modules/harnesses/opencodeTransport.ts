@@ -324,9 +324,13 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   async requestResident(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined> {
     signal.throwIfAborted()
     const url = new URL(path, 'http://opencode.invalid')
+    const messagePage = /^\/session\/[^/]+\/message$/.test(url.pathname)
+    const allowedKeys = messagePage ? ['directory', 'limit', 'before'] : ['directory']
     if (url.origin !== 'http://opencode.invalid'
-      || !/^\/(?:permission|session\/[^/]+(?:\/message\/[^/]+)?)$/.test(url.pathname)
-      || [...url.searchParams.keys()].some(key => key !== 'directory')) return undefined
+      || !/^\/(?:permission|agent|session\/[^/]+(?:\/message(?:\/[^/]+)?)?)$/.test(url.pathname)
+      || [...url.searchParams.keys()].some(key => !allowedKeys.includes(key))
+      || messagePage && (!/^[1-9][0-9]?$/.test(url.searchParams.get('limit') ?? '')
+        || Number(url.searchParams.get('limit')) > 64 || (url.searchParams.get('before')?.length ?? 0) > 1024)) return undefined
     const child = this.child
     const adopted = this.adopted
     const epoch = this.epoch

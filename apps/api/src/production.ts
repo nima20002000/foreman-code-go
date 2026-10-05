@@ -173,7 +173,7 @@ import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/p
 import { productionOperatorManagers } from './modules/harnesses/operatorFiles/managers.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
-import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeOutputCallCapture } from './modules/harnesses/port.js'
 import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeConfigurationQualifier.js'
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
@@ -873,6 +873,53 @@ export function buildProductionApp(
         ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
     },
   )
+  const captureLocalNativeOutputCall = async (executionId: string, toolName: string,
+    args: unknown, signal: AbortSignal): Promise<NativeOutputCallCapture> => {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+    for (;;) {
+      deadline.throwIfAborted()
+      const owned = approvals.passiveOwnedNativeSessions().find(item => item.execution.id === executionId
+        && item.session.harness === 'opencode' && item.manager.harness === 'opencode')
+      if (owned) {
+        try {
+          owned.assertCurrent()
+          const lane = await repository.coordination.getLane('opencode', owned.session.nativeSessionId)
+          if (lane?.id === owned.writer.id && lane.leaseToken === owned.writer.token
+            && lane.ownerAgentId === owned.execution.agentId
+            && lane.connectionGeneration === owned.writer.connectionGeneration
+            && lane.correlationId === `execution:${executionId}` && lane.currentTurnOrMessageId) {
+            if (!owned.manager.captureNativeOutputCall) throw new DomainError('WORKFLOW_NATIVE_OUTPUT_CAPTURE_REQUIRED',
+              'The native output call cannot be inspected on its original owner.', 409)
+            const capture = await owned.manager.captureNativeOutputCall(owned.session, toolName, args,
+              AbortSignal.any([signal, owned.signal]))
+            if (capture.descriptor.rootTurnId !== lane.currentTurnOrMessageId) throw new DomainError(
+              'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output call belongs to another turn.', 409)
+            const assertCurrent = () => {
+              owned.assertCurrent()
+              capture.assertCurrent()
+              signal.throwIfAborted()
+            }
+            assertCurrent()
+            return { ...capture, assertCurrent }
+          }
+        } catch (error) {
+          if (!(error instanceof DomainError) || !['SESSION_LANE_LEASE_LOST', 'WORKER_EXECUTION_IDENTITY_INVALID']
+            .includes(error.code)) throw error
+        }
+      }
+      const execution = await runs.getExecution(executionId)
+      const run = execution && await runs.get(execution.runId)
+      if (!execution || !run || execution.state === 'completed' || run.executionState === 'completed'
+        || !['running', 'waiting'].includes(run.executionState) || await runs.hasPendingCleanup(run.id)) throw new DomainError(
+        'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output execution is no longer active.', 409)
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { deadline.removeEventListener('abort', abort); resolve() }, 25)
+        const abort = () => { clearTimeout(timer); deadline.removeEventListener('abort', abort); reject(deadline.reason) }
+        deadline.addEventListener('abort', abort, { once: true })
+        if (deadline.aborted) abort()
+      })
+    }
+  }
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()
   let mainTelemetryContext: Extract<TrustedTelemetryContext, { kind: 'main-local' }> | null = null

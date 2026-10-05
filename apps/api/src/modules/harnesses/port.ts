@@ -131,10 +131,35 @@ export interface NativeSubagentHistoryPage {
   nextCursor: string | null
 }
 
+export interface NativeOutputCallCapture {
+  descriptor: {
+    nativeSessionId: string
+    rootTurnId: string
+    assistantMessageId: string
+    callId: string
+    toolName: string
+    inputDigest: string
+  }
+  effectivePolicy: 'allow' | 'ask' | 'deny'
+  nativeAutoApproval?: {
+    nativeRequestId: string
+    nativeSessionId: string
+    permission: string
+    patterns: readonly string[]
+    assistantMessageId: string
+    callId: string
+    reply: 'once'
+  }
+  assertCurrent(): void
+}
+
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
   /** Read the original protected credential environment for a verified restart attachment. */
-  recoverEnvironment?(): ChildProcessEnvironment | undefined
+  recoverEnvironment?(signal?: AbortSignal): ChildProcessEnvironment | undefined
+    | Promise<ChildProcessEnvironment | undefined>
+  captureNativeOutputCall?(session: NativeSessionReference, toolName: string, args: unknown,
+    signal?: AbortSignal): Promise<NativeOutputCallCapture>
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
