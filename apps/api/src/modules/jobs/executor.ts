@@ -1,21 +1,31 @@
 import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
-import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type JobAcceptedInputPort,type VerifiedJobSource } from './inputs.js'
+import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type VerifiedJobSource } from './inputs.js'
 import type { JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
 import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@foreman-code/contracts'
 import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { componentLogger } from '../../infrastructure/logger.js'
+import { isDeepStrictEqual } from 'node:util'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema, JobExecutionRecordSchema,
+  type AcceptedVerificationJobSpec } from '@foreman-code/contracts/job-verification'
+import type { z } from 'zod'
+import { JobVerificationRuntimeMeasurementSchema, type JobVerificationRuntimeMeasurement }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { JobVerificationDispatchValiditySchema } from '@foreman-code/contracts/job-verification-policy'
 export { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
-export interface JobLaunchAuthority {
-  recheck(execution: JobExecution): Promise<void>
-  claim(execution: JobExecution, supervisorIdentity: string): Promise<'launch' | 'cancelled' | 'reconcile'>
-  launched(execution: JobExecution, supervisorIdentity: string, containerId?: string): Promise<void>
+export type RuntimeJobExecution = z.infer<typeof JobExecutionRecordSchema>
+export type VerificationExecution = z.infer<typeof VerificationJobExecutionSchema>
+export interface JobLaunchAuthority<Execution extends RuntimeJobExecution = JobExecution> {
+  recheck(execution: Execution): Promise<void>
+  claim(execution: Execution, supervisorIdentity: string): Promise<'launch' | 'cancelled' | 'reconcile'>
+  launched(execution: Execution, supervisorIdentity: string, containerId?: string): Promise<void>
 }
-export interface JobSourcePort {
-  verify(spec: AcceptedJobSpec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number; gitMounts?:VerifiedJobGitMounts }>
+export interface JobSourcePort<Spec extends RuntimeJobExecution['acceptedSpec'] = AcceptedJobSpec> {
+  verify(spec: Spec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number; gitMounts?:VerifiedJobGitMounts }>
 }
 export interface QualifiedJobProfile {
   workspaceLayout?:string|undefined
@@ -37,9 +47,75 @@ export interface QualifiedJobProfile {
   pidsLimit: number
   diskBytes: number
 }
-export interface JobLaunchPlan {
+
+/** Verification evidence is separate from the seven-check build qualification. */
+export function requireVerificationRuntime(
+  input: AcceptedVerificationJobSpec,
+  raw: JobVerificationRuntimeMeasurement,
+  runtime: QualifiedJobProfile | null,
+  now = Date.now(),
+  dispatchAt = new Date(now).toISOString(),
+): JobVerificationRuntimeMeasurement {
+  const spec = AcceptedVerificationJobSpecSchema.parse(input)
+  const measured = JobVerificationRuntimeMeasurementSchema.parse(raw)
+  if (!runtime) throw new Error('The accepted verification has no matching measured offline runtime.')
+  if (Date.parse(dispatchAt) > now || Date.parse(measured.identity.approvalExpiresAt) <= now
+    || Date.parse(measured.expiresAt) <= now) throw new Error('Original verification qualification expired or dispatch changed.')
+  const fingerprint = measured.fingerprint
+  const digest = createHash('sha256').update(canonicalGraphJson(fingerprint)).digest('hex')
+  const suite = measured.suites.find(value => value.suite === spec.verification.suite)
+  const durations = [spec.policy.preparationTimeoutMs, spec.policy.serviceStartupTimeoutMs,
+    spec.policy.executionTimeoutMs, spec.policy.cancellationGraceMs, spec.policy.publicationTimeoutMs,
+    spec.policy.cleanupTimeoutMs]
+  if (!spec.argv[0] || spec.argv.some(argument => argument.includes('\0'))
+    || durations.some(value => value > 2147423647)
+    || spec.policy.maxLogChunkBytes < 4 || spec.policy.maxWorkerSpoolBytes < 8) {
+    throw new Error('Verification argv, deadlines or stream budgets exceed runtime support.')
+  }
+  const remainingMs = Math.min(Date.parse(measured.expiresAt), Date.parse(measured.identity.approvalExpiresAt)) - now
+  const entryBudgetMs = spec.policy.serviceStartupTimeoutMs + spec.policy.executionTimeoutMs
+    + spec.policy.cancellationGraceMs + spec.policy.publicationTimeoutMs + spec.policy.cleanupTimeoutMs
+  if (remainingMs < entryBudgetMs) throw new Error('Verification approval cannot cover execution and closure.')
+  if (!suite || !isDeepStrictEqual(spec.profile, measured.identity) || digest !== measured.identity.fingerprintDigest
+    || !isDeepStrictEqual(spec.target.hostRef, fingerprint.hostRef)
+    || !isDeepStrictEqual(spec.target.registration, fingerprint.registration)
+    || spec.target.mainInstallationId !== fingerprint.mainInstallationId
+    || spec.profile.rootId !== fingerprint.root.binding.rootId
+    || spec.profile.bindingRevision !== fingerprint.root.binding.bindingRevision
+    || !spec.target.destination.canonicalProjectRoot.startsWith(`${fingerprint.root.binding.canonicalPath}/`)
+    || spec.verification.credentialRefs.length || fingerprint.network.mode !== 'none'
+    || runtime.policyId !== fingerprint.profileId || runtime.policyRevision !== fingerprint.profileRevision
+    || runtime.imageDigest !== fingerprint.imageDigest || runtime.toolchainDigest !== fingerprint.toolchainDigest
+    || runtime.qualificationId !== measured.identity.qualificationId
+    || runtime.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT || runtime.network !== 'none'
+    || !runtime.rootless || !runtime.cgroupV2 || !runtime.filesystemBounded || !runtime.descendantContainment
+    || !runtime.runtimeVersion || !runtime.ociRuntimeVersion || !runtime.kernelVersion
+    || spec.verification.parameters.unitWorkers > suite.maxUnitWorkers
+    || spec.verification.parameters.integrationShards > suite.maxIntegrationShards
+    || !isDeepStrictEqual(spec.verification.resources, suite.resources)) {
+    throw new Error('The accepted verification has no matching measured offline runtime.')
+  }
+  const resources = spec.verification.resources
+  for (const key of ['cpuLimit', 'memoryBytes', 'pidsLimit', 'diskBytes'] as const) {
+    if (runtime[key] !== resources.limits[key]) throw new Error('Verification runtime differs from its reservation.')
+  }
+  // Volume capacity is not a Job quota. Both mutable byte and inode limits need effective readback.
+  if (fingerprint.quota.workloadHardLimitBytes > resources.limits.diskBytes
+    || fingerprint.quota.workloadHardInodes > resources.mutableInodes
+    || suite.coldCachePeakBytes > fingerprint.quota.workloadHardLimitBytes
+    || suite.coldCachePeakInodes > fingerprint.quota.workloadHardInodes
+    || fingerprint.quota.workloadUsageBytes > resources.limits.diskBytes - resources.reportBytes
+    || resources.controlTempBytes + resources.shmBytes > resources.limits.memoryBytes) {
+    throw new Error('Verification byte, inode, report reserve or private memory budget is unenforced.')
+  }
+  JobVerificationDispatchValiditySchema.parse({ identity: measured.identity,
+    approvalConfig: fingerprint.approvalConfig, approvedAt: measured.approvedAt,
+    dispatchAt, policy: spec.policy })
+  return measured
+}
+export interface JobLaunchPlan<Execution extends RuntimeJobExecution = JobExecution> {
   identity: string
-  execution: JobExecution
+  execution: Execution
   privateRepositoryRoot: string
   verifiedSource: VerifiedJobSource
   inputs: JobInputDeliveryReceipt
@@ -60,18 +136,33 @@ export interface JobSupervisedProcess {
   stop(graceMs: number): Promise<boolean>
   proveStopped(): Promise<boolean>
 }
-export interface JobSupervisor {
+export interface JobSupervisor<Execution extends RuntimeJobExecution = JobExecution> {
   qualifiedProfile: QualifiedJobProfile | null
-  launch(plan: JobLaunchPlan): Promise<JobSupervisedProcess>
+  launch(plan: JobLaunchPlan<Execution>): Promise<JobSupervisedProcess>
 }
-export interface JobExecutorPorts {
-  authority: JobLaunchAuthority
-  source: JobSourcePort
-  inputs: JobAcceptedInputPort
-  supervisor: JobSupervisor
+export interface JobExecutorPorts<Execution extends RuntimeJobExecution = JobExecution> {
+  authority: JobLaunchAuthority<Execution>
+  source: JobSourcePort<Execution['acceptedSpec']>
+  inputs: {
+    prepare(execution: Execution, source: VerifiedJobSource, signal: AbortSignal): Promise<JobInputDeliveryReceipt>
+  }
+  supervisor: JobSupervisor<Execution>
   /** Resolves only after the bounded W08 worker spool has durably accepted the chunk. */
   appendLog(chunk: { executionId: string; attemptId: string; sequence: number; stream: 'stdout' | 'stderr'; text: string; byteSize: number; createdAt: string }): Promise<void>
-  collectOutputs(execution: JobExecution): Promise<void>
+  collectOutputs(execution: Execution): Promise<void>
+  /** Allocate interruption-report capacity before claim, inside the retained private source reservation. */
+  prepareOutputs?(execution: Execution, signal: AbortSignal): Promise<void>
+}
+export interface VerificationJobExecutorPorts extends JobExecutorPorts<VerificationExecution> {
+  measurement: JobVerificationRuntimeMeasurement
+  dispatchAt: string
+  /** Shared versioned digest and W09 physical receipt validation; no build projection is permitted. */
+  verifyAcceptedSpec(spec: AcceptedVerificationJobSpec): Promise<void>
+  inputs: JobExecutorPorts<VerificationExecution>['inputs'] & {
+    verify(execution: VerificationExecution, source: VerifiedJobSource,
+      receipt: JobInputDeliveryReceipt, signal: AbortSignal): Promise<void>
+  }
+  prepareOutputs(execution: VerificationExecution, signal: AbortSignal): Promise<void>
 }
 export interface JobExecutorResult {
   outcome: 'succeeded' | 'build_failed' | 'spawn_failed' | 'preparation_failed' | 'cancelled' | 'timed_out' | null
@@ -86,7 +177,9 @@ export interface JobExecutorResult {
   outputCollectionError: boolean
 }
 
-export function jobSupervisorIdentity(execution: JobExecution): string {
+export function jobSupervisorIdentity(execution: Pick<JobExecution, 'id' | 'attemptId' | 'operationId' | 'owner'> & {
+  acceptedSpec: Pick<AcceptedJobSpec, 'specDigest'>
+}): string {
   return `graphql-job-${createHash('sha256').update(JSON.stringify([execution.id, execution.attemptId, execution.operationId, execution.owner, execution.acceptedSpec.specDigest])).digest('hex')}`
 }
 
@@ -147,6 +240,7 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
       }
       requireJobGitMounts(execution,source)
       const inputs=requireJobInputReceipt(execution,source,await ports.inputs.prepare(execution,source,signal))
+      await ports.prepareOutputs?.(execution, signal)
       if(signal.aborted)throw new Error('Input delivery interrupted.')
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
       if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted working directory changed.')
@@ -160,6 +254,68 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
     return { ...result, outcome: cancellation.aborted ? 'cancelled' : 'preparation_failed', processStopped: true }
   }
   if (cancellation.aborted) return { ...result, outcome: 'cancelled', processStopped: true }
+  return superviseJob(plan, ports, cancellation, result)
+}
+
+/** Verification retains its accepted record and shares build supervision, deadlines, logs and descendant closure. */
+export async function executeVerificationJob(
+  raw: VerificationExecution,
+  ports: VerificationJobExecutorPorts,
+  cancellation: AbortSignal,
+): Promise<JobExecutorResult> {
+  const execution = VerificationJobExecutionSchema.parse(raw)
+  const spec = execution.acceptedSpec
+  const identity = jobSupervisorIdentity(execution)
+  const result: JobExecutorResult = { outcome: null, exitCode: null, signal: null, processStopped: false,
+    supervisorIdentity: identity, containerId: null, recoveryRequired: false, logError: false,
+    logsTruncated: false, outputCollectionError: false }
+  if (execution.process.phase === 'terminal') throw new Error('Terminal execution requires readback, not dispatch.')
+  if (cancellation.aborted || execution.cancelRequestedAt) return { ...result, outcome: 'cancelled', processStopped: true }
+  let plan: JobLaunchPlan<VerificationExecution>
+  try {
+    plan = await prepareWithinBudget(spec.policy.preparationTimeoutMs, cancellation, async signal => {
+      await ports.authority.recheck(execution)
+      await ports.verifyAcceptedSpec(spec)
+      const profile = ports.supervisor.qualifiedProfile
+      requireVerificationRuntime(spec, ports.measurement, profile, Date.now(), ports.dispatchAt)
+      if (!profile) throw new Error('Qualified verification runtime unavailable.')
+      const source = await ports.source.verify(spec, signal)
+      signal.throwIfAborted()
+      if (!source.privateGit || source.privateRepositoryRoot !== spec.target.destination.canonicalProjectRoot
+        || source.directoryIdentityHash !== spec.target.destination.directoryIdentityHash
+        || source.diskQuotaBytes !== spec.verification.resources.limits.diskBytes) {
+        throw new Error('Accepted verification source or quota changed.')
+      }
+      requireJobGitMounts(execution, source)
+      const inputs = await ports.inputs.prepare(execution, source, signal)
+      await ports.inputs.verify(execution, source, inputs, signal)
+      await ports.prepareOutputs(execution, signal)
+      signal.throwIfAborted()
+      const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
+      if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted verification working directory changed.')
+      await ports.authority.recheck(execution)
+      return { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource: source, inputs,
+        cwd, argv: spec.argv, environment: { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
+          PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1', ...JOB_GIT_ENVIRONMENT,
+          GRAPHQL_JOB_INPUT_MANIFEST: JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
+    })
+  } catch (error) {
+    componentLogger('jobs').warn({ err: error, executionId: execution.id }, 'Verification preparation failed before native entry')
+    return { ...result, outcome: cancellation.aborted ? 'cancelled' : 'preparation_failed', processStopped: true }
+  }
+  if (cancellation.aborted) return { ...result, outcome: 'cancelled', processStopped: true }
+  return superviseJob(plan, ports, cancellation, result)
+}
+
+async function superviseJob<Execution extends RuntimeJobExecution>(
+  plan: JobLaunchPlan<Execution>,
+  ports: JobExecutorPorts<Execution>,
+  cancellation: AbortSignal,
+  result: JobExecutorResult,
+): Promise<JobExecutorResult> {
+  const execution = plan.execution
+  const spec = execution.acceptedSpec
+  const identity = plan.identity
   const claim = await ports.authority.claim(execution, identity)
   if (claim === 'cancelled') return { ...result, outcome: 'cancelled', processStopped: true }
   if (claim === 'reconcile') return { ...result, recoveryRequired: true }

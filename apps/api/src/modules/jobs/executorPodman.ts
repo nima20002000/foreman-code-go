@@ -3,12 +3,18 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import type { z } from 'zod'
+import { VerificationJobExecutionSchema, JobVerificationParametersSchema } from '@foreman-code/contracts/job-verification'
+import type { JobVerificationRuntimeMeasurement } from '@foreman-code/contracts/job-verification-runtime'
+import { JobResourceRequestSchema, type JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
 import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 import { JOB_INPUT_MANIFEST_CONTAINER_PATH, verifyJobInputDirectory } from './inputs.js'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import type { QualificationNativeOwner, JobQualificationCandidate, JobQualificationAuthority } from './qualification.js'
 import type { JobExecution } from '@foreman-code/contracts'
-import { jobSupervisorIdentity, type JobLaunchPlan, type JobSupervisor, type QualifiedJobProfile } from './executor.js'
+import { jobSupervisorIdentity, requireVerificationRuntime, type JobLaunchPlan, type JobSupervisor,
+  type QualifiedJobProfile, type RuntimeJobExecution, type VerificationExecution } from './executor.js'
 
 export interface PodmanIsolationInput {
   identity: string
@@ -22,6 +28,8 @@ export interface PodmanIsolationInput {
   inputRoot: string
   gitDirectory:string
   schedulerDirectory:string
+  verification?: { resources: JobResourceRequest; scratchDirectory: string;
+    parameters?: z.infer<typeof JobVerificationParametersSchema>; qualifiedIntegrationShards?: number }
 }
 const JOB_COMMAND_GATE='/tmp/graphql-job-start'
 // The qualified image already contains Node. Its original PID/cgroup remains
@@ -46,6 +54,34 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
   if (input.gitDirectory!==join(input.sourceRoot,'..','repository')||input.schedulerDirectory!==join(input.sourceRoot,'..','job-heavy-jobs')
     ||[input.gitDirectory,input.schedulerDirectory].some(path=>path.includes(',')||path.includes('\0')))throw new Error('Original bounded Git/scheduler siblings required.')
   if (input.inputRoot !== join(input.sourceRoot, JOB_INPUT_DIRECTORY)) throw new Error('Exact retained immutable input directory required.')
+  let temporary = ['--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864']
+  let environment: Record<string, string> = { HOME: '/tmp/job-home' }
+  if (input.verification) {
+    const resources = JobResourceRequestSchema.parse(input.verification.resources)
+    const scratch = input.verification.scratchDirectory
+    if (scratch !== join(input.sourceRoot, '..', 'job-scratch') || /[:,\0]/.test(scratch)
+      || ['cpuLimit', 'memoryBytes', 'pidsLimit'].some(key =>
+        Reflect.get(input.profile, key) !== Reflect.get(resources.limits, key))
+      || input.spoolBytes > resources.spoolBytes
+      || resources.controlTempBytes + resources.shmBytes > resources.limits.memoryBytes) {
+      throw new Error('Verification mounts and resources must match the reserved private boundary.')
+    }
+    const execution = resources.scratchExecutable ? 'exec' : 'noexec'
+    temporary = ['--tmpfs', `/tmp:rw,nosuid,nodev,noexec,size=${resources.controlTempBytes}`,
+      '--shm-size', String(resources.shmBytes), '--volume', `${scratch}:/job-scratch:rw,nosuid,nodev,${execution},rprivate`]
+    environment = { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
+      XDG_CACHE_HOME: '/job-scratch/cache', XDG_CONFIG_HOME: '/job-scratch/config', XDG_DATA_HOME: '/job-scratch/data' }
+    if (input.verification.parameters) {
+      const parameters = JobVerificationParametersSchema.parse(input.verification.parameters)
+      const maximum = input.verification.qualifiedIntegrationShards
+      if (!Number.isSafeInteger(maximum) || !maximum || maximum < parameters.integrationShards || maximum > 12) {
+        throw new Error('Measured integration shard allowance required.')
+      }
+      environment.GRAPHQL_VERIFICATION_UNIT_WORKERS = String(parameters.unitWorkers)
+      environment.GRAPHQL_VERIFICATION_INTEGRATION_SHARDS = String(parameters.integrationShards)
+      environment.GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS = String(maximum)
+    }
+  }
   return ['--remote=false', `--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
     ...Object.entries(input.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
@@ -58,10 +94,81 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     '--mount', `type=bind,src=${input.inputRoot},dst=/workspace/${JOB_INPUT_DIRECTORY},ro`,
     '--mount', `type=bind,src=${input.gitDirectory},dst=${JOB_GIT_CONTAINER_DIRECTORY},ro`,
     '--mount', `type=bind,src=${input.schedulerDirectory},dst=${JOB_GIT_CONTAINER_DIRECTORY}/graphql-heavy-jobs,rw`,
-    '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864',
-    '--workdir', `/workspace${relative}`, '--unsetenv-all', '--env', 'HOME=/tmp/job-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
+    ...temporary,
+    '--workdir', `/workspace${relative}`, '--unsetenv-all',
+    ...Object.entries(environment).flatMap(([key, value]) => ['--env', `${key}=${value}`]), '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
     '--env', 'LANG=C.UTF-8', '--env', 'CI=1', ...Object.entries(JOB_GIT_ENVIRONMENT).flatMap(([key,value])=>['--env',`${key}=${value}`]), '--env', `FOREMAN_CODE_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
     input.profile.imageDigest, ...input.argv.slice(1)]
+}
+
+/** The installed carrier supplies the complete verification execution and current physical evidence. */
+export function podmanVerificationCreateArgv(input: Omit<PodmanIsolationInput, 'verification' | 'profile' | 'labels'> & {
+  execution: z.infer<typeof VerificationJobExecutionSchema>
+  measurement: JobVerificationRuntimeMeasurement
+  runtime: QualifiedJobProfile
+  dispatchAt: string
+}): string[] {
+  const execution = VerificationJobExecutionSchema.parse(input.execution)
+  const spec = execution.acceptedSpec
+  requireVerificationRuntime(spec, input.measurement, input.runtime, Date.now(), input.dispatchAt)
+  if (input.sourceRoot !== spec.target.destination.canonicalProjectRoot
+    || input.runtimeRoot !== spec.target.destination.managedRuntimeRoot
+    || input.cwd !== spec.target.destination.canonicalCwd || !isDeepStrictEqual(input.argv, spec.argv)
+    || input.spoolBytes !== spec.policy.maxWorkerSpoolBytes) {
+    throw new Error('Verification launch differs from its complete accepted execution.')
+  }
+  const identity = jobSupervisorIdentity(execution)
+  if (input.identity !== identity) throw new Error('Original verification supervisor identity changed.')
+  return podmanIsolationCreateArgv({ ...input,
+    argv: ['node', '-e', JOB_COMMAND_BOOTSTRAP, '--', JOB_COMMAND_GATE, ...spec.argv],
+    profile: input.runtime, labels: { 'graphql.job.identity': identity,
+      'graphql.job.spec': spec.specDigest, 'graphql.job.attempt': execution.attemptId },
+    verification: { resources: spec.verification.resources, scratchDirectory: join(input.sourceRoot, '..', 'job-scratch'),
+      parameters: spec.verification.parameters,
+      qualifiedIntegrationShards: input.measurement.suites.find(suite => suite.suite === spec.verification.suite)!.maxIntegrationShards },
+  })
+}
+
+/** Storage preparation stays inside the already accepted quota namespace; it never provisions a host volume. */
+export async function prepareVerificationScratchDirectory(
+  raw: z.infer<typeof VerificationJobExecutionSchema>,
+  measurement: JobVerificationRuntimeMeasurement,
+): Promise<string> {
+  const execution = VerificationJobExecutionSchema.parse(raw)
+  const source = execution.acceptedSpec.target.destination.canonicalProjectRoot
+  if (source !== join(source, '..', 'tree') || !source.startsWith(`${measurement.fingerprint.root.binding.canonicalPath}/`)
+    || await realpath(source) !== source) throw new Error('Original private verification namespace required.')
+  const directory = await open(join(source, '..'), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try {
+    const parent = await directory.stat()
+    if (parent.uid !== process.getuid?.() || parent.mode & 0o077
+      || String(parent.dev) !== measurement.fingerprint.root.binding.filesystem.device) {
+      throw new Error('Verification scratch escaped its qualified private filesystem.')
+    }
+    const scratch = `/proc/self/fd/${directory.fd}/job-scratch`
+    await mkdir(scratch, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error })
+    const handle = await open(scratch, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    try {
+      const info = await handle.stat()
+      if (info.uid !== parent.uid || info.mode & 0o077 || info.dev !== parent.dev) {
+        throw new Error('Private verification scratch ownership changed.')
+      }
+      for (const name of ['home', 'tmp', 'cache', 'config', 'data']) {
+        const path = `/proc/self/fd/${handle.fd}/${name}`
+        await mkdir(path, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error })
+        const child = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+        try {
+          const childInfo = await child.stat()
+          if (childInfo.uid !== parent.uid || childInfo.mode & 0o077 || childInfo.dev !== parent.dev) {
+            throw new Error('Private verification state escaped its scratch boundary.')
+          }
+        } finally { await child.close() }
+      }
+      await handle.sync()
+    } finally { await handle.close() }
+    await directory.sync()
+    return join(source, '..', 'job-scratch')
+  } finally { await directory.close() }
 }
 
 /** Application-owned empty hook directory inside the already approved runtime root. */
@@ -148,7 +255,7 @@ export function guardedPodmanCommandRunner(candidate: JobQualificationCandidate,
 }
 
 interface ContainerEvidence { Id: string; Config: { Labels: Record<string, string> }; State: { Running: boolean; Pid: number; ExitCode: number; Status: string; Error?: string } }
-function evidence(stdout: string, execution: JobExecution): ContainerEvidence {
+function evidence(stdout: string, execution: RuntimeJobExecution): ContainerEvidence {
   const rows: unknown = JSON.parse(stdout)
   if (!Array.isArray(rows) || rows.length !== 1) throw new Error('Container identity unavailable.')
   const row = rows[0] as ContainerEvidence
@@ -166,9 +273,16 @@ export interface JobSupervisorDeadline {
   markTimeout(): Promise<void>
   isTimedOut(): Promise<boolean>
 }
-export class PodmanJobSupervisor implements JobSupervisor {
+export interface VerificationSupervisorValidation {
+  measurement: JobVerificationRuntimeMeasurement
+  dispatchAt: string
+  verifyGit(execution: VerificationExecution, source: JobLaunchPlan['verifiedSource']): Promise<void>
+  verifyInputs(execution: VerificationExecution, source: JobLaunchPlan['verifiedSource'],
+    receipt: JobLaunchPlan['inputs'], signal: AbortSignal): Promise<void>
+}
+export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExecution> implements JobSupervisor<Execution> {
   private readonly watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
-  private async watch(execution: JobExecution, stop: () => Promise<boolean>) {
+  private async watch(execution: Execution, stop: () => Promise<boolean>) {
     const end = this.timing ? await this.timing.deadlineMs() : Date.now() + execution.acceptedSpec.policy.executionTimeoutMs
     if (!this.watchdogs.has(execution.operationId)) {
       const timer = setTimeout(() => {
@@ -178,15 +292,16 @@ export class PodmanJobSupervisor implements JobSupervisor {
     }
     return end
   }
-  private clearWatch(execution: JobExecution) {
+  private clearWatch(execution: Execution) {
     const timer = this.watchdogs.get(execution.operationId)
     if (timer) clearTimeout(timer)
     this.watchdogs.delete(execution.operationId)
   }
   constructor(readonly qualifiedProfile: QualifiedJobProfile | null, private readonly commands: PodmanCommandRunner,
-    private readonly ownership: (execution: JobExecution) => Promise<OCIContainerOwnership>, private readonly timing?: JobSupervisorDeadline) {}
+    private readonly ownership: (execution: Execution) => Promise<OCIContainerOwnership>, private readonly timing?: JobSupervisorDeadline,
+    private readonly verification?: VerificationSupervisorValidation) {}
 
-  async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; execError: boolean; timedOut: boolean; logGapPossible: true } | null> {
+  async reconcile(execution: Execution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; execError: boolean; timedOut: boolean; logGapPossible: true } | null> {
     const reply = await this.commands.run(['container', 'inspect', jobSupervisorIdentity(execution)])
     if (reply.exitCode !== 0) return null // Missing is uncertainty, never permission to relaunch.
     const row = evidence(reply.stdout, execution)
@@ -197,7 +312,7 @@ export class PodmanJobSupervisor implements JobSupervisor {
   }
 
   /** W08 recovery/control uses original execution scope, including after worker restart. */
-  async stopExecution(execution: JobExecution, graceMs: number, expectedContainerId?: string): Promise<boolean> {
+  async stopExecution(execution: Execution, graceMs: number, expectedContainerId?: string): Promise<boolean> {
     const owned = new OwnedOCIContainer({ identity: jobSupervisorIdentity(execution), labels: {
       'graphql.job.identity': jobSupervisorIdentity(execution), 'graphql.job.spec': execution.acceptedSpec.specDigest,
       'graphql.job.attempt': execution.attemptId } }, this.commands, await this.ownership(execution))
@@ -207,16 +322,39 @@ export class PodmanJobSupervisor implements JobSupervisor {
     return stopped
   }
 
-  async launch(plan: JobLaunchPlan) {
+  async launch(plan: JobLaunchPlan<Execution>) {
     if (!this.qualifiedProfile || this.qualifiedProfile.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
-    await verifyJobGitMounts(plan.execution,plan.verifiedSource)
-    await verifyJobInputDirectory(plan.execution, plan.verifiedSource, plan.inputs, AbortSignal.timeout(plan.execution.acceptedSpec.policy.preparationTimeoutMs))
+    let createArgv: string[]
+    const execution: RuntimeJobExecution = plan.execution
+    if (execution.schemaVersion === 2) {
+      if (!this.verification || !this.timing) throw new Error('Qualified verification validation and original deadlines unavailable.')
+      requireVerificationRuntime(execution.acceptedSpec, this.verification.measurement, this.qualifiedProfile,
+        Date.now(), this.verification.dispatchAt)
+      requireJobGitMounts(execution, plan.verifiedSource)
+      await this.verification.verifyGit(execution, plan.verifiedSource)
+      await this.verification.verifyInputs(execution, plan.verifiedSource, plan.inputs,
+        AbortSignal.timeout(execution.acceptedSpec.policy.preparationTimeoutMs))
+      await prepareVerificationScratchDirectory(execution, this.verification.measurement)
+      createArgv = podmanVerificationCreateArgv({ identity: plan.identity, execution, measurement: this.verification.measurement,
+        dispatchAt: this.verification.dispatchAt,
+        runtime: this.qualifiedProfile, sourceRoot: plan.privateRepositoryRoot,
+        runtimeRoot: execution.acceptedSpec.target.destination.managedRuntimeRoot, cwd: plan.cwd, argv: plan.argv,
+        inputRoot: join(plan.privateRepositoryRoot, JOB_INPUT_DIRECTORY),
+        gitDirectory: plan.verifiedSource.gitMounts!.git.directory,
+        schedulerDirectory: plan.verifiedSource.gitMounts!.scheduler.directory,
+        spoolBytes: execution.acceptedSpec.policy.maxWorkerSpoolBytes })
+    } else {
+      await verifyJobGitMounts(execution, plan.verifiedSource)
+      await verifyJobInputDirectory(execution, plan.verifiedSource, plan.inputs,
+        AbortSignal.timeout(execution.acceptedSpec.policy.preparationTimeoutMs))
+      createArgv = podmanCreateArgv({ ...plan, execution })
+    }
     const ownership = await this.ownership(plan.execution)
     await ownership.reserveContainerIntent(plan.identity, plan.execution.acceptedSpec.specDigest)
     const owned = new OwnedOCIContainer({ identity: plan.identity, labels: { 'graphql.job.identity': plan.identity,
       'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } }, this.commands, ownership)
     await ensureEmptyPodmanHooks(plan.execution.acceptedSpec.target.destination.managedRuntimeRoot)
-    const created = await this.commands.run(podmanCreateArgv(plan), plan.execution.acceptedSpec.policy.preparationTimeoutMs)
+    const created = await this.commands.run(createArgv, plan.execution.acceptedSpec.policy.preparationTimeoutMs)
     const containerId = created.stdout.trim()
     if (created.exitCode !== 0 || !/^[a-f0-9]{64}$/.test(containerId)) throw new Error('Container create uncertain; reconcile original identity.')
     await owned.bind(containerId)

@@ -13,6 +13,7 @@ import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
+import { JobResourceRequestSchema, type JobResourceRequest } from '@graphql/contracts/job-verification-policy'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
 export { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
@@ -496,6 +497,49 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
 }
 
 export interface QualificationMount {Type:string;Source:string;Destination:string;RW:boolean}
+
+/** Only physical probe output from the original admitted container can satisfy these checks. */
+export function validateVerificationIsolationObservation(input: {
+  observation: Record<string, unknown>
+  resources: JobResourceRequest
+  hostPidNamespace: string
+  hostNetworkNamespace: string
+  ownerSentinelPaths: readonly string[]
+}): void {
+  const resources = JobResourceRequestSchema.parse(input.resources)
+  const observed = input.observation
+  const denied = () => { throw new Error('Measured verification scratch, shm, dependency or credential isolation rejected.') }
+  const sentinels = observed.ownerSentinels
+  if (observed.schemaVersion !== 1 || observed.node !== 'v22.23.3'
+    || observed.pidNamespace === input.hostPidNamespace || observed.networkNamespace === input.hostNetworkNamespace
+    || typeof observed.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(observed.pidNamespace)
+    || typeof observed.networkNamespace !== 'string' || !/^net:\[\d+\]$/.test(observed.networkNamespace)
+    || JSON.stringify(observed.interfaces) !== '["lo"]' || observed.memoryMax !== String(resources.limits.memoryBytes)
+    || observed.swapMax !== '0' || observed.pidsMax !== String(resources.limits.pidsLimit)
+    || observed.cpuRatio !== resources.limits.cpuLimit || observed.capabilities !== '0000000000000000'
+    || observed.noNewPrivileges !== '1' || observed.controlExecution !== 'EACCES'
+    || observed.scratchExecution !== (resources.scratchExecutable ? 0 : 'EACCES')
+    || observed.shmType !== 0x01021994 || observed.controlTempType !== 0x01021994
+    || typeof observed.shmCapacityBytes !== 'number' || observed.shmCapacityBytes <= 0
+    || observed.shmCapacityBytes > resources.shmBytes || typeof observed.controlTempCapacityBytes !== 'number'
+    || observed.controlTempCapacityBytes <= 0 || observed.controlTempCapacityBytes > resources.controlTempBytes
+    || canonicalGraphJson(observed.packagePolicy) !== canonicalGraphJson({
+      minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false,
+    }) || !input.ownerSentinelPaths.length || !Array.isArray(sentinels)
+    || sentinels.length !== input.ownerSentinelPaths.length
+    || input.ownerSentinelPaths.some(path => sentinels.filter(value => value?.path === path && value.result === 'ENOENT').length !== 1)) {
+    denied()
+  }
+  if (typeof observed.mountInfo !== 'string') denied()
+  const mounts = (observed.mountInfo as string).split('\n').map(line => line.split(' '))
+  for (const path of ['/tmp', '/dev/shm', '/job-scratch']) {
+    const matching = mounts.filter(columns => columns[4] === path)
+    if (matching.length !== 1) denied()
+    const options = new Set(matching[0]![5]?.split(','))
+    const noexec = path !== '/job-scratch' || !resources.scratchExecutable
+    if (!['rw', 'nosuid', 'nodev'].every(option => options.has(option)) || options.has('noexec') !== noexec) denied()
+  }
+}
 /** Pure exact-layout verifier, reused only after genuine original OCI inspection. */
 export function validateJobQualificationMounts(mounts:QualificationMount[],paths:{sourceRoot:string;inputRoot:string;gitDirectory:string;schedulerDirectory:string},tmpfs:unknown,spoolBytes:number) {
   const expected=[{source:paths.sourceRoot,destination:'/workspace',rw:true},

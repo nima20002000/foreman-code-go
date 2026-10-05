@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 unset NODE_OPTIONS NODE_PATH
+case "${0##*/}" in
+  pnpm) set -- pnpm "$@" ;;
+esac
 if test -f /opt/graphql-ci/verification-policy.mjs; then
   exec /usr/local/bin/node /opt/graphql-ci/verification-policy.mjs "$@"
 fi

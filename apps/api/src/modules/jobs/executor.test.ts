@@ -2,7 +2,7 @@ import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts 
 import { createHash } from 'node:crypto'
 import { JOB_INPUT_DIRECTORY,type JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink, writeFile, chmod, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -17,7 +17,10 @@ import type { JobDispatchPort } from './ports.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { executeJob, jobSpecDigests, jobSupervisorIdentity, type JobExecutorPorts, type JobSupervisedProcess, type QualifiedJobProfile } from './executor.js'
 import { podmanCreateArgv } from './executorPodman.js'
-import { readDeclaredJobOutputs } from './executorOutputs.js'
+import { readDeclaredJobOutputs, reserveVerificationReportSpace, writeVerificationInterruptionReport } from './executorOutputs.js'
+import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
+import type { RemoteJobTerminalEvidence } from '@graphql/contracts/remote-job-execution'
+import { verificationFixture } from '../../../../../packages/contracts/tests/helpers/jobVerification.js'
 
 const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
@@ -25,6 +28,61 @@ const profile: QualifiedJobProfile = { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, p
   runtimeVersion: 'qualified-test', ociRuntimeVersion: 'qualified-test', kernelVersion: 'qualified-test', qualificationId: id,
   rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none',
   cpuLimit: 1, memoryBytes: 1024, pidsLimit: 64, diskBytes: 1024 }
+
+describe('verification interruption reports with real private files, no container qualification', () => {
+  it.each(['cancelled', 'timed_out'] as const)('publishes an honest partial summary after %s and reuses its original reserve', async outcome => {
+    const root = await mkdtemp(join(tmpdir(), 'verification-report-'))
+    try {
+      await chmod(root, 0o700)
+      const source = join(root, 'tree')
+      await mkdir(source, { mode: 0o700 })
+      const f = verificationFixture()
+      const raw = execution()
+      const job = VerificationJobExecutionSchema.parse({ ...raw, schemaVersion: 2,
+        acceptedSpec: { ...f.acceptedBuild, ...f.spec, schemaVersion: 2,
+          source: f.acceptedBuild.source, profile: f.profile, reservationId: id,
+          resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
+          target: { ...f.spec.target, destination: { ...f.spec.target.destination,
+            canonicalProjectRoot: source, canonicalCwd: source } } } })
+      const reserve = await reserveVerificationReportSpace(job)
+      expect(await reserveVerificationReportSpace(job)).toEqual(reserve)
+      const terminal: RemoteJobTerminalEvidence = { outcome, finishedAt: '2026-10-04T12:01:00.000Z',
+        processStopped: true, exitCode: null, signal: 'SIGKILL', closureEvidenceDigest: digest, resultDigest: digest,
+        logGapPossible: false, logsTruncated: false, outputCollectionError: false, artifactDigests: [] }
+      await writeVerificationInterruptionReport({ execution: job, reserve, terminal })
+      const outputs = await readDeclaredJobOutputs(source, job.acceptedSpec)
+      expect(outputs).toHaveLength(1)
+      const report = JSON.parse(outputs[0]!.bytes.toString('utf8'))
+      expect(report).toMatchObject({ outcome, completeness: 'partial', completedPortions: 0,
+        executionId: job.id, attemptId: job.attemptId, commit: job.acceptedSpec.source.commit,
+        totals: { total: 0, passed: 0, failed: 0, skipped: 0 } })
+      await expect(readFile(join(reserve.parent, reserve.name))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect((await stat(join(source, job.acceptedSpec.outputs[0]!.path))).ino).toBe(reserve.inode)
+      await writeVerificationInterruptionReport({ execution: job, reserve, terminal })
+      expect(await readDeclaredJobOutputs(source, job.acceptedSpec)).toEqual(outputs)
+      await expect(writeVerificationInterruptionReport({ execution: job, reserve,
+        terminal: { ...terminal, processStopped: false } as unknown as RemoteJobTerminalEvidence })).rejects.toThrow('confirmed closed')
+      await expect(writeVerificationInterruptionReport({ execution: job,
+        reserve: { ...reserve, inode: reserve.inode + 1 }, terminal })).rejects.toThrow('could not be written')
+      const reportPath = join(source, job.acceptedSpec.outputs[0]!.path)
+      await rm(reportPath)
+      await symlink('/etc/passwd', reportPath)
+      await expect(writeVerificationInterruptionReport({ execution: job, reserve, terminal })).rejects.toThrow('could not be written')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+  it('keeps required per-report limits on the existing output collector', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verification-output-'))
+    try {
+      const f = verificationFixture()
+      await mkdir(join(root, 'reports'))
+      await writeFile(join(root, 'reports/summary.json'), Buffer.alloc(4097))
+      const spec = AcceptedVerificationJobSpecSchema.parse({ ...f.acceptedBuild, ...f.spec,
+        schemaVersion: 2, source: f.acceptedBuild.source, profile: f.profile, reservationId: id,
+        resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1 })
+      await expect(readDeclaredJobOutputs(root, spec)).rejects.toThrow('budget rejected')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+})
 function execution(): JobExecution {
   const job: JobExecution = { schemaVersion: 1, id, workspaceId: id, operationId: id, attemptId: id, owner: { grantId: id, epoch: '1' }, workflow: null,
     process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false }, transport: 'connected', publication: 'pending',

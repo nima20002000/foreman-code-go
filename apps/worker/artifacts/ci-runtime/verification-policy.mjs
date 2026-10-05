@@ -35,7 +35,14 @@ export function verificationEnvironment(environment) {
 export function verificationInstallArguments(argv) {
   if (argv[0] !== 'install') return argv;
   const allowed = new Set(['install', '--frozen-lockfile', '--offline', '--prod=false']);
-  if (argv.some(argument => !allowed.has(argument))) throw new Error('Verification install arguments cannot change dependency policy.');
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index];
+    if (argument === '--store-dir' && argv[index + 1] === `${VERIFICATION_SCRATCH}/pnpm-store`) {
+      index++;
+      continue;
+    }
+    if (!allowed.has(argument)) throw new Error('Verification install arguments cannot change dependency policy.');
+  }
   return ['install', '--frozen-lockfile', '--offline', '--prod=false'];
 }
 

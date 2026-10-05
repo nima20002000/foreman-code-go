@@ -84,6 +84,7 @@
   "apps/api/src/modules/interactions/runtimePorts.ts",
   "apps/api/src/modules/jobs/executor.ts",
   "apps/api/src/modules/jobs/executorContainerOwner.ts",
+  "apps/api/src/modules/jobs/executorHandler.ts",
   "apps/api/src/modules/jobs/executorInstalled.ts",
   "apps/api/src/modules/jobs/executorJournal.ts",
   "apps/api/src/modules/jobs/executorOutputs.ts",

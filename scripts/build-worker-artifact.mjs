@@ -22,11 +22,13 @@ const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedC
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const allowedApiModules = new Set(JSON.parse(execFileSync('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], { cwd: root, encoding: 'utf8' })));
 const snapshot = new Map();
+const verificationScripts = ['scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs'];
 const forbiddenApiModule = path => /^apps\/api\/src\/(?:server|app|production)\.ts$/.test(path) || /^apps\/api\/src\/(?:infrastructure\/(?:db|database)|(?:db|migrations|bootstrap)\/)/.test(path);
 if ([...allowedApiModules].some(path => !path.startsWith('apps/api/src/') || forbiddenApiModule(path))) throw new Error('Invalid worker API allowlist');
 function snapshotSource(path) {
   if (forbiddenApiModule(path) || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..') || /\.(?:test|spec)\.[cm]?[jt]s$/.test(path) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(?:^|\/)(?:credentials|secrets)\.json$/.test(path)
     || !(allowedApiModules.has(path) || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
+      || verificationScripts.includes(path)
       || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
   if (!snapshot.has(path)) {
     const bytes = execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -89,6 +91,14 @@ await mkdir(join(output, 'artifacts/ci-runtime'));
 for (const name of ciRuntimeControls) {
   await writeFile(join(output, 'artifacts/ci-runtime', name), snapshotSource(`apps/worker/artifacts/ci-runtime/${name}`),
     { mode: name === 'corepack' ? 0o700 : 0o600 });
+}
+const committedScripts = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only', commit, '--', ...verificationScripts],
+  { cwd: root, encoding: 'utf8' }).trim().split('\n'));
+if (verificationScripts.every(path => committedScripts.has(path))) {
+  await mkdir(join(output, 'artifacts/verification'));
+  for (const path of verificationScripts) {
+    await writeFile(join(output, 'artifacts/verification', path.slice('scripts/'.length)), snapshotSource(path), { mode: 0o600 });
+  }
 }
 await writeFile(join(output, 'install'), snapshotSource('apps/worker/artifacts/install.sh.in').toString('utf8').replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
 if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(relative(root, resolve(runtimeFile))), { mode: 0o600 });

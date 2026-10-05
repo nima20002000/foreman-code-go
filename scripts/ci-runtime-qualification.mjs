@@ -8,10 +8,13 @@ Orchestrator-only physical qualification through the authenticated main API.
 Uses an existing persisted human approval. Does not approve, install, pull an
 image, change settings, invoke a model or directly spawn a runtime.
 
-Config (outside source/build mounts): schemaVersion:1, apiBaseUrl, workspaceId,
+Config (outside source/build mounts): schemaVersion:1 (build) or 2 (verification), apiBaseUrl, workspaceId,
 approvalId, commandId (retain on retry), authorizationEnvironmentVariable,
 humanGates:{hostReady:true,runtimeInstallation:true,image:true,rootAndQuota:true}.
 The selected host/root/runtime/image fingerprint is read from saved approval.
+Verification readback must include the separate version 2 measurement, all
+requested suites, their cold-cache byte/inode peaks and measured concurrency.
+This tool does not convert build qualification into verification qualification.
 Evidence contains authoritative readback and excludes authorization headers.
 `
 
@@ -23,7 +26,7 @@ async function main() {
   if (configBytes.length > 16384) throw new Error('Qualification config exceeds its byte bound.')
   const config = JSON.parse(configBytes.toString('utf8'))
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
-  if (config.schemaVersion !== 1 || !uuid.test(config.approvalId) || !uuid.test(config.commandId) ||
+  if (![1, 2].includes(config.schemaVersion) || !uuid.test(config.approvalId) || !uuid.test(config.commandId) ||
     typeof config.workspaceId !== 'string' || !config.workspaceId || !/^[A-Z][A-Z0-9_]{0,63}$/.test(config.authorizationEnvironmentVariable ?? '') ||
     ['hostReady', 'runtimeInstallation', 'image', 'rootAndQuota'].some(key => config.humanGates?.[key] !== true)) throw new Error('Exact IDs, authorization reference and every explicit human gate are required.')
   const base = new URL(config.apiBaseUrl)
@@ -55,8 +58,30 @@ async function main() {
   try {
     if (before.approval.status !== 'complete') await request('/run', 'POST', { commandId: config.commandId })
     const after = await request('')
-    if (after.approval?.qualificationId !== before.approval.qualificationId || after.approval?.fingerprintDigest !== before.approval.fingerprintDigest ||
-      after.measurement?.qualificationId !== before.approval.qualificationId || after.measurement?.origin !== 'real-runtime' || after.readiness?.ready !== true) throw new Error('Original physical qualification is incomplete or its fingerprint changed; read and reconcile the same approval.')
+    if (after.approval?.qualificationId !== before.approval.qualificationId
+      || after.approval?.fingerprintDigest !== before.approval.fingerprintDigest
+      || after.measurement?.origin !== 'real-runtime' || after.readiness?.ready !== true) {
+      throw new Error('Original physical qualification is incomplete or its fingerprint changed; read and reconcile the same approval.')
+    }
+    if (config.schemaVersion === 2) {
+      const { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema } =
+        await import('../packages/contracts/dist/jobVerificationRuntime.js');
+      const measurement = JobVerificationRuntimeMeasurementSchema.parse(after.measurement);
+      const profile = JobVerificationProfileSchema.parse(after.profile);
+      if (measurement.identity.qualificationId !== before.approval.qualificationId
+        || measurement.identity.fingerprintDigest !== before.approval.fingerprintDigest
+        || measurement.identity.approvalId !== config.approvalId || profile.status !== 'qualified'
+        || JSON.stringify(profile.measurement) !== JSON.stringify(measurement)) {
+        throw new Error('The persisted verification profile does not retain this separate physical measurement.');
+      }
+      evidence.resources = measurement.suites.map(suite => ({ suite: suite.suite,
+        coldCachePeakBytes: suite.coldCachePeakBytes, coldCachePeakInodes: suite.coldCachePeakInodes,
+        resources: suite.resources, maxConcurrentHeavyJobs: suite.maxConcurrentHeavyJobs,
+        maxUnitWorkers: suite.maxUnitWorkers, maxIntegrationShards: suite.maxIntegrationShards }));
+    } else if (after.measurement?.schemaVersion !== 1
+      || after.measurement.qualificationId !== before.approval.qualificationId) {
+      throw new Error('Original build measurement missing; verification cannot replace historical build evidence.');
+    }
     evidence.after = after; evidence.outcome = 'qualified'
     process.stdout.write(`Qualification evidence: ${evidencePath}\n`)
   } catch (error) { evidence.outcome = 'reconciliation_required'; throw error }
