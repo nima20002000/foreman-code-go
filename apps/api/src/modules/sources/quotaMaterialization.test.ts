@@ -14,7 +14,7 @@ import { identity, openPrivateRoot } from './privateFilesystem.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture() {
+async function fixture(slotCount = 2) {
   const root = await mkdtemp(join(tmpdir(), 'job-source-quota-'))
   roots.push(root)
   await chmod(root, 0o700)
@@ -30,7 +30,7 @@ async function fixture() {
     workspaceId: randomUUID(), rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: root,
     filesystem, accessMode: 'exclusive-write', snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const slots = []
-  for (const projectId of [2, 3]) {
+  for (const projectId of Array.from({ length: slotCount }, (_, index) => 2 + index)) {
     const namespace = randomUUID()
     const path = join(root, namespace)
     await mkdir(path, { mode: 0o700 })
@@ -67,18 +67,15 @@ async function fixture() {
 }
 
 describe('per-Job source quota ownership', () => {
-  it('prepares concurrent Jobs from one root in distinct projects and recovers both after restart', async () => {
-    const f = await fixture()
-    const firstAttempt = f.attempt(), secondAttempt = f.attempt()
-    const [first, second] = await Promise.all([
-      f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: firstAttempt }),
-      f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: secondAttempt }),
-    ])
-    expect(first.quota!.projectId).not.toBe(second.quota!.projectId)
-    expect(first.quota!.namespace).not.toBe(second.quota!.namespace)
-    expect(await f.materializer().recover(f.binding, firstAttempt)).toEqual(first)
-    expect(await f.materializer().recover(f.binding, secondAttempt)).toEqual(second)
-    for (const receipt of [first, second]) {
+  it.each([4, 2])('prepares %i concurrent Jobs from one root and recovers their independent quotas after restart', async count => {
+    const f = await fixture(count)
+    const attempts = Array.from({ length: count }, () => f.attempt())
+    const receipts = await Promise.all(attempts.map(attempt =>
+      f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt })))
+    expect(new Set(receipts.map(receipt => receipt.quota!.projectId)).size).toBe(count)
+    expect(new Set(receipts.map(receipt => receipt.quota!.namespace)).size).toBe(count)
+    for (const [index, receipt] of receipts.entries()) {
+      expect(await f.materializer().recover(f.binding, attempts[index]!)).toEqual(receipt)
       expect(await readFile(join(sourceMaterializationParent(receipt), 'tree/src/index.ts'))).toEqual(f.bytes)
     }
     await expect(f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() }))

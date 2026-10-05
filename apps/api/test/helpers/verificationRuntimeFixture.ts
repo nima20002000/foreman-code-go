@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { JobQualificationCandidateSchema, JOB_RUNTIME_PROVISIONING_SUITE, type JobQualificationCandidate }
   from '@foreman-code/contracts/job-runtime'
@@ -41,6 +41,11 @@ export function verificationRuntimeFixture() {
     resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
     provisioningSuite: JOB_RUNTIME_PROVISIONING_SUITE,
     deviceLimits: { cpuLimit: 4, memoryBytes: 8 * 2 ** 30, pidsLimit: 1024, diskBytes: 64 * 2 ** 30 },
+    quotaPool: { queryExecutable: '/usr/lib/foreman-code/job-quota-query', queryBinarySha256: digest,
+      blockDevice: '/dev/loop0', volumeCapacityInodes: 1000 + resources.mutableInodes * 4,
+      slots: Array.from({ length: 4 }, (_, index) => ({ namespace: randomUUID(), projectId: 2 + index,
+        hardLimitBytes: resources.limits.diskBytes, hardInodes: resources.mutableInodes,
+        filesystem: { ...baseline.root.binding.filesystem, inode: String(100 + index) } })) },
     quota: { volumeId: id, mountIdentityDigest: digest, volumeCapacityBytes: 64 * 2 ** 30,
       growthMode: 'filesystem-project-quota' as const, reservedHostBytes: 2 ** 30, controlProjectId: 1, workloadProjectId: 2,
       controlHardLimitBytes: 2 ** 30, controlUsageBytes: 0, workloadHardLimitBytes: resources.limits.diskBytes,

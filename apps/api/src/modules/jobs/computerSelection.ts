@@ -87,11 +87,15 @@ export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntim
   if (!runtime?.deviceLimits || !runtime.quota) return jobRuntimeProfileLimits(profile)
   const allowance = runtime.deviceLimits
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE
+  let quotaBytes = runtime.quota.workloadHardLimitBytes
+  if (runtime.schemaVersion === 3) {
+    quotaBytes = Math.min(runtime.quota.volumeCapacityBytes - runtime.quota.controlHardLimitBytes,
+      runtime.quotaPool?.slots.reduce((bytes, slot) => bytes + slot.hardLimitBytes, 0) ?? 0)
+  }
   return { cpuLimit: allowance.cpuLimit - reserve.cpuLimit,
     memoryBytes: allowance.memoryBytes - reserve.memoryBytes,
     pidsLimit: allowance.pidsLimit - reserve.pidsLimit,
-    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, profile.schemaVersion === 2
-      ? runtime.quota.volumeCapacityBytes - runtime.quota.controlHardLimitBytes : runtime.quota.workloadHardLimitBytes) }
+    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, quotaBytes) }
 }
 
 export type VerificationMemoryReader = (profile: JobVerificationProfile) => Promise<number | null>
@@ -248,8 +252,13 @@ export class JobComputerSelection {
         union all select source_bytes,1 from job_computer_selections s where s.source_scope=$1 and s.released_at is null
           and not exists(select 1 from source_storage_reservations r where r.owner_kind='materialization' and r.owner_id=s.operation_id)
       ) usage`, [candidate.sourceReservation.scopeId])).rows[0]!
+    let sourceSlots: number = SOURCE_AGGREGATE_LIMITS.materializations
+    if (candidate.profile.schemaVersion === 2) {
+      sourceSlots = candidate.profile.root.selection.hostRef.kind === 'main'
+        ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
+    }
     if (Number(storage.bytes) + candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes
-      || Number(storage.materializations) >= SOURCE_AGGREGATE_LIMITS.materializations) return { fits: false, reason: 'busy' }
+      || Number(storage.materializations) >= sourceSlots) return { fits: false, reason: 'busy' }
     return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory)
   }
 
@@ -291,12 +300,16 @@ export async function jobComputerCapacityDecision(sql: JobSql,
   target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
   availableMemory?: VerificationMemoryReader): Promise<JobComputerCapacityDecision> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
-  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits']; compute_closed: boolean }>(`select s.limits,
+  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits']; compute_closed: boolean; inodes?: number }>(`select s.limits,
+    coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes,
     exists(select 1 from job_executions e where e.id=s.execution_id
       and e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
     from job_computer_selections s
+    join job_runtime_profile_versions p on p.profile_id=s.spec #>> '{policy,isolationPolicyId}'
+      and p.revision=(s.spec #>> '{policy,isolationPolicyRevision}')::bigint
     where host_key=$1 and released_at is null and not ${closedJobComputerSql}
     union all select coalesce(p.record->'limits',p.record #> '{spec,resources,limits}') as limits,
+      coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes,
       (e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
     from job_executions e
     join job_runtime_profile_versions p on p.profile_id=e.accepted_spec #>> '{policy,isolationPolicyId}'
@@ -304,7 +317,16 @@ export async function jobComputerCapacityDecision(sql: JobSql,
     where not exists(select 1 from job_computer_selections s where s.execution_id=e.id)
       and e.accepted_spec #>> '{target,hostRef,mainId}'=$2
       and coalesce(e.accepted_spec #>> '{target,hostRef,deviceId}','main')=$3
-      and not ${closedJobExecutionSql}`,
+      and not ${closedJobExecutionSql}
+    union all select s.limits,
+      coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes, true as compute_closed
+    from job_computer_selections s
+    join job_runtime_profile_versions p on p.profile_id=s.spec #>> '{policy,isolationPolicyId}'
+      and p.revision=(s.spec #>> '{policy,isolationPolicyRevision}')::bigint
+    join source_storage_reservations r on r.owner_kind='materialization' and r.owner_id=s.operation_id
+    join source_execution_materializations m on m.operation_id=s.operation_id
+    where s.host_key=$1 and s.released_at is not null and r.state<>'reclaimed'
+      and m.record #> '{receipt,quota}' is not null`,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile)
@@ -314,7 +336,13 @@ export async function jobComputerCapacityDecision(sql: JobSql,
     const approved = target.hostRef.kind === 'main' ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs
       : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
     const measured = profile.measurement?.suites.map(suite => suite.maxConcurrentHeavyJobs) ?? []
-    slots = measured.length ? Math.min(approved, ...measured) : 0
+    const pool = profile.measurement?.fingerprint.quotaPool
+    slots = measured.length && pool ? Math.min(approved, pool.slots.length, ...measured) : 0
+    if (!pool || rows.length >= pool.slots.length
+      || rows.reduce((total, row) => total + Number(row.inodes ?? profile.spec.resources.mutableInodes),
+        profile.spec.resources.mutableInodes) > pool.slots.reduce((total, slot) => total + slot.hardInodes, 0)) {
+      return { fits: false, reason: 'busy' }
+    }
     if (target.hostRef.kind === 'device') {
       const bytes = await availableMemory?.(profile)
       if (bytes === null || bytes === undefined) return { fits: false, reason: 'memory_unavailable' }
