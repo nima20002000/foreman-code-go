@@ -40,7 +40,7 @@ it('recovers a quarantined turn from persisted ownership after native closure us
     const recovered: unknown[] = []
     await new OpenCodeFileCleanupJournal(join(root, 'vault'), conversationId).recover(async value => { recovered.push(value) },
       AbortSignal.timeout(10_000))
-    assert.deepEqual(recovered, [])
+    assert.deepEqual([...recovered], [])
     assert.deepEqual((await readdir(parent)).sort(), [owned.quarantine, 'other-turn'].sort())
     child.kill('SIGTERM')
     await exited
