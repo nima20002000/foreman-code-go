@@ -3,9 +3,9 @@ export { createFixtureDatabase, dropFixtureDatabase, createFixtureSchema, dropFi
 
 import type pg from 'pg'
 import { AgentConfigurationVersionSchema, ExecutionLocationSchema, HarnessExecutionSchema,
-  RuntimeIdentitySchema } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
-import { createRuntimeIdentity, testResourcesIdentity } from '@graphql/contracts/runtime-identity-node'
+  RuntimeIdentitySchema } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { createRuntimeIdentity, testResourcesIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import { assertTestDatabase, ownedTestDatabaseUrl, ownedTestPath } from '../../../../scripts/test-resources.mjs'
 
 /** Prepared native acceptance binds the API's effective storage and database to this invocation. */
@@ -15,17 +15,17 @@ export async function assertOwnedTestApi(origin: URL, pool: pg.Pool, environment
     throw new Error('Native acceptance requires a loopback test API')
   }
   const databaseUrl = ownedTestDatabaseUrl('TEST_DATABASE_URL', environment)
-  await assertTestDatabase(pool, { directory: environment.GRAPHQL_TEST_ROOT!, token: environment.GRAPHQL_TEST_OWNER!,
+  await assertTestDatabase(pool, { directory: environment.FOREMAN_CODE_TEST_ROOT!, token: environment.FOREMAN_CODE_TEST_OWNER!,
     name: new URL(databaseUrl).pathname.slice(1), databaseUrl })
   const result = await pool.query<{ id: string }>('select id from application_installation where singleton=true')
-  const expected = createRuntimeIdentity(environment.GRAPHQL_TEST_ROOT!, databaseUrl, result.rows[0]?.id ?? '')
+  const expected = createRuntimeIdentity(environment.FOREMAN_CODE_TEST_ROOT!, databaseUrl, result.rows[0]?.id ?? '')
   const response = await fetch(new URL('/health/identity', origin), { redirect: 'error', signal: AbortSignal.timeout(10_000) })
   if (!response.ok) throw new Error('Test API identity is unavailable')
   const identity = RuntimeIdentitySchema.parse(await response.json())
   if (identity.databaseId !== expected.databaseId || identity.installationId !== expected.installationId) {
     throw new Error('Native acceptance API does not own the disposable test database')
   }
-  const resourcesId = testResourcesIdentity(environment.GRAPHQL_TEST_ROOT!, environment.GRAPHQL_TEST_OWNER!)
+  const resourcesId = testResourcesIdentity(environment.FOREMAN_CODE_TEST_ROOT!, environment.FOREMAN_CODE_TEST_OWNER!)
   if (identity.testResourcesId !== resourcesId) {
     throw new Error('Native acceptance API storage and harness homes do not belong to this invocation')
   }

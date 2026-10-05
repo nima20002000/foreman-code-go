@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { Pool } = require('pg')
@@ -106,13 +107,14 @@ export function assertTestResourcesSettled(resource) {
 }
 
 export function testEnvironment(environment, resource) {
+  environment = resolveProductEnvironment(environment)
   requireTestServerUrl(resource.databaseUrl)
   assertTestRoot(resource.directory, resource.token)
   const clean = { ...environment }
   for (const key of Object.keys(clean)) {
-    if (/^PG/.test(key) || (!key.startsWith('GRAPHQL_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
-      || ['GRAPHQL_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE',
-        'GRAPHQL_PRODUCTION_DB_PASSWORD', 'GRAPHQL_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
+    if (/^PG/.test(key) || (!key.startsWith('FOREMAN_CODE_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
+      || ['FOREMAN_CODE_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE',
+        'FOREMAN_CODE_PRODUCTION_DB_PASSWORD', 'FOREMAN_CODE_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
   }
   for (const key of new Set([...databaseVariables, ...Object.keys(clean).filter(key => key.endsWith('DATABASE_URL'))])) {
     clean[key] = resource.databaseUrl
@@ -122,7 +124,7 @@ export function testEnvironment(environment, resource) {
     XDG_CONFIG_HOME: 'home/.config', XDG_DATA_HOME: 'home/.local/share',
     XDG_CACHE_HOME: 'home/.cache', XDG_STATE_HOME: 'home/.local/state', XDG_RUNTIME_DIR: 'xdg-runtime',
     OPENCODE_CONFIG_DIR: 'home/.config/opencode', FILE_STORAGE_ROOT: 'app/files',
-    WORKSPACE_STORAGE_ROOT: 'app/projects', GRAPHQL_APP_MCP_DIRECTORY: 'home/.local/share/graphql/mcp',
+    WORKSPACE_STORAGE_ROOT: 'app/projects', FOREMAN_CODE_APP_MCP_DIRECTORY: 'home/.local/share/graphql/mcp',
     HARNESS_WORKSPACE_ROOT: 'app/workspaces', LOG_DIR: 'logs', ENG03_A_EVIDENCE_DIR: 'evidence',
     TMPDIR: 'tmp', TMP: 'tmp', TEMP: 'tmp',
   }
@@ -138,7 +140,7 @@ export function testEnvironment(environment, resource) {
       throw new Error('Test API environment file ownership changed')
     }
   } else writeFileSync(apiEnvFile, '', { mode: 0o600, flag: 'wx' })
-  clean.GRAPHQL_API_ENV_FILE = apiEnvFile
+  clean.FOREMAN_CODE_API_ENV_FILE = apiEnvFile
   clean.SKILLS_EVIDENCE_FILE = join(clean.ENG03_A_EVIDENCE_DIR, 'skills.jsonl')
   clean.A2_QUALIFICATION_REPORT = join(clean.ENG03_A_EVIDENCE_DIR, 'a2-native-qualification.json')
   const launcher = join(clean.HOME, '.local', 'share', 'graphql', 'mcp', 'launcher.mjs')
@@ -146,11 +148,11 @@ export function testEnvironment(environment, resource) {
   copyFileSync(new URL('./graphql-mcp.mjs', import.meta.url), launcher)
   chmodSync(launcher, 0o600)
   for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENCODE_API_KEY']) {
-    if (environment[`GRAPHQL_TEST_${key}`]) clean[key] = environment[`GRAPHQL_TEST_${key}`]
+    if (environment[`FOREMAN_CODE_TEST_${key}`]) clean[key] = environment[`FOREMAN_CODE_TEST_${key}`]
   }
   for (const [variable, destination] of [
-    ['GRAPHQL_TEST_CODEX_AUTH_FILE', join(clean.CODEX_HOME, 'auth.json')],
-    ['GRAPHQL_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
+    ['FOREMAN_CODE_TEST_CODEX_AUTH_FILE', join(clean.CODEX_HOME, 'auth.json')],
+    ['FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
   ]) {
     if (!environment[variable]) continue
     mkdirSync(join(destination, '..'), { recursive: true, mode: 0o700 })
@@ -159,7 +161,7 @@ export function testEnvironment(environment, resource) {
   }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
-  return { ...clean, GRAPHQL_TEST_ROOT: resource.directory, GRAPHQL_TEST_OWNER: resource.token,
+  return { ...clean, FOREMAN_CODE_TEST_ROOT: resource.directory, FOREMAN_CODE_TEST_OWNER: resource.token,
     NIM2691_POSTGRES: '1' }
 }
 
@@ -211,8 +213,9 @@ export async function cleanupTestResources(resource) {
 }
 
 export async function provisionTestResources(environment = process.env) {
-  if (environment.GRAPHQL_TEST_ROOT || environment.GRAPHQL_TEST_OWNER) {
-    const resource = { directory: environment.GRAPHQL_TEST_ROOT, token: environment.GRAPHQL_TEST_OWNER,
+  environment = resolveProductEnvironment(environment)
+  if (environment.FOREMAN_CODE_TEST_ROOT || environment.FOREMAN_CODE_TEST_OWNER) {
+    const resource = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER,
       databaseUrl: environment.TEST_DATABASE_URL }
     const admin = await testAdminPool()
     try { await assertTestDatabase(admin, resource) } finally { await admin.end() }
@@ -235,8 +238,9 @@ export async function provisionTestResources(environment = process.env) {
 }
 
 export function ownedTestDatabaseUrl(variable = 'TEST_DATABASE_URL', environment = process.env) {
-  const directory = environment.GRAPHQL_TEST_ROOT
-  const token = environment.GRAPHQL_TEST_OWNER
+  environment = resolveProductEnvironment(environment)
+  const directory = environment.FOREMAN_CODE_TEST_ROOT
+  const token = environment.FOREMAN_CODE_TEST_OWNER
   assertTestRoot(directory, token)
   const value = environment[variable]
   requireTestServerUrl(value)
@@ -252,7 +256,7 @@ function identifier(value) {
 async function assertFixtureDatabase(sql) {
   ownedTestDatabaseUrl()
   const result = await sql.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname=current_database()")
-  if (result.rows[0]?.marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+  if (result.rows[0]?.marker !== `graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}`) {
     throw new Error('Fixture database ownership mismatch')
   }
 }
@@ -263,13 +267,13 @@ export async function createFixtureDatabase(sql, name, options = '') {
     throw new Error('Invalid test database creation options')
   }
   await sql.query(`create database ${identifier(name)} ${options}`)
-  await sql.query(`comment on database ${identifier(name)} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+  await sql.query(`comment on database ${identifier(name)} is 'graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}'`)
 }
 
 export async function dropFixtureDatabase(sql, name) {
   await assertFixtureDatabase(sql)
   const result = await sql.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname=$1", [name])
-  if (result.rows[0]?.marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+  if (result.rows[0]?.marker !== `graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}`) {
     throw new Error('Fixture database cleanup ownership mismatch')
   }
   await sql.query(`drop database ${identifier(name)}`)
@@ -278,22 +282,22 @@ export async function dropFixtureDatabase(sql, name) {
 export async function createFixtureSchema(sql, name) {
   await assertFixtureDatabase(sql)
   await sql.query(`create schema ${identifier(name)}`)
-  await sql.query(`comment on schema ${identifier(name)} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+  await sql.query(`comment on schema ${identifier(name)} is 'graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}'`)
 }
 
 export async function dropFixtureSchema(sql, name) {
   await assertFixtureDatabase(sql)
   const result = await sql.query("select obj_description(oid, 'pg_namespace') as marker from pg_namespace where nspname=$1", [name])
   if (!result.rows.length) return
-  if (result.rows[0].marker !== `graphql-test:${process.env.GRAPHQL_TEST_OWNER}`) {
+  if (result.rows[0].marker !== `graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}`) {
     throw new Error('Fixture schema cleanup ownership mismatch')
   }
   await sql.query(`drop schema ${identifier(name)} cascade`)
 }
 
 export async function removeFixtureDirectory(directory, options = { force: true }) {
-  const root = process.env.GRAPHQL_TEST_ROOT
-  assertTestRoot(root, process.env.GRAPHQL_TEST_OWNER)
+  const root = process.env.FOREMAN_CODE_TEST_ROOT
+  assertTestRoot(root, process.env.FOREMAN_CODE_TEST_OWNER)
   const target = resolve(directory)
   if (!target.startsWith(`${root}/`)) throw new Error('Fixture cleanup must remain inside its owned test root')
   if (!existsSync(target) && options.force) return
@@ -328,5 +332,5 @@ export function assertTestPath(resource, path) {
 }
 
 export function ownedTestPath(path) {
-  return assertTestPath({ directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }, path)
+  return assertTestPath({ directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }, path)
 }

@@ -197,7 +197,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const artifactPath = join(process.env.ENG03_A_EVIDENCE_DIR!, `${scenario}-${suffix}.json`)
   await Promise.all([mkdir(projectDirectory), mkdir(registryDirectory, { recursive: true, mode: 0o700 }),
     mkdir(join(artifactPath, '..'), { recursive: true })])
-  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   const cleanupId = registerTestResourceCleanup(invocation,
     { kind: 'native-acceptance', root, schema, databaseUrl: baseUrl, registryDirectory, artifactPath })
   const registry = new NativeProcessRegistry(registryDirectory)

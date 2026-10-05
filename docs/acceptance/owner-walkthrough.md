@@ -23,7 +23,7 @@ node scripts/acceptance/local.mjs --help
 
 For native work, have **OpenCode 1.18.31** installed and test credentials authorized for **`opencode-go/deepseek-v4.1-flash`**. The version is taken from this head's `opencodeTransport.ts` and `opencodeMcpConfiguration.ts`, not an assumption about the latest release. OpenCode model availability and authentication remain live preflight checks. Native Starts may incur provider charges; seeding itself does not start a Run.
 
-Supply authentication explicitly through `GRAPHQL_TEST_OPENCODE_AUTH_FILE` and, for a mixed run, `GRAPHQL_TEST_CODEX_AUTH_FILE`. Each value is an absolute path to a credential file authorized for tests; the provisioner copies it into this invocation's private OpenCode or Codex home with mode 0600. Provider keys may instead be supplied through `GRAPHQL_TEST_OPENAI_API_KEY`, `GRAPHQL_TEST_ANTHROPIC_API_KEY` or `GRAPHQL_TEST_OPENCODE_API_KEY` using a secure environment source. Do not paste credential values into commands, prompts, `.env`, screenshots or the launcher's input. Ambient provider keys and native account/configuration directories are excluded. The API/native process receives the selected test authentication; Vite does not receive provider keys. The launcher ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. It does not enable experimental/parity gates to make a provider appear qualified.
+Supply authentication explicitly through `FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE` and, for a mixed run, `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`. Each value is an absolute path to a credential file authorized for tests; the provisioner copies it into this invocation's private OpenCode or Codex home with mode 0600. Provider keys may instead be supplied through `FOREMAN_CODE_TEST_OPENAI_API_KEY`, `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY` or `FOREMAN_CODE_TEST_OPENCODE_API_KEY` using a secure environment source. Do not paste credential values into commands, prompts, `.env`, screenshots or the launcher's input. Ambient provider keys and native account/configuration directories are excluded. The API/native process receives the selected test authentication; Vite does not receive provider keys. The launcher ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. It does not enable experimental/parity gates to make a provider appear qualified.
 
 Run a disposable setup smoke check first; native credentials are unnecessary for smoke mode:
 
@@ -36,7 +36,7 @@ node scripts/acceptance/local.mjs --smoke
 Start the interactive session with available ports:
 
 ```sh
-GRAPHQL_TEST_OPENCODE_AUTH_FILE=/absolute/path/to/test-opencode-auth.json \
+FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE=/absolute/path/to/test-opencode-auth.json \
 node scripts/acceptance/local.mjs \
   --api-port 3307 --web-port 5307
 ```
@@ -55,7 +55,7 @@ The execution folder receives an `opencode.json` with the selected API's `/mcp` 
 
 ### Optional mixed Codex/OpenCode run
 
-Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Supply `GRAPHQL_TEST_CODEX_AUTH_FILE` or `GRAPHQL_TEST_OPENAI_API_KEY` and use a model available to that test account's repository-qualified Codex installation. The launcher does not guess a model, change trust settings or auto-enable an experimental rollout.
+Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Supply `FOREMAN_CODE_TEST_CODEX_AUTH_FILE` or `FOREMAN_CODE_TEST_OPENAI_API_KEY` and use a model available to that test account's repository-qualified Codex installation. The launcher does not guess a model, change trust settings or auto-enable an experimental rollout.
 
 A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "GRAPHQL_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-OpenCode S3-02 does not establish mixed-provider acceptance.
 

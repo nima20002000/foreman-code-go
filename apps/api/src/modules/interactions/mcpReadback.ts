@@ -11,7 +11,6 @@ import { DomainError } from '../errors.js'
 export const INTERACTION_MCP_RESPONSE_BYTES = 384 * 1024
 // Stay below OpenCode's default tool-text truncation so options and cursors reach the model.
 export const INTERACTION_MCP_TEXT_BYTES = 24 * 1024
-const CHUNK_CHARACTERS = 8192
 const ContentCursorSchema = z.object({
   interactionId: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   offset: z.number().int().nonnegative(),
@@ -69,21 +68,45 @@ export function interactionMcpGet(
     }
   }
   const interaction = interactionMcpSummary(value.interaction)
-  let length = CHUNK_CHARACTERS
-  while (length > 0) {
-    let end = Math.min(offset + length, json.length)
-    if (isSurrogateBoundary(json, end)) end--
+  function contentPage(end: number) {
     const nextCursor = end < json.length ? Buffer.from(JSON.stringify({
       interactionId: value.interaction.id, sha256, offset: end,
     })).toString('base64url') : null
-    const result = {
+    return {
       interaction,
       content: { format: 'json' as const, text: json.slice(offset, end), totalCharacters: json.length, sha256, nextCursor },
     }
-    if (end > offset && fitsInteractionMcpResponse(result)) return result
-    length = Math.floor(length / 2)
   }
+  // Use the model-visible byte budget fully so escaped payloads need fewer full-record reads.
+  const metadata = contentPage(offset)
+  // The largest offset reserves enough cursor bytes for every partial page.
+  metadata.content.nextCursor = Buffer.from(JSON.stringify({
+    interactionId: value.interaction.id, sha256, offset: json.length,
+  })).toString('base64url')
+  const available = INTERACTION_MCP_TEXT_BYTES - Buffer.byteLength(JSON.stringify(metadata), 'utf8')
+  const end = jsonChunkEnd(json, offset, available)
+  const result = contentPage(end)
+  if (end > offset && fitsInteractionMcpResponse(result)) return result
   throw new DomainError('INTERACTION_METADATA_TOO_LARGE', 'The interaction metadata exceeds the MCP response budget.', 413)
+}
+
+function jsonChunkEnd(text: string, offset: number, available: number): number {
+  let end = offset
+  while (end < text.length) {
+    const code = text.charCodeAt(end)
+    let characters = 1
+    let bytes = 1
+    if (code === 34 || code === 92) bytes = 2
+    else if (code >= 0xd800 && code <= 0xdbff && isSurrogateBoundary(text, end + 1)) {
+      characters = 2
+      bytes = 4
+    } else if (code >= 0x800) bytes = 3
+    else if (code >= 0x80) bytes = 2
+    if (bytes > available) break
+    available -= bytes
+    end += characters
+  }
+  return end
 }
 
 function isSurrogateBoundary(text: string, offset: number): boolean {

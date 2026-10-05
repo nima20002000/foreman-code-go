@@ -55,7 +55,7 @@ async function main() {
   const db = createDatabase(config.database)
   close = () => db.close()
   ownedTestDatabaseUrl()
-  await assertTestDatabase(db.pool, { directory: state, token: process.env.GRAPHQL_TEST_OWNER,
+  await assertTestDatabase(db.pool, { directory: state, token: process.env.FOREMAN_CODE_TEST_OWNER,
     databaseUrl: process.env.TEST_DATABASE_URL })
   const identity = (await db.pool.query('select current_database() as database, current_schema() as schema')).rows[0]
   if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07') throw new Error('Database identity mismatch.')

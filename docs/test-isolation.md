@@ -13,7 +13,7 @@ settings are independent of this test-only configuration.
 
 Root and API package test commands provision UUID databases on that instance.
 The root unit command also runs the integration-runner and acceptance safety
-script tests before the workspace suites.
+script tests alongside the workspace suites.
 API Vitest global setup also provisions resources for direct `pnpm exec vitest`
 invocations. Ambient database selectors (including DB-gated unit-test selectors)
 are replaced with the disposable URL. Real `pg` connections outside the test
@@ -39,18 +39,22 @@ production runtime lifecycle fixture run in exclusive phases. Their bounded
 setup and wall-clock checks need shared host resources without concurrent fixture
 migrations. Other integration files use the configured disposable slots.
 
-Native acceptance uses dedicated authentication. Set `GRAPHQL_TEST_CODEX_AUTH_FILE`
-and/or `GRAPHQL_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
+Native acceptance uses dedicated authentication. Set `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`
+and/or `FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
 these are copied into private homes. API-key authentication can use
-`GRAPHQL_TEST_OPENAI_API_KEY`, `GRAPHQL_TEST_ANTHROPIC_API_KEY`, or
-`GRAPHQL_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
+`FOREMAN_CODE_TEST_OPENAI_API_KEY`, `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY`, or
+`FOREMAN_CODE_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
 not reused. Do not commit credential files. Acceptance fails when its native
 prerequisites or dedicated authentication are unavailable.
 Native agents do not inherit database selector URLs or test-controller ownership
 and credential variables. Explicit provider authentication stays in their private
 profiles and standard provider variables.
+Test settings use `FOREMAN_CODE_*`. The shared product environment resolver also
+accepts the legacy spellings documented in [rename compatibility](rebranding.md)
+and rejects conflicting values before configuring disposable resources. Database
+identities, Compose volumes, ownership markers and physical storage paths stay stable.
 
-Run full integration verification with `GRAPHQL_INTEGRATION_SHARDS=12 corepack
+Run full integration verification with `FOREMAN_CODE_INTEGRATION_SHARDS=12 corepack
 pnpm test:integration`. Package integration uses the same runner. Unit and native
 acceptance commands use the same provisioner; standalone local acceptance also
 uses this dedicated instance. Prepared native acceptance also checks that the

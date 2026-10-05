@@ -60,7 +60,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto'] as const)('CI canonical art
       limits: { cpuLimit: 1, memoryBytes: 67108864, diskBytes: 8388608, pidsLimit: 32 } })
       : {...jobSpec(),outputs:execution.acceptedSpec.outputs},createdAt:execution.createdAt,updatedAt:execution.createdAt}
     await pool.query('insert into job_definition_versions values($1,$2,$3,$4::jsonb)',[definition.versionId,definition.workspaceId,definition.id,JSON.stringify(definition)])
-    root=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'.ci-artifact-db-'))
+    root=await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!,'.ci-artifact-db-'))
     const authority=new JobPublicationAuthority({require:async(sql,job,fence)=>{
       const r=(await sql.query<{epoch:string;revoked:boolean}>('select epoch,revoked from job_fixture_owner where grant_id=$1 for share',[fence.owner.grantId])).rows[0]
       if(!r||r.revoked||r.epoch!==fence.owner.epoch||job.attemptId!==fence.attemptId)throw new DomainError('JOB_OWNER_REVOKED','Owner denied.',403)

@@ -136,7 +136,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
         await client.query('insert into application_migrations(version) values($1)', [fileStorageMigration.version]); await client.query('commit')
       } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     }
-    root = await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!, '.fil10-test-'))
+    root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!, '.fil10-test-'))
     fixture = await seedAgent3(database.pool, root, makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential'))
     access = new PostgresAccessService(database.pool)
     owner = await access.issue({ name: 'FIL-10 owner', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),

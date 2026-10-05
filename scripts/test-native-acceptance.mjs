@@ -68,7 +68,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   const parentUrl = ownedTestDatabaseUrl()
   if (configured !== undefined && configured !== parentUrl) throw new Error('Native acceptance requires its owned test database')
   ownedTestPath(evidenceRoot)
-  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
   const admin = await testAdminPool()
   let resource
   let evidence

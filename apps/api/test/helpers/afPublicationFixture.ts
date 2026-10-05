@@ -98,7 +98,7 @@ class PausedNative implements NativeHarnessSessionManager {
 
 export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'codex', selectedRun = false) {
   const database = await agent3Database()
-  const root = await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!, 'af-publications-'))
+  const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!, 'af-publications-'))
   const project = join(root, 'project'), hostRoot = join(root, 'host')
   await Promise.all([mkdir(project), mkdir(hostRoot)])
   const app = Fastify()

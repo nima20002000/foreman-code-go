@@ -26,7 +26,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
   const admin = new pg.Pool({ connectionString: adminUrl })
   await createFixtureDatabase(admin, database)
   const url = new URL(adminUrl); url.pathname = `/${database}`
-  const pool = new pg.Pool({ connectionString: url.toString() }), root = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/source-claims-db-`)
+  const pool = new pg.Pool({ connectionString: url.toString() }), root = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/source-claims-db-`)
   try {
     await pool.query(`create table source_execution_materializations (materialization_id uuid primary key, record jsonb not null,
       state text not null, execution_id text not null, reservation_id uuid not null);

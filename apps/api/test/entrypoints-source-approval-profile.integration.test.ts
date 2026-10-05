@@ -60,7 +60,7 @@ vi.mock('node:child_process', async importOriginal => {
 
 it.skipIf(!postgresEnabled)('profiles complete repository approval through real HTTP/MCP with constant SQL publication and persisted readback', async () => {
   const db = await currentDatabase(), clients: Client[] = []
-  const directory = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/entrypoints-source-profile-`)
+  const directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/entrypoints-source-profile-`)
   const storage = join(directory, 'state', 'runtime', 'main', 'canonical', 'source-snapshots')
   await mkdir(storage, { recursive: true, mode: 0o700 })
   const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))

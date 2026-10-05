@@ -94,13 +94,13 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it.each(['unset', 'enabled'])(
     'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
       const input = { ...process.env }
-      delete input.GRAPHQL_TEST_ROOT
-      delete input.GRAPHQL_TEST_OWNER
+      delete input.FOREMAN_CODE_TEST_ROOT
+      delete input.FOREMAN_CODE_TEST_OWNER
       const resources = await provisionTestResources(input)
       const environment = { ...resources.environment }
       if (keep === 'enabled') environment.ENG03_A_KEEP_RUNTIME = '1'
       else delete environment.ENG03_A_KEEP_RUNTIME
-      const observation = join(environment.GRAPHQL_TEST_ROOT!, 'acceptance-retention.json')
+      const observation = join(environment.FOREMAN_CODE_TEST_ROOT!, 'acceptance-retention.json')
       const probe = fileURLToPath(new URL('./helpers/nativeAcceptanceRetentionProbe.ts', import.meta.url))
       const child = spawn(process.execPath, ['--import', require.resolve('tsx'), probe, observation], {
         env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -154,12 +154,12 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         } finally { await stopGroup(recovery.pid) }
         expect(existsSync(artifact.resources.root)).toBe(false)
         await resources.close()
-        expect(existsSync(resources.environment.GRAPHQL_TEST_ROOT!)).toBe(false)
+        expect(existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)).toBe(false)
       } catch (error) { errors.push(error) }
       finally {
         try { await stopGroup(child.pid) }
         catch (error) { errors.push(error) }
-        if (existsSync(resources.environment.GRAPHQL_TEST_ROOT!)) {
+        if (existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)) {
           try { await resources.close() }
           catch (error) { errors.push(error) }
         }

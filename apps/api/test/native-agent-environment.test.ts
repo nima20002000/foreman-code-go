@@ -30,8 +30,8 @@ it('withholds database selectors and test-controller credentials from native age
     SUBAGENT_CORE_ADMIN_DATABASE_URL: 'postgresql://test/database',
     HRT_F03_DATABASE_URL: 'postgresql://test/database',
     PGPASSWORD: 'controller-password',
-    GRAPHQL_TEST_OWNER: 'controller-owner',
-    GRAPHQL_TEST_OPENAI_API_KEY: 'test-key-alias',
+    FOREMAN_CODE_TEST_OWNER: 'controller-owner',
+    FOREMAN_CODE_TEST_OPENAI_API_KEY: 'test-key-alias',
     OPENAI_API_KEY: 'explicit-provider-key',
     HOME: '/private/native-home',
   }

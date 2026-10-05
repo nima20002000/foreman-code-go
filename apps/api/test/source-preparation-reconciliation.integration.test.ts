@@ -58,7 +58,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   const queueServices: JobService[] = []
   const dispatches: PostgresJobDispatch[] = []
   beforeAll(async () => {
-    database = await agent3Database(); directory = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/jobprep-reconcile-sql-`)
+    database = await agent3Database(); directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/jobprep-reconcile-sql-`)
     const runtime = join(directory, 'runtime'), project = join(directory, 'project'), policyId = randomUUID()
     await mkdir(runtime, { mode: 0o700 }); await mkdir(project, { mode: 0o700 }); await mkdir(join(runtime, 'source-materializations'), { mode: 0o700 })
     const namespace = join(runtime, 'source-materializations', policyId); await mkdir(namespace, { mode: 0o700 })

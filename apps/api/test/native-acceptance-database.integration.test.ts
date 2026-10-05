@@ -64,7 +64,7 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
 it('retains the native bootstrap database until registered cleanup is confirmed', async () => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
   const { withNativeAcceptanceDatabase } = await import(script)
-  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-retained-'))
   let cleanupId: string | undefined
   let databaseName: string | undefined

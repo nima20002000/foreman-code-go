@@ -32,7 +32,7 @@ async function main() {
       throw error
     }
   }
-  if (process.env.GRAPHQL_TEST_ROOT || process.env.GRAPHQL_TEST_OWNER) {
+  if (readProductEnvironment(process.env, 'TEST_ROOT') || readProductEnvironment(process.env, 'TEST_OWNER')) {
     readTestResourcesIdentity(loadConfig(process.env))
   }
   await enableFileLogging(process.env)

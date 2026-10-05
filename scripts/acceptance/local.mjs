@@ -166,8 +166,8 @@ async function main() {
   state = resources.directory
   cleanupOwners.push({ resource: resources, id: registerTestResourceCleanup(resources,
     { kind: 'local-acceptance', stateDirectory: state }) })
-  if (process.env.GRAPHQL_TEST_ROOT) {
-    const parent = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER }
+  if (process.env.FOREMAN_CODE_TEST_ROOT) {
+    const parent = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
     cleanupOwners.push({ resource: parent, id: registerTestResourceCleanup(parent,
       { kind: 'local-acceptance', stateDirectory: state }) })
   }
@@ -176,11 +176,11 @@ async function main() {
   resources = await createTestDatabase(admin, resources)
   const isolated = testEnvironment(process.env, resources)
   safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS,
-    GRAPHQL_API_ENV_FILE: isolated.GRAPHQL_API_ENV_FILE }
+    FOREMAN_CODE_API_ENV_FILE: isolated.FOREMAN_CODE_API_ENV_FILE }
   toolEnv = {
     ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
-    ...(isolated.GRAPHQL_HEAVY_JOB_COMMON ? { GRAPHQL_HEAVY_JOB_COMMON: isolated.GRAPHQL_HEAVY_JOB_COMMON } : {}),
-    ...(isolated.GRAPHQL_HEAVY_JOB_TOKEN ? { GRAPHQL_HEAVY_JOB_TOKEN: isolated.GRAPHQL_HEAVY_JOB_TOKEN } : {}),
+    ...(isolated.FOREMAN_CODE_HEAVY_JOB_COMMON ? { FOREMAN_CODE_HEAVY_JOB_COMMON: isolated.FOREMAN_CODE_HEAVY_JOB_COMMON } : {}),
+    ...(isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN ? { FOREMAN_CODE_HEAVY_JOB_TOKEN: isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN } : {}),
   }
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {

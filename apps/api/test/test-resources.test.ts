@@ -65,9 +65,9 @@ describe('disposable test resources', () => {
   })
 
   it('rejects fixture cleanup outside the owned root and through escaping symlinks', async () => {
-    const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
+    const outside = createTestRoot(dirname(process.env.FOREMAN_CODE_TEST_ROOT!))
     const file = join(outside.directory, 'retained.txt')
-    const link = join(process.env.GRAPHQL_TEST_ROOT!, 'outside-cleanup-link')
+    const link = join(process.env.FOREMAN_CODE_TEST_ROOT!, 'outside-cleanup-link')
     await writeFile(file, 'retained')
     await symlink(outside.directory, link)
     try {
@@ -92,34 +92,37 @@ describe('disposable test resources', () => {
     } finally { removeTestRoot(resource) }
   })
 
-  it('isolates storage and harness homes, discards ambient authentication, and copies only test authentication', async () => {
+  it.each(['FOREMAN_CODE_', 'GRAPHQL_'])(
+    'isolates storage and harness homes and uses only explicit test authentication through %s settings', async prefix => {
     const resource = createTestRoot()
     const auth = join(resource.directory, 'test-auth.json')
     const opencodeAuth = join(resource.directory, 'test-opencode-auth.json')
     await writeFile(auth, '{"test":"credential"}')
     await writeFile(opencodeAuth, '{"test":"opencode-credential"}')
     try {
-      const environment = testEnvironment({ HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
+      const source = { HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
         OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
-        GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log', WORKSPACE_STORAGE_ROOT: '/real/projects',
-        GRAPHQL_APP_MCP_DIRECTORY: '/real/mcp', GRAPHQL_WEB_DIST: '/real/web',
-        GRAPHQL_PRODUCTION_DB_PASSWORD: 'real-production-password',
-        GRAPHQL_API_ENV_FILE: '/real/api.env',
-        GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key',
-        GRAPHQL_TEST_OPENCODE_AUTH_FILE: opencodeAuth, GRAPHQL_TEST_OPENCODE_API_KEY: 'test-opencode-key' },
+        FOREMAN_CODE_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log', WORKSPACE_STORAGE_ROOT: '/real/projects',
+        FOREMAN_CODE_APP_MCP_DIRECTORY: '/real/mcp', FOREMAN_CODE_WEB_DIST: '/real/web',
+        FOREMAN_CODE_PRODUCTION_DB_PASSWORD: 'real-production-password',
+        FOREMAN_CODE_API_ENV_FILE: '/real/api.env',
+        FOREMAN_CODE_TEST_CODEX_AUTH_FILE: auth, FOREMAN_CODE_TEST_OPENAI_API_KEY: 'test-key',
+        FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE: opencodeAuth, FOREMAN_CODE_TEST_OPENCODE_API_KEY: 'test-opencode-key' }
+      const environment = testEnvironment(Object.fromEntries(Object.entries(source).map(([key, value]) =>
+        [key.replace(/^FOREMAN_CODE_/, prefix), value])),
       { ...resource, name: 'graphql_test_unit', databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
         'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR',
-        'WORKSPACE_STORAGE_ROOT', 'GRAPHQL_APP_MCP_DIRECTORY']) {
+        'WORKSPACE_STORAGE_ROOT', 'FOREMAN_CODE_APP_MCP_DIRECTORY']) {
         expect(environment[key]).toMatch(resource.directory + '/')
       }
       expect(await readFile(join(environment.HOME!, '.local/share/graphql/mcp/launcher.mjs'), 'utf8')).toBeTruthy()
       expect(environment.PGHOST).toBeUndefined()
-      expect(environment.GRAPHQL_MCP_TOKEN).toBeUndefined()
+      expect(environment.FOREMAN_CODE_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
-      expect(environment.GRAPHQL_WEB_DIST).toBeUndefined()
-      expect(environment.GRAPHQL_PRODUCTION_DB_PASSWORD).toBeUndefined()
-      expect(await readFile(environment.GRAPHQL_API_ENV_FILE!, 'utf8')).toBe('')
+      expect(environment.FOREMAN_CODE_WEB_DIST).toBeUndefined()
+      expect(environment.FOREMAN_CODE_PRODUCTION_DB_PASSWORD).toBeUndefined()
+      expect(await readFile(environment.FOREMAN_CODE_API_ENV_FILE!, 'utf8')).toBe('')
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
       expect(environment.OPENAI_API_KEY).toBe('test-key')
@@ -131,6 +134,15 @@ describe('disposable test resources', () => {
       expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"credential"}')
       expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
         .toBe('{"test":"opencode-credential"}')
+    } finally { removeTestRoot(resource) }
+  })
+
+  it('rejects conflicting environment aliases before configuring test paths', () => {
+    const resource = createTestRoot()
+    try {
+      expect(() => testEnvironment({ FOREMAN_CODE_APP_MCP_DIRECTORY: '/canonical',
+        GRAPHQL_APP_MCP_DIRECTORY: '/legacy' }, { ...resource,
+        databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })).toThrow('conflicts')
     } finally { removeTestRoot(resource) }
   })
 })

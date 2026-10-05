@@ -17,7 +17,7 @@ async function ownedFixture() {
   await writeFile(f.binary, (await readFile(f.binary, 'utf8')).replace('log({ cli: args })',
     `log({cli:args,hasAppToken:Boolean(process.env.FOREMAN_CODE_MCP_TOKEN || process.env.GRAPHQL_MCP_TOKEN),
       controllerVariables:Object.keys(process.env).filter(key => key.endsWith('DATABASE_URL')
-        || key.startsWith('GRAPHQL_TEST_') || key === 'PGPASSWORD'),
+        || key.startsWith('FOREMAN_CODE_TEST_') || key.startsWith('GRAPHQL_TEST_') || key === 'PGPASSWORD'),
       refreshedToken:(process.env.FOREMAN_CODE_MCP_TOKEN || process.env.GRAPHQL_MCP_TOKEN) === 'replacement-fixture-token'})`))
   const registry = new NativeProcessRegistry(join(f.directory, 'recovery'))
   const owner = 'idle-codex-owner'
@@ -82,12 +82,12 @@ describe('Codex idle lifecycle with a populated recovery owner', () => {
     vi.stubEnv('SUBAGENT_CORE_ADMIN_DATABASE_URL', 'controller-database-sentinel')
     vi.stubEnv('HRT_F14_ADMIN_DATABASE_URL', 'controller-database-sentinel')
     vi.stubEnv('JOB_DISPATCH_DATABASE_URL', 'controller-database-sentinel')
-    vi.stubEnv('GRAPHQL_TEST_OPENAI_API_KEY', 'controller-key-sentinel')
-    vi.stubEnv('GRAPHQL_TEST_CODEX_AUTH_FILE', 'controller-auth-file-sentinel')
+    vi.stubEnv('FOREMAN_CODE_TEST_OPENAI_API_KEY', 'controller-key-sentinel')
+    vi.stubEnv('FOREMAN_CODE_TEST_CODEX_AUTH_FILE', 'controller-auth-file-sentinel')
     try {
       const session = await f.manager.createSession(input(f.directory))
       await f.manager.refreshProcessEnvironment(session,
-        { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_MCP_TOKEN: 'replacement-fixture-token' } })
+        { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', FOREMAN_CODE_MCP_TOKEN: 'replacement-fixture-token' } })
       const launches = (await calls(f.directory)).filter(entry =>
         Array.isArray(entry.cli) && entry.cli[0] === 'app-server')
       assert.equal(launches.length, 2)

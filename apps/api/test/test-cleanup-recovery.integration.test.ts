@@ -34,14 +34,14 @@ async function waitForFile(file: string, child: ChildProcess): Promise<void> {
 it.each(['same invocation', 'nested invocation'])(
   'retains databases and native state after failed closure in the %s, then recovers in a fresh process', async mode => {
   const environment = { ...process.env }
-  delete environment.GRAPHQL_TEST_ROOT
-  delete environment.GRAPHQL_TEST_OWNER
+  delete environment.FOREMAN_CODE_TEST_ROOT
+  delete environment.FOREMAN_CODE_TEST_OWNER
   const program = `
     import { join } from 'node:path';
     import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
     import { createTestDatabase, createTestRoot, registerTestResourceCleanup, testAdminPool }
       from ${JSON.stringify(resourcesModule)};
-    const parent = { directory: process.env.GRAPHQL_TEST_ROOT, token: process.env.GRAPHQL_TEST_OWNER,
+    const parent = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER,
       databaseUrl: process.env.TEST_DATABASE_URL, name: new URL(process.env.TEST_DATABASE_URL).pathname.slice(1) };
     let resource = parent;
     if (${JSON.stringify(mode)} === 'nested invocation') {
@@ -110,7 +110,7 @@ it.each(['same invocation', 'nested invocation'])(
 
 it.each(['SIGINT', 'SIGTERM'] as const)('escalates %s for an ignoring detached suite group and retains a nonzero result', async signal => {
   const resources = await provisionTestResources({ PATH: process.env.PATH })
-  const ready = join(resources.environment.GRAPHQL_TEST_ROOT!, 'child-ready.json')
+  const ready = join(resources.environment.FOREMAN_CODE_TEST_ROOT!, 'child-ready.json')
   const program = `
     const { spawn } = require('node:child_process');
     const { writeFileSync } = require('node:fs');
@@ -135,7 +135,7 @@ it.each(['SIGINT', 'SIGTERM'] as const)('escalates %s for an ignoring detached s
     expect(await ended).toBe(signal === 'SIGINT' ? 130 : 143)
     expect(groupUsed(pgid)).toBe(false)
     await resources.close()
-    expect(existsSync(resources.environment.GRAPHQL_TEST_ROOT!)).toBe(false)
+    expect(existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)).toBe(false)
   } finally {
     await stopGroup(child.pid)
     await stopGroup(pgid)

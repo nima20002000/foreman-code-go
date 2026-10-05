@@ -5,7 +5,7 @@ import { completeTestResourceCleanup, provisionTestResources, registerTestResour
 const [separator, command, ...args] = process.argv.slice(2)
 if (separator !== '--' || !command) throw new Error('Usage: test-command.mjs -- command [arguments]')
 const resources = await provisionTestResources()
-const invocation = { directory: resources.environment.GRAPHQL_TEST_ROOT, token: resources.environment.GRAPHQL_TEST_OWNER }
+const invocation = { directory: resources.environment.FOREMAN_CODE_TEST_ROOT, token: resources.environment.FOREMAN_CODE_TEST_OWNER }
 const cleanupId = registerTestResourceCleanup(invocation, { kind: 'suite-process-group', wrapperPid: process.pid })
 let child
 let shutdown

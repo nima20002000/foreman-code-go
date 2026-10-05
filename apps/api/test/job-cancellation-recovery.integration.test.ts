@@ -50,7 +50,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
   beforeAll(async () => {
     database = await agent3Database()
-    directory = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/job-revoked-cancellation-`)
+    directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/job-revoked-cancellation-`)
     const pool = database.pool
     const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
     await loadOrCreateMainDeviceIdentity(pool, mainId)

@@ -6,8 +6,8 @@ import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFi
 import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
 import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
 import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 
 it('rejects connections to the app PostgreSQL endpoint before connecting', async () => {
   const client = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' })
@@ -32,13 +32,13 @@ it('requires database and schema markers for destructive cleanup and excludes pu
     await admin.query(`comment on schema ${schema} is 'another-owner'`)
     await expect(dropFixtureSchema(admin, schema)).rejects.toThrow('ownership mismatch')
     expect((await admin.query(`select value from public.${sentinel}`)).rows).toEqual([{ value: 'retained' }])
-    await admin.query(`comment on schema ${schema} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+    await admin.query(`comment on schema ${schema} is 'graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}'`)
     await createFixtureDatabase(admin, database)
     databaseCreated = true
     await admin.query(`comment on database ${database} is 'another-owner'`)
     await expect(dropFixtureDatabase(admin, database)).rejects.toThrow('ownership mismatch')
     expect((await admin.query('select datname from pg_database where datname=$1', [database])).rows).toHaveLength(1)
-    await admin.query(`comment on database ${database} is 'graphql-test:${process.env.GRAPHQL_TEST_OWNER}'`)
+    await admin.query(`comment on database ${database} is 'graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}'`)
   } finally {
     await pool?.end()
     if (databaseCreated) await dropFixtureDatabase(admin, database)
@@ -74,7 +74,7 @@ it('rejects a prepared acceptance API bound to a different database before start
 
 it('checks persisted execution destinations again after reconnecting to the prepared database', async () => {
   const fixture = await agent3Database()
-  const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
+  const outside = createTestRoot(dirname(process.env.FOREMAN_CODE_TEST_ROOT!))
   let restarted: pg.Pool | undefined
   try {
     const saved = await seedAgent3(fixture.pool, fixture.directory,
@@ -110,7 +110,7 @@ it('checks persisted execution destinations again after reconnecting to the prep
 
 it('checks accepted Run locations and native directories independently of the current workspace location', async () => {
   const fixture = await agent3Database()
-  const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
+  const outside = createTestRoot(dirname(process.env.FOREMAN_CODE_TEST_ROOT!))
   try {
     const outsideRun = await seedAgent3(fixture.pool, outside.directory,
       makeCurrentWorkflowFixture(randomUUID(), 'single'))

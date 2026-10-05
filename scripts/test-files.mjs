@@ -32,7 +32,7 @@ async function run(command, args) {
   }
 }
 
-await run('corepack', ['pnpm', '--filter', '@graphql/contracts', 'build'])
+await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
 if (mode === 'scripts') {
   await run(process.execPath, ['--test', ...files])
 } else if (mode === 'integration') {
@@ -41,6 +41,6 @@ if (mode === 'scripts') {
   const workerOptions = mode === 'unit'
     ? ['--maxWorkers=12']
     : ['--no-file-parallelism', '--maxWorkers=1']
-  await run('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run',
+  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest', 'run',
     ...files.map(file => file.slice('apps/api/'.length)), ...workerOptions])
 }

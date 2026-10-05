@@ -44,7 +44,7 @@ export async function qualifyEng03OpenCode() {
   const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
   const registryDirectory = join(directory, 'native-process-registry')
   const processes = new NativeProcessRegistry(registryDirectory)
-  const invocation = { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER! }
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   const cleanupId = registerTestResourceCleanup(invocation, {
     kind: 'native-qualification', registryDirectory, schema, databaseUrl: configured,
   })

@@ -1,7 +1,8 @@
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
-import { testResourcesIdentity } from '@graphql/contracts/runtime-identity-node'
+import { testResourcesIdentity } from '@foreman-code/contracts/runtime-identity-node'
+import { resolveProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ApiConfig } from '../config.js'
 import { defaultFileStorageRoot } from '../modules/files/storage.js'
 import { workspaceStorageRoot } from '../modules/workspaces/storage.js'
@@ -43,9 +44,9 @@ function assertTestPath(root: string, path: string): void {
 }
 
 export function readTestResourcesIdentity(config: ApiConfig): string | undefined {
-  const environment = process.env
-  if (!environment.GRAPHQL_TEST_ROOT && !environment.GRAPHQL_TEST_OWNER) return undefined
-  const resource = { directory: environment.GRAPHQL_TEST_ROOT!, token: environment.GRAPHQL_TEST_OWNER! }
+  const environment = resolveProductEnvironment(process.env)
+  if (!environment.FOREMAN_CODE_TEST_ROOT && !environment.FOREMAN_CODE_TEST_OWNER) return undefined
+  const resource = { directory: environment.FOREMAN_CODE_TEST_ROOT!, token: environment.FOREMAN_CODE_TEST_OWNER! }
   assertTestRoot(resource)
   const home = environment.HOME ?? homedir()
   const configHome = environment.XDG_CONFIG_HOME ?? join(home, '.config')
@@ -59,12 +60,12 @@ export function readTestResourcesIdentity(config: ApiConfig): string | undefined
     environment.CODEX_HOME ?? join(home, '.codex'),
     environment.CLAUDE_CONFIG_DIR ?? join(home, '.claude'),
     environment.OPENCODE_CONFIG_DIR ?? join(configHome, 'opencode'),
-    environment.GRAPHQL_APP_MCP_DIRECTORY ?? join(home, '.local/share/graphql/mcp'),
+    environment.FOREMAN_CODE_APP_MCP_DIRECTORY ?? join(home, '.local/share/graphql/mcp'),
     environment.TMPDIR ?? tmpdir(),
     config.fileStorageRoot ?? defaultFileStorageRoot(),
     config.workspaceStorageRoot ?? workspaceStorageRoot(),
     config.harnesses.workspaceRoot,
-    environment.GRAPHQL_API_ENV_FILE,
+    environment.FOREMAN_CODE_API_ENV_FILE,
     ...(logFile ? [dirname(logFile)] : []),
   ]
   for (const path of paths) {

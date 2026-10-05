@@ -31,7 +31,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
   const connectionString = process.env.TEST_DATABASE_URL!
   const url = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.includes('test')) throw new Error('Use an owned disposable loopback test database.')
-  const schema = `source_mcp_${randomUUID().replaceAll('-', '')}`, directory = await mkdtemp(`${process.env.GRAPHQL_TEST_ROOT}/source-mcp-`)
+  const schema = `source_mcp_${randomUUID().replaceAll('-', '')}`, directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/source-mcp-`)
   const admin = new pg.Pool({ connectionString }); await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const clients: Client[] = []

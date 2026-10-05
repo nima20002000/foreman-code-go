@@ -95,7 +95,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     const sourceChecks=async(sql:JobSql)=>{const r=(await sql.query<{availability:string}>('select availability from source_snapshots for share')).rows[0];if(r?.availability!=='retained')throw new DomainError('SOURCE_UNAVAILABLE','Pinned fixture source unavailable.',410)}
     const dispatch=new PostgresJobDispatch(pool,{} as never,{revalidate:sourceChecks,authorizeControl:sourceChecks,observe:async()=>{throw new Error('Receipt mutation is outside this fixture')}})
     const authority=new JobPublicationAuthority(dispatch,{revalidateAccepted:sourceChecks})
-    storage=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'.job-admission-canonical-'));staging=await mkdtemp(join(process.env.GRAPHQL_TEST_ROOT!,'job-admission-staging-'))
+    storage=await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!,'.job-admission-canonical-'));staging=await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!,'job-admission-staging-'))
     endpoint=new DeviceEndpoint({mainId,appVersion:'fixture',auth:access,signMainIdentityProof:async request=>signMainIdentityProof(identity,request,'fixture'),reconcile:async()=>{},presence:()=>{},extensions:[]})
     actual=createAdmittedJobOutputs({pool,storageRoot:storage,stagingRoot:staging,endpoint,authority})
     // Build the genuine endpoint with the concrete C/B handler before handshake.

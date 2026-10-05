@@ -13,7 +13,7 @@ import { preserveOperatorConfiguration, publish, readEnvironment, readProduction
   renderEnvironment, waitForProductionReady,
   withInstallationLock } from './local-production-runtime.mjs'
 
-if (process.env.GRAPHQL_TEST_ROOT || process.env.GRAPHQL_TEST_OWNER) {
+if (readProductEnvironment(process.env, 'TEST_ROOT') || readProductEnvironment(process.env, 'TEST_OWNER')) {
   throw new Error('Installed production verification cannot run inside disposable test resources')
 }
 

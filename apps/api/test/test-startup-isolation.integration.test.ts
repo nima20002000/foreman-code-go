@@ -40,7 +40,7 @@ async function ready(child: ChildProcess, port: number): Promise<void> {
 
 it.each(['explicit env file', 'default .env'])('isolates real API startup from %s logs and authentication', async selector => {
   const resources = await provisionTestResources({ PATH: process.env.PATH })
-  const state = resources.environment.GRAPHQL_TEST_ROOT!
+  const state = resources.environment.FOREMAN_CODE_TEST_ROOT!
   const ambient = join(state, 'ambient-app')
   await mkdir(ambient, { mode: 0o700 })
   const log = join(ambient, 'api.log')
@@ -52,8 +52,8 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
   await writeFile(envFile, `LOG_FILE=${log}\nOPENAI_API_KEY=ambient-provider-sentinel\n`)
   const { testEnvironment } = await import('../../../scripts/test-resources.mjs')
   const environment = testEnvironment({ PATH: process.env.PATH,
-    ...(selector === 'explicit env file' ? { GRAPHQL_API_ENV_FILE: envFile } : {}) }, {
-    directory: state, token: resources.environment.GRAPHQL_TEST_OWNER!,
+    ...(selector === 'explicit env file' ? { FOREMAN_CODE_API_ENV_FILE: envFile } : {}) }, {
+    directory: state, token: resources.environment.FOREMAN_CODE_TEST_OWNER!,
     name: new URL(resources.environment.TEST_DATABASE_URL!).pathname.slice(1),
     databaseUrl: resources.environment.TEST_DATABASE_URL!,
   })
@@ -96,7 +96,7 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
 }, 120_000)
 
 it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT',
-  'WORKSPACE_STORAGE_ROOT', 'GRAPHQL_APP_MCP_DIRECTORY'])(
+  'WORKSPACE_STORAGE_ROOT', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
   'refuses prepared native acceptance when the real API uses an unowned %s', async variable => {
     const resources = await provisionTestResources({ PATH: process.env.PATH })
     const outside = createTestRoot()
