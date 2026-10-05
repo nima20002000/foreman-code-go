@@ -261,15 +261,20 @@ describe('Run inspection inside the one mounted Board', () => {
     const { cache } = await mount(href(scope, { runNodeId: fixture.first.id }))
     await screen.findByRole('button', { name: 'Refresh accepted Run facts' })
     await screen.findByRole('region', { name: 'Selected Run actions' })
-    await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
-      .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
-    expect(cache.getQueryData(currentRunKey(scope))).toMatchObject({ state: { run: { cleanupPending: true } } })
+    // Unrelated Board queries keep polling; settlement depends on this Run's readbacks.
+    await waitFor(() => expect(cache.getQueryState<typeof current>(currentRunKey(scope))).toMatchObject({
+      status: 'success', fetchStatus: 'idle', data: { state: { run: { cleanupPending: true } } },
+    }))
+    expect(screen.getByText('Settled according to authenticated Run readback')).toBeVisible()
     expect(readBoardStop(scope)).toEqual(journal)
     await act(async () => {
       current.state.run.cleanupPending = false
       current.asOfSequence = '1'
       await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true })
     })
+    await waitFor(() => expect(cache.getQueryData<typeof current>(currentRunKey(scope))).toMatchObject({
+      asOfSequence: '1', state: { run: { cleanupPending: false } },
+    }))
     await waitFor(() => expect(readBoardStop(scope)).toBeUndefined())
     expect(fixture.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
   })
