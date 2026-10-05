@@ -176,9 +176,7 @@ export class PostgresRunRepository implements RunRepository {
     owner.assertOwned()
     await owner.oneShotConnection().transaction(async (sql) => {
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
-      for (const { event, evidence } of frames) {
-        await this.nativeProof.appendEventLocked(sql, snapshot.run, event, evidence, owner, lease)
-      }
+      await this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease)
     })
     for (const { evidence } of frames) await this.nativeCommitted?.(evidence)
   }

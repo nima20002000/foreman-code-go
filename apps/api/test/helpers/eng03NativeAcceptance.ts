@@ -137,6 +137,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
+  const scenarioBegan = performance.now()
+  const timing = { setupMs: 0, engineMs: 0, totalMs: 0 }
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
@@ -161,7 +163,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let mcpRoutes: AppMcpRoutes | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
-  const evidence: Record<string, unknown> = { scenario, mode: 'current V3 native internal acceptance', artifactPath,
+  const evidence: Record<string, unknown> = { scenario, timing, mode: 'current V3 native internal acceptance', artifactPath,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
@@ -413,7 +415,13 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     activeRuntime = makeRuntime(checkpoints.saver)
     engine = activeRuntime.engine
     stopRun = () => engine!.cancel(run.id, authorizeStop)
+    timing.setupMs = Math.round(performance.now() - scenarioBegan)
+    const engineBegan = performance.now()
     const startTask = engine.start(run.id)
+    void startTask.then(
+      () => { timing.engineMs = Math.round(performance.now() - engineBegan) },
+      () => { timing.engineMs = Math.round(performance.now() - engineBegan) },
+    )
     evidence.startTaskState = 'pending'
     if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
       evidence.startTaskState = 'rejected'
@@ -627,6 +635,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     await pool?.end().catch(() => undefined)
     await admin.query(`drop schema if exists ${schema} cascade`).catch(() => undefined)
     await admin.end()
+    timing.totalMs = Math.round(performance.now() - scenarioBegan)
     await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
     if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)

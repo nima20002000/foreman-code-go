@@ -1,0 +1,70 @@
+import type { WorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
+import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { DomainError } from '../errors.js'
+import { repeatDigest, repeatId, repeatExecutionIdentity, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
+import type { StoredRepeatExecution } from './repeatPostgres.js'
+import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
+
+function fail(code = 'NATIVE_SOURCE_CONFLICT'): never {
+  throw new DomainError(code, 'The original native source conflicts with its retained record.', 409)
+}
+function originalIdentity(capture: WorkflowNativeCapture): unknown {
+  switch (capture.source.type) {
+    case 'session_created': return ['session', capture.session]
+    case 'event': return ['event', capture.source.event.connectionId ?? null, capture.source.event.sequence]
+    case 'history': return ['history', repeatDigest(capture.source.history, 4 * 1024 * 1024)]
+    case 'boundary': return fail('NATIVE_SOURCE_NOT_CAPTURED')
+  }
+}
+function sourceIdentity(record: WorkflowNativeProofRecord): unknown {
+  return { scope: record.scope, ref: record.ref, execution: record.execution, inputDigest: record.inputDigest,
+    session: record.session, commandId: record.commandId, original: record.original }
+}
+
+export function workflowNativeSourceRecord(capture: WorkflowNativeCapture, stored: StoredRepeatExecution,
+  scope: RepeatScope, fence: { ownerId: string; fence: string }): WorkflowNativeProofRecord {
+  return {
+    proofId: repeatId('workflow-native-source', stored.execution.id, repeatDigest(originalIdentity(capture))),
+    scope, ref: stored.ref, execution: repeatExecutionIdentity(stored.execution), inputDigest: stored.inputDigest,
+    commandId: `execution:${stored.execution.id}`, session: capture.session, original: capture.source,
+    observedAt: capture.observedAt, ownerId: fence.ownerId, ownerFence: fence.fence,
+    lifetimeGeneration: capture.lifetimeGeneration, closureGeneration: capture.closureGeneration!, lane: capture.lane,
+  }
+}
+
+/** Each frame keeps its own immutable source, including the first receipt on replay. */
+export async function persistWorkflowNativeSources(sql: GraphTransactionSql,
+  proposed: readonly WorkflowNativeProofRecord[]): Promise<WorkflowNativeProofRecord[]> {
+  assertGraphTransaction(sql)
+  const distinct = new Map<string, WorkflowNativeProofRecord>()
+  for (const record of proposed) {
+    const previous = distinct.get(record.proofId)
+    if (previous && !sameRepeatValue(sourceIdentity(previous), sourceIdentity(record))) return fail()
+    if (!previous) distinct.set(record.proofId, record)
+  }
+  const rows = await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string; identity_digest: string }>(
+    'select record,source_digest,identity_digest from workflow_native_proofs where proof_id=any($1::text[]) for share',
+    [[...distinct.keys()]])
+  const saved = new Map(rows.rows.map((row) => [row.record.proofId, row]))
+  const inserts = []
+  for (const record of distinct.values()) {
+    const existing = saved.get(record.proofId)
+    const identityDigest = repeatDigest(sourceIdentity(record), 4 * 1024 * 1024)
+    if (existing && (existing.identity_digest !== identityDigest
+      || repeatDigest(existing.record, 4 * 1024 * 1024) !== existing.source_digest
+      || !sameRepeatValue(sourceIdentity(existing.record), sourceIdentity(record)))) return fail()
+    if (!existing) {
+      const json = canonicalGraphJson(record, 4 * 1024 * 1024)
+      inserts.push({ proof_id: record.proofId, run_id: record.scope.runId, execution_id: record.execution.executionId,
+        identity_digest: identityDigest, source_digest: repeatDigest(record, 4 * 1024 * 1024), record: json })
+    }
+  }
+  if (inserts.length) {
+    await sql.query(`insert into workflow_native_proofs(proof_id,run_id,execution_id,identity_digest,source_digest,record,record_json)
+      select proof_id,run_id,execution_id,identity_digest,source_digest,record::jsonb,record
+      from jsonb_to_recordset($1::jsonb) as source(proof_id text,run_id text,execution_id text,
+        identity_digest text,source_digest text,record text)`, [JSON.stringify(inserts)])
+  }
+  return proposed.map((record) => structuredClone(saved.get(record.proofId)?.record ?? distinct.get(record.proofId)!))
+}
