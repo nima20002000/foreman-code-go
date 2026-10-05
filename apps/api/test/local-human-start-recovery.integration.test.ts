@@ -1,0 +1,88 @@
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { buildApp } from '../src/app.js'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { RunManagementService } from '../src/modules/runs/management.js'
+import { createCurrentNativeProductionFactory } from '../src/modules/runs/workflowProduction.js'
+import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
+import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
+
+describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_000 }, () => {
+  it('reconciles a lost Start response after upgrade and restart without another native execution', async () => {
+    const fixture = await currentOperatorIntegration({
+      fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [],
+    })
+    let restarted: ReturnType<typeof buildApp> | undefined
+    try {
+      const candidate = await fixture.create()
+      const saved = (await fixture.services.workflows.current.save(fixture.writer.principal, 'http', candidate)).value
+      const input = RunStartV3InputSchema.parse({
+        workspaceId: saved.version.workspaceId,
+        workflowId: saved.version.workflowId,
+        workflowVersionId: saved.currentVersionId,
+        executionSemanticsVersion: 3,
+        commandId: randomUUID(),
+        expectedWorkflowRevision: saved.revision,
+        expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
+        expectedLocationRevision: 1,
+        input: { user: 'Original Start journal' },
+      })
+      const path = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/runs`
+      await browserOwnerUpgrade(fixture.db.pool, fixture.writer.principal.id)
+      // Discard the response; reconciliation has only the original command journal.
+      const response = await fetch(new URL(path, fixture.address), { method: 'POST',
+        headers: { authorization: `Bearer ${fixture.writer.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(input) })
+      expect(response.status).toBe(202)
+      await response.body?.cancel()
+      const readReceipt = async () => (await fixture.db.pool.query<{ result: { id: string } }>(
+        "select result from management_command_receipts where principal_id=$1 and operation='run.start' and command_id=$2",
+        [fixture.writer.principal.id, input.commandId],
+      )).rows[0]!.result
+      const original = await readReceipt()
+      const deadline = Date.now() + 20_000
+      while ((await fixture.runs.get(original.id))?.executionState !== 'completed') {
+        if (Date.now() >= deadline) throw new Error('The original Run did not settle.')
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
+      await fixture.app.close()
+      await fixture.engine.shutdown()
+      const starts = fixture.provider.counts.starts
+      const executions = await fixture.runs.listRepeatExecutions(original.id)
+      await applyApplicationMigrations(fixture.db.pool)
+      const runtime = fixture.compose()
+      const access = new PostgresAccessService(fixture.db.pool)
+      const commands = new PostgresCommandCoordinator(fixture.db.pool)
+      const binding = createCurrentNativeProductionFactory({ isRuntimeOpen: () => true,
+        reportDispatchFailure: (_id, code) => { throw new Error(code) } })({
+        primaryPool: fixture.db.pool, commands, runs: runtime.runs, workflows: runtime.workflows,
+        locations: runtime.locations, engine: runtime.engine, nativeExecutions: runtime.native,
+        interactions: runtime.service, checkpointer: runtime.checkpointer,
+      })
+      const runs = new RunManagementService(fixture.db.pool, commands, runtime.runs,
+        runtime.engine, runtime.locations, binding)
+      restarted = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { ...fixture.services, commands, runs } },
+        localHuman: new PostgresLocalHumanAccess(fixture.db.pool, access) })
+      const recovered = await restarted.inject({ method: 'POST', url: path, payload: input })
+      expect(recovered.statusCode, recovered.body).toBe(202)
+      expect(recovered.json()).toMatchObject({ accepted: true, replayed: true, run: { id: original.id } })
+      expect(await readReceipt()).toEqual(original)
+      expect(await runtime.runs.listRepeatExecutions(original.id)).toEqual(executions)
+      expect(fixture.provider.counts.starts).toBe(starts)
+      expect((await fixture.db.pool.query('select id from runs where workflow_id=$1', [input.workflowId])).rows)
+        .toEqual([{ id: original.id }])
+      const conflict = await restarted.inject({ method: 'POST', url: path,
+        payload: { ...input, input: { user: 'Changed journal' } } })
+      expect(conflict.statusCode).toBe(409)
+    } finally {
+      await restarted?.close()
+      await fixture.close()
+    }
+  })
+})

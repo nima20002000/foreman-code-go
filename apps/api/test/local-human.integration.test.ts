@@ -90,7 +90,11 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
         .toEqual(principals)
       expect((await db.pool.query('select * from management_audit order by sequence')).rows).toEqual(audit)
       expect(await access.authenticate(reader.token)).toEqual(reader.principal)
-      expect((await new PostgresLocalHumanAccess(db.pool, access).current()).id).not.toBe(reader.principal.id)
+      const human = new PostgresLocalHumanAccess(db.pool, access)
+      expect(await human.current()).toEqual(reader.principal)
+      await applyApplicationMigrations(db.pool)
+      expect(await new PostgresLocalHumanAccess(db.pool, new PostgresAccessService(db.pool)).current())
+        .toEqual(reader.principal)
     } finally { await db.close() }
   })
 })
