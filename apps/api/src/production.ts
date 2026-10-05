@@ -719,6 +719,12 @@ export function buildProductionApp(
   })
   const credentials = new WorkerCredentialService(database.pool, access)
   const launchCredentials: ExecutionCredentialProvider = {
+    async restore(executionId, environment) {
+      await validateContinuation(executionId)
+      const credential = await credentials.restoreForExecution(executionId, environment)
+      await appRoutes.refresh()
+      return credential
+    },
     async prepare(input) {
       await validateContinuation(input.executionId, input.signal)
       const execution = await runs.getExecution(input.executionId)
