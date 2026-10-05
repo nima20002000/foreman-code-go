@@ -1,3 +1,4 @@
+import type { SessionMode } from '@graphql/contracts'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -88,13 +89,51 @@ export class RemoteExecutionHost {
       return this.ports.journal.status(frame.intent.operationId)
     }
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
-    await this.ports.authorize(frame.intent, placement, frame.method === 'control' ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
+    await this.ports.authorize(frame.intent, placement, ['control', 'session-compact', 'session-preferences-apply'].includes(frame.method) ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
+    if (frame.method === 'session-controls-read' || frame.method === 'session-preferences-apply' || frame.method === 'session-compact' || frame.method === 'session-compact-reconcile') {
+      const resident = await this.resident(frame.intent.operationId, ['session-compact', 'session-preferences-apply'].includes(frame.method) ? 'control' : 'read')
+      const status = await this.ports.journal.status(frame.intent.operationId)
+      if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.native, frame.native)
+        || resident.session.nativeSessionId !== frame.native.sessionId) throw new Error('Wrong native control target or generation')
+      if (frame.method === 'session-preferences-apply') {
+        if (!resident.manager.applySessionPreferences) throw new Error('Native safe-resume preferences are unavailable')
+        await resident.manager.applySessionPreferences(resident.session, frame.preferences, resident.controller.signal)
+        return { status: await this.ports.journal.status(frame.intent.operationId) }
+      }
+      if (frame.method === 'session-controls-read') {
+        if (!resident.manager.sessionControlCapabilities) throw new Error('Native session controls are unavailable')
+        return { capabilities: await resident.manager.sessionControlCapabilities(resident.session),
+          context: resident.manager.contextSnapshot?.(resident.session) ?? null,
+          preferences: resident.manager.appliedSessionPreferences?.(resident.session) ?? null, status }
+      }
+      if (frame.method === 'session-compact-reconcile') {
+        const saved = await this.ports.journal.sessionControl(frame.intent.operationId, frame.state.requestId)
+        if (!saved || !isDeepStrictEqual(saved.native, frame.native)) throw new Error('The original compaction is not in this worker journal')
+        const state = resident.manager.reconcileCompaction
+          ? await resident.manager.reconcileCompaction(resident.session, saved.state) : saved.state
+        return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, state), status }
+      }
+      if (!resident.manager.compactSession) throw new Error('Native compact is unavailable')
+      const input = { requestId: frame.requestId, clientCorrelationId: frame.clientCorrelationId }
+      const reserved = await this.ports.journal.reserveSessionControl(frame.intent.operationId, input, frame.native)
+      if (!reserved.dispatch) return { compaction: reserved.state, status }
+      let result = reserved.state
+      try {
+        await this.ports.authorize(resident.intent, resident.placement, 'control')
+        result = await resident.manager.compactSession(resident.session, { ...input,
+          onProgress: async state => { result = state; await this.ports.journal.saveSessionControl(frame.intent.operationId, state) } }, resident.controller.signal)
+      } catch (error) {
+        const definite = error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
+        result = { ...result, status: definite ? 'failed' : 'uncertain', message: 'Read the original worker compaction to recover its outcome.' }
+      }
+      return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, result), status }
+    }
     if (frame.method === 'reconcile-response') { const resident = await this.resident(frame.intent.operationId, 'read'); if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable'); return { history: await resident.manager.reconcileResponse(resident.session, frame.response), status: await this.ports.journal.status(frame.intent.operationId) } }
     if (frame.method === 'control') return this.control(frame.command, frame)
-    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId)
+    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId, frame.sessionMode)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
     if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
     return this.read(frame.intent.operationId, frame.method)
@@ -121,10 +160,10 @@ export class RemoteExecutionHost {
       return await resolved.manager[method](controller.signal)
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
-  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@graphql/contracts').SessionPreferences | undefined }) {
     return this.track(() => this.prepareOwned(raw))
   }
-  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@graphql/contracts').SessionPreferences | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
       ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined
@@ -162,6 +201,7 @@ export class RemoteExecutionHost {
       controller.signal.throwIfAborted()
       this.allocatedManagers.add(resolved.manager)
       resolved.beginStart?.()
+      if (raw.sessionPreferences) await resolved.manager.configureSessionPreferences?.(raw.sessionPreferences)
       const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
       const native = await this.ports.nativeEvidence(intent, session, { manager: resolved.manager, request, signal: controller.signal })
@@ -255,10 +295,10 @@ export class RemoteExecutionHost {
     await this.ports.authorize(resident.intent, resident.placement, action)
     return resident
   }
-  startTurn(operationId: string, prompt: string, correlationId: string) {
-    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId))
+  startTurn(operationId: string, prompt: string, correlationId: string, sessionMode?: SessionMode) {
+    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId, sessionMode))
   }
-  private async startTurnOwned(operationId: string, prompt: string, correlationId: string) {
+  private async startTurnOwned(operationId: string, prompt: string, correlationId: string, sessionMode?: SessionMode) {
     const resident = await this.resident(operationId, 'start')
     if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
     const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })
@@ -268,7 +308,7 @@ export class RemoteExecutionHost {
         await this.ports.authorize(resident.intent, resident.placement, 'start')
         const status = await this.ports.journal.status(operationId)
         if (status.status !== 'known' || status.receipt.stopFence) return
-        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId,
+        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId, ...(sessionMode ? { sessionMode } : {}),
           onSubmitted: async turnId => { await this.ports.journal.acknowledgeTurn(operationId, turnId); const current = await this.ports.journal.status(operationId); if (current.status === 'known' && current.receipt.stopFence) await resident.manager.cancel(resident.session, undefined, turnId); else await this.ports.journal.markRunning(operationId) } }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
       } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch { /* A faulted journal already denies entry and requires recovery. */ } }
@@ -297,7 +337,7 @@ export class RemoteExecutionHost {
   async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp') {
     const resident = await this.resident(operationId, 'read')
     if (resident.settlementEvidence) await this.settle(resident, `execution:${resident.intent.executionId}`)
-    if (method === 'history') return { history: resident.settlementHistory ? structuredClone(resident.settlementHistory)
+    if (method === 'history') return { context: resident.manager.contextSnapshot?.(resident.session) ?? null, history: resident.settlementHistory ? structuredClone(resident.settlementHistory)
       : await resident.manager.reconcile(resident.session, `execution:${resident.intent.executionId}`), status: await this.ports.journal.status(operationId) }
     if (method === 'pending') return resident.settlementHistory
       ? resident.settlementHistory.pendingInteraction ?? resident.settlementHistory.pendingInteractions[0] : resident.manager.pending(resident.session)

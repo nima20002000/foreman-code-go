@@ -1,3 +1,5 @@
+import { pendingSessionControls } from '../../harnesses/sessionControlDefaults.js'
+import { SessionPreferencesSchema } from '@graphql/contracts'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
@@ -77,6 +79,37 @@ describe('actual worker native-port adapter', () => {
     journals.push(reopened)
     expect((await reopened.control(command)).dispatch).toBe(false)
     expect((await reopened.status('operation'))).toMatchObject({ receipt: { controls: [command] } })
+  })
+
+  it('forwards controls and usage with journaled compact retries without settling the workflow', async () => {
+    const f = await setup()
+    let compactions = 0
+    Object.assign(f.manager, {
+      sessionControlCapabilities: async () => pendingSessionControls(f.request.configuration.harness),
+      contextSnapshot: () => ({ nativeSessionId: f.session.nativeSessionId, model: f.request.configuration.harness.model,
+        generation: 'worker', sequence: 1, observedAt: new Date().toISOString(), source: 'codex', accuracy: 'native',
+        usedTokens: 120, capacityTokens: 1000, lifetimeTokens: 300, cost: null, stale: false }),
+      appliedSessionPreferences: () => SessionPreferencesSchema.parse({}),
+      compactSession: async (_session: unknown, input: { requestId: string }) => {
+        compactions++
+        return { requestId: input.requestId, nativeSessionId: f.session.nativeSessionId, nativeOperationId: 'native-boundary',
+          status: 'completed', message: 'Context compacted.', beforeTokens: 120, observedAt: new Date().toISOString() }
+      },
+    })
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex',
+      configuration: f.request.configuration, transport: { request: async (_method, frame) => f.host.handle(frame) },
+      observeReceipt: async () => {}, controlFor: async () => { throw new Error('Stop/response was not requested') } })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    await proxy.sessionControlCapabilities(session)
+    expect(proxy.contextSnapshot(session)?.usedTokens).toBe(120)
+    const input = { requestId: 'compact-worker-request', clientCorrelationId: 'compact-worker-correlation', onProgress: async () => {} }
+    expect((await proxy.compactSession(session, input)).status).toBe('completed')
+    expect((await proxy.compactSession(session, input)).status).toBe('completed')
+    expect(compactions).toBe(1)
+    const status = await f.journal.status(f.intent.operationId)
+    expect(status.status === 'known' && status.receipt.phase).not.toBe('confirmed_terminal')
+    f.state.allowed = false
+    await expect(proxy.sessionControlCapabilities(session)).rejects.toThrow('revoked')
   })
 
   it('reuses a streamed history and acknowledges a refreshed turn before its next event', async () => {

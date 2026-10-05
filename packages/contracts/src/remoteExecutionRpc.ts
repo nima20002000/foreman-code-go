@@ -1,3 +1,5 @@
+import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
+import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { z } from 'zod'
 import { DeviceExecutionAdmissionFields } from './deviceResources.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema, NativeSessionReferenceSchema } from './index.js'
@@ -7,12 +9,18 @@ const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacement
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),
     sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
-  z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
+  z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional(), sessionPreferences: SessionPreferencesSchema.optional() }).strict(),
   z.object({ method: z.literal('reattach'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
-  z.object({ method: z.literal('start-turn'), ...binding, prompt: z.string().min(1).max(1_000_000), correlationId: z.string().min(1) }).strict(),
+  z.object({ method: z.literal('start-turn'), ...binding, prompt: z.string().min(1).max(1_000_000), correlationId: z.string().min(1), sessionMode: SessionModeSchema.optional() }).strict(),
   z.object({ method: z.enum(['history', 'pending', 'status']), ...binding }).strict(),
   z.object({ method: z.enum(['capabilities', 'inspect-mcp']), ...binding, configuration: z.lazy(() => AgentConfigurationVersionSchema) }).strict(),
   z.object({ method: z.literal('reconcile-response'), ...binding, response: z.object({ nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1), option: z.lazy(() => ApprovalResponseOptionSchema) }).strict() }).strict(),
+  z.object({ method: z.literal('session-controls-read'), ...binding, native: RemoteNativeIdentitySchema }).strict(),
+  z.object({ method: z.literal('session-preferences-apply'), ...binding, native: RemoteNativeIdentitySchema, preferences: SessionPreferencesSchema }).strict(),
+  z.object({ method: z.literal('session-compact'), ...binding, native: RemoteNativeIdentitySchema,
+    requestId: z.string().min(8), clientCorrelationId: z.string().min(1) }).strict(),
+  z.object({ method: z.literal('session-compact-reconcile'), ...binding, native: RemoteNativeIdentitySchema,
+    state: CompactionStateSchema }).strict(),
   z.object({ method: z.literal('renew-owner'), ...binding, transition: RemoteOwnerReconciliationSchema }).strict(),
   z.object({ method: z.literal('control'), ...binding, command: RemoteOwnerControlSchema }).strict(),
 ])

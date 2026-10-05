@@ -1,3 +1,5 @@
+import { CompactionStateSchema, ContextSnapshotSchema, SessionControlCapabilitiesSchema, SessionPreferencesSchema, type ContextSnapshot, type SessionPreferences } from '@graphql/contracts'
+import type { NativeCompactInput } from '../../harnesses/port.js'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -9,7 +11,7 @@ import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteO
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 
 export interface RemoteNativeTransport {
-  request(method: 'prepare' | 'reattach' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
+  request(method: 'prepare' | 'reattach' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner' | 'session-controls-read' | 'session-compact' | 'session-compact-reconcile' | 'session-preferences-apply', payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
 const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
 const HistorySchema = z.object({ correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(),
@@ -44,6 +46,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     receipt: RemoteOperationReceipt
     observedAt: number
   } | undefined
+  private preferences: SessionPreferences | undefined
+  private context: ContextSnapshot | null = null
+  private appliedPreferences: SessionPreferences | null = null
   private prepareAttempted = false
   private detached = false
   constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
@@ -80,6 +85,51 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     this.intent = next
     return receipt
   }
+  async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
+    this.assertSession(session)
+    if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    const result = z.object({ status: StatusSchema }).strict().parse(await this.request('session-preferences-apply', {
+      native: this.receipt.native, preferences: SessionPreferencesSchema.parse(preferences),
+    }, signal))
+    await this.status(result.status)
+  }
+  async configureSessionPreferences(preferences: SessionPreferences) {
+    if (this.prepareAttempted) throw new Error('Worker startup preferences require a safe new admission')
+    this.preferences = SessionPreferencesSchema.parse(preferences)
+  }
+  async sessionControlCapabilities(session: NativeSessionReference) {
+    this.assertSession(session)
+    if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    const value = z.object({ capabilities: SessionControlCapabilitiesSchema, context: ContextSnapshotSchema.nullable(),
+      preferences: SessionPreferencesSchema.nullable(), status: StatusSchema }).strict().parse(
+      await this.request('session-controls-read', { native: this.receipt.native }))
+    await this.status(value.status)
+    if (value.context && value.context.nativeSessionId !== session.nativeSessionId) throw new Error('Wrong worker context session')
+    this.context = value.context
+    this.appliedPreferences = value.preferences
+    return value.capabilities
+  }
+  contextSnapshot(session: NativeSessionReference) { this.assertSession(session); return this.context }
+  appliedSessionPreferences(session: NativeSessionReference) { this.assertSession(session); return this.appliedPreferences }
+  async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal) {
+    this.assertSession(session)
+    if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(
+      await this.request('session-compact', { native: this.receipt.native,
+        requestId: input.requestId, clientCorrelationId: input.clientCorrelationId }, signal))
+    await this.status(value.status)
+    if (value.compaction.requestId !== input.requestId || value.compaction.nativeSessionId !== session.nativeSessionId) throw new Error('Wrong worker compaction')
+    await input.onProgress(value.compaction)
+    return value.compaction
+  }
+  async reconcileCompaction(session: NativeSessionReference, state: import('@graphql/contracts').CompactionState, signal?: AbortSignal) {
+    this.assertSession(session)
+    if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(
+      await this.request('session-compact-reconcile', { native: this.receipt.native, state }, signal))
+    await this.status(value.status)
+    return value.compaction
+  }
   async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async createSession(input: NativeSessionStart, signal?: AbortSignal) {
@@ -89,7 +139,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const applicationAccess = token ? { kind: 'scoped-worker-mcp', token, executionId: this.intent.executionId, agentId: this.options.configuration.agentId, operationId: this.intent.operationId, attemptId: this.intent.attemptId, bindingHash: this.intent.bindingHash } : undefined
     if (input.request.executionId !== this.intent.executionId || input.correlationId !== `execution:${this.intent.executionId}`) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
-    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request, ...(applicationAccess ? { applicationAccess } : {}) }, signal))
+    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request, ...(this.preferences ? { sessionPreferences: this.preferences } : {}), ...(applicationAccess ? { applicationAccess } : {}) }, signal))
     await this.status(value.status)
     if (this.receipt?.native?.sessionId !== value.session.nativeSessionId || value.session.harness !== this.harness) throw new Error('Original remote session recovery required')
     this.session = structuredClone(value.session)
@@ -111,13 +161,14 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
-    await this.status(await this.request('start-turn', { operationId: this.intent.operationId, prompt: input.prompt, correlationId: input.clientCorrelationId }, signal))
+    await this.status(await this.request('start-turn', { operationId: this.intent.operationId, prompt: input.prompt, correlationId: input.clientCorrelationId, ...(input.sessionMode ? { sessionMode: input.sessionMode } : {}) }, signal))
     let sequence = -1, submitted = false
     while (true) {
       signal?.throwIfAborted()
-      const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
+      const value = z.object({ history: HistorySchema, context: ContextSnapshotSchema.nullable().optional(), status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
       const receipt = await this.status(value.status)
-      if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
+      if (value.context !== undefined) this.context = value.context
+      if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); await input.onSettingsApplied?.(); submitted = true }
       this.streamHistory = { value: value.history, receipt, observedAt: Date.now() }
       try {
         for (const event of value.history.events) {
@@ -168,8 +219,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       await this.options.observeOriginalSource?.(streamed.receipt, { type: 'history', history })
       return history
     }
-    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
+    const value = z.object({ history: HistorySchema, context: ContextSnapshotSchema.nullable().optional(), status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
     await this.status(value.status)
+    if (value.context !== undefined) this.context = value.context
     if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now() }
     const history = this.projectHistory(value.history)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })
@@ -201,7 +253,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async reconcileResponse(session: NativeSessionReference, response: Parameters<NonNullable<NativeHarnessSessionManager['reconcileResponse']>>[1], signal?: AbortSignal) {
     this.assertSession(session)
-    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('reconcile-response', { response }, signal))
+    const value = z.object({ history: HistorySchema, context: ContextSnapshotSchema.nullable().optional(), status: StatusSchema }).strict().parse(await this.request('reconcile-response', { response }, signal))
     await this.status(value.status)
     const history = this.projectHistory(value.history)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })

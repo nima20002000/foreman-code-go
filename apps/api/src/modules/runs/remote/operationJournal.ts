@@ -1,3 +1,4 @@
+import { CompactionStateSchema, type CompactionState } from '@graphql/contracts'
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -19,7 +20,7 @@ import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } fr
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+const JournalSchema = z.object({ schemaVersion: z.literal(1), nativeControls: z.array(z.object({ operationId: z.string(), requestId: z.string(), inputHash: z.string(), native: RemoteNativeIdentitySchema, state: CompactionStateSchema }).strict()).default([]), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
@@ -48,7 +49,7 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
+        data = { schemaVersion: 1, nativeControls: [], receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
       if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
@@ -180,6 +181,38 @@ export class RemoteOperationJournal {
       receipt.interaction = target; receipt.sequence++; return receipt
     })
   }
+  reserveSessionControl(operationId: string, input: { requestId: string; clientCorrelationId: string }, native: RemoteNativeIdentity) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!same(receipt.native, native)) throw new Error('Wrong native session control owner')
+      const inputHash = JSON.stringify(input)
+      const prior = data.nativeControls.find(control => control.operationId === operationId && control.requestId === input.requestId)
+      if (prior) {
+        if (prior.inputHash !== inputHash || !same(prior.native, native)) throw new Error('Session control identity conflict')
+        return { dispatch: false, state: prior.state }
+      }
+      const state: CompactionState = { requestId: input.requestId, nativeSessionId: native.sessionId,
+        nativeOperationId: null, status: 'accepted', message: 'Native compaction is pending.', beforeTokens: null,
+        observedAt: new Date().toISOString() }
+      data.nativeControls.push({ operationId, requestId: input.requestId, inputHash, native, state })
+      return { dispatch: true, state }
+    })
+  }
+
+  async sessionControl(operationId: string, requestId: string) {
+    await this.tail
+    return structuredClone(this.data.nativeControls.find(control => control.operationId === operationId && control.requestId === requestId))
+  }
+
+  saveSessionControl(operationId: string, state: CompactionState) {
+    return this.change(data => {
+      const control = data.nativeControls.find(item => item.operationId === operationId && item.requestId === state.requestId)
+      if (!control || control.native.sessionId !== state.nativeSessionId) throw new Error('Wrong native control result')
+      control.state = CompactionStateSchema.parse(state)
+      return control.state
+    })
+  }
+
   control(command: RemoteOwnerControl) {
     return this.change(data => {
       command = RemoteOwnerControlSchema.parse(command)
