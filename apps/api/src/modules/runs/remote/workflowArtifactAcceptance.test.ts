@@ -69,7 +69,7 @@ function fixture(host: 'device' | 'main' = 'device') {
           placementHash: intent.bindingHash, rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'artifact',
           sha256, byteSize: 12, manifestDigest: digest, chunkBytes: 1024, expiresAt: '2099-01-01T00:00:00.000Z' } } })
     if (host === 'device') return remoteOutput
-    const { transferReceipt: _transferReceipt, ...output } = remoteOutput
+    const output = NativeArtifactOutputSchema.omit({ transferReceipt: true }).parse(remoteOutput)
     return MainNativeArtifactOutputSchema.parse({ ...output,
       mainPublication: { kind: 'main', mainId, attempt: producer, sha256, byteSize: 12 } })
   })

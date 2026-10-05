@@ -27,6 +27,7 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
       record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
     console.error('Remote review provider activity', (await fixture.provider.calls()).slice(-30).map(call => ({
       method: call.method, nativeStarted: call.nativeStarted, review: call.review, providerFailure: call.providerFailure,
+      reviewDecisionError: call.reviewDecisionError, approvalResponse: call.approvalResponse,
     })))
     try {
       await fixture.close()
