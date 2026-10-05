@@ -1,0 +1,448 @@
+import { spawn, execFile, type ChildProcess } from 'node:child_process'
+import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { request } from 'node:https'
+import { createServer } from 'node:net'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { ManagementActionSchema } from '@graphql/contracts/management'
+import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
+  WorkerPairingConfigurationSchema } from '@graphql/contracts/device-identity'
+import { loadOrCreateWorkerIdentity, persistWorkerPairing, pairingProof } from '@graphql/contracts/device-identity-node'
+import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
+  HostHarnessInstanceCheckResultSchema } from '@graphql/contracts/harness-registry'
+import { SourceApproveResultSchema, SourceRootBindResultSchema } from '@graphql/contracts/source-admission'
+import { WorkspaceRootListResultSchema } from '@graphql/contracts/workspace-root-policies'
+import { WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
+  ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { loadConfig } from '../../src/config.js'
+import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
+import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
+import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
+import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@graphql/contracts/remote-execution'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { agent3Database, seedAgent3 } from './wave25Agent3.js'
+import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls } from './remoteReviewProvider.js'
+import { createRemoteReviewTransport } from './remoteReviewTransport.js'
+
+const execute = promisify(execFile)
+
+export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
+  description: string): Promise<T> {
+  const deadline = Date.now() + 90_000
+  for (;;) {
+    const value = await read()
+    if (accept(value)) return value
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}.`)
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+}
+
+async function freePort() {
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Expected a loopback port.')
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  return address.port
+}
+
+async function postDeviceJson(endpoint: string, certificate: Buffer, payload: unknown) {
+  return new Promise<unknown>((resolve, reject) => {
+    const call = request(endpoint, { method: 'POST', ca: certificate,
+      headers: { 'content-type': 'application/json' } }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`Device pairing returned ${response.statusCode}.`))
+          return
+        }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch (error) { reject(error) }
+      })
+      response.on('error', reject)
+    })
+    call.on('error', reject)
+    call.end(JSON.stringify(payload))
+  })
+}
+
+/** Fresh production instances share only persisted data; the Worker runs the
+ * shipped installed domains in a separate process with its own native owners. */
+export async function remoteReviewProduction() {
+  const closes: Array<() => Promise<void>> = []
+  const close = async () => {
+    const errors: unknown[] = []
+    while (closes.length) {
+      try { await closes.pop()!() } catch (error) { errors.push(error) }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Remote review fixture cleanup failed.')
+  }
+  try {
+    const db = await agent3Database()
+    closes.push(db.close)
+    const directory = await privateFixtureDirectory('remote-review-production-')
+    closes.push(() => rm(directory, { recursive: true, force: true }))
+    const workerRelease = await buildRemoteReviewWorkerRelease(directory)
+    const provider = await createRemoteReviewProvider(join(directory, 'provider'))
+    const tls = await createRemoteReviewTls(join(directory, 'tls'))
+    const certificate = await readFile(tls.certificateFile)
+    const project = join(directory, 'projects', 'project')
+    const runtime = join(directory, 'main-runtime')
+    const stateDirectory = join(directory, 'worker-state')
+    const workerProject = join(directory, 'worker-projects', 'project')
+    const workerRuntime = join(directory, 'worker-runtime')
+    for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime]) {
+      await mkdir(path, { recursive: true, mode: 0o700 })
+    }
+    await writeFile(join(project, 'README.md'), '# Remote review fixture\n', { mode: 0o600 })
+    await execute('git', ['init', '--quiet', project])
+    await execute('git', ['-C', project, 'add', 'README.md'])
+    await execute('git', ['-C', project, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-m', 'Source fixture'])
+    const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'])).stdout.trim()
+    const seed = makeCurrentWorkflowFixture(randomUUID(), 'approval')
+    seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
+      ...configuration, prompt: { system: index === 0
+        ? 'fixture-reviewer' : 'fixture-requester' },
+      harness: { ...configuration.harness, model: 'test-model' },
+    }))
+    const saved = await seedAgent3(db.pool, project, seed, { run: false })
+    const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, PORT: String(await freePort()),
+      HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),
+      CODEX_BINARY: provider.binary, OPENCODE_BINARY: join(directory, 'missing-opencode'),
+      DATABASE_QUERY_TIMEOUT_MS: '10000', GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' })
+    config.workspaceStorageRoot = join(directory, 'projects')
+    const checkpointSchema = `${db.schema}_checkpoints`
+    config.checkpoints.schema = checkpointSchema
+    const databaseUrl = new URL(config.database.connectionString)
+    databaseUrl.searchParams.set('options', `-c search_path=${db.schema},public`)
+    config.database.connectionString = databaseUrl.toString()
+    const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, checkpointSchema, config.database)
+    await checkpoints.setup()
+    closes.push(async () => {
+      await checkpoints.close()
+      await db.pool.query(`drop schema "${checkpointSchema}" cascade`)
+    })
+    const access = new PostgresAccessService(db.pool)
+    const writer = await access.issue({ name: 'Remote review owner', audience: 'operator',
+      expiresAt: new Date(Date.now() + 900_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
+    const devicePort = await freePort()
+    const deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
+    const infrastructure = { mode: 'native' as const,
+      deviceListener: { ...tls, host: '127.0.0.1', port: devicePort, advertisedEndpoint: deviceEndpoint } }
+    const mainConfiguration = join(directory, 'main-configuration.json')
+    await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
+    let main: ChildProcess | undefined
+    let mainFailure = ''
+    let origin = ''
+    const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
+      if (!main || main.exitCode !== null || main.signalCode !== null) return
+      const stopped = main
+      await new Promise<void>((resolve, reject) => {
+        stopped.once('error', reject)
+        stopped.once('exit', code => {
+          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Production Main cleanup failed: ${mainFailure}`))
+          else resolve()
+        })
+        stopped.kill(signal)
+      })
+    }
+    closes.push(() => stopMain())
+    const startMain = async () => {
+      let ready = false
+      mainFailure = ''
+      const started = spawn(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
+        cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env },
+      })
+      main = started
+      started.stderr!.on('data', chunk => { mainFailure = `${mainFailure}${String(chunk)}`.slice(-16384) })
+      started.on('message', message => {
+        if (message && typeof message === 'object' && 'kind' in message && message.kind === 'ready'
+          && 'origin' in message && typeof message.origin === 'string') {
+          origin = message.origin
+          ready = true
+        }
+      })
+      await waitForRemoteReview(async () => {
+        if (started.exitCode !== null || started.signalCode !== null) {
+          throw new Error(`Production Main exited: ${mainFailure}`)
+        }
+        return ready
+      }, value => value, 'production Main startup')
+    }
+    await startMain()
+    async function call(name: string, args: Record<string, unknown>, token = writer.token) {
+      const client = new Client({ name: 'Production remote review integration', version: '1' })
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
+          authProvider: { token: async () => token },
+        }))
+        return await client.callTool({ name, arguments: args })
+      } finally { await client.close() }
+    }
+    async function value(name: string, args: Record<string, unknown>) {
+      const response = await call(name, args)
+      if (response.isError) throw new Error(`${name}: ${JSON.stringify(response.content)}`)
+      return response.structuredContent
+    }
+    const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const mainHost = { kind: 'main' as const, mainId }
+    const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
+      workspaceId: saved.scope.workspaceId,
+    }))
+    const mainAllowlist = mainChoices.allowlists.find(allowlist => allowlist.hostRef.kind === 'main')!
+    const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
+      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
+      allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
+      relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
+    })).value
+    const approved = SourceApproveResultSchema.parse(await value('source_approve', {
+      workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+      expectedLocationRevision: mainLocation.locationRevision, commit,
+      approvedPaths: ['README.md'], executablePolicy: 'strip',
+    })).value
+    const identity = await loadOrCreateWorkerIdentity(stateDirectory)
+    const grant = DevicePairingGrantResultSchema.parse(await value('device_pairing_grant_create', {
+      commandId: randomUUID(), workerInstallationId: identity.workerInstallationId,
+      publicKey: identity.publicKey, expectedFingerprint: identity.publicKeyFingerprint, scopes: ['connect', 'heartbeat'],
+    }))
+    const publicMain = MainDeviceIdentityPublicSchema.parse(await value('device_main_identity_get', {}))
+    const unsignedPairing = { mainId, workerInstallationId: identity.workerInstallationId,
+      publicKey: identity.publicKey, grant: grant.grant, requestId: randomUUID() }
+    const pairingRequest = { ...unsignedPairing, signature: sign(null, Buffer.from(pairingProof(unsignedPairing)),
+      identity.privateKey).toString('base64url') }
+    const paired = DevicePairingResultSchema.parse(await postDeviceJson(
+      `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
+    let denyReservedResponse = false
+    let deniedResponse: ReturnType<typeof RemoteOwnerControlSchema.parse> | undefined
+    const transport = await createRemoteReviewTransport({ ...tls, endpoint: deviceEndpoint,
+      beforeAuthorization: async authorization => {
+        if (!denyReservedResponse || authorization.action !== 'control') return
+        const serialized = JSON.parse(await readFile(join(stateDirectory, 'workflow-operations.json'), 'utf8')) as {
+          receipts: unknown[]; controlDeliveries: Array<{ operationId: string; commandId: string; phase: string }>
+        }
+        const receipt = serialized.receipts.map(value => RemoteOperationReceiptSchema.safeParse(value))
+          .find(value => value.success && value.data.intent.operationId === authorization.intent.operationId)
+        if (!receipt?.success) return
+        const command = receipt.data.controls.find(command => command.action.kind === 'respond'
+          && serialized.controlDeliveries.some(delivery => delivery.operationId === command.operationId
+            && delivery.commandId === command.commandId && delivery.phase === 'reserved'))
+        if (!command) return
+        denyReservedResponse = false
+        deniedResponse = RemoteOwnerControlSchema.parse(command)
+        const changed = await db.pool.query(`update execution_dispatch_owner_grants set revoked=true
+          where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked`,
+        [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
+        if (changed.rowCount !== 1) throw new Error('The original response grant was unavailable for the denial scenario.')
+      } })
+    closes.push(transport.close)
+    const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId,
+      deviceId: paired.registration.deviceId, workerInstallationId: identity.workerInstallationId,
+      keyRevision: paired.registration.keyRevision, authorizationRevision: paired.registration.authorizationRevision,
+      endpoint: transport.endpoint, credential: paired.credential, mainPublicKeyFingerprint: publicMain.mainPublicKeyFingerprint,
+      expiresAt: paired.expiresAt, tlsTrust: { certificatePem: certificate.toString('utf8'),
+        sha256: createHash('sha256').update(new X509Certificate(certificate).raw).digest('hex') },
+    })
+    await persistWorkerPairing(stateDirectory, pairing)
+    const hostRef = { kind: 'device' as const, mainId, deviceId: pairing.deviceId }
+    const roots = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef,
+      applicationInstallationId: identity.workerInstallationId, configurationRevision: '1',
+      bases: [{ baseId: randomUUID(), canonicalPath: join(directory, 'worker-projects'), accessModes: ['read-only'] }],
+      managedRuntimeRoot: workerRuntime })
+    await writeFile(join(stateDirectory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
+    await writeFile(join(stateDirectory, 'workflow-runtime.json'), JSON.stringify({ schemaVersion: 1,
+      codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
+      appMcpLauncher: appLauncherPath(), payloadPaths: provider.payloadPaths }), { mode: 0o600 })
+    const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
+    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'])
+    let worker: ChildProcess | undefined
+    let ready = false
+    let workerStateRevision = 0
+    let workerFailure = ''
+    const startWorker = async () => {
+      ready = false
+      workerFailure = ''
+      const started = spawn(process.execPath, [workerEntrypoint, stateDirectory, workerRelease], {
+        cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env },
+      })
+      worker = started
+      started.stderr!.on('data', chunk => { workerFailure = `${workerFailure}${String(chunk)}`.slice(-16384) })
+      started.on('message', message => {
+        if (message && typeof message === 'object' && 'view' in message) {
+          const view = message.view
+          ready = view !== null && typeof view === 'object' && 'phase' in view && view.phase === 'ready'
+          if (!ready) workerStateRevision++
+        }
+      })
+      await waitForRemoteReview(async () => {
+        if (started.exitCode !== null || started.signalCode !== null) {
+          throw new Error(`Installed Worker exited: ${workerFailure}`)
+        }
+        return ready
+      }, value => value, 'authenticated installed Worker connection')
+    }
+    const stopWorker = async (signal: NodeJS.Signals = 'SIGTERM') => {
+      if (!worker || worker.exitCode !== null || worker.signalCode !== null) return
+      const stopped = worker
+      await new Promise<void>((resolve, reject) => {
+        stopped.once('error', reject)
+        stopped.once('exit', code => {
+          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Installed Worker cleanup failed: ${workerFailure}`))
+          else resolve()
+        })
+        stopped.kill(signal)
+      })
+    }
+    closes.push(() => stopWorker())
+    await startWorker()
+    const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
+      await value('harness_registry_get', hostRef)), value => value.installations.some(
+      installation => installation.driverId === 'codex' && installation.installationFingerprint !== null), 'remote Codex inventory')
+    const installation = inventory.installations.find(installation => installation.driverId === 'codex')!
+    const target = { hostRef, applicationInstallationId: identity.workerInstallationId,
+      harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint! }
+    const profiles = []
+    for (const configuration of saved.configurations) {
+      const profile = HostHarnessOverrideSaveResultSchema.parse(await value('harness_instance_save', {
+        commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target,
+        presetId: 'remote-review-fixture', enabled: true, configuration: configuration.harness,
+      })).value
+      const checked = HostHarnessInstanceCheckResultSchema.parse(await value('harness_instance_check', {
+        commandId: randomUUID(), instanceId: profile.instanceId, expectedRevision: profile.revision, target,
+      }))
+      if (!checked.proof.qualified) throw new Error(`Remote profile qualification failed: ${JSON.stringify(checked.proof)}`)
+      profiles.push(checked.value)
+    }
+    await value('workspace_root_configuration_adopt', {
+      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
+    })
+    const location = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
+      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef, allowedBaseId: roots.bases[0]!.baseId,
+      configurationRevision: roots.configurationRevision, relativePath: 'project', accessMode: 'read-only',
+      expectedLocationRevision: mainLocation.locationRevision, expectedRootPolicyRevision: 0,
+    })).value
+    if (location.evidence !== 'bound') throw new Error('Remote source requires a bound workspace root.')
+    const source = { approvedSourceId: approved.manifest.approvedSourceId,
+      snapshotId: approved.manifest.snapshotId, manifestDigest: approved.manifest.manifestDigest }
+    const bound = SourceRootBindResultSchema.parse(await value('source_root_bind', {
+      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), source,
+      selection: { hostRef, rootPolicyId: location.binding.rootPolicyId,
+        rootPolicyRevision: location.binding.rootPolicyRevision, locationRevision: location.binding.locationRevision },
+      expectedBindingRevision: 0, accessMode: 'read-only',
+    })).value
+    const workflowScope = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId }
+    const before = CurrentWorkflowReadResultSchema.parse(await value(CURRENT_WORKFLOW_TOOLS.saved, workflowScope))
+    const graph = structuredClone(before.version.definition)
+    for (let index = 0; index < graph.nodes.length; index++) {
+      const node = graph.nodes[index]!
+      if (node.kind === 'job') throw new Error('Expected an Agent fixture node.')
+      const profile = profiles[index]!
+      node.placement = { schemaVersion: 1, hostRef, rootPolicyId: location.binding.rootPolicyId,
+        rootPolicyRevision: location.binding.rootPolicyRevision, locationRevision: location.binding.locationRevision,
+        projectRoot: location.binding.canonicalProjectRoot, cwdPolicy: 'project-root', relativeCwd: '',
+        instanceId: profile.instanceId, instanceRevision: profile.instanceRevision,
+        harnessInstallationId: installation.harnessInstallationId, source,
+        rootBinding: { rootId: bound.binding.rootId, bindingRevision: bound.binding.bindingRevision } }
+    }
+    const version = CurrentWorkflowSaveResultSchema.parse(await value(CURRENT_WORKFLOW_TOOLS.save, {
+      ...workflowScope, commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: before.revision,
+      expectedWorkflowVersionId: before.version.id, expectedLocationRevision: location.locationRevision,
+      expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
+    })).value.version
+    async function start() {
+      const current = CurrentWorkflowReadResultSchema.parse(await value(CURRENT_WORKFLOW_TOOLS.saved, workflowScope))
+      return ManualRunStartResultSchema.parse(await value('run_start', { ...workflowScope,
+        workflowVersionId: version.id, commandId: randomUUID(), executionSemanticsVersion: 3,
+        expectedWorkflowRevision: current.revision, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        expectedLocationRevision: location.locationRevision, input: {},
+      }))
+    }
+    const reconcile = () => new Promise<void>((resolve, reject) => {
+      if (!main || !main.connected) {
+        reject(new Error('Production Main reconciliation is disconnected.'))
+        return
+      }
+      const child = main
+      const requestId = randomUUID()
+      const finish = (error?: Error) => {
+        clearTimeout(timer)
+        child.off('message', settled)
+        child.off('exit', exited)
+        if (error) reject(error)
+        else resolve()
+      }
+      const exited = () => finish(new Error('Production Main exited during reconciliation.'))
+      const settled = (message: unknown) => {
+        if (!message || typeof message !== 'object' || !('requestId' in message)
+          || message.requestId !== requestId || !('kind' in message)) return
+        if (message.kind === 'reconciled') finish()
+        else finish(new Error('message' in message ? String(message.message) : 'Main reconciliation failed.'))
+      }
+      const timer = setTimeout(() => finish(new Error('Production Main reconciliation timed out.')), 30_000)
+      child.on('message', settled)
+      child.once('exit', exited)
+      child.send({ kind: 'reconcile', requestId }, error => { if (error) finish(error) })
+    })
+    async function details(runId: string) {
+      const response = await fetch(`${origin}/api/management/workspaces/${saved.scope.workspaceId}/runs/${runId}`, {
+        headers: { authorization: `Bearer ${writer.token}` } })
+      if (!response.ok) throw new Error(`Run read failed: ${await response.text()}`)
+      return SavedRunDetailsSchema.parse(await response.json())
+    }
+    const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
+    closes.push(() => stopMain())
+    return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version,
+      start, call, value, details, reconcile, registry, close,
+      workerPid: () => worker?.pid,
+      inventory: () => value('harness_registry_get', hostRef).then(HarnessRegistryReadbackSchema.parse),
+      denyNextReservedResponse: () => { denyReservedResponse = true },
+      deniedResponse: () => deniedResponse,
+      deliveryReads: transport.deliveryReads,
+      async restoreOriginalResponseGrant() {
+        const command = deniedResponse
+        if (!command) throw new Error('No original reserved response was denied.')
+        const changed = await db.pool.query(`update execution_dispatch_owner_grants set revoked=false
+          where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and revoked`,
+        [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
+        if (changed.rowCount !== 1) throw new Error('The original response grant changed before retry.')
+      },
+      async restartMain() {
+        const previousWorkerState = workerStateRevision
+        ready = false
+        await stopMain('SIGKILL')
+        await waitForRemoteReview(async () => workerStateRevision,
+          value => value > previousWorkerState, 'Worker observing the crashed Main connection')
+        await startMain()
+        await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
+      },
+      async restartWorker() {
+        await stopWorker('SIGKILL')
+        await startWorker()
+      },
+      async pending(runId: string) {
+        const rows = await db.pool.query<{ record: unknown }>(
+          "select record from durable_interactions where run_id=$1 and status='pending' order by id", [runId])
+        return rows.rows.map(row => DurableInteractionSchema.parse(row.record))
+      },
+      async executions(runId: string) {
+        const rows = await db.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId])
+        return rows.rows.map(row => HarnessExecutionSchema.parse(row.record))
+      },
+    }
+  } catch (error) {
+    try { await close() } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: error })
+    }
+    throw error
+  }
+}
