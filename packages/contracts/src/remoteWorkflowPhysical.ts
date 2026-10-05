@@ -5,9 +5,10 @@ import { NativeMessageSubmissionSchema } from './claude.js'
 import { PlacementDigestSchema } from './nodePlacement.js'
 import { RemoteOperationReceiptSchema } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
-import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
+import { WorkflowArtifactResultV1Schema, type WorkflowArtifactOutputsV1 } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
+import { WorkHandoffResultSchema } from './wave25/handoffs.js'
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -47,7 +48,8 @@ export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
       canonicalGraphJson(value.result, 64 * 1024)
       if (value.result.outcome !== 'succeeded') throw new Error('successful original terminal result required')
       const output = z.object({ text: z.string() }).strict().parse(value.result.output)
-      const envelope = z.union([WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema]).parse(JSON.parse(output.text))
+      const envelope = z.union([WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema,
+        WorkHandoffResultSchema]).parse(JSON.parse(output.text))
       if (canonicalGraphJson(envelope.artifactOutputs) !== canonicalGraphJson(value.artifactOutputs))
         throw new Error('artifact association differs from original terminal text')
     } catch {
@@ -56,6 +58,22 @@ export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
   }),
 ])
 export type RemoteWorkflowPhysicalOutput = z.infer<typeof RemoteWorkflowPhysicalOutputSchema>
+
+/** Association metadata from original text; Main still verifies publication and bytes. */
+export function remoteWorkflowPhysicalOutput(result: z.infer<typeof ExecutionResultSchema>,
+  declaration?: WorkflowArtifactOutputsV1): RemoteWorkflowPhysicalOutput {
+  if (!declaration || result.outcome !== 'succeeded') {
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'text-only', result })
+  }
+  const native = z.object({ text: z.string() }).strict().parse(result.output)
+  const envelope = z.object({ artifactOutputs: WorkflowArtifactResultV1Schema }).passthrough().parse(JSON.parse(native.text))
+  const keys = new Set(envelope.artifactOutputs.outputs.map((output) => output.outputKey))
+  if (keys.size !== declaration.outputKeys.length || declaration.outputKeys.some((key) => !keys.has(key))) {
+    throw new Error('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+  }
+  return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'published-artifacts', result,
+    artifactOutputs: envelope.artifactOutputs })
+}
 
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,
   session: z.lazy(() => NativeSessionReferenceSchema), launch: RemoteNativeLaunchObservationSchema,

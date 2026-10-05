@@ -41,6 +41,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       ...(saved ? [
         `Required saved output keys: ${JSON.stringify(saved.outputKeys)}`,
         'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
+        'Use files_native_output_create, files_native_output_append, files_native_output_seal, then files_native_output_publish to produce each original artifact. These tools supply the execution scope and transfer the sealed bytes.',
         'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
         'Admit, transfer, and publish the original bytes before completing. The backend verifies canonical bytes and durable output mappings.',
         'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
@@ -61,6 +62,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       `On success return exactly one complete JSON object with ${outcomes ? 'routing, data, and artifactOutputs' : 'data and artifactOutputs'}.`,
       ...(outcomes ? [`routing has exactly outcome, one of ${JSON.stringify(outcomes)}.`] : []),
       'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
+      'Use files_native_output_create, files_native_output_append, files_native_output_seal, then files_native_output_publish to produce each original artifact. These tools supply the execution scope and transfer the sealed bytes.',
       'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
       'Admit, transfer, and publish the original bytes before completing. A command ID alone does not prove publication; the backend verifies canonical bytes and durable output mappings.',
       'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',

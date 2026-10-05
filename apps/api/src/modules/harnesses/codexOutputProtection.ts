@@ -1,0 +1,152 @@
+import { randomUUID } from 'node:crypto'
+import { access, readFile, unlink, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { sameCodexNativeOutputSandbox, type CodexNativeOutputQualificationInput } from './codexNativeOutput.js'
+import { CodexStdioTransport, object, type JsonObject } from './codexStdioTransport.js'
+import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
+import { inheritedAgentEnvironment } from './secrets.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
+import { runCommand } from './process.js'
+import type { NativeProcessRegistry } from './recovery/processRegistry.js'
+import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand } from './qualification/suites/codexNativeOutputSandbox.js'
+import { DomainError } from '../errors.js'
+
+const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
+  'The selected native sandbox did not prove protection of its output store.', 409)
+
+/** Probe the selected binary with the same sandbox policy, using a separately
+ * owned diagnostic actor without an application credential. Assistant claims
+ * cannot pass: the exact native command item and its filesystem witness must agree. */
+export async function qualifyCodexOutputProtection(input: {
+  qualification: CodexNativeOutputQualificationInput
+  protectedDirectory: string
+  registry: NativeProcessRegistry
+  qualify: typeof qualifyCodex
+  command: typeof runCommand
+  assertCurrent(signal: AbortSignal): Promise<void>
+  signal: AbortSignal
+}): Promise<void> {
+  const { qualification: selected, protectedDirectory, registry } = input
+  const signal = AbortSignal.any([input.signal, AbortSignal.timeout(60_000)])
+  assertCodexProtectedOutputPlacement(protectedDirectory, selected.expectedSandbox)
+  await input.assertCurrent(signal)
+  const recovery = registry.reserveLaunch(`native-output-qualification:${randomUUID()}`)
+  let transport: CodexStdioTransport | undefined
+  const marker = randomUUID()
+  const directPath = join(protectedDirectory, `.native-direct-${marker}`)
+  const descendantPath = join(protectedDirectory, `.native-descendant-${marker}`)
+  const witnessPath = join(selected.expectedSandbox.cwd, `.native-witness-${marker}.json`)
+  const hostPath = join(protectedDirectory, `.host-witness-${marker}`)
+  try {
+    const environment = inheritedAgentEnvironment()
+    if (selected.expectedSandbox.tmpdir) environment.TMPDIR = selected.expectedSandbox.tmpdir
+    const qualified = await input.qualify(selected.binary, selected.providerVersion,
+      selected.expectedSandbox.cwd, environment, true, signal, recovery)
+    if (qualified.identity !== selected.binaryIdentity || qualified.schemaManifestSha256 !== selected.schemaIdentity) {
+      throw unavailable()
+    }
+    const listed = await input.command(qualified.binary, ['mcp', 'list', '--json'], selected.expectedSandbox.cwd,
+      signal, environment, { recovery })
+    const servers: unknown = JSON.parse(listed.stdout)
+    if (listed.exitCode !== 0 || !Array.isArray(servers) || servers.length > 500
+      || servers.some((entry) => typeof entry?.name !== 'string')) throw unavailable()
+    const disabled = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+      .filter((name) => servers.some((entry) => entry.name === name))
+    let threadId: string | undefined
+    let turnId: string | undefined
+    const commands: Array<{ threadId: string; turnId: string; item: JsonObject }> = []
+    const terminals = new Map<string, string>()
+    let complete!: () => void
+    let fail!: (error: unknown) => void
+    const done = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject })
+    transport = new CodexStdioTransport(qualified.binary, selected.expectedSandbox.cwd, environment,
+      qualified.protocol, async (request) => {
+        await transport!.reject(request.id, -32601, 'No application tools in native output qualification.')
+      }, (method, params) => {
+        if (method === 'item/completed') {
+          const item = object(params.item)
+          if (item.type === 'commandExecution' && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
+            commands.push({ threadId: params.threadId, turnId: params.turnId, item })
+          }
+        }
+        if (method === 'turn/completed') {
+          const turn = object(params.turn)
+          if (typeof turn.id === 'string' && typeof turn.status === 'string') {
+            terminals.set(turn.id, turn.status)
+            if (turn.id === turnId) complete()
+          }
+        }
+      }, fail, 30_000, recovery, disabled)
+    await transport.start(signal)
+    const policy = selected.expectedSandbox
+    const started = object(await transport.request('thread/start', { cwd: policy.cwd,
+      runtimeWorkspaceRoots: [policy.cwd], sandbox: 'workspace-write', approvalPolicy: 'never', ephemeral: true,
+      model: selected.configuration.model,
+      config: { ...Object.fromEntries(disabled.map((name) => [`mcp_servers.${name}.enabled`, false])),
+        sandbox_workspace_write: { writable_roots: [...policy.writableRoots], network_access: policy.networkAccess,
+          exclude_tmpdir_env_var: policy.excludeTmpdirEnvVar, exclude_slash_tmp: policy.excludeSlashTmp } },
+    }, signal))
+    threadId = object(started.thread).id as string
+    const actual = object(started.sandbox)
+    const roots = actual.writableRoots
+    if (!threadId || started.cwd !== policy.cwd || actual.type !== 'workspaceWrite'
+      || !Array.isArray(roots) || roots.some((root) => typeof root !== 'string')
+      || !sameCodexNativeOutputSandbox({ cwd: String(started.cwd), writableRoots: roots,
+        networkAccess: actual.networkAccess === true, excludeTmpdirEnvVar: actual.excludeTmpdirEnvVar === true,
+        excludeSlashTmp: actual.excludeSlashTmp === true, tmpdir: environment.TMPDIR }, policy)) {
+      throw unavailable()
+    }
+    await writeFile(hostPath, marker, { flag: 'wx', mode: 0o600 })
+    await unlink(hostPath)
+    const command = codexNativeOutputSandboxProbeCommand({ directPath, descendantPath, witnessPath, marker })
+    const turn = object(await transport.request('turn/start', { threadId, clientUserMessageId: randomUUID(),
+      input: [{ type: 'text', text: `Run this exact command once with the native shell tool. Do not change it, request broader permissions, or use other tools. Then finish.\n${command}`, text_elements: [] }],
+    }, signal))
+    turnId = object(turn.turn).id as string
+    if (!turnId) throw unavailable()
+    if (!terminals.has(turnId)) {
+      let aborted!: () => void
+      try {
+        await Promise.race([done, new Promise<never>((_resolve, reject) => {
+          aborted = () => reject(signal.reason)
+          signal.addEventListener('abort', aborted, { once: true })
+          if (signal.aborted) aborted()
+        })])
+      } finally { signal.removeEventListener('abort', aborted) }
+    }
+    const observed = commands.filter((entry) => entry.threadId === threadId && entry.turnId === turnId)
+    if (terminals.get(turnId) !== 'completed' || observed.length !== 1 || observed[0]!.item.command !== command
+      || observed[0]!.item.status !== 'completed' || observed[0]!.item.exitCode !== 0) throw unavailable()
+    const result = JSON.parse(String(observed[0]!.item.aggregatedOutput)) as {
+      marker: string; uid: number; tmpdir: string | null; direct: { denied: boolean }; descendant: { denied: boolean }
+      descendantExitCode: number
+    }
+    const witness: unknown = JSON.parse(await readFile(witnessPath, 'utf8'))
+    if (!isDeepStrictEqual(result, witness) || result.marker !== marker || result.uid !== process.getuid?.()
+      || !result.direct?.denied || !result.descendant?.denied || result.descendantExitCode !== 0) throw unavailable()
+    assertCodexProtectedOutputPlacement(protectedDirectory, { ...policy, tmpdir: result.tmpdir ?? undefined })
+    for (const path of [directPath, descendantPath]) {
+      try { await access(path); throw unavailable() }
+      catch (error) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+      }
+    }
+    await assertCodexUnchanged(qualified)
+    await input.assertCurrent(signal)
+  } finally {
+    const errors: unknown[] = []
+    try { await transport?.close() } catch (error) { errors.push(error) }
+    try {
+      await registry.abandonReservedLaunch(recovery)
+      if (!await registry.closeOwner(recovery.owner)) throw unavailable()
+    } catch (error) { errors.push(error) }
+    if (errors.length) throw new AggregateError(errors, 'Native output qualification closure was incomplete.')
+    // Own probe markers only, after positive diagnostic closure.
+    for (const path of [hostPath, directPath, descendantPath, witnessPath]) {
+      await unlink(path).catch((error: unknown) => {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+      })
+    }
+  }
+}

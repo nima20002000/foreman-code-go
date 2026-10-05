@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { RemoteWorkflowPhysicalOutputSchema } from './remoteWorkflowPhysical.js'
+import { RemoteWorkflowPhysicalOutputSchema, remoteWorkflowPhysicalOutput } from './remoteWorkflowPhysical.js'
 
 const artifactOutputs = { version: 1, outputs: [{ outputKey: 'report', commandId: 'publish-original-report' }] }
 const native = (envelope: unknown) => ({ outcome: 'succeeded', output: { text: JSON.stringify(envelope) } })
@@ -22,6 +22,18 @@ describe('original remote physical artifact association', () => {
       expect(RemoteWorkflowPhysicalOutputSchema.parse(output)).toEqual(output)
       expect(JSON.stringify(output)).toBe(before)
     }
+  })
+  it('carries the combined handoff and artifact association from the original native result', () => {
+    for (const routing of [{ kind: 'finish' }, { kind: 'request', outcome: 'review' },
+      { kind: 'return', requestId: 'original-request', outcome: 'accepted' }]) {
+      const result = native({ routing, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] }, artifactOutputs })
+      const output = remoteWorkflowPhysicalOutput(result, { version: 1, outputKeys: ['report'] })
+      expect(output).toEqual({ kind: 'published-artifacts', result, artifactOutputs })
+      expect(RemoteWorkflowPhysicalOutputSchema.parse(output)).toEqual(output)
+      expect(() => remoteWorkflowPhysicalOutput(result, { version: 1, outputKeys: ['another'] })).toThrow()
+    }
+    expect(() => remoteWorkflowPhysicalOutput(native({ routing: { kind: 'finish' },
+      data: { latestDeliverable: {}, remainingFindings: [] } }), { version: 1, outputKeys: ['report'] })).toThrow()
   })
   it.each([
     { ...published(), artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId: 'foreign-command' }] } },

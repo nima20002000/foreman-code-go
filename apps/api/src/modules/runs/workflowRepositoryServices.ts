@@ -21,6 +21,7 @@ import type { RunOwnership } from './ownership.js'
 import { visitRepeatNativeAttemptsLocked } from './repeatNativeAttempts.js'
 import { hasWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { readWorkflowNativeEntryLocked, workflowNativeReservation } from './workflowNativeEntry.js'
+import { readWorkflowTerminalReceiptLocked } from './workflowTerminalReceipt.js'
 
 function conflict(code: string): never {
   throw new DomainError(code, 'The current workflow operation conflicts with its exact durable evidence.', 409)
@@ -105,6 +106,9 @@ export async function assertWorkflowRunSettlementLocked(sql: GraphTransactionSql
       const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
       const stored = await readRepeatExecutionLocked(sql, snapshot, id)
       if (stored.execution.state !== 'queued') {
+        if (stored.execution.result?.outcome === 'succeeded' && !stored.accepted) {
+          await readWorkflowTerminalReceiptLocked(sql, snapshot, stored)
+        }
         settled.push(id)
         continue
       }

@@ -46,9 +46,14 @@ export async function settleWorkForRestart(owner: RunOwnership): Promise<boolean
           where n.execution_id=e.id and n.run_id=e.run_id and n.phase='reserved')
           or exists(select 1 from run_graph_effects f where f.run_id=e.run_id
             and f.effect_kind='execution.launch' and f.entity_id=e.id))
-        or e.record#>>'{result,outcome}'='succeeded' and (not e.accepted or not exists(
+        or e.record#>>'{result,outcome}'='succeeded' and (e.accepted and not exists(
           select 1 from run_work_results x where x.run_id=e.run_id and x.execution_id=e.id
-            and x.activation_id=e.work_activation_id)))) as pending`, [owner.runId])).rows[0]
+            and x.activation_id=e.work_activation_id)
+          or not e.accepted and not exists(select 1 from workflow_native_proofs p
+            where p.run_id=e.run_id and p.execution_id=e.id
+              and p.record#>>'{original,type}'='history'
+              and p.record#>'{original,history,terminalTurn,result}'=e.record->'result')))) as pending`,
+    [owner.runId])).rows[0]
     if (pending?.pending !== false) return false
     await retainOwner(sql, owner)
     await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'restart')

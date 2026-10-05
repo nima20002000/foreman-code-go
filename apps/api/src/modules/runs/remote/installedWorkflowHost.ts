@@ -11,7 +11,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
-import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteWorkflowPhysicalReadoutSchema, remoteWorkflowPhysicalOutput } from '@foreman-code/contracts/remote-workflow-physical'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { SourceOperationResponseSchema, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
@@ -41,7 +41,7 @@ import { RemoteExecutionHost } from './executionHost.js'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
-import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
+import type { DeviceExtensionRegistration, DeviceExtensionContext, DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
@@ -50,6 +50,10 @@ import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,asser
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
 import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
+import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
+import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
+  type AgentFilePublishInput, type AgentFilePublishResult } from '@graphql/contracts/files'
+import { workflowArtifactDigestsByOutputKey } from '@graphql/contracts/workflow-artifact-result'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
@@ -75,7 +79,7 @@ export function captureInstalledWorkflowNativeOwner(registry:NativeProcessRegist
 /** Only matched provider history plus positive original registry closure can settle. Manager/process cleanup errors retain the original uncertainty. */
 export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOperationJournal;registry:NativeProcessRegistry;
   intent:DispatchIntent;history:NativeHistory;captured:InstalledWorkflowNativeOwner;
-  manager:NativeHarnessSessionManager;session:NativeSessionReference}):Promise<RemoteTerminalEvidence|null> {
+  manager:NativeHarnessSessionManager;session:NativeSessionReference;artifactDigests?:string[]}):Promise<RemoteTerminalEvidence|null> {
   const status=await input.journal.status(input.intent.operationId)
   if(status.status!=='known'||!isDeepStrictEqual(status.receipt.intent,input.intent)||!status.receipt.native
     ||status.receipt.native.sessionId!==input.session.nativeSessionId||input.captured.native.sessionId!==input.session.nativeSessionId
@@ -93,7 +97,8 @@ export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOp
   if(!await input.registry.closeOwner(input.captured.owner))return null
   return RemoteTerminalEvidenceSchema.parse({kind:result?result.outcome==='succeeded'?'completed':result.outcome==='failed'?'failed':'cancelled':'cancelled',
     closureEvidenceDigest:digest({intent:input.intent,native:status.receipt.native,launch:input.captured.launch,physicalOwnerClosed:true}),
-    ...(result?{result,resultDigest:digest(result)}:{})})
+    ...(result?{result,resultDigest:digest(result)}:{}),
+    ...(input.artifactDigests ? { artifactDigests: input.artifactDigests } : {})})
 }
 
 /** Source verification uses W09's actual Main-authorized worker service. The runtime leaf is a separate anchored directory with an immutable operation receipt. */
@@ -163,13 +168,15 @@ type QualificationReader=ReturnType<typeof createInstalledCodexQualificationRead
 type QualificationCapture=Awaited<ReturnType<QualificationReader['capture']>>
 export interface CapturedWorkflowMainRequest {
   readonly binding:Readonly<DeviceSessionBinding>
-  request(payload:unknown,options?:{signal?:AbortSignal}):Promise<DeviceApplicationResult>
+  request(payload:unknown,options?:DeviceApplicationRequestOptions):Promise<DeviceApplicationResult>
 }
 export interface InstalledWorkflowNativeOutputContext {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
   binding: Readonly<DeviceSessionBinding>
   materialization: SourceMaterializationRecord
+  applicationAccess(): RemoteApplicationAccess
+  publicationCompleted(publication: AgentFilePublishInput, result: AgentFilePublishResult): void
   /** Real original registry/ACK evidence; deliberately does not inspect passive
    * originalSessionLifetime while the producer's starting gate is active. */
   assertCurrent(pin?: CodexNativeOutputTurnPin, signal?: AbortSignal): Promise<void>
@@ -207,6 +214,7 @@ interface InstalledOperation {
   nativeSignal?:AbortSignal
   nativeStart?:NativeSessionStart
   applicationAccess?:RemoteApplicationAccess
+  publications: Map<string, AgentFilePublishResult['value']>
   mcp?:Awaited<ReturnType<typeof createWorkerMcpEndpoint>>
   leaseExpiresAt?:string
   runtimeLeaf?:RuntimeLeafAttestation
@@ -272,7 +280,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         readFacts:()=>readFacts(intent,placement),suiteRevision:input.codexSuiteRevision})
       const capture=await reader.capture()
       current(context.binding)
-      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,scope:registry.scope(`execution:${intent.executionId}`)}
+      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,
+        scope:registry.scope(`execution:${intent.executionId}`),publications:new Map()}
       operations.set(intent.executionId,owned)
     }
     const generation=commandInputHash(context.binding)
@@ -300,6 +309,21 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
           binding: Object.freeze(structuredClone(actual.context.binding)),
           materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
+          applicationAccess: () => {
+            if (!actual.applicationAccess || actual.launchDisabled || closing) unavailable('original_main_lease_required')
+            return structuredClone(actual.applicationAccess!)
+          },
+          publicationCompleted: (raw, reply) => {
+            const publication = AgentFilePublishInputSchema.parse(raw)
+            const result = AgentFilePublishResultSchema.parse(reply)
+            const chat = publication.scope.chat
+            if (actual.launchDisabled || closing || chat.kind !== 'agent' || chat.runId !== actual.intent.runId
+              || chat.executionId !== actual.intent.executionId
+              || !isDeepStrictEqual(result.value.file.scope, publication.scope)) unavailable('original_artifact_publication_conflict')
+            const previous = actual.publications.get(publication.commandId)
+            if (previous && !isDeepStrictEqual(previous, result.value)) unavailable('original_artifact_publication_conflict')
+            actual.publications.set(publication.commandId, structuredClone(result.value))
+          },
           assertCurrent: async (pin, effectSignal) => {
             effectSignal?.throwIfAborted(); current(actual.context.binding)
             await before(); effectSignal?.throwIfAborted(); current(actual.context.binding)
@@ -321,7 +345,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
           },
         }
-        const outputPorts = input.nativeOutputs?.(outputContext)
+        const declared = actual.placement.payload.kind === 'agent' && actual.placement.payload.artifactOutputs
+        const outputPorts = declared ? (input.nativeOutputs
+          ? input.nativeOutputs(outputContext)
+          : createInstalledWorkflowNativeOutputProviders({ stateDirectory: input.stateDirectory,
+            context: outputContext, registry, captureRequest: input.captureRequest,
+            qualification: { qualify: dependencies.qualify, command: dependencies.runCommand } })) : undefined
         if (outputPorts && (!isDeepStrictEqual(outputPorts.artifacts.binding.intent, actual.intent)
           || !isDeepStrictEqual(outputPorts.artifacts.binding.placement, actual.placement)
           || outputPorts.artifacts.binding.root.rootId !== outputContext.materialization.receipt.binding.rootId
@@ -409,10 +438,19 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!resident.native||resident.manager!==owner.manager)unavailable('original_native_owner_required')
           resident.retainedHistory=structuredClone(history)
           const state=await log.status(intent.operationId)
+          const result = history.terminalTurn?.result
+          const declaration = resident.placement.payload.kind === 'agent' ? resident.placement.payload.artifactOutputs : undefined
+          const output = result ? remoteWorkflowPhysicalOutput(result, declaration) : undefined
+          const artifactDigests = output?.kind === 'published-artifacts'
+            ? workflowArtifactDigestsByOutputKey(output.artifactOutputs.outputs.map((mapping) => {
+              const publication = resident.publications.get(mapping.commandId)
+              if (!publication) unavailable('original_artifact_publication_missing')
+              return { outputKey: mapping.outputKey, sha256: publication!.revision.sha256 }
+            })) : []
           if(state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
             &&history.terminalTurn.providerId===state.receipt.native?.turnId))resident.launchDisabled=true
           const terminal=await settleInstalledWorkflowNativeOwner({journal:log,registry,intent,history,captured:resident.native,
-            manager:owner.manager,session:owner.session})
+            manager:owner.manager,session:owner.session,artifactDigests})
           if(terminal) {
             const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
             if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
@@ -456,7 +494,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               observation:matchingOriginalRegistryLaunch(registry,resident.native.launch),runtimeLeaf:resident.runtimeLeaf,
               source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
               ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
-              ...(receipt.terminal?.result?{output:{kind:'text-only',result:receipt.terminal.result}}:{})})
+              ...(receipt.terminal?.result ? { output: remoteWorkflowPhysicalOutput(receipt.terminal.result,
+                resident.placement.payload.kind === 'agent' ? resident.placement.payload.artifactOutputs : undefined) } : {})})
             const assertOwnerCurrent = async () => {
               current(context.binding)
               await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')

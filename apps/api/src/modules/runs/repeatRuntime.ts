@@ -134,6 +134,7 @@ export interface RepeatNativeObserverContext {
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
   preparePlacement?(execution: HarnessExecution): Promise<{ workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
+  reconcileArtifacts?(execution: HarnessExecution): Promise<void>
   directory(executionId: string): string
 }
 
@@ -166,6 +167,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
     // Do not even enter capacity or compute a directory for terminal replay.
     if (execution.state === 'completed') {
       await native.observeExact({ ...common, execution, store, signal })
+      await context.reconcileArtifacts?.(execution)
       return
     }
     // LangGraph restarts every unresolved wrapper, not just the notified
@@ -188,6 +190,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       execution = await reload() // Stop or another exact observation may win while queued.
       if (execution.state === 'completed') {
         await native.observeExact({ ...common, execution, store, signal })
+        await context.reconcileArtifacts?.(execution)
         return
       }
       const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
@@ -218,6 +221,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       assertSameRepeatExecution(admitted, execution)
       if (execution.state === 'completed') {
         await native.observeExact({ ...common, execution, store, signal })
+        await context.reconcileArtifacts?.(execution)
         return
       }
       if (execution.workingDirectory !== paths.workingDirectory || execution.runtimeDirectory !== paths.runtimeDirectory) {
@@ -273,7 +277,10 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution
-        if (observation.state === 'completed') return
+        if (observation.state === 'completed') {
+          await context.reconcileArtifacts?.(execution)
+          return
+        }
         // Also gate a later request in this same native turn. Replaying older
         // task-local resume values must not reopen its budget/native observer.
         await waitForApprovals()
@@ -355,6 +362,8 @@ export async function executeRepeatRuntime(input: {
       // Launch preflight refusals happen before any native session exists.
       'APP_MCP_PREFLIGHT_FAILED', 'MCP_INSPECTION_CONTEXT_MISMATCH', 'HARNESS_INSPECTOR_UNAVAILABLE',
       'WORKER_EXECUTION_IDENTITY_INVALID', 'HARNESS_CONFIGURATION_MISMATCH',
+      'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED', 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT',
+      'WORKFLOW_ARTIFACT_SOURCE_CONFLICT', 'WORKFLOW_TERMINAL_SOURCE_CONFLICT',
       'WORK_SELECTED_EXECUTION_FAILED', 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
       'WORK_POLICY_PIN_CONFLICT', 'WORK_ACTIVATION_REPLAY_CONFLICT', 'WORK_ACTIVATION_PIN_CONFLICT',
       'WORK_TERMINAL_REPLAY_CONFLICT', 'WORK_RETRY_ACTIVATION_CONFLICT', 'WORK_RETRY_NOT_ALLOWED',

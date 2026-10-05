@@ -33,7 +33,9 @@ import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
-import { MainWorkerMcpRelay, selectedMainMcpForward } from './modules/placement/workerMcpRelay.js'
+import { MainWorkerMcpRelay, selectedMainMcpForward, createWorkerNativeOutputAuthorizationPort } from './modules/placement/workerMcpRelay.js'
+import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { recoverWorkflowArtifactOutputs } from './modules/runs/remote/workflowArtifactRecovery.js'
 import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
@@ -386,6 +388,16 @@ export function buildProductionApp(
     await artifactResultSource?.retainOriginalLocked(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
+    async reconcileWorkflowArtifacts(owner, run, execution) {
+      const snapshot = await runs.getRepeatSnapshot(run.id, owner)
+      const node = snapshot.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+      if (!node || node.kind === 'job' || !node.artifactOutputs) return
+      if (!artifactComposition || !workflowArtifacts) {
+        throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original artifact composition is unavailable.', 503)
+      }
+      await recoverWorkflowArtifactOutputs({ owner, execution, authority: artifactComposition.authority,
+        outputs: workflowArtifacts.artifacts.outputs })
+    },
     async assertWorkflowArtifactOutputsLocked(sql, run, version, execution) {
       if (!artifactOutputsGate) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact acceptance composition is unavailable.', 503)
       await artifactOutputsGate(sql, run, version, execution)
@@ -396,7 +408,7 @@ export function buildProductionApp(
     },
     async preparePlacementExecution(owner, run, execution) {
       if (!artifactResultSource) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact composition is unavailable.', 503)
-      await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchSupportedLocked(sql, execution.id, run.id))
+      await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchDeclarationLocked(sql, execution.id, run.id))
       if (agentPreparation) {
         const prepared = await approvals.withSourceObservationLane(owner, execution, () => agentPreparation!.prepare(owner, run, execution))
         return prepared ? { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) } : undefined
@@ -1298,8 +1310,28 @@ export function buildProductionApp(
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
-      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app),
-        infrastructure?.nativeOutputAuthorization?.(artifactAuthority))
+      const outputAuthorization = infrastructure?.nativeOutputAuthorization?.(artifactAuthority)
+        ?? createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (input, connection, sql) => {
+          const binding = deviceRuntime.currentBinding(connection.deviceId)
+          const identity = binding && DeviceConnectionIdentitySchema.parse({ mainId: binding.mainId,
+            deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision,
+            authorizationRevision: binding.authorizationRevision, bootId: binding.bootId,
+            connectionGeneration: binding.connectionGeneration })
+          const original = DeviceConnectionIdentitySchema.parse({ mainId: connection.mainId, deviceId: connection.deviceId,
+            workerInstallationId: connection.workerInstallationId, keyRevision: connection.keyRevision,
+            authorizationRevision: connection.authorizationRevision, bootId: connection.bootId,
+            connectionGeneration: connection.connectionGeneration })
+          if (!binding || !isDeepStrictEqual(identity, original)) {
+            throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original artifact connection changed.', 403)
+          }
+          const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
+            'select workspace_id,workflow_id from runs where id=$1 for share', [input.intent.runId])).rows[0]
+          if (!row) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original artifact Run is unavailable.', 409)
+          return artifactAuthority.resolveWorkflowContext({ workspaceId: row.workspace_id, workflowId: row.workflow_id,
+            runId: input.intent.runId, nodeId: input.intent.nodeId, executionId: input.intent.executionId,
+            attemptId: input.intent.attemptId, placementHash: input.intent.bindingHash }, transferContextForBinding(binding), sql)
+        })
+      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app), outputAuthorization)
       artifactOutputsGate = createWorkflowArtifactOutputsGate(machine.installationId, artifactAuthority)
       artifactResultSource = createProductionWorkflowArtifactResultSource({ captures: workflowCapture.verify,
         physical: remoteWorkflow, authority: artifactAuthority })
