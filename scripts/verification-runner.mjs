@@ -403,4 +403,3 @@ export async function verifyRepository(context, { root = repository, signal } = 
   }
   return finalizeVerification(context, { root, directory, state, ...result })
 }
-
