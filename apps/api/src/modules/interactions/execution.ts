@@ -1363,13 +1363,15 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!execution.nativeSessionId) {
+        const launchContext = context
+        const launchManager = resolved
         const environment = await timeRuntimeOperation('harness', 'native.prepare_environment', () =>
-          this.prepareEnvironment(context, resolved, signal, undefined, async () => {
+          this.prepareEnvironment(launchContext, launchManager, signal, undefined, async () => {
             await repeat.authorizeNativeSubmission(execution.id)
             repeatLaunch = repeat.consumeLaunch(execution.id)
             if (!repeatLaunch) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
               'No exact committed launch permit exists. Native work was not started.', 409)
-        }))
+          }))
         startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
