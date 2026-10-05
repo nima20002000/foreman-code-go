@@ -57,6 +57,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       providers: ['opencode', 'codex'], review: false, approval: true, capLoop: false, attemptFourth: false },
     { name: 'unequal Codex and OpenCode branches into one all-required join', form: 'parallel',
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
+    { name: 'concurrent branches into one join approval with engine restart', form: 'parallel',
+      providers: ['codex', 'codex', 'codex', 'opencode'], review: false, approval: true,
+      approvalNode: 3, restartOnApproval: true, capLoop: false, attemptFourth: false },
     { name: 'third needs-changes review reroutes from C to D', form: 'parallel',
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false, capLoop: true, attemptFourth: false },
     { name: 'attempted fourth C request is denied before D reroute', form: 'parallel',
@@ -68,6 +71,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false,
       capLoop: true, attemptFourth: false, finalAccepted: true },
   ] as const)('finishes $name with exact accepted results and cleanup', async (scenario) => {
+    const approvalNode = 'approvalNode' in scenario ? scenario.approvalNode : 0
+    const restartOnApproval = 'restartOnApproval' in scenario && scenario.restartOnApproval
     const noRoute = 'noRoute' in scenario && scenario.noRoute
     const finalAccepted = 'finalAccepted' in scenario && scenario.finalAccepted
     await nim2691TaskDatabase(async (pool, directory, suppliedUrl) => {
@@ -160,7 +165,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
-        const production = buildProductionApp(config, database, checkpoints, false)
+        let production = buildProductionApp(config, database, checkpoints, false)
         const startupErrors: Array<{ code: string; detail?: string }> = []
         const start = production.engine.start.bind(production.engine)
         production.engine.start = async (runId) => {
@@ -189,7 +194,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           harness: scenario.providers[index] === 'opencode'
             ? { harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high',
               nativeAgent: 'build', thinking: false, autoApprove: false,
-              ...(scenario.approval && index === 0 ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+              ...(scenario.approval && index === approvalNode ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
             : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? 'gpt-5.6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
@@ -198,8 +203,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             ? finalAccepted && index === 1
               ? 'You are requester B. On work_request and needs-changes work_return, always output a new routing.kind request with outcome review_c. Never output routing.kind return. Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
               : 'Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
-            : index === 0
-            ? scenario.approval
+            : index === 0 || scenario.approval && index === approvalNode
+            ? scenario.approval && index === approvalNode
               ? 'Use exactly one read-only shell command: pwd. Wait for the authorized response. Then follow the Foreman Code work-handoff output contract.'
               : 'Follow the Foreman Code work-handoff output contract. Do not use tools.'
             : 'Summarize only the received work. Follow the Foreman Code work-handoff output contract.' },
@@ -279,7 +284,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                   : 'Return to the exact input.work.request.requestId with routing.kind return and outcome needs_changes. Set latestDeliverable.revision to the prior latestDeliverable.revision plus one. Include one remaining finding. Never accept.',
                 'Return to the exact input.work.request.requestId with routing.kind return and outcome accepted. Preserve the latest deliverable and set remainingFindings to [].',
               ][index]
-              : scenario.approval && index === 0
+              : scenario.approval && index === approvalNode
               ? 'First call the shell tool with exactly pwd. After its approval and result, return a short greeting in latestDeliverable and finish.'
               : scenario.review
               ? index === 0
@@ -291,7 +296,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 ? 'Return a short greeting as latestDeliverable and finish.'
                 : 'Summarize only the received work in latestDeliverable and finish.' })),
           edges: capEdges ?? fixture.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
-          handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: 1,
+          handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: scenario.form === 'parallel' && !scenario.capLoop ? 2 : 1,
             maxNodeExecutions: scenario.capLoop ? 12 : configurations.length } }
         const saveInput = CurrentWorkflowSaveInputSchema.parse({ workspaceId: workspace.id,
           workflowId: managed.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
@@ -314,6 +319,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         const runId = started.json().run.id as string
         observedRunId = runId
         const approved = new Set<string>()
+        let restarted = false
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
           if (scenario.approval) {
@@ -323,6 +329,23 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expect(pendingResponse.statusCode, pendingResponse.body).toBe(200)
             const pending: ReturnType<typeof ListInteractionsResponseSchema.parse>['items'] =
               ListInteractionsResponseSchema.parse(pendingResponse.json()).items
+            if (restartOnApproval && !restarted && pending.length) {
+              expect(pending).toHaveLength(1)
+              const current = (await pool.query<{ execution_state: string }>(
+                'select execution_state from runs where id=$1', [runId])).rows[0]
+              if (current?.execution_state !== 'waiting') {
+                await new Promise((resolve) => setTimeout(resolve, 50))
+                continue
+              }
+              await production.shutdown()
+              production = buildProductionApp(config, database, checkpoints, false)
+              app = production.app
+              await production.initialize()
+              await app.listen({ host: config.host, port: config.port })
+              await production.reconcile((error) => { throw error })
+              restarted = true
+              continue
+            }
             for (const interaction of pending) {
               if (approved.has(interaction.id)) continue
               const request = interaction.request as { permission?: unknown; patterns?: unknown }
@@ -374,6 +397,14 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           expect(activityKinds).toContain('work_needs_direction')
           expect(activityKinds).toContain('work_direction_wait')
           expect((await pool.query('select 1 from run_work_unresolved where run_id=$1',
+            [runId])).rowCount).toBe(1)
+        }
+        if (restartOnApproval) {
+          expect(restarted).toBe(true)
+          expect(approved.size).toBe(1)
+          expect((await pool.query('select id from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, fixture.version.definition.nodes[approvalNode]!.id])).rowCount).toBe(1)
+          expect((await pool.query('select activation_id from run_work_join_dispatches where run_id=$1',
             [runId])).rowCount).toBe(1)
         }
         if (scenario.approval) {
