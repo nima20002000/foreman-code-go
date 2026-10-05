@@ -59,7 +59,7 @@ const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
 export function nativeAcceptanceBinaries(environment: NodeJS.ProcessEnv = process.env) {
-  if (environment.GRAPHQL_VERIFICATION_ROOT
+  if (environment.FOREMAN_CODE_VERIFICATION_ROOT
     && (!environment.ENG03_A_CODEX_BINARY || !environment.ENG03_A_OPENCODE_BINARY)) {
     throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
   }
@@ -148,7 +148,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   }
   const { codexBinary, openCodeBinary } = nativeAcceptanceBinaries()
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
-    ?? (process.env.GRAPHQL_VERIFICATION_ROOT ? undefined : process.env.WAVE25_TEST_DATABASE_URL)
+    ?? (process.env.FOREMAN_CODE_VERIFICATION_ROOT ? undefined : process.env.WAVE25_TEST_DATABASE_URL)
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol)

@@ -21,16 +21,16 @@ import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
 describe('acceptance Job binary configuration', () => {
   it('denies missing in-image binaries instead of selecting owner installations', () => {
     for (const environment of [
-      { GRAPHQL_VERIFICATION_ROOT: '/source' },
-      { GRAPHQL_VERIFICATION_ROOT: '/source', ENG03_A_CODEX_BINARY: '/opt/codex' },
-      { GRAPHQL_VERIFICATION_ROOT: '/source', ENG03_A_OPENCODE_BINARY: '/opt/opencode' },
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source' },
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source', ENG03_A_CODEX_BINARY: '/opt/codex' },
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source', ENG03_A_OPENCODE_BINARY: '/opt/opencode' },
     ]) {
       expect(() => nativeAcceptanceBinaries(environment)).toThrow('explicitly qualified in-image')
     }
   })
 
   it('retains both explicitly qualified binary paths', () => {
-    expect(nativeAcceptanceBinaries({ GRAPHQL_VERIFICATION_ROOT: '/source',
+    expect(nativeAcceptanceBinaries({ FOREMAN_CODE_VERIFICATION_ROOT: '/source',
       ENG03_A_CODEX_BINARY: '/opt/codex', ENG03_A_OPENCODE_BINARY: '/opt/opencode' }))
       .toEqual({ codexBinary: '/opt/codex', openCodeBinary: '/opt/opencode' })
   })

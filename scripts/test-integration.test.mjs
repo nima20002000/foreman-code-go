@@ -340,11 +340,11 @@ test('skipped cases and diagnostic resumes cannot satisfy a complete integration
 
 test('Job integration shards require and respect both reservation and qualification', () => {
   assert.equal(reservedIntegrationShards({}), 12)
-  const job = { GRAPHQL_VERIFICATION_ROOT: '/source',
-    GRAPHQL_VERIFICATION_INTEGRATION_SHARDS: '1', GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS: '1' }
+  const job = { FOREMAN_CODE_VERIFICATION_ROOT: '/source',
+    FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '1', FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS: '1' }
   assert.equal(reservedIntegrationShards(job), 1)
-  assert.throws(() => reservedIntegrationShards({ GRAPHQL_VERIFICATION_ROOT: '/source' }), /require reserved/)
+  assert.throws(() => reservedIntegrationShards({ FOREMAN_CODE_VERIFICATION_ROOT: '/source' }), /require reserved/)
   assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
-  assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_VERIFICATION_INTEGRATION_SHARDS: '2',
+  assert.throws(() => reservedIntegrationShards({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '2',
     GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
 })

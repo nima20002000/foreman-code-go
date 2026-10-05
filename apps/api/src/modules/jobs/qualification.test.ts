@@ -14,9 +14,9 @@ import { validateVerificationIsolationObservation } from './qualification.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import { requireVerificationRuntime, type QualifiedJobProfile } from './executor.js'
 import { JobVerificationRuntimeMeasurementSchema, JOB_VERIFICATION_BASE_CHECKS }
-  from '@graphql/contracts/job-verification-runtime'
-import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
-import { JOB_RUNTIME_PROVISIONING_SUITE } from '@graphql/contracts/job-runtime'
+  from '@foreman-code/contracts/job-verification-runtime'
+import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
+import { JOB_RUNTIME_PROVISIONING_SUITE } from '@foreman-code/contracts/job-runtime'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { verificationRepositoryContext } from './executorOutputs.js'
@@ -184,8 +184,8 @@ describe('offline verification launch validation with structured physical observ
     expect(argv.slice(argv.indexOf('--shm-size'), argv.indexOf('--shm-size') + 2)).toEqual(['--shm-size', String(resources.shmBytes)])
     expect(argv).toContain(`${input.verification.scratchDirectory}:/job-scratch:rw,nosuid,nodev,exec,rprivate`)
     expect(argv).toContain('HOME=/job-scratch/home')
-    expect(argv).toContain('GRAPHQL_VERIFICATION_UNIT_WORKERS=1')
-    expect(argv).toContain('GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS=1')
+    expect(argv).toContain('FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=1')
+    expect(argv).toContain('FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS=1')
     expect(() => podmanIsolationCreateArgv({ ...input, verification: { resources, scratchDirectory: '/owner/home' } }))
       .toThrow('reserved private boundary')
     expect(() => podmanIsolationCreateArgv({ ...input, profile: { ...input.profile, memoryBytes: 1 } }))

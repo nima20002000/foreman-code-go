@@ -1,8 +1,8 @@
 import { JobVerificationProfileSchema, type JobVerificationProfile,
-  type JobRuntimeProfileRecord, type JobVerificationProfileInput } from '@graphql/contracts/job-verification-runtime'
+  type JobRuntimeProfileRecord, type JobVerificationProfileInput } from '@foreman-code/contracts/job-verification-runtime'
 import { JobVerificationApprovalConfigSchema, JOB_VERIFICATION_APPROVAL_LIFETIME_MS }
-  from '@graphql/contracts/job-verification-policy'
-import type { SourceRootRecord } from '@graphql/contracts/source-admission'
+  from '@foreman-code/contracts/job-verification-policy'
+import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
 import { jobDigest } from './service.js'
 

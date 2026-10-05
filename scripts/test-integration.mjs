@@ -148,16 +148,16 @@ export function integrationShardLimit(value) {
 }
 
 export function reservedIntegrationShards(environment) {
-  if (!environment.GRAPHQL_VERIFICATION_ROOT) {
-    return integrationShardLimit(environment.GRAPHQL_INTEGRATION_SHARDS)
+  if (!environment.FOREMAN_CODE_VERIFICATION_ROOT) {
+    return integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS'))
   }
-  if (!environment.GRAPHQL_VERIFICATION_INTEGRATION_SHARDS
-    || !environment.GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS) {
+  if (!environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS
+    || !environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS) {
     throw new Error('Integration Jobs require reserved and qualified shard limits')
   }
-  const reserved = integrationShardLimit(environment.GRAPHQL_VERIFICATION_INTEGRATION_SHARDS)
-  const qualified = integrationShardLimit(environment.GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS)
-  const requested = integrationShardLimit(environment.GRAPHQL_INTEGRATION_SHARDS ?? String(reserved))
+  const reserved = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS)
+  const qualified = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS)
+  const requested = integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS') ?? String(reserved))
   if (requested > reserved || requested > qualified) {
     throw new Error('Integration shards exceed the accepted reservation or suite qualification')
   }
@@ -183,10 +183,10 @@ export async function scheduleFiles(files, slots, runFile, shouldStop = () => fa
 export function integrationTimeouts(environment) {
   const timeouts = { ...integrationProcessLimits }
   for (const [setting, variable] of [
-    ['idleTimeoutMs', 'GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS'],
-    ['fileTimeoutMs', 'GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS'],
+    ['idleTimeoutMs', 'FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS'],
+    ['fileTimeoutMs', 'FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS'],
   ]) {
-    const selected = readProductEnvironment(environment, variable.slice('GRAPHQL_'.length))
+    const selected = readProductEnvironment(environment, variable.slice('FOREMAN_CODE_'.length))
     if (selected === undefined) continue
     const value = Number(selected)
     if (!Number.isSafeInteger(value) || value < 1000 || value > 60 * 60_000) {
@@ -300,7 +300,7 @@ async function main() {
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
   if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
-  if (process.env.GRAPHQL_VERIFICATION_ROOT && !process.env.TEST_DATABASE_URL) {
+  if (process.env.FOREMAN_CODE_VERIFICATION_ROOT && !process.env.TEST_DATABASE_URL) {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
   const shardCount = Math.min(reservedIntegrationShards(process.env), selected.length)
@@ -318,10 +318,10 @@ async function main() {
   const startedAt = new Date().toISOString()
   const firstPass = []
   const retestReports = []
-  const logBytes = positiveInteger(Number(process.env.GRAPHQL_VERIFICATION_LOG_BYTES
-    ?? process.env.GRAPHQL_INTEGRATION_LOG_BYTES ?? 8 * 1024 * 1024), 'Integration log byte limit')
-  const reportBytes = positiveInteger(Number(process.env.GRAPHQL_VERIFICATION_REPORT_BYTES
-    ?? process.env.GRAPHQL_INTEGRATION_REPORT_BYTES ?? 32 * 1024 * 1024), 'Integration report byte limit')
+  const logBytes = positiveInteger(Number(process.env.FOREMAN_CODE_VERIFICATION_LOG_BYTES
+    ?? readProductEnvironment(process.env, 'INTEGRATION_LOG_BYTES') ?? 8 * 1024 * 1024), 'Integration log byte limit')
+  const reportBytes = positiveInteger(Number(process.env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES
+    ?? readProductEnvironment(process.env, 'INTEGRATION_REPORT_BYTES') ?? 32 * 1024 * 1024), 'Integration report byte limit')
   let interrupted = null
   const interrupt = (signal) => {
     interrupted ??= signal
@@ -591,7 +591,7 @@ async function main() {
       try {
         writeReport(join(failedLogs, 'vitest.json'), mergedVitestReport(fileResults, startedAt, report.outcome), reportBytes)
         writeReport(join(failedLogs, 'junit.xml'), junitReport(fileResults, report.outcome), reportBytes)
-        const archiveBytes = positiveInteger(Number(process.env.GRAPHQL_INTEGRATION_ARCHIVE_BYTES
+    const archiveBytes = positiveInteger(Number(readProductEnvironment(process.env, 'INTEGRATION_ARCHIVE_BYTES')
           ?? reportBytes), 'Integration archive byte limit')
         writeReport(join(failedLogs, 'logs.tar.gz'), logArchive(failedLogs, archiveBytes), archiveBytes)
       } catch (error) {

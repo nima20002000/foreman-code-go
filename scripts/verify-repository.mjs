@@ -179,7 +179,7 @@ function ownedGroups(token) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue
     try {
       const environment = readFileSync(`/proc/${entry}/environ`)
-      if (!environment.includes(Buffer.from(`GRAPHQL_VERIFICATION_PROCESS_TOKEN=${token}\0`))) continue
+      if (!environment.includes(Buffer.from(`FOREMAN_CODE_VERIFICATION_PROCESS_TOKEN=${token}\0`))) continue
       const stat = readFileSync(`/proc/${entry}/stat`, 'utf8')
       const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')
       if (fields[0] !== 'Z') groups.add(Number(fields[2]))
@@ -196,7 +196,7 @@ export async function runSuiteProcess(command, { root, env, directory, limits, e
   const token = randomUUID()
   const log = boundedLog(join(directory, 'parts', `${logName}.log`), limits.logBytes)
   const child = spawn(command[0], command.slice(1), { cwd: root, detached: true,
-    env: { ...env, GRAPHQL_VERIFICATION_PROCESS_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] })
+    env: { ...env, FOREMAN_CODE_VERIFICATION_PROCESS_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.on('data', (chunk) => log.write(chunk))
   child.stderr.on('data', (chunk) => log.write(chunk))
   let terminalOutcome
@@ -281,10 +281,10 @@ export async function verifyRepository(context, { root = repository, signal } = 
   const state = { identity: context.identity, startedAt: new Date().toISOString(),
     expected: expectedPortions(root, context.identity.suite) }
   writeReport(join(directory, 'parts', 'state.json'), state, context.limits.vitestBytes)
-  const environment = { ...process.env, GRAPHQL_VERIFICATION_ROOT: resolve(root),
-    GRAPHQL_VERIFICATION_REPORT_DIR: directory, GRAPHQL_VERIFICATION_LOG_BYTES: String(context.limits.logBytes),
-    GRAPHQL_VERIFICATION_REPORT_BYTES: String(context.limits.vitestBytes),
-    GRAPHQL_VERIFICATION_UNIT_WORKERS: String(context.identity.parameters.unitWorkers), COREPACK_ENABLE_NETWORK: '0' }
+  const environment = { ...process.env, FOREMAN_CODE_VERIFICATION_ROOT: resolve(root),
+    FOREMAN_CODE_VERIFICATION_REPORT_DIR: directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: String(context.limits.logBytes),
+    FOREMAN_CODE_VERIFICATION_REPORT_BYTES: String(context.limits.vitestBytes),
+    FOREMAN_CODE_VERIFICATION_UNIT_WORKERS: String(context.identity.parameters.unitWorkers), COREPACK_ENABLE_NETWORK: '0' }
   let result = { terminalOutcome: 'incomplete', processStopped: true }
   let measurementTimer
   try {

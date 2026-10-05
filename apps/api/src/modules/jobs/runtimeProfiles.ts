@@ -23,7 +23,7 @@ import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema,
   JobRuntimeFingerprintRecordSchema, JobRuntimeMeasurementRecordSchema, JobRuntimeNativeAdmissionRecordSchema,
   jobRuntimeProfilePolicy, jobRuntimeProfileLimits, type JobRuntimeApprovalRecord,
   type JobRuntimeProfileRecord, type JobRuntimeProfileSaveRecord }
-  from '@graphql/contracts/job-verification-runtime'
+  from '@foreman-code/contracts/job-verification-runtime'
 import { createVerificationProfile, requireVerificationOwnerReview } from './verificationProfiles.js'
 import type { z } from 'zod'
 import { runtimeQualificationFacts, validateRuntimeQualification, qualificationTimeoutMs, qualificationDeadline }

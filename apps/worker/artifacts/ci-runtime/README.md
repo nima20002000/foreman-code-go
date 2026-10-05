@@ -2,7 +2,7 @@ Build the CI runtime from a committed source snapshot:
 
 ```sh
 node scripts/build-ci-runtime-context.mjs /new/private/context
-podman build --file /new/private/context/Containerfile --tag localhost/graphql-ci:reviewed /new/private/context
+podman build --file /new/private/context/Containerfile --tag localhost/foreman-code-ci:reviewed /new/private/context
 ```
 
 The context contains only committed lockfile, workspace policy, package manifests and image controls. It excludes working-tree files, source credentials and caches. The base manifest, Node 22.23.3, Corepack 0.36.0 and pnpm 11.27.0 are pinned. Frozen-lock dependency fetching retains the repository's strict 48-hour release-age policy. The installed Corepack wrapper uses its fixed image cache and disables network acquisition at workload runtime.
@@ -17,7 +17,7 @@ recipe does not authorize that process's network access or choose destinations.
 ```sh
 node scripts/build-ci-runtime-context.mjs /new/private/context /private/offline-seed-config.json
 podman build --network=none --pull=never --target verification \
-  --file /new/private/context/Containerfile --tag localhost/graphql-verification:reviewed /new/private/context
+  --file /new/private/context/Containerfile --tag localhost/foreman-code-verification:reviewed /new/private/context
 ```
 
 The private config contains absolute `directory` and `receiptPath` values. The
