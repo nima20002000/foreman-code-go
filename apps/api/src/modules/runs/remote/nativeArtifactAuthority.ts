@@ -101,10 +101,13 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
       || !caller.context.allowMutation || !caller.context.allowedTools.includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[operation])) {
       return denied()
     }
-    const active = await sql.query(`select 1 from execution_native_closures c join native_session_lanes l
-      on l.native_session_id=$2 where c.execution_id=$1 and c.closed_at is null and c.detached_at is null
-      and c.expected_reference->>'nativeSessionId'=$2 and l.record->>'currentTurnOrMessageId'=$3
-      and l.record->>'correlationId'=$4 and (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for share of c,l`,
+    const active = await sql.query(`select 1 from execution_native_closures c
+      join execution_native_sessions s using(execution_id)
+      join native_session_lanes l on l.native_session_id=$2
+      where c.execution_id=$1 and c.closed_at is null and c.detached_at is null
+      and s.reference->>'nativeSessionId'=$2 and (c.expected_reference is null or c.expected_reference=s.reference)
+      and l.record->>'currentTurnOrMessageId'=$3 and l.record->>'correlationId'=$4
+      and (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for share of c,s,l`,
     [attempt.executionId, nativeSessionId, turnId, `execution:${attempt.executionId}`])
     if (active.rowCount !== 1) return denied()
     await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
