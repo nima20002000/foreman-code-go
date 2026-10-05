@@ -1,4 +1,5 @@
-import { JobRuntimeProfileRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
+import { readJobRuntimeProfileVersion } from '../jobs/runtimeProfileVersion.js'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { randomUUID } from 'node:crypto'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -10,12 +11,14 @@ export type SourceReservation = { reservationId: string; scopeId: string; ownerK
 export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })
 async function materializationCapacity(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>): Promise<number> {
   if (request.ownerKind !== 'materialization') return SOURCE_AGGREGATE_LIMITS.materializations
-  const row = (await sql.query<{ profile: unknown }>(`select p.record as profile from job_computer_selections s
-    join job_runtime_profile_versions p on p.profile_id=s.spec #>> '{policy,isolationPolicyId}'
-      and p.revision=(s.spec #>> '{policy,isolationPolicyRevision}')::bigint
-    where s.operation_id=$1 and s.released_at is null`, [request.ownerId])).rows[0]
-  if (!row?.profile) return SOURCE_AGGREGATE_LIMITS.materializations
-  const profile = JobRuntimeProfileRecordSchema.parse(row.profile)
+  const row = (await sql.query<{ workspace_id: string; spec: unknown }>(
+    `select workspace_id,spec from job_computer_selections
+      where operation_id=$1 and released_at is null`, [request.ownerId])).rows[0]
+  if (!row) return SOURCE_AGGREGATE_LIMITS.materializations
+  const spec = ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
+  if (!('verification' in spec)) return SOURCE_AGGREGATE_LIMITS.materializations
+  const profile = await readJobRuntimeProfileVersion(sql, row.workspace_id,
+    spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
   if (profile.schemaVersion !== 2) return SOURCE_AGGREGATE_LIMITS.materializations
   const measured = profile.measurement
   const pool = measured?.fingerprint.quotaPool
