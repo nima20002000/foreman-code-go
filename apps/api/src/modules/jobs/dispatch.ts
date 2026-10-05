@@ -27,6 +27,7 @@ export interface JobDispatchHost {
   settleSource?(executionId: string): Promise<void>
   capacityChanged?(): void
   prepareWaiting?(executionId: string): Promise<void>
+  refreshRuntime?(executionId: string): Promise<void>
 }
 /** Durable job intent is consumed by the same W08 carrier/journal, never a new scheduler. */
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
@@ -92,6 +93,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         return
       }
     }
+    const unfinished = (await this.pool.query(`select 1 from job_executions where id=$1
+      and (record #>> '{process,phase}'<>'terminal' or record->>'publication' in ('pending','collecting'))`,
+    [executionId])).rowCount
+    if (unfinished) await this.host.refreshRuntime?.(executionId)
     let active=this.owners.get(executionId)
     if(!active) {
       const abort=new AbortController(),owner=await JobOwnership.acquire(this.pool,executionId,()=>abort.abort())

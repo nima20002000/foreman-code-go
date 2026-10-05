@@ -11,6 +11,9 @@ import { createProductionJobs, createReviewedBuildQueueConfiguration,
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { jobRuntimeMetadataFixture } from './helpers/jobRuntimeMetadataFixture.js'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
 
 describe.skipIf(!postgresEnabled)('build queue persistence and owner configuration', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -23,6 +26,7 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {}, actions: [
         'job_definitions:read', 'job_definitions:write', 'jobs:read', 'jobs:start', 'jobs:cancel',
         'settings:read', 'settings:update',
+        'sources:read', 'source_roots:read',
       ] }] })).principal
   }, 60000)
   afterAll(async () => {
@@ -238,5 +242,75 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
       expect(await runtime.jobs.getDefinitionVersion(principal, f.workspaceId, definition.id, definition.versionId))
         .toEqual(definition)
     } finally { await runtime.close() }
+  })
+  it('restores retained runtime eligibility in fresh production compositions and reinspects reconnects', async () => {
+    const f = await fixture()
+    const config = await configuration(f)
+    const computer = f.computers[0]!
+    let binding: DeviceSessionBinding = { mainId: config.mainId, deviceId: computer.registration.deviceId,
+      workerInstallationId: computer.registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+    const retained = jobRuntimeMetadataFixture(computer.candidate.profile, binding.bootId)
+    const profile = retained.profile
+    await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+      values($1,$2,1,$3,1,$4::jsonb)`, [profile.id, f.workspaceId,
+      profile.root.binding.rootId, JSON.stringify(profile)])
+    await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
+      [profile.id, JSON.stringify(profile)])
+    const measurement = profile.measurement!
+    const approval = { schemaVersion: 1, id: measurement.approvalId, qualificationId: measurement.qualificationId,
+      workspaceId: f.workspaceId, profileId: profile.id, profileRevision: 1,
+      fingerprint: retained.fingerprint, fingerprintDigest: measurement.fingerprintDigest,
+      requestedByPrincipalId: principal.id, status: 'complete', approvedByPrincipalId: principal.id,
+      approvedAt: measurement.checkedAt, expiresAt: measurement.expiresAt }
+    await database.pool.query(`insert into job_runtime_qualification_approvals
+      (id,qualification_id,profile_id,profile_revision,workspace_id,record,measurement,requested_by,approved_by)
+      values($1,$2,$3,1,$4,$5::jsonb,$6::jsonb,$7,$7)`, [approval.id, approval.qualificationId,
+      profile.id, f.workspaceId, JSON.stringify(approval), JSON.stringify(measurement), principal.id])
+    let changed = false
+    const inspections: number[] = []
+    const endpoint = {
+      currentBinding: () => binding,
+      captureRequest: () => ({ binding: structuredClone(binding), request: async () => {
+        inspections.push(binding.connectionGeneration)
+        return { payload: { version: 1, operation: 'inspect', descriptor: retained.descriptor,
+          fingerprint: { ...retained.fingerprint,
+            configurationDigest: changed ? '6'.repeat(64) : retained.fingerprint.configurationDigest } } }
+      } }),
+    } as unknown as DeviceEndpoint
+    const directory = join(database.directory, randomUUID())
+    await mkdir(directory, { mode: 0o700 })
+    const create = () => createProductionJobs({ pool: database.pool, commands: f.commands,
+      locations: new WorkspaceLocationService(database.pool, f.commands), mainId: config.mainId,
+      runtimeRoot: directory, storageRoot: join(directory, 'storage'), endpoint: () => endpoint,
+      infrastructure: { installedConfiguration: null, queueConfiguration: config } })
+    for (let restart = 0; restart < 2; restart++) {
+      const runtime = await create()
+      try {
+        await vi.waitFor(async () => {
+          expect(await runtime.profiles.readiness(database.pool, profile)).toEqual({ ready: true, reasons: [] })
+        })
+        expect(profile.measurement).toEqual(retained.profile.measurement)
+        await expect(runtime.profiles.revalidate(database.pool, principal, profile.root, computer.candidate.spec))
+          .resolves.toBeUndefined()
+        if (restart === 1) {
+          binding = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 2 }
+          expect(await runtime.host.currentMetadata(database.pool, profile)).toBeNull()
+          runtime.requestQueueWake()
+          await vi.waitFor(async () => {
+            expect(await runtime.profiles.readiness(database.pool, profile)).toEqual({ ready: true, reasons: [] })
+          })
+          changed = true
+          binding = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 3 }
+          runtime.requestQueueWake()
+          await vi.waitFor(() => { expect(inspections).toContain(3) })
+          expect(await runtime.profiles.readiness(database.pool, profile))
+            .toEqual({ ready: false, reasons: ['context_changed'] })
+        }
+      } finally { await runtime.close() }
+    }
+    expect(inspections.filter(generation => generation === 1)).toHaveLength(2)
+    expect((await database.pool.query<{ record: unknown }>('select record from job_runtime_profiles where id=$1',
+      [profile.id])).rows[0]!.record).toEqual(profile)
   })
 })

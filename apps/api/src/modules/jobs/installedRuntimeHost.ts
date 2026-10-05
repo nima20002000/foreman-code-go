@@ -197,11 +197,12 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
   inspect(profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>
 } {
   const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration; descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>()
+  const key = (profile: InstalledRuntimeProfileContext) => `${profile.id}:${profile.revision}`
   async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
     const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
     await installedIdentity(sql, configuration)
     const snapshot = await inspectConfiguration(configuration, profile)
-    snapshots.set(profile.id, snapshot)
+    snapshots.set(key(profile), snapshot)
     return snapshot
   }
   return {
@@ -209,7 +210,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     async descriptor(profile) { return (await current(dependencies.identity, profile)).descriptor },
     async currentConnection(sql, profile) {
       if (profile.root.selection.hostRef.kind === 'main') return null
-      const snapshot = snapshots.get(profile.id)
+      const snapshot = snapshots.get(key(profile))
       if (!snapshot || !dependencies.currentConnection) unavailable('current_connection_unavailable')
       const binding = DeviceSessionBindingSchema.parse(await dependencies.currentConnection(sql, profile))
       const selected = snapshot.configuration.target
@@ -221,7 +222,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     async currentMetadata(sql, profile): Promise<JobRuntimeFingerprint | null> {
       // G1/GET readback consumes captured installed metadata only. Native entry
       // captures pins again; an uncaptured/restarted host never invents readiness.
-      const snapshot = snapshots.get(profile.id)
+      const snapshot = snapshots.get(key(profile))
       if (!snapshot || snapshot.fingerprint.profileRevision !== profile.revision || snapshot.fingerprint.specDigest !== profile.specDigest ||
         hash(snapshot.configuration.root) !== hash(profile.root) || snapshot.fingerprint.imageDigest !== profile.policy.imageDigest ||
         snapshot.fingerprint.toolchainDigest !== profile.policy.toolchainDigest || hash(snapshot.fingerprint.limits) !== hash(profile.limits)) return null

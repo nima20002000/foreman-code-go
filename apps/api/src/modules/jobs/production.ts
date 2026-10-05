@@ -48,6 +48,7 @@ import { isAutoJobSpec } from '@graphql/contracts/jobs'
 import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
 import { JobResourceRequestSchema, type JobResourceRequest } from '@graphql/contracts/job-verification-policy'
 import { canonical } from './repository.js'
+import { JobRuntimeMetadataRecovery } from './runtimeMetadataRecovery.js'
 
 export interface ProductionJobInfrastructure {
   installedConfiguration: InstalledRuntimeHostDependencies['configuration']
@@ -177,6 +178,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const host = qualification.host
+  const metadataRecovery = new JobRuntimeMetadataRecovery(input.pool, host, requestQueueWake)
   const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands,
     sources: source.sources, host, changed: requestQueueWake })
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
@@ -192,6 +194,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const dispatch: PostgresJobDispatch = new PostgresJobDispatch(input.pool, carrier, {
     prepareWaiting: (): Promise<void> => jobs.wakeQueue(),
     capacityChanged: requestQueueWake,
+    refreshRuntime: executionId => metadataRecovery.refreshExecution(executionId),
     revalidate: (sql, execution, principal) => preparationPort.revalidateAccepted(sql, principal, execution),
     authorizeLaunch: async (sql, execution) => {
       await buildComputers.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
@@ -266,6 +269,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     dispatch,
     artifacts,
     cancellationRecovery: new PostgresJobCancellationRecovery(input.pool, input.commands, dispatch),
+    refreshRuntimeMetadata: () => metadataRecovery.request(),
     ...(queue ? { queue } : {}),
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
@@ -279,7 +283,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     requestQueueWake,
     async close() {
       const failures: unknown[] = []
-      const resources = [() => jobs.closeQueue(), () => dispatch.close(), () => outputs.close(),
+      const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(), () => dispatch.close(), () => outputs.close(),
         async () => { if (qualificationJournal) await (await qualificationJournal).close() }]
       for (const close of resources) {
         try {

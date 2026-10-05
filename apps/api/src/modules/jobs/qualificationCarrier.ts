@@ -16,7 +16,10 @@ import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: PostgresSourceService;
   endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost; workerExecution?: WorkerExecutionPolicy }) {
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
-  const snapshots = new Map<string, Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseSchema.parse>, { operation: 'inspect' }>>()
+  const snapshots = new Map<string, {
+    response: Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseSchema.parse>, { operation: 'inspect' }>
+    binding: NonNullable<ReturnType<DeviceEndpoint['currentBinding']>>
+  }>()
   const key = (profile: JobRuntimeProfile) => `${profile.id}:${profile.revision}`
   const exchange = async (profile: JobRuntimeProfile, payload: unknown, signal?: AbortSignal) => {
     const target = profile.root.selection.hostRef
@@ -47,7 +50,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
       || !sameWorkflowValue(response.descriptor.target.hostRef, response.fingerprint.hostRef)
       || !sameWorkflowValue(response.descriptor.target.registration, response.fingerprint.registration)
       || response.descriptor.target.mainInstallationId !== binding.mainId) throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The actual installed worker returned another qualification context.', 409)
-    snapshots.set(key(profile), response)
+    snapshots.set(key(profile), { response, binding })
     return response
   }
   const host: InstalledJobRuntimeHost = {
@@ -73,9 +76,10 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
     currentMetadata: async (sql, profile) => {
       if (profile.root.selection.hostRef.kind === 'main') return input.local.currentMetadata(sql, profile)
       const snapshot = snapshots.get(key(profile)), binding = await host.currentConnection(sql, profile)
-      return snapshot && binding && snapshot.fingerprint.bootId === binding.bootId
-        && snapshot.fingerprint.specDigest === profile.specDigest && sameWorkflowValue(snapshot.fingerprint.root, profile.root)
-        ? snapshot.fingerprint : null
+      return snapshot && binding && sameWorkflowValue(snapshot.binding, binding)
+        && snapshot.response.fingerprint.specDigest === profile.specDigest
+        && sameWorkflowValue(snapshot.response.fingerprint.root, profile.root)
+        ? snapshot.response.fingerprint : null
     },
     reserveQualification: request => input.local.reserveQualification(request),
     runAdmitted: async request => {

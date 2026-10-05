@@ -50,6 +50,7 @@ export class JobService {
       workerExecution?: WorkerExecutionPolicy
       cancellationRecovery?: PostgresJobCancellationRecovery
       queue?: JobQueueConfiguration
+      refreshRuntimeMetadata?(): void
     },
     private readonly clock: () => Date = () => new Date()) {
     this.workerExecution = ports.workerExecution ?? new WorkerExecutionPolicy()
@@ -313,6 +314,7 @@ export class JobService {
   async wakeQueue(): Promise<void> {
     if (!this.queuePreparation) return Promise.resolve()
     this.queueConfiguration()
+    this.ports.refreshRuntimeMetadata?.()
     if (this.queueWake) {
       this.queueRescanRequested = true
     } else if (!this.queueClosing) {
