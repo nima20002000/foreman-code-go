@@ -61,11 +61,15 @@ const unavailable = (reason: string): never => {
     `Remote native verification failed (${reason}).`, 409, { reason })
 }
 function same(left: unknown, right: unknown) { return isDeepStrictEqual(left, right) }
-function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource) {
+function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource,
+  placement: AcceptedNodePlacement) {
   const { receipt, session, launch, observation } = readout
+  if (placement.payload.kind !== 'agent' || session.harness !== placement.payload.driverId) {
+    return unavailable('harness_binding')
+  }
   const launchIntent = readout.launchIntent ?? receipt.intent
   if (!same({ ...launchIntent, owner: receipt.intent.owner }, receipt.intent)) return unavailable('launch_binding')
-  if (!receipt.native || receipt.native.sessionId !== session.nativeSessionId || session.harness !== 'codex'
+  if (!receipt.native || receipt.native.sessionId !== session.nativeSessionId
     || launch.owner !== `execution:${receipt.intent.executionId}` || launch.bootId !== receipt.connection.bootId
     || launch.lifecycle !== 'active' || remoteWorkflowProcessDigest(receipt.connection, launchIntent, launch) !== receipt.native.processIdentityDigest
     || observation.launchId !== launch.launchId || observation.owner !== launch.owner || observation.bootId !== launch.bootId
@@ -130,7 +134,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         && same(retained.placement, placement) && same(retained.binding, captured.binding)
         && retained.expiresAt > Date.now()) {
         retained.assertCurrent()
-        assertSource(retained.readout, source)
+        assertSource(retained.readout, source, placement)
         const result = Object.freeze({ kind: 'original-remote-physical' as const })
         prepared.set(result, { ...retained, source: structuredClone(source) })
         return result
@@ -163,7 +167,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       }, signal)
       expiresAt=Math.min(expiresAt,Date.parse(readout.expiresAt))
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
-      assertSource(readout, source)
+      assertSource(readout, source, placement)
       rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
         && readout.observation.closureEvidence === 'linux_boot_changed'
         && same(readout.closure.launch, readout.observation))
@@ -223,7 +227,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const assertCurrent = () => {
         if (bound.get(original) !== capture) return unavailable('passive_owner')
         capture.owner.assertOwned(); original.assertCurrent(); capture.assertCurrent(); capture.lifetime.assertCurrent()
-        assertSource(capture.readout, original.source)
+        assertSource(capture.readout, original.source, capture.placement)
       }
       try { assertCurrent() } catch { return undefined }
       return { nativeOwner: capture.readout.launch.owner, native: structuredClone(capture.readout.receipt.native),
@@ -333,7 +337,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
             ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)
             ||original.sourceDigest!==remoteWorkflowSourceDigest(capture.source))return unavailable('published_capture')
         }else{original.assertCurrent();capture.assertCurrent();lifetime.assertCurrent()}
-        assertSource(readout,original.source)
+        assertSource(readout,original.source,capture.placement)
       }
       check()
       const current = await readReconciledDispatchIntent(sql, intent.operationId, true)

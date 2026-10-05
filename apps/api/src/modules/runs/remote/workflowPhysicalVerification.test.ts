@@ -33,25 +33,31 @@ import { repeatExecutionIdentity, repeatDigest } from '../repeatResolution.js'
 
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
+import type { WorkflowNativeCapture, WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
 import { workflowNativeReservation } from '../workflowNativeEntry.js'
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
 async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
-function nativeFixture() {
+function nativeFixture(harness: 'codex' | 'opencode' = 'codex') {
   const connection=DeviceConnectionIdentitySchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
     bootId:bootIdentity(),keyRevision:1,authorizationRevision:1,connectionGeneration:4})
   const intent=DispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:connection.mainId,runId:'run',nodeId:'node',executionId:'execution',
     occurrenceId:null,occurrenceIndex:0,technicalAttempt:1,attemptId:'attempt',operationId:'operation',bindingHash:'a'.repeat(64),inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
-  const session:NativeSessionReference={harness:'codex',providerVersion:'codex-cli 0.154.0',nativeSessionId:'native-session'}
+  const session: NativeSessionReference = {
+    harness,
+    providerVersion: harness === 'codex' ? 'codex-cli 0.154.0' : '1.18.31',
+    nativeSessionId: 'native-session',
+  }
   // Provider/closure doubles test the exact consumer contract; no process or physical closure is produced here.
   const launch:NativeLaunchObservation={owner:'execution:execution',launchId:randomUUID(),bootId:connection.bootId,
     guardian:{pid:200,startTicks:'2000'},provider:{pid:201,startTicks:'2001'},boundary:{kind:'cgroup-v2',path:'/unit/boundary',device:'1',inode:'2'},lifecycle:'active'}
   const registry=new NativeProcessRegistry('/unit/registry'),snapshot=vi.spyOn(registry,'snapshot').mockReturnValue({revision:'snapshot:1',launches:[launch]})
   return {connection,intent,session,launch,registry,snapshot}
 }
-async function sourceFixture(relativeCwd='') {
+async function sourceFixture(options: { relativeCwd?: string; harness?: 'codex' | 'opencode' } = {}) {
+  const relativeCwd = options.relativeCwd ?? ''
+  const harness = options.harness ?? 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
   await mkdir(runtime,{mode:0o700});await mkdir(project,{mode:0o700});await mkdir(namespace,{recursive:true,mode:0o700})
   if(relativeCwd)await mkdir(join(project,relativeCwd),{recursive:true,mode:0o700})
@@ -72,7 +78,10 @@ async function sourceFixture(relativeCwd='') {
   const placement=freezePlacement({schemaVersion:1,mainId:binding.mainId,mainInstallationId:binding.mainId,runId:'run',nodeId:'node',hostRef:approvedRoots.hostRef,registration:sourceRoot.registration,
     destination:{canonicalProjectRoot:project,canonicalCwd:join(project,relativeCwd),managedRuntimeRoot:runtime,directoryIdentityHash:'a'.repeat(64),rootPolicyId,rootPolicyRevision:'1',locationRevision:'1',attestationId:'attestation',attestationHash:'a'.repeat(64)},
     source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
-    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:'codex',driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:'installed-codex',installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:'codex-native-adapter-v1',credentialScopeRefs:[]}})
+    payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: harness,
+      driverRevision: '1', instanceId: randomUUID(), instanceRevision: '1', harnessInstallationId: `installed-${harness}`,
+      installationFingerprint: 'a'.repeat(64), runtimeContractVersion: 1,
+      protocolRevision: `${harness}-native-adapter-v1`, credentialScopeRefs: [] } })
   const intent=deriveDispatch(placement,{executionId:'execution',attemptId:'attempt',operationId:'operation',technicalAttempt:1,occurrenceId:null,occurrenceIndex:0,inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
   const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
   attempt.placementHash=sourceBindingHash(sourceRoot,attempt,intent.operationId)
@@ -84,13 +93,24 @@ async function sourceFixture(relativeCwd='') {
   const owner:SourceOperationOwner={identity:{operationId:intent.operationId,ownerPrincipalId:'owner',expiresAt:'2099-01-01T00:00:00.000Z'},root:sourceRoot,attempt,source,record:nativePlacement.materialization,physicalClosureConfirmed:false}
   const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner,
     transfers:{resolveVerifiedReceipt:vi.fn().mockRejectedValue(new Error('Verify-only fixture')),openVerified:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))},transferContext:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))})
-  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS.codex,contentHash:'fixture',createdAt:new Date().toISOString()}
+  const configuration: AgentConfigurationVersion = {
+    id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1,
+    prompt: { system: 'Unit workflow instructions.' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS[harness],
+    contentHash: 'fixture', createdAt: new Date().toISOString(),
+  }
   const request={executionId:intent.executionId,runId:intent.runId,workspaceId:'workspace',workflowNodeId:intent.nodeId,workingDirectory:workingTree.canonicalCwd,
     runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input:{}}
   return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
 }
-async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
-  const f=await sourceFixture(),n=nativeFixture()
+async function physicalFixture(options: {
+  artifacts?: WorkflowPhysicalArtifactsPort
+  harness?: 'codex' | 'opencode'
+  phase?: 'session-created' | 'running'
+} = {}) {
+  const artifacts = options.artifacts
+  const harness = options.harness ?? 'codex'
+  const f = await sourceFixture({ harness })
+  const n = nativeFixture(harness)
   const connection=DeviceConnectionIdentitySchema.parse({mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId,
     workerInstallationId:f.context.binding.workerInstallationId,keyRevision:f.context.binding.keyRevision,authorizationRevision:f.context.binding.authorizationRevision,
     bootId:f.context.binding.bootId,connectionGeneration:f.context.binding.connectionGeneration})
@@ -98,11 +118,17 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
   const journal=await RemoteOperationJournal.open(join(f.root,'physical-journal'),{initializeNewInstallation:true});journals.push(journal)
   await journal.accept(f.intent,connection,randomUUID());await journal.reserveEntry(f.intent.operationId)
   await journal.acknowledgeStart(f.intent.operationId,captured.native)
-  await journal.reserveTurn(f.intent.operationId,{correlationId:`execution:${f.intent.executionId}`,promptDigest:'c'.repeat(64)})
-  await journal.acknowledgeTurn(f.intent.operationId,'original-turn');await journal.markRunning(f.intent.operationId)
+  if (options.phase !== 'session-created') {
+    await journal.reserveTurn(f.intent.operationId, {
+      correlationId: `execution:${f.intent.executionId}`, promptDigest: 'c'.repeat(64),
+    })
+    await journal.acknowledgeTurn(f.intent.operationId, 'original-turn')
+    await journal.markRunning(f.intent.operationId)
+  }
   const status=await journal.status(f.intent.operationId)
   if(status.status!=='known')throw new Error('Unit journal must retain its original receipt')
-  const history={events:[],pendingInteractions:[],correlationId:`execution:${f.intent.executionId}`,nativeTurnId:'original-turn'}
+  const history={events:[],pendingInteractions:[],correlationId:`execution:${f.intent.executionId}`,
+    ...(options.phase === 'session-created' ? {} : { nativeTurnId:'original-turn' })}
   const source={type:'history' as const,history}
   const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf(f)
   const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Date.now()+60_000).toISOString(),
@@ -160,12 +186,12 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
   const owner={runId:f.intent.runId,assertOwned:vi.fn(),readOneShotFence:vi.fn(async()=>({ownerId:'original-owner',fence:'1'}))} as unknown as Parameters<typeof producer.bind>[2]
   const originals=createRemoteNativeSourceChannel()
   let original:Parameters<typeof producer.bind>[0]|undefined
-  const bind=async()=>{
-    const prepared=await producer.prefetch(readout.receipt,f.placement,source)
+  const bind=async(observedSource: WorkflowOriginalNativeSource = source)=>{
+    const prepared=await producer.prefetch(readout.receipt,f.placement,observedSource)
     await VerifiedRemoteEvidence.commit(readout.receipt,connection,{transaction:async(_operation,work)=>work({authority:async()=>({intent:f.intent,placement:f.placement,
       originalConnection:connection,originalIncarnationId:readout.receipt.workerIncarnationId,grantIsLive:true,lastSequence:0,lastReceipt:null,native:null,terminal:null}),
       reject:async()=>{throw new Error('Unit original receipt rejected')},accept:async verified=>{
-        originals.observe(verified,source,()=>{});original=originals.verify.read(originals.capture(f.intent.executionId,source))
+        originals.observe(verified,observedSource,()=>{});original=originals.verify.read(originals.capture(f.intent.executionId,observedSource))
         producer.bind(original,prepared,owner,lifetime)
       }})})
     if(!original)throw new Error('Expected private unit original-source capability')
@@ -176,9 +202,9 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
 }
 // Real private directories and original capability; SQL/carrier/process boundaries
 // are unit doubles. These fixtures never establish physical qualification.
-async function terminalFixture() {
+async function terminalFixture(harness: 'codex' | 'opencode' = 'codex') {
   const artifacts={assertPublications:vi.fn(async()=>{}),assertAdopted:vi.fn(async()=>{})}
-  const f=await physicalFixture(artifacts)
+  const f=await physicalFixture({ artifacts, harness })
   const artifactOutputs={version:1 as const,outputs:[{outputKey:'report',commandId:randomUUID()}]}
   const result={outcome:'succeeded' as const,output:{text:JSON.stringify({data:{original:true},artifactOutputs})}}
   const history={...f.source.history,terminalTurn:{correlationId:`execution:${f.execution.id}`,providerId:'original-turn',result}}
@@ -213,6 +239,137 @@ async function terminalFixture() {
   }
   return {...f,artifacts,result,original,capture,proof,retain,complete}
 }
+
+async function closeTextOnlyFixture(f: Awaited<ReturnType<typeof physicalFixture>>, disposition: 'completed' | 'stopped') {
+  const result = { outcome: 'succeeded' as const, output: { text: 'Original provider output' } }
+  if (disposition === 'stopped') await f.journal.revokeFence(f.intent.operationId)
+  const closureEvidenceDigest = commandInputHash({
+    intent: f.intent, native: f.readout.receipt.native, launch: f.captured.launch, physicalOwnerClosed: true,
+  }).slice('sha256:'.length)
+  const terminal = disposition === 'completed'
+    ? { kind: 'completed' as const, result, resultDigest: commandInputHash(result).slice('sha256:'.length),
+      closureEvidenceDigest }
+    : { kind: 'cancelled' as const, closureEvidenceDigest }
+  await f.journal.terminal(f.intent.operationId, terminal)
+  const status = await f.journal.status(f.intent.operationId)
+  if (status.status !== 'known') throw new Error('Expected original terminal receipt')
+  f.readout.receipt = status.receipt
+  f.retained.receipt = status.receipt
+  f.readout.observation = { ...f.readout.observation, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }
+  f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
+  if (disposition === 'completed') {
+    const history = { ...f.source.history, terminalTurn: {
+      correlationId: `execution:${f.execution.id}`, providerId: 'original-turn', result,
+    } }
+    f.readout.history = history
+    f.source.history = history
+    f.readout.output = { kind: 'text-only', result }
+  }
+}
+
+describe('accepted physical session harness', () => {
+  it.each(['codex', 'opencode'] as const)('verifies the installed %s session before its first turn', async harness => {
+    const f = await physicalFixture({ harness, phase: 'session-created' })
+    try {
+      expect(f.readout.receipt.native?.turnId).toBeUndefined()
+      const original = await f.bind({ type: 'session_created', session: f.session })
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      expect(original.source).toEqual({ type: 'session_created', session: f.session })
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('keeps the accepted OpenCode process available to its running Main owner', async () => {
+    const f = await physicalFixture({ harness: 'opencode' })
+    try {
+      const original = await f.bind()
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      const owner = f.producer.passiveNativeOwner(original)
+      expect(owner).toMatchObject({ nativeOwner: 'execution:execution', native: f.readout.receipt.native })
+      owner!.assertCurrent()
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it.each(['codex', 'opencode'] as const)('verifies %s completion with the original result and owner closure', async harness => {
+    const f = await physicalFixture({ harness })
+    try {
+      await closeTextOnlyFixture(f, 'completed')
+      const original = await f.bind()
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      expect(original.verified.receipt.terminal).toMatchObject({
+        kind: 'completed', result: { outcome: 'succeeded', output: { text: 'Original provider output' } },
+      })
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it.each(['codex', 'opencode'] as const)('verifies %s Stop after the original owner closes', async harness => {
+    const f = await physicalFixture({ harness })
+    try {
+      await closeTextOnlyFixture(f, 'stopped')
+      const original = await f.bind()
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      expect(original.verified.receipt.stopFence).toBeTruthy()
+      expect(original.verified.receipt.terminal?.kind).toBe('cancelled')
+      expect(original.verified.receipt.terminal?.result).toBeUndefined()
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('keeps OpenCode artifact completion verifiable after its Main lifetime and lane release', async () => {
+    const f = await terminalFixture('opencode')
+    try {
+      await f.retain()
+      f.complete()
+      await f.sqlConnection.transaction(sql => f.producer.assertArtifactTerminal(sql, f.owner, f.capture, f.proof))
+      await f.sqlConnection.transaction(sql => f.producer.assertAdoptedArtifacts(sql, f.owner, f.original))
+      expect(f.artifacts.assertAdopted).toHaveBeenCalledTimes(2)
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it.each(['codex', 'opencode'] as const)('rejects a different session harness for accepted %s placement', async harness => {
+    const f = await physicalFixture({ harness })
+    try {
+      f.readout.session = { ...f.session, harness: harness === 'codex' ? 'opencode' : 'codex' }
+      await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'harness_binding' },
+      })
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it.each(['session', 'owner', 'provider', 'boundary'] as const)('preserves the OpenCode %s identity check', async identity => {
+    const f = await physicalFixture({ harness: 'opencode' })
+    try {
+      if (identity === 'session') f.readout.session.nativeSessionId = 'replacement-session'
+      if (identity === 'owner') f.readout.observation.owner = 'execution:replacement'
+      if (identity === 'provider') f.readout.observation.provider = { pid: 201, startTicks: '2002' }
+      if (identity === 'boundary') f.readout.observation.boundary = { ...f.readout.observation.boundary, inode: '3' }
+      await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'process_identity' },
+      })
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('rejects OpenCode completion when the output differs from the original provider result', async () => {
+    const f = await physicalFixture({ harness: 'opencode' })
+    try {
+      await closeTextOnlyFixture(f, 'completed')
+      f.readout.output = { kind: 'text-only', result: { outcome: 'succeeded', output: { text: 'Replacement output' } } }
+      await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'terminal_result' },
+      })
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('rejects OpenCode Stop without positive original owner closure', async () => {
+    const f = await physicalFixture({ harness: 'opencode' })
+    try {
+      await closeTextOnlyFixture(f, 'stopped')
+      delete f.readout.closure
+      await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source)).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'terminal_closure' },
+      })
+    } finally { await f.sqlConnection.close() }
+  })
+})
+
 describe('original published-artifact terminal physical companion',()=>{
   it('verifies the first original running physical capture before any terminal result exists',async()=>{
     const f=await physicalFixture()
