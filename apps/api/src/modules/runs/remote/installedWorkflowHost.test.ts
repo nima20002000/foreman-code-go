@@ -389,6 +389,7 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   let live: DeviceSessionBinding | undefined = f.context.binding
   let expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
   let launchDenied = false
+  let cleanupOnly = false
   const requests: Array<{ namespace: string; payload: unknown; binding: DeviceSessionBinding }> = []
   const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, registry,
     pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
@@ -405,7 +406,8 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
           const request = payload as { action: string }
           if (launchDenied && request.action !== 'stop' && request.action !== 'read') throw new Error('Launch authority revoked')
           return { payload: { version: 1, action: request.action, operationId: f.intent.operationId,
-            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner } }
+            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner,
+            ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
         }
         if (launchDenied) throw new Error('Original MCP lease revoked')
         return { payload: { version: 1, mainId: f.intent.mainId, audience: 'worker', principalId: 'original-principal',
@@ -436,11 +438,31 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   }
   return { ...f, host, journal: log, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
     disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
+    cleanup: () => { cleanupOnly = true; launchDenied = true },
     renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
     changeProcess: () => { observed = { ...launch, provider: { pid: 201, startTicks: 'changed' } } } }
 }
 
 describe('installed host resident execution continuity', () => {
+  it('reads the original native history during cleanup without renewing model-tool access', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.cleanup()
+      const before = f.requests.filter(request => request.namespace !== 'execution-authority-v1').length
+      expect(await f.call('history')).toMatchObject({ payload: { history: {
+        correlationId: 'execution:execution', nativeTurnId: 'original-turn',
+      } } })
+      expect(f.requests.filter(request => request.namespace !== 'execution-authority-v1')).toHaveLength(before)
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+      await expect(f.call('start-turn', { prompt: 'replacement', correlationId: 'execution:execution' }))
+        .rejects.toThrow('Launch authority revoked')
+    } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
   it('pages original large terminal receipts from the installed handler and its retired readback', async () => {
     const f = await runningInstalledFixture()
     const result = { outcome: 'succeeded' as const, output: { text: 'original 雪'.repeat(110_000) } }

@@ -31,6 +31,14 @@ describe('actual Agent admission contracts and private upstream authorizer',()=>
   it('rejects forged entry permits in an authority request',()=>{expect(ExecutionAuthorityRequestSchema.safeParse({version:1,action:'start',intent,placement:pin,permit:true}).success).toBe(false)})
   it('saves explicit approved source/root pins',()=>{expect(SavedNodePlacementSchema.parse({schemaVersion:1,hostRef:pin.hostRef,rootPolicyId:'policy',rootPolicyRevision:'1',locationRevision:'1',projectRoot:'/project',cwdPolicy:'project-root',relativeCwd:'',instanceId:'instance',instanceRevision:'1',harnessInstallationId:'harness',source:{approvedSourceId:mainId,snapshotId:mainId,manifestDigest:digest},rootBinding:{rootId:mainId,bindingRevision:1}}).source?.snapshotId).toBe(mainId)})
   it('uses only the authenticated namespace with exact echoed identities',async()=>{const authorize=workerExecutionAuthorizer(async(namespace,input)=>{expect(namespace).toBe('execution-authority-v1');expect(ExecutionAuthorityRequestSchema.parse(input).intent).toEqual(intent);return{payload:{version:1,action:'read',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner}}});await authorize(intent,pin,'read')})
+  it.each(['read', 'stop', 'start', 'control'] as const)('keeps cleanup-only authority limited to observations and Stop: %s', async action => {
+    const authorize = workerExecutionAuthorizer(async () => ({ payload: { version: 1, action,
+      operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash,
+      owner: intent.owner, cleanupOnly: true } }))
+    if (action === 'read' || action === 'stop') {
+      await expect(authorize(intent, pin, action)).resolves.toEqual({ cleanupOnly: true })
+    } else await expect(authorize(intent, pin, action)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
   it('rejects mismatched owner and binary authority responses',async()=>{const response={version:1,action:'start',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner};await expect(workerExecutionAuthorizer(async()=>({payload:{...response,owner:{grantId:'forged',epoch:'1'}}}))(intent,pin,'start')).rejects.toThrow();await expect(workerExecutionAuthorizer(async()=>({payload:response,bytes:new Uint8Array([1])}))(intent,pin,'start')).rejects.toThrow()})
 })
 

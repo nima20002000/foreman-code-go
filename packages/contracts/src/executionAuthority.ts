@@ -12,6 +12,8 @@ export const ExecutionAuthorityRequestSchema = z.object({ version: z.literal(1),
 export const ExecutionAuthorityResultSchema = z.object({ version: z.literal(1),
   action: z.enum(['start', 'read', 'control', 'stop', 'retain-reviewer', 'review']), operationId: z.string().min(1), attemptId: z.string().min(1),
   bindingHash: z.string().regex(/^[a-f0-9]{64}$/), owner: DispatchIntentSchema.shape.owner,
+  // Original-owner observation/Stop only; never extends the model's application credential.
+  cleanupOnly: z.literal(true).optional(),
   reviewer: z.object({ agentId: z.string().min(1), expiresAt: z.string().datetime() }).strict().optional(),
 }).strict()
 export const EXECUTION_AUTHORITY_EXTENSION = { namespace: 'execution-authority-v1', version: 1 as const,

@@ -23,7 +23,7 @@ const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', '
  * new grant, allocation or lease; main and worker entry guards remain mandatory. */
 export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   locations: ExecutionRunAuthorityPort,
-  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer): Promise<void> {
+  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer): Promise<{ cleanupOnly: true } | undefined> {
   const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
   const current = await readReconciledDispatchIntent(sql, input.intent.operationId, true)
   const persisted = await readExecutionPlacement(sql, input.intent.executionId)
@@ -90,6 +90,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
       await assertRemoteReviewAssignment(sql, input.intent, input.review!)
     }
   }
+  return cleanup ? { cleanupOnly: true } : undefined
 }
 export function createExecutionAuthorityExtension(pool: pg.Pool,
   locations: ExecutionRunAuthorityPort, producer: AgentPlacementProducer): DeviceExtensionRegistration {
@@ -98,8 +99,8 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
     const facts = ExecutionFactsRequestSchema.safeParse(raw)
     const input = facts.success ? facts.data.authorization : ExecutionAuthorityRequestSchema.parse(raw)
     return withExclusiveGraphConnection(pool, connection => connection.transaction(async sql => {
-      const verify = () => assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer)
-      await verify(); beforeGraphCommit(sql, verify)
+      const authority = await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer)
+      beforeGraphCommit(sql, async () => { await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer) })
       if (facts.success) {
         if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1 for share',
           [input.intent.operationId])).rowCount) denied()
@@ -126,7 +127,7 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         ? await remoteReviewerPolicy(sql, input.intent) : undefined
       return { payload: ExecutionAuthorityResultSchema.parse({ version: 1, action: input.action,
         operationId: input.intent.operationId, attemptId: input.intent.attemptId, bindingHash: input.intent.bindingHash,
-        owner: input.intent.owner,
+        owner: input.intent.owner, ...authority,
         ...(policy ? { reviewer: { agentId: policy.execution.agentId,
           expiresAt: new Date(Date.now() + 60_000).toISOString() } } : {}) }) }
     }))

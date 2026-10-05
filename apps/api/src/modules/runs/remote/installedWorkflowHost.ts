@@ -921,7 +921,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           const recovered = await recoverInstalledWorkflowReply({ frame, binding: context.binding,
             journal: await journal(), recovery, registry, physical, signal: context.signal, lifetimeSignal: signal,
             assertCurrent: () => current(context.binding),
-            authorize: action => workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, action) })
+            authorize: async action => { await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, action) } })
           if (recovered) return recovered
         }
         if (journalOpening && await(await journalOpening).isRetired(frame.intent.operationId)) {
@@ -968,17 +968,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(status?.status==='known') {
           const receipt=RemoteOperationReceiptSchema.parse(status.receipt),resident=operation(frame.intent)
           if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
-            if (receipt.stopFence) {
-              await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, 'stop')
-            } else if (!resident.physicalClosure) {
+            const authority = await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement,
+              receipt.stopFence ? 'stop' : 'read')
+            const cleanupOnly = authority?.cleanupOnly === true
+            if (!cleanupOnly && !receipt.stopFence && !resident.physicalClosure) {
               if (!resident.mcp) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.mcp!.refreshLease()
-            } else if (Date.parse(resident.leaseExpiresAt) <= Date.now()) {
+            } else if (!cleanupOnly && !receipt.stopFence && Date.parse(resident.leaseExpiresAt) <= Date.now()) {
               if (!resident.relay) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.relay!.refresh(signal)
             }
             // Cancellation readback uses cleanup authority; it does not extend the MCP credential.
-            const observationExpiresAt = receipt.stopFence
+            const observationExpiresAt = cleanupOnly || receipt.stopFence
               ? new Date(Date.now() + 60_000).toISOString() : resident.leaseExpiresAt
             const originalHistory = nativeHistoryPageSource(response) ?? value?.history
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
@@ -1003,11 +1004,11 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
             physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:observationExpiresAt,assertOwnerCurrent,
               assertCurrent:async()=>{
-                const approvedRoots=ApprovedRootAllowlistSchema.parse(receipt.stopFence
+                const approvedRoots=ApprovedRootAllowlistSchema.parse(cleanupOnly || receipt.stopFence
                   ? resident.runtimeRoots : await input.approvedRoots())
                 await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
                   assertCurrent:()=>current(context.binding),authorize:assertOwnerCurrent})
-                if(!receipt.stopFence&&!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
+                if(!cleanupOnly&&!receipt.stopFence&&!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
                 current(context.binding)},
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
               closure:()=>resident.physicalClosure??null})

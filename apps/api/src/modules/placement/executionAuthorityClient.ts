@@ -11,9 +11,10 @@ export function workerExecutionAuthorizer(request: (namespace: string, payload: 
     const input = ExecutionAuthorityRequestSchema.parse({ version: 1, intent, placement, action })
     const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
     if (reply.bytes?.byteLength) denied()
-    const result = ExecutionAuthorityResultSchema.parse(reply.payload)
+    const { cleanupOnly, ...result } = ExecutionAuthorityResultSchema.parse(reply.payload)
     if (!sameWorkflowValue(result, { version: 1, action, operationId: intent.operationId, attemptId: intent.attemptId,
-      bindingHash: intent.bindingHash, owner: intent.owner })) denied()
+      bindingHash: intent.bindingHash, owner: intent.owner }) || cleanupOnly && action !== 'read' && action !== 'stop') denied()
+    return cleanupOnly ? { cleanupOnly: true as const } : undefined
   }
 }
 

@@ -64,8 +64,8 @@ describe('remote cleanup authorization', () => {
     else f.pins.mockRejectedValue(new Error(`${defect} changed`))
     await expect(f.authorize('start')).rejects.toThrow()
     await expect(f.authorize('control')).rejects.toThrow()
-    await expect(f.authorize('stop')).resolves.toBeUndefined()
-    await expect(f.authorize('read')).resolves.toBeUndefined()
+    await expect(f.authorize('stop')).resolves.toEqual({ cleanupOnly: true })
+    await expect(f.authorize('read')).resolves.toEqual({ cleanupOnly: true })
   })
 
   it('requires a committed cleanup intent even when the caller holds the original grant', async () => {
@@ -94,7 +94,7 @@ describe('authenticated original execution reconnection', () => {
     await expect(f.authorize('control', replacement)).resolves.toBeUndefined()
     expect(f.pins.mock.calls.at(-1)?.[4]).toEqual({ purpose: 'resident' })
     f.state.cleanup = true
-    await expect(f.authorize('stop', replacement)).resolves.toBeUndefined()
+    await expect(f.authorize('stop', replacement)).resolves.toEqual({ cleanupOnly: true })
     await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     expect(f.receipt.connection).toEqual(f.connection)
   })
@@ -120,7 +120,7 @@ describe('authenticated original execution reconnection', () => {
       await expect(f.authorize(action, restarted)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     }
     f.state.cleanup = true
-    await expect(f.authorize('stop', restarted)).resolves.toBeUndefined()
+    await expect(f.authorize('stop', restarted)).resolves.toEqual({ cleanupOnly: true })
     delete (f.receipt as { native?: unknown }).native
     await expect(f.authorize('read', restarted)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
@@ -136,7 +136,7 @@ describe('authenticated original execution reconnection', () => {
     await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     f.state.cleanup = true
-    await expect(f.authorize('stop', replacement)).resolves.toBeUndefined()
+    await expect(f.authorize('stop', replacement)).resolves.toEqual({ cleanupOnly: true })
     f.state.grant = false
     await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
