@@ -63,15 +63,13 @@ if (args[1] === 'generate-json-schema') {
   process.exit(0)
 }
 const agent = process.env.TEST_AGENT_ID || 'agent-a'
-let current
-let nextTurn = 0
 let created = 0
-let expectedResponses = 0
 const outstanding = new Map()
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
 const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
-const store = () => save(`state-${current.id}.json`, current)
+const store = (owner) => save(`state-${owner.id}.json`, owner)
+const loadThread = (threadId) => read(`state-${threadId}.json`, null)
 const userMessage = (id, clientId, content = []) => ({ type: 'userMessage', id, clientId: clientId ?? null, content })
 const agentMessage = (id, text) => ({
   type: 'agentMessage', id, text, phase: 'final_answer', memoryCitation: null, delivery: null, questions: null,
@@ -90,42 +88,68 @@ const thread = (id, params, original) => ({
   agentNickname: null, agentRole: null, gitInfo: null, name: null,
   turns: original ? JSON.parse(JSON.stringify(original.turns)) : [], settings: settings(params),
 })
-const settings = (params) => {
+const settings = (params, previous = {}) => {
   const config = params.config || {}
   const workspace = config.sandbox_workspace_write || {}
+  let serviceTier = previous.serviceTier || null
+  if (Object.hasOwn(params, 'serviceTier')) {
+    serviceTier = params.serviceTier === 'fast' ? 'fast' : null
+    if (serviceTier === 'fast' && flag('native-priority-tier')) serviceTier = 'priority'
+  }
+  let sandbox = previous.sandbox || { type: 'readOnly', networkAccess: false }
+  if (params.sandbox === 'danger-full-access') sandbox = { type: 'dangerFullAccess' }
+  if (params.sandbox === 'read-only') sandbox = { type: 'readOnly', networkAccess: false }
+  if (params.sandbox === 'workspace-write') {
+    sandbox = {
+      type: 'workspaceWrite', writableRoots: workspace.writable_roots || [], networkAccess: workspace.network_access || false,
+      excludeTmpdirEnvVar: workspace.exclude_tmpdir_env_var || false, excludeSlashTmp: workspace.exclude_slash_tmp || false,
+    }
+  }
   return {
-    model: params.model || 'test-model', modelProvider: 'openai', serviceTier: flag('native-priority-tier') && params.serviceTier === 'fast' ? 'priority' : params.serviceTier === 'fast' ? 'fast' : null,
-    cwd: params.cwd || process.cwd(), reasoningEffort: config.model_reasoning_effort || 'medium',
-    approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', instructionSources: [],
-    sandbox: params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' }
-      : params.sandbox === 'workspace-write' ? {
-        type: 'workspaceWrite', writableRoots: workspace.writable_roots || [], networkAccess: workspace.network_access || false,
-        excludeTmpdirEnvVar: workspace.exclude_tmpdir_env_var || false, excludeSlashTmp: workspace.exclude_slash_tmp || false,
-      } : { type: 'readOnly', networkAccess: false },
+    model: params.model || previous.model || 'test-model', modelProvider: previous.modelProvider || 'openai', serviceTier,
+    cwd: params.cwd || previous.cwd || process.cwd(),
+    reasoningEffort: config.model_reasoning_effort || previous.reasoningEffort || 'medium',
+    approvalPolicy: params.approvalPolicy || previous.approvalPolicy || 'on-request',
+    approvalsReviewer: params.approvalsReviewer || previous.approvalsReviewer || 'user',
+    instructionSources: previous.instructionSources || [], sandbox,
   }
 }
-const replyThread = (id, params) => {
-  if (!flag('ignore-resume-settings') || args[0] !== 'app-server') current.settings = settings(params)
-  store()
-  result(id, { ...current.settings, thread: params.excludeTurns ? { ...current, turns: [] } : current })
+const replyThread = (owner, id, params) => {
+  const persisted = loadThread(owner.id) || owner
+  if (!flag('ignore-resume-settings')) persisted.settings = settings(params, persisted.settings)
+  persisted.model = persisted.settings.model
+  persisted.cwd = persisted.settings.cwd
+  persisted.reasoningEffort = persisted.settings.reasoningEffort
+  store(persisted)
+  result(id, { ...persisted.settings, thread: params.excludeTurns ? { ...persisted, turns: [] } : persisted })
 }
-const complete = (nativeTurn, status = 'completed', answer = `answer-${agent}`) => {
+const complete = (threadId, turnId, status = 'completed', answer = `answer-${agent}`) => {
+  const owner = loadThread(threadId)
+  const nativeTurn = owner.turns.find((entry) => entry.id === turnId)
   nativeTurn.status = status
   nativeTurn.completedAt = 2
   nativeTurn.items.push(agentMessage(`answer-${nativeTurn.id}`, answer))
-  store()
+  owner.status = { type: 'idle' }
+  store(owner)
   const item = nativeTurn.items[nativeTurn.items.length - 1]
-  send({ method: 'item/completed', params: { threadId: current.id, turnId: nativeTurn.id, item, completedAtMs: 2 } })
-  send({ method: 'item/completed', params: { threadId: current.id, turnId: nativeTurn.id, item, completedAtMs: 2 } })
-  send({ method: 'turn/completed', params: { threadId: current.id, turn: nativeTurn } })
+  send({ method: 'item/completed', params: { threadId, turnId, item, completedAtMs: 2 } })
+  send({ method: 'item/completed', params: { threadId, turnId, item, completedAtMs: 2 } })
+  send({ method: 'turn/completed', params: { threadId, turn: nativeTurn } })
 }
-const approval = (nativeTurn, id) => {
-  outstanding.set(id, nativeTurn)
+const approval = (pending, id) => {
+  while (outstanding.has(id) && outstanding.get(id) !== pending) id += 10_000
+  outstanding.set(id, pending)
   send({ id, method: 'item/commandExecution/requestApproval', params: {
-    threadId: current.id, turnId: nativeTurn.id, itemId: `command-${id}`, command: 'printf harmless', cwd: process.cwd(),
+    threadId: pending.threadId, turnId: pending.turnId, itemId: `command-${id}`, command: 'printf harmless', cwd: process.cwd(),
     startedAtMs: 1,
     availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
   } })
+}
+const page = (entries, params) => {
+  const offset = Number(params.cursor || 0)
+  const limit = params.limit ?? entries.length
+  const end = Math.min(offset + limit, entries.length)
+  return { data: entries.slice(offset, end), nextCursor: end > offset && end < entries.length ? String(end) : null }
 }
 const expectedEnvironment = read('expected-environment.json', {})
 const environmentMatches = Object.fromEntries(Object.entries(expectedEnvironment).map(([key, expected]) => [
@@ -142,10 +166,18 @@ setInterval(() => {
   const batch = contents.slice(offset); offset = contents.length
   for (const line of batch.split('\n').filter(Boolean)) {
     const message = JSON.parse(line)
-    if (message.id !== undefined && message.method) outstanding.set(message.id, current.turns[current.turns.length - 1])
-    if (message.method === 'turn/completed' && current) {
-      const index = current.turns.findIndex((value) => value.id === message.params.turn.id)
-      if (index >= 0) { current.turns[index] = message.params.turn; store() }
+    const owner = loadThread(message.params?.threadId)
+    if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {
+      outstanding.set(message.id, { threadId: owner.id, turnId: message.params.turnId || owner.turns.at(-1)?.id,
+        remaining: 0 })
+    }
+    if (message.method === 'turn/completed' && owner) {
+      const index = owner.turns.findIndex((value) => value.id === message.params.turn.id)
+      if (index >= 0) {
+        owner.turns[index] = message.params.turn
+        if (!owner.turns.some((value) => value.status === 'inProgress')) owner.status = { type: 'idle' }
+        store(owner)
+      }
     }
     send(message)
   }
@@ -159,68 +191,84 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   else if (message.method === 'thread/start') {
     if (flag('fail-start') || flag('required-mcp-failure')) { fail(message.id); return }
     if (flag('late-reject-thread-start')) { setTimeout(() => fail(message.id), 800); return }
-    current = thread(`thread-${agent}-${process.pid}-${++created}`, params)
-    nextTurn = 0
-    store()
-    if (flag('late-thread-start')) setTimeout(() => replyThread(message.id, params), 800)
-    else replyThread(message.id, params)
+    const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params)
+    store(owner)
+    if (flag('late-thread-start')) setTimeout(() => replyThread(owner, message.id, params), 800)
+    else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/fork') {
     const original = read(`state-${params.threadId}.json`, null)
     if (!original) { fail(message.id); return }
-    current = thread(`thread-${agent}-${process.pid}-${++created}`, params, original)
-    nextTurn = current.turns.length
-    store()
+    const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params, original)
+    store(owner)
     if (flag('hold-thread-fork-ack')) return
-    if (flag('late-thread-fork')) setTimeout(() => replyThread(message.id, params), 800)
-    else replyThread(message.id, params)
+    if (flag('late-thread-fork')) setTimeout(() => replyThread(owner, message.id, params), 800)
+    else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/resume') {
     if (flag('fail-resume')) { fail(message.id); return }
-    current = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))
-    nextTurn = current.turns.length
-    if (flag('resume-delay')) setTimeout(() => replyThread(message.id, params), 250)
-    else replyThread(message.id, params)
+    const owner = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))
+    if (flag('resume-delay')) setTimeout(() => replyThread(owner, message.id, params), 250)
+    else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/read') {
-    const persisted = read(`state-${params.threadId}.json`, current)
+    const persisted = loadThread(params.threadId)
+    if (!persisted) { fail(message.id); return }
     const reply = () => result(message.id, { thread: params.includeTurns ? persisted : { ...persisted, turns: [] } })
     if (flag('read-delay')) setTimeout(reply, 250)
     else reply()
   }
   else if (message.method === 'thread/turns/list') {
-    const persisted = read(`state-${params.threadId}.json`, current)
-    result(message.id, { data: [...persisted.turns].reverse(), nextCursor: null, prevCursor: null })
+    const persisted = loadThread(params.threadId)
+    if (!persisted) { fail(message.id); return }
+    const entries = [...persisted.turns]
+    if (params.sortDirection !== 'asc') entries.reverse()
+    result(message.id, { ...page(entries, params), prevCursor: null })
+  }
+  else if (message.method === 'thread/items/list') {
+    const persisted = loadThread(params.threadId)
+    if (!persisted) { fail(message.id); return }
+    const entries = persisted.turns.filter((entry) => !params.turnId || entry.id === params.turnId)
+      .flatMap((entry) => entry.items.map((item) => ({ turnId: entry.id, item })))
+    if (params.sortDirection === 'desc') entries.reverse()
+    result(message.id, { ...page(entries, params), backwardsCursor: null })
   }
   else if (message.method === 'turn/start') {
     const prompt = params.input[0].text
     if (prompt === 'reject') { fail(message.id); return }
-    const nativeTurn = turn(`turn-${++nextTurn}`, 'inProgress', params.clientUserMessageId, params.input)
-    current.turns.push(nativeTurn); store()
+    const owner = loadThread(params.threadId)
+    if (!owner) { fail(message.id); return }
+    const turnNumber = owner.turns.length + 1
+    const nativeTurn = turn(`turn-${turnNumber}`, 'inProgress', params.clientUserMessageId, params.input)
+    owner.turns.push(nativeTurn)
+    owner.status = { type: 'active', activeFlags: [] }
+    store(owner)
     if (prompt === 'lost-start') {
       nativeTurn.status = 'completed'; nativeTurn.completedAt = 2
-      nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store()
+      nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store(owner)
       process.exit(17)
     }
     const started = () => {
-      if (!flag('hold-turn-start-ack')) result(message.id, { turn: nativeTurn })
+      const persistedTurn = loadThread(owner.id).turns.find((entry) => entry.id === nativeTurn.id)
+      if (!flag('hold-turn-start-ack')) result(message.id, { turn: persistedTurn })
       if (prompt === 'approval' || prompt === 'multi') {
-        expectedResponses = prompt === 'multi' ? 2 : 1
-        approval(nativeTurn, 900 + nextTurn)
-        if (prompt === 'multi') { approval(nativeTurn, 900 + nextTurn); approval(nativeTurn, 1900 + nextTurn) }
+        const pending = { threadId: owner.id, turnId: nativeTurn.id, remaining: prompt === 'multi' ? 2 : 1 }
+        approval(pending, 900 + turnNumber)
+        if (prompt === 'multi') { approval(pending, 900 + turnNumber); approval(pending, 1900 + turnNumber) }
       } else if (prompt === 'crash-completed') {
         nativeTurn.status = 'completed'; nativeTurn.completedAt = 2
-        nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store()
+        nativeTurn.items.push(agentMessage('recovered', 'recovered-answer')); store(owner)
         setTimeout(() => process.exit(17), 15)
       } else if (['wait', 'slow-start', 'late-start'].includes(prompt)) { /* The fixture intentionally leaves the turn active. */ }
-      else complete(nativeTurn)
+      else complete(owner.id, nativeTurn.id)
     }
     if (prompt === 'slow-start') setTimeout(started, 250)
     else if (prompt === 'late-start') setTimeout(started, 800)
     else started()
   } else if (message.method === 'turn/steer') {
-    const nativeTurn = current.turns.find((entry) => entry.id === params.expectedTurnId && entry.status === 'inProgress')
-    if (params.threadId !== current.id || !nativeTurn) { fail(message.id); return }
+    const owner = loadThread(params.threadId)
+    const nativeTurn = owner?.turns.find((entry) => entry.id === params.expectedTurnId && entry.status === 'inProgress')
+    if (!nativeTurn) { fail(message.id); return }
     const itemId = `native-user-${nativeTurn.id}-${nativeTurn.items.length + 1}`
     nativeTurn.items.push(userMessage(itemId, params.clientUserMessageId, params.input))
-    store()
+    store(owner)
     if (params.input[0].text !== 'lost-steer') result(message.id, { turnId: nativeTurn.id })
   } else if (message.method === 'turn/interrupt') {
     if (flag('interrupt-startup-race')) {
@@ -228,16 +276,22 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       send({ id: message.id, error: { code: -32000, message: 'no active turn to interrupt' } })
       return
     }
-    const found = current.turns.find((entry) => entry.id === params.turnId)
+    const owner = loadThread(params.threadId)
+    if (!owner) { fail(message.id); return }
+    const found = owner.turns.find((entry) => entry.id === params.turnId)
     result(message.id, {})
-    if (found) complete(found, 'interrupted', '')
+    if (found) complete(owner.id, found.id, 'interrupted', '')
   } else if (!message.method && message.id !== undefined) {
     const found = outstanding.get(message.id)
     if (found && message.result) {
       outstanding.delete(message.id)
       if (flag('exit-on-response')) process.exit(18)
-      if (!flag('no-resolution')) send({ method: 'serverRequest/resolved', params: { threadId: current.id, requestId: message.id } })
-      if (expectedResponses > 0 && --expectedResponses === 0 && !flag('no-resolution')) complete(found, 'completed', `approved-${agent}`)
+      if (!flag('no-resolution')) send({ method: 'serverRequest/resolved', params: {
+        threadId: found.threadId, requestId: message.id,
+      } })
+      if (found.remaining > 0 && --found.remaining === 0 && !flag('no-resolution')) {
+        complete(found.threadId, found.turnId, 'completed', `approved-${agent}`)
+      }
     }
   } else if (message.method === 'config/read') {
     const configured = read('mcp.json', { name: 'graphql', enabled: true })

@@ -5,7 +5,7 @@ import { describe, it } from 'vitest'
 
 import { codexRequest } from '../src/modules/harnesses/codexProtocol.js'
 import { CodexStdioTransport, type JsonObject, type RpcRequest } from '../src/modules/harnesses/codexStdioTransport.js'
-import { calls, fixture, fixtureProtocol, until } from './fixtures/codex-test-helpers.js'
+import { calls, fixture, fixtureProtocol, state, until } from './fixtures/codex-test-helpers.js'
 
 describe('Codex fixtures use the pinned protocol validator', () => {
   it('validates nested client inputs and server request and response payloads', () => {
@@ -30,6 +30,90 @@ describe('Codex fixtures use the pinned protocol validator', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Codex executable fixture protocol', () => {
+  it('targets each thread independently and paginates its items while preserving resume settings', async () => {
+    const f = await fixture()
+    const notifications: Array<{ method: string; params: JsonObject }> = []
+    const transport = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, fixtureProtocol,
+      async () => undefined,
+      (method, params) => notifications.push({ method, params }),
+      () => undefined,
+    )
+    try {
+      await transport.start()
+      const root = await codexRequest(transport, 'thread/start', { cwd: f.directory, model: 'root-model' })
+      const child = await codexRequest(transport, 'thread/start', { cwd: f.directory, model: 'child-model',
+        approvalPolicy: 'never', sandbox: 'danger-full-access', config: { model_reasoning_effort: 'low' } })
+      const rootTurn = await codexRequest(transport, 'turn/start', { threadId: root.thread.id,
+        input: [{ type: 'text', text: 'wait', text_elements: [] }], clientUserMessageId: 'root-request' })
+      const childTurn = await codexRequest(transport, 'turn/start', { threadId: child.thread.id,
+        input: [{ type: 'text', text: 'wait', text_elements: [] }], clientUserMessageId: 'child-request' })
+      await codexRequest(transport, 'turn/steer', { threadId: child.thread.id, expectedTurnId: childTurn.turn.id,
+        input: [{ type: 'text', text: 'steer', text_elements: [] }], clientUserMessageId: 'child-steer' })
+      const firstPage = await codexRequest(transport, 'thread/items/list', {
+        threadId: child.thread.id, turnId: childTurn.turn.id, sortDirection: 'asc', limit: 1,
+      })
+      assert.equal(firstPage.data[0]!.turnId, childTurn.turn.id)
+      assert(firstPage.nextCursor)
+      const secondPage = await codexRequest(transport, 'thread/items/list', {
+        threadId: child.thread.id, turnId: childTurn.turn.id, sortDirection: 'asc', limit: 1,
+        cursor: firstPage.nextCursor,
+      })
+      assert.equal(secondPage.nextCursor, null)
+      const items = [firstPage.data[0]!.item, secondPage.data[0]!.item]
+      assert.deepEqual(items.filter((item) => item.type === 'userMessage').map((item) => item.clientId),
+        ['child-request', 'child-steer'])
+      const rootItems = await codexRequest(transport, 'thread/items/list', { threadId: root.thread.id })
+      assert.equal(rootItems.data.length, 1)
+      assert.equal(rootItems.data[0]!.turnId, rootTurn.turn.id)
+      await codexRequest(transport, 'turn/interrupt', { threadId: child.thread.id, turnId: childTurn.turn.id })
+      await until(async () => notifications.some((entry) => entry.method === 'turn/completed'
+        && entry.params.threadId === child.thread.id))
+      assert.equal((await state(f.directory, root.thread.id)).turns[0]!.status, 'inProgress')
+      assert.equal((await state(f.directory, child.thread.id)).turns[0]!.status, 'interrupted')
+      const resumed = await codexRequest(transport, 'thread/resume', { threadId: child.thread.id, excludeTurns: true })
+      assert.equal(resumed.model, 'child-model')
+      assert.equal(resumed.approvalPolicy, 'never')
+      assert.equal(resumed.reasoningEffort, 'low')
+      assert.deepEqual(resumed.sandbox, { type: 'dangerFullAccess' })
+    } finally {
+      await transport.close()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
+  it('retains each approval owner when another thread starts and receives input', async () => {
+    const f = await fixture()
+    const requests: RpcRequest[] = []
+    const transport = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, fixtureProtocol,
+      async (request) => { requests.push(request) }, () => undefined, () => undefined,
+    )
+    try {
+      await transport.start()
+      const first = await codexRequest(transport, 'thread/start', { cwd: f.directory })
+      const firstTurn = await codexRequest(transport, 'turn/start', { threadId: first.thread.id,
+        input: [{ type: 'text', text: 'approval', text_elements: [] }], clientUserMessageId: 'first-request' })
+      await until(async () => requests.length === 1)
+      const second = await codexRequest(transport, 'thread/start', { cwd: f.directory })
+      await codexRequest(transport, 'turn/start', { threadId: second.thread.id,
+        input: [{ type: 'text', text: 'approval', text_elements: [] }], clientUserMessageId: 'second-request' })
+      await until(async () => requests.length === 2)
+      assert.notEqual(requests[0]!.id, requests[1]!.id)
+      await codexRequest(transport, 'turn/steer', { threadId: first.thread.id, expectedTurnId: firstTurn.turn.id,
+        input: [{ type: 'text', text: 'steer', text_elements: [] }], clientUserMessageId: 'first-steer' })
+      await transport.respond(requests[0]!.id, requests[0]!.method, { decision: 'accept' })
+      await until(async () => (await state(f.directory, first.thread.id)).turns[0]!.status === 'completed')
+      assert.equal((await state(f.directory, second.thread.id)).turns[0]!.status, 'inProgress')
+      const readback = await codexRequest(transport, 'thread/read', { threadId: first.thread.id, includeTurns: true })
+      const messages = readback.thread.turns[0]!.items.filter((item) => item.type === 'userMessage')
+      assert.deepEqual(messages.map((item) => item.clientId), ['first-request', 'first-steer'])
+      await transport.respond(requests[1]!.id, requests[1]!.method, { decision: 'accept' })
+      await until(async () => (await state(f.directory, second.thread.id)).turns[0]!.status === 'completed')
+    } finally {
+      await transport.close()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
   it('validates live fixture frames and preserves distinct native and application IDs after restart', async () => {
     const f = await fixture()
     const transports: CodexStdioTransport[] = []
