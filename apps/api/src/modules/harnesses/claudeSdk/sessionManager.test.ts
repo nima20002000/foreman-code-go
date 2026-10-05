@@ -744,9 +744,10 @@ it('applies preferences by idle exact-session resume and retains the admitted se
     frames = new ClaudeBoundedQueue(32)
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
       initializationResult: async () => ({ models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet' },
-        { value: 'sonnet[1m]', resolvedModel: 'claude-sonnet' }] }),
+        { value: 'sonnet[1m]', resolvedModel: 'claude-sonnet', displayName: 'Sonnet (1M)' }] }),
       getContextUsage: async () => ({ rawMaxTokens: input.options.model === 'sonnet[1m]' ? 1000000 : 200000,
-        maxTokens: 200000, totalTokens: 10, model: String(input.options.model),
+        maxTokens: 200000, totalTokens: 10,
+        model: input.options.model === 'sonnet[1m]' ? 'Sonnet (1M)' : String(input.options.model),
         isAutoCompactEnabled: (input.options.env as Record<string, string>)?.DISABLE_AUTO_COMPACT !== '1' }),
       interrupt: f.interrupt, close: () => frames.close(), setPermissionMode: async () => {},
     }

@@ -87,7 +87,7 @@ interface Turn {
 interface Runtime {
   startingTurn?: Turn | undefined
   start: NativeSessionStart
-  models?: Array<{ value: string; resolvedModel?: string | undefined }>
+  models?: Array<{ value: string; resolvedModel?: string | undefined; displayName?: string | undefined }>
   defaultModelCapacity?: number
   modelCapacity?: number
   selectedModel?: string
@@ -321,7 +321,7 @@ export function createClaudeNativeSessionManager(options: {
   async function inspectSettings(runtime: Runtime) {
     const initialization = await runtime.sdk.initializationResult!()
     const models = z.object({ models: z.array(z.object({ value: z.string(),
-      resolvedModel: z.string().optional() }).passthrough()).optional() }).passthrough().parse(initialization)
+      resolvedModel: z.string().optional(), displayName: z.string().optional() }).passthrough()).optional() }).passthrough().parse(initialization)
     runtime.models = models.models ?? []
     if (!runtime.sdk.getContextUsage) return
     const usage = z.object({ rawMaxTokens: z.number().positive(), maxTokens: z.number().positive(),
@@ -385,9 +385,11 @@ export function createClaudeNativeSessionManager(options: {
       if (profile) {
         const base = (model: string) => model.replace(/\[(?:1m|200k)\]$/, '')
         const selected = runtime.models?.find(model => model.value === profile.id)
+        const family = base(selected?.resolvedModel ?? profile.id)
+        const aliases = runtime.models?.filter(model => base(model.resolvedModel ?? model.value) === family)
+          .flatMap(model => [model.value, model.resolvedModel ?? model.value, model.displayName ?? model.value]) ?? []
         const actualModel = runtime.selectedModel ? base(runtime.selectedModel) : undefined
-        const matchesModel = actualModel === base(profile.id)
-          || selected?.resolvedModel !== undefined && actualModel === base(selected.resolvedModel)
+        const matchesModel = actualModel !== undefined && aliases.some(alias => base(alias) === actualModel)
         if (runtime.modelCapacity !== profile.capacity || !matchesModel) {
           throw new HarnessExecutionError('CLAUDE_CONTEXT_PROFILE_NOT_APPLIED',
             'Native model or context capacity differs from the selected profile.')
