@@ -83,6 +83,8 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
       })
       owned.child.stdout.on('data', chunk => { transcript = (transcript + String(chunk)).slice(-4_000) })
       owned.child.stderr.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4_000) })
+      // Codex exec consumes piped prompt input until EOF before starting its MCP clients.
+      owned.child.stdin.end()
       const deadline = setTimeout(() => { void owned.close() }, 150_000)
       try {
         const outcome = await owned.closed
