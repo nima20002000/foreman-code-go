@@ -1,0 +1,277 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+import { groupUsed } from './integration-process.mjs'
+import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess, sampleVerificationResources,
+  validateVerificationContext, verificationCommand, verifyOfflinePreseed } from './verify-repository.mjs'
+import { portionPath, readNodeReport, runVerificationCommand, writeReport } from './verification-reports.mjs'
+
+function context(suite = 'unit') {
+  const id = '11111111-1111-4111-8111-111111111111'
+  const digest = 'a'.repeat(64)
+  return { identity: {
+    suite, commit: 'b'.repeat(40), manifestDigest: digest, definitionVersionId: 'definition-version',
+    executionId: 'execution', attemptId: 'attempt',
+    parameters: { unitWorkers: 1, integrationShards: 1 },
+    resources: { schemaVersion: 1, limits: { cpuLimit: 1, memoryBytes: 2 ** 30, pidsLimit: 128, diskBytes: 8 * 2 ** 30 },
+      mutableInodes: 100000, controlTempBytes: 2 ** 20, scratchBytes: 2 ** 30, scratchExecutable: true,
+      shmBytes: 64 * 2 ** 20, spoolBytes: 2 ** 20, reportBytes: 4 * 2 ** 20 },
+    target: { schemaVersion: 1, mainId: id, mainInstallationId: id, hostRef: { kind: 'main', mainId: id },
+      registration: null, destination: { canonicalProjectRoot: '/approved/source', canonicalCwd: '/approved/source',
+        managedRuntimeRoot: '/approved/runtime', directoryIdentityHash: digest, rootPolicyId: 'root',
+        rootPolicyRevision: '1', locationRevision: '1', attestationId: 'attestation', attestationHash: digest } },
+    profile: { profileId: 'profile', profileRevision: 1, qualificationId: id, rootId: id, bindingRevision: 1,
+      fingerprintDigest: digest, imageDigest: `sha256:${digest}`, toolchainDigest: digest,
+      network: { schemaVersion: 2, mode: 'none' }, approvalId: id,
+      approvalExpiresAt: '2026-10-05T13:00:00.000Z', qualificationExpiresAt: '2026-10-05T13:00:00.000Z' },
+  }, mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
+  limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
+    logsArchiveBytes: 65536, logBytes: 8192 } }
+}
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'verify-repository-'))
+  const directory = join(root, 'reports')
+  mkdirSync(directory)
+  return { root, directory, close: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+function receipt(directory, key, code = 0) {
+  writeReport(portionPath(directory, key, 'command.json'), { key, code,
+    startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:00:01.000Z' }, 8192)
+}
+
+test('ordinary suites run their full root commands', () => {
+  for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build']]) {
+    assert.deepEqual(verificationCommand(context(suite)), ['corepack', 'pnpm', script])
+  }
+  const install = { ...context('install'), storeDirectory: '/mutable/store', mutableDirectory: '/mutable',
+    preseedReceipt: {} }
+  assert.deepEqual(verificationCommand(install), ['corepack', 'pnpm', 'install', '--frozen-lockfile',
+    '--offline', '--prod=false', '--store-dir', '/mutable/store'])
+})
+
+test('missing policy inputs, excessive workers and report reservations fail closed', () => {
+  assert.throws(() => validateVerificationContext({}), /context/)
+  assert.throws(() => validateVerificationContext({ ...context(), limits: {} }), /positive integer/)
+  const tooMany = context()
+  tooMany.identity.parameters.unitWorkers = 2
+  assert.throws(() => validateVerificationContext(tooMany), /Unit workers/)
+  const tooLarge = context()
+  tooLarge.identity.resources.reportBytes = 1024
+  assert.throws(() => validateVerificationContext(tooLarge), /reservation/)
+  assert.throws(() => verificationCommand({ ...context('install'), storeDirectory: undefined }), /private store/)
+  assert.throws(() => verificationCommand({ ...context('install'), mutableDirectory: '/mutable',
+    storeDirectory: '/owner/store', preseedReceipt: {} }), /inside the Job/)
+})
+
+test('offline provenance must match lockfile, pnpm, platform and verified release age', () => {
+  const f = fixture()
+  try {
+    writeFileSync(join(f.root, 'pnpm-lock.yaml'), 'frozen lockfile')
+    const receipt = { lockfileSha256: createHash('sha256').update('frozen lockfile').digest('hex'),
+      pnpmVersion: '11.27.0', platform: process.platform, architecture: process.arch,
+      provenanceDigest: 'a'.repeat(64), minimumReleaseAgeMinutes: 2880, releaseAgeVerified: true }
+    assert.doesNotThrow(() => verifyOfflinePreseed(f.root, receipt))
+    for (const change of [{ lockfileSha256: 'b'.repeat(64) }, { pnpmVersion: '11.28.0' },
+      { platform: 'unknown' }, { releaseAgeVerified: false }, { minimumReleaseAgeMinutes: 0 }]) {
+      assert.throws(() => verifyOfflinePreseed(f.root, { ...receipt, ...change }), /Preseed receipt/)
+    }
+  } finally { f.close() }
+})
+
+test('a native Node test process records each file and case, including skips', async () => {
+  const f = fixture()
+  try {
+    const file = join(f.root, 'example.test.mjs')
+    writeFileSync(file, "import { test } from 'node:test'; test('passes', () => {}); test.skip('skips', () => {});\n")
+    const code = await runVerificationCommand([process.execPath, '--test', file], {
+      root: f.root, cwd: f.root, script: 'test', env: { ...process.env,
+        GRAPHQL_VERIFICATION_REPORT_DIR: f.directory, GRAPHQL_VERIFICATION_LOG_BYTES: '8192',
+        GRAPHQL_VERIFICATION_REPORT_BYTES: '65536' },
+    })
+    assert.equal(code, 0)
+    const report = readNodeReport(portionPath(f.directory, 'root:test', 'node.ndjson'),
+      { root: f.root, expectedFiles: ['example.test.mjs'], maxBytes: 65536 })
+    assert.equal(report.complete, true)
+    assert.deepEqual(report.totals, { total: 2, passed: 1, failed: 0, skipped: 1 })
+  } finally { f.close() }
+})
+
+test('exit zero with a missing or corrupt native report is incomplete', () => {
+  const f = fixture()
+  try {
+    const key = 'root:test'
+    receipt(f.directory, key)
+    writeReport(portionPath(f.directory, key, 'inventory.json'), ['example.test.mjs'], 8192)
+    const expected = [{ key, kind: 'vitest' }]
+    assert.equal(collectPortions(f.directory, f.root, expected, context().limits)[0].complete, false)
+    writeFileSync(portionPath(f.directory, key, 'vitest.json'), '{broken')
+    assert.equal(collectPortions(f.directory, f.root, expected, context().limits)[0].complete, false)
+    receipt(f.directory, key, 1)
+    assert.equal(collectPortions(f.directory, f.root, expected, context().limits)[0].failed, true)
+  } finally { f.close() }
+})
+
+test('interrupted Node reports retain observed passes even before the command receipt exists', () => {
+  const f = fixture()
+  try {
+    const key = 'root:test'
+    writeReport(portionPath(f.directory, key, 'inventory.json'), ['example.test.mjs'], 8192)
+    writeFileSync(portionPath(f.directory, key, 'node.ndjson'), JSON.stringify({ type: 'test:pass',
+      file: join(f.root, 'example.test.mjs'), name: 'observed', testType: 'test', duration: 1 }) + '\n')
+    const portions = collectPortions(f.directory, f.root, [{ key, kind: 'node' }], context().limits)
+    assert.equal(portions[0].complete, false)
+    assert.equal(portions[0].totals.passed, 1)
+  } finally { f.close() }
+})
+
+test('finalization emits contract-valid summary, JUnit, Vitest JSON and a binary archive', async () => {
+  const f = fixture()
+  try {
+    receipt(f.directory, 'apps/api:build')
+    const configuration = context('build')
+    const summary = finalizeVerification(configuration, { root: f.root, directory: f.directory,
+      state: { startedAt: new Date(Date.now() - 1000).toISOString(), expected: [{ key: 'apps/api:build', kind: 'command' }] },
+      terminalOutcome: 'passed', processStopped: true })
+    assert.equal(summary.outcome, 'passed')
+    const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
+    const { JobVerificationReportSchema } = await import(pathToFileURL(require.resolve('@graphql/contracts/job-verification')).href)
+    assert.equal(JobVerificationReportSchema.parse(summary).executionId, 'execution')
+    for (const file of ['summary.json', 'junit.xml', 'vitest.json', 'logs.tar.gz']) assert.ok(existsSync(join(f.directory, file)))
+    assert.equal(readFileSync(join(f.directory, 'logs.tar.gz'))[0], 0x1f)
+    assert.equal(JSON.parse(readFileSync(join(f.directory, 'vitest.json'), 'utf8')).verification.commit, configuration.identity.commit)
+  } finally { f.close() }
+})
+
+test('publication limit failure produces an incomplete summary without fabricated successes', () => {
+  const f = fixture()
+  try {
+    receipt(f.directory, 'root:install')
+    const configuration = context('install')
+    configuration.limits.junitBytes = 1
+    const summary = finalizeVerification(configuration, { root: f.root, directory: f.directory,
+      state: { startedAt: new Date(Date.now() - 1000).toISOString(), expected: [{ key: 'root:install', kind: 'command' }] },
+      terminalOutcome: 'passed', processStopped: true })
+    assert.equal(summary.outcome, 'incomplete')
+    assert.equal(summary.completeness, 'partial')
+    assert.equal(existsSync(join(f.directory, 'junit.xml')), false)
+  } finally { f.close() }
+})
+
+async function waitForLog(path, text) {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    if (existsSync(path) && readFileSync(path, 'utf8').includes(text)) return
+    await new Promise((done) => setTimeout(done, 10))
+  }
+  throw new Error('Fixture process did not become ready')
+}
+
+test('deadline closes a TERM-ignoring process and its detached descendant', async () => {
+  const f = fixture()
+  try {
+    const script = `const { spawn } = require('node:child_process');
+      process.on('SIGTERM', () => {});
+      const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+        { detached: true, stdio: 'ignore' });
+      console.log('child=' + child.pid); setInterval(() => {}, 1000);`
+    const result = await runSuiteProcess([process.execPath, '-e', script], { root: f.root, env: process.env,
+      directory: f.directory, limits: context().limits, executionTimeoutMs: 500, cancellationTimeoutMs: 100 })
+    const childPid = Number(readFileSync(join(f.directory, 'parts', 'root.log'), 'utf8').match(/child=(\d+)/)[1])
+    assert.equal(result.terminalOutcome, 'timed_out')
+    assert.equal(result.processStopped, true)
+    assert.equal(groupUsed(childPid), false)
+  } finally { f.close() }
+})
+
+test('cancellation preserves bounded output and closes the active group', async () => {
+  const f = fixture()
+  const controller = new AbortController()
+  try {
+    const pending = runSuiteProcess([process.execPath, '-e',
+      "console.log('ready'); process.stdout.write('x'.repeat(30000)); setInterval(() => {}, 1000)"],
+    { root: f.root, env: process.env, directory: f.directory, limits: context().limits,
+      executionTimeoutMs: 3000, cancellationTimeoutMs: 100, signal: controller.signal })
+    await waitForLog(join(f.directory, 'parts', 'root.log'), 'ready')
+    controller.abort()
+    const result = await pending
+    assert.equal(result.terminalOutcome, 'cancelled')
+    assert.equal(result.processStopped, true)
+    assert.ok(result.log.discardedBytes > 0)
+    assert.equal(result.log.bytes, context().limits.logBytes)
+  } finally { controller.abort(); f.close() }
+})
+
+test('an already cancelled request never starts its command', async () => {
+  const f = fixture()
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    const marker = join(f.root, 'should-not-run')
+    const result = await runSuiteProcess([process.execPath, '-e',
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, 'started')`],
+    { root: f.root, env: process.env, directory: f.directory, limits: context().limits,
+      executionTimeoutMs: 2000, cancellationTimeoutMs: 100, signal: controller.signal })
+    assert.equal(result.terminalOutcome, 'cancelled')
+    assert.equal(existsSync(marker), false)
+  } finally { f.close() }
+})
+
+test('unit inventory includes all package runners and both web/root smoke commands', () => {
+  const portions = expectedPortions('/unused', 'unit')
+  assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'packages/contracts:test', 'apps/api:test',
+    'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
+})
+
+
+test('measurement reads available cgroup metrics and denies missing or corrupt metrics', () => {
+  const f = fixture()
+  try {
+    const cgroup = join(f.root, 'cgroup')
+    mkdirSync(cgroup)
+    writeFileSync(join(cgroup, 'cpu.stat'), 'usage_usec 12345\n')
+    writeFileSync(join(cgroup, 'memory.peak'), '65536\n')
+    writeFileSync(join(cgroup, 'pids.peak'), '4\n')
+    const input = { mutableDirectory: f.root, cgroupDirectory: cgroup }
+    const measurement = sampleVerificationResources(input)
+    assert.equal(measurement.cpuUsageUsec, 12345)
+    assert.equal(measurement.memoryPeakBytes, 65536)
+    assert.equal(measurement.pidsPeak, 4)
+    assert.ok(measurement.mutableBytes >= 0)
+    assert.ok(measurement.mutableInodes >= 0)
+    writeFileSync(join(cgroup, 'pids.peak'), 'unknown\n')
+    assert.throws(() => sampleVerificationResources(input), /unavailable or invalid/)
+    rmSync(join(cgroup, 'pids.peak'))
+    assert.throws(() => sampleVerificationResources(input))
+  } finally { f.close() }
+})
+
+
+test('complete Node reports reconcile case totals and preserve nested names', () => withDirectory((directory) => {
+  const path = join(directory, 'node.ndjson')
+  const file = '/source/a.test.mjs'
+  const counts = { tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, cancelled: 0 }
+  const events = [
+    { type: 'test:start', file, name: 'suite', nesting: 0, timestamp: 1 },
+    { type: 'test:start', file, name: 'case', nesting: 1, timestamp: 2 },
+    { type: 'test:pass', file, name: 'case', nesting: 1, timestamp: 3, duration: 1 },
+    { type: 'test:pass', file, name: 'suite', nesting: 0, timestamp: 4, testType: 'suite' },
+    { type: 'test:summary', file, success: true, timestamp: 5, counts },
+    { type: 'test:summary', success: true, counts },
+  ]
+  const read = () => readNodeReport(path, { root: '/source', expectedFiles: ['a.test.mjs'], maxBytes: 4096 })
+  writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
+  const report = read()
+  assert.equal(report.complete, true)
+  assert.equal(report.totals.passed, 1)
+  assert.equal(report.files[0].assertionResults[0].fullName, 'suite > case')
+  events.at(-1).counts = { ...counts, failed: 1 }
+  writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
+  assert.equal(read().complete, false)
+}))

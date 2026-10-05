@@ -12,8 +12,20 @@ const running = join(common, 'graphql-heavy-jobs', 'running')
 const readOwner = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
 const owner = (matches) => [readOwner(activePath), ...(existsSync(running) ? readdirSync(running).map((name) => readOwner(join(running, name))) : [])].find((record) => record && matches(record))
 
+function liveOwner(record) {
+  if (!Number.isSafeInteger(record?.pid) || record.pid < 1) return false
+  try {
+    const text = readFileSync(`/proc/${record.pid}/stat`, 'utf8')
+    const fields = text.slice(text.lastIndexOf(') ') + 2).split(' ')
+    return fields[0] !== 'Z' && fields[19] === record.start
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return false
+    throw error
+  }
+}
+
 export default async function setup() {
-  const inherited = owner((record) => record.token && record.token === readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN'))
+  const inherited = owner((record) => record.token && record.token === readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN') && liveOwner(record))
   if (inherited?.token && readProductEnvironment(process.env, 'HEAVY_JOB_COMMON') === common && readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN') === inherited.token) return
   const child = spawn(process.execPath, [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, join(root, 'scripts/heavy-job.mjs'), '__hold'], { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] })
   await new Promise((resolveReady, reject) => {

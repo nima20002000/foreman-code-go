@@ -696,3 +696,38 @@ for (const [name, contents] of [
     assert.equal(readFileSync(path, 'utf8'), contents)
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
+
+test('verification builds execute each time and return machine-readable command results', async () => {
+  const f = fixture()
+  try {
+    copyFileSync(new URL('./verification-reports.mjs', import.meta.url), join(f.first, 'scripts/verification-reports.mjs'))
+    const reports = join(f.first, '.logs', 'verification')
+    const environment = { ...jobEnv(f.first), GRAPHQL_VERIFICATION_ROOT: f.first,
+      GRAPHQL_VERIFICATION_REPORT_DIR: reports, GRAPHQL_VERIFICATION_LOG_BYTES: '8192',
+      GRAPHQL_VERIFICATION_REPORT_BYTES: '65536', npm_lifecycle_event: 'build' }
+    const script = "const fs = require('fs'); const n = fs.existsSync('count') ? +fs.readFileSync('count') : 0; fs.writeFileSync('count', String(n+1)); fs.mkdirSync('packages/contracts/dist', {recursive:true}); fs.writeFileSync('packages/contracts/dist/index.js', 'export {}');"
+    const argumentsList = ['--build', 'contracts', '--', process.execPath, '-e', script]
+    assert.equal((await run(f.first, argumentsList)).code, 0)
+    const cached = await run(f.first, argumentsList)
+    assert.equal(cached.code, 0, cached.output)
+    assert.match(cached.output, /build is current/)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await new Promise((done) => {
+        const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--build', 'contracts', '--',
+          process.execPath, '-e', script], { cwd: f.first, env: environment, stdio: ['ignore', 'pipe', 'pipe'] })
+        let output = ''
+        child.stdout.on('data', (chunk) => { output += chunk })
+        child.stderr.on('data', (chunk) => { output += chunk })
+        child.once('exit', (code) => done({ code, output }))
+      })
+      assert.equal(result.code, 0, result.output)
+      const receipt = JSON.parse(readFileSync(join(reports, 'parts', 'root_build.command.json'), 'utf8'))
+      assert.equal(receipt.key, 'root:build')
+      assert.equal(receipt.code, 0)
+      assert.ok(Date.parse(receipt.finishedAt) >= Date.parse(receipt.startedAt))
+      // Each invocation is a separate command execution, with a fresh report destination.
+      rmSync(reports, { recursive: true, force: true })
+    }
+    assert.equal(readFileSync(join(f.first, 'count'), 'utf8'), '3')
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})

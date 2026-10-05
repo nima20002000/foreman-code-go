@@ -1,0 +1,345 @@
+import { execFileSync, spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statfsSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { groupUsed, stopGroup } from './integration-process.mjs'
+import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, portionKey, portionPath,
+  positiveInteger, privateDirectory, readNodeReport, readReport, readVitestReport, reportPaths,
+  suiteSummary, writeReport } from './verification-reports.mjs'
+
+const repository = fileURLToPath(new URL('..', import.meta.url))
+const rootCommands = { typecheck: 'typecheck', lint: 'lint', unit: 'test', build: 'build' }
+const limitNames = ['summaryBytes', 'junitBytes', 'vitestBytes', 'logsArchiveBytes', 'logBytes']
+
+export function validateVerificationContext(context) {
+  const identity = context?.identity
+  if (!identity || !['install', ...Object.keys(rootCommands)].includes(identity.suite)) {
+    throw new Error('An ordinary-suite accepted execution context is required')
+  }
+  for (const field of ['commit', 'manifestDigest', 'definitionVersionId', 'executionId', 'attemptId']) {
+    if (typeof identity[field] !== 'string' || !identity[field]) throw new Error(`Missing execution identity: ${field}`)
+  }
+  if (!identity.target || !identity.profile || !identity.resources || !identity.parameters) {
+    throw new Error('Accepted target, profile, resources and parameters are required')
+  }
+  positiveInteger(identity.resources.reportBytes, 'Accepted report reservation')
+  positiveInteger(context.executionTimeoutMs, 'Execution deadline')
+  positiveInteger(context.cancellationTimeoutMs, 'Cancellation deadline')
+  positiveInteger(context.qualifiedUnitWorkers, 'Qualified unit workers', 256)
+  positiveInteger(identity.parameters.unitWorkers, 'Unit workers', context.qualifiedUnitWorkers)
+  positiveInteger(identity.parameters.integrationShards, 'Integration shards', 12)
+  for (const name of limitNames) positiveInteger(context.limits?.[name], name)
+  const outputBytes = context.limits.summaryBytes + context.limits.junitBytes
+    + context.limits.vitestBytes + context.limits.logsArchiveBytes
+  if (outputBytes > identity.resources.reportBytes || context.limits.logBytes > context.limits.logsArchiveBytes) {
+    throw new Error('Report limits exceed the accepted report reservation')
+  }
+  if (!context.storeDirectory || !context.mutableDirectory || !context.preseedReceipt
+    || !isAbsolute(context.storeDirectory) || !isAbsolute(context.mutableDirectory)) {
+    throw new Error('Offline install requires a private store and reviewed preseed receipt')
+  }
+  const store = relative(context.mutableDirectory, context.storeDirectory)
+  if (!store || store === '..' || store.startsWith(`..${sep}`) || isAbsolute(store)) {
+    throw new Error('Offline store must be inside the Job mutable directory')
+  }
+  return context
+}
+
+export function offlineInstallCommand(context) {
+  validateVerificationContext(context)
+  return ['corepack', 'pnpm', 'install', '--frozen-lockfile', '--offline', '--prod=false',
+    '--store-dir', context.storeDirectory]
+}
+
+export function verificationCommand(context) {
+  validateVerificationContext(context)
+  if (context.identity.suite === 'install') return offlineInstallCommand(context)
+  return ['corepack', 'pnpm', rootCommands[context.identity.suite]]
+}
+
+export function verifyOfflinePreseed(root, receipt) {
+  const lockfileSha256 = createHash('sha256').update(readFileSync(join(root, 'pnpm-lock.yaml'))).digest('hex')
+  if (receipt.lockfileSha256 !== lockfileSha256 || receipt.pnpmVersion !== '11.27.0'
+    || receipt.platform !== process.platform || receipt.architecture !== process.arch
+    || !/^[a-f0-9]{64}$/.test(receipt.provenanceDigest)
+    || receipt.minimumReleaseAgeMinutes !== 2880 || receipt.releaseAgeVerified !== true) {
+    throw new Error('Preseed receipt does not cover the frozen lockfile, platform and 48-hour policy')
+  }
+}
+
+export function verifyEffectivePackagePolicy(root, environment) {
+  const run = (args) => execFileSync('corepack', ['pnpm', ...args], { cwd: root, env: environment,
+    encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024 }).trim()
+  if (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).packageManager !== 'pnpm@11.27.0'
+    || run(['--version']) !== '11.27.0') throw new Error('Verification requires pinned pnpm 11.27.0')
+  for (const [key, required] of [['minimumReleaseAge', '2880'], ['minimumReleaseAgeStrict', 'true'],
+    ['minimumReleaseAgeIgnoreMissingTime', 'false']]) {
+    if (run(['config', 'get', key]) !== required) throw new Error(`Effective pnpm policy is unsafe: ${key}`)
+  }
+  const exclusions = run(['config', 'get', 'minimumReleaseAgeExclude'])
+  if (!['undefined', 'null', '[]', ''].includes(exclusions)) throw new Error('Release-age exclusions are prohibited')
+}
+
+export function expectedPortions(root, suite) {
+  if (suite === 'install') return [{ key: 'root:install', kind: 'command' }]
+  const bootstrap = { key: 'root:install', kind: 'bootstrap' }
+  if (suite === 'unit') return [bootstrap,
+    { key: portionKey('packages/contracts', 'test'), kind: 'vitest' },
+    { key: portionKey('apps/api', 'test'), kind: 'vitest' },
+    { key: portionKey('apps/web', 'test:unit'), kind: 'vitest' },
+    { key: portionKey('apps/web', 'test:run-graph-smoke'), kind: 'node' },
+    { key: portionKey('apps/worker', 'test'), kind: 'node' },
+    { key: portionKey('', 'test:scripts'), kind: 'node' },
+  ]
+  const portions = [bootstrap]
+  if (suite !== 'build') portions.push({ key: portionKey('packages/contracts', 'build'), kind: 'command' })
+  for (const base of ['apps', 'packages']) for (const name of readdirSync(join(root, base)).sort()) {
+    const directory = `${base}/${name}`
+    const path = join(root, directory, 'package.json')
+    if (!existsSync(path)) continue
+    if (JSON.parse(readFileSync(path, 'utf8')).scripts?.[suite]) {
+      portions.push({ key: portionKey(directory, suite), kind: 'command' })
+    }
+  }
+  return portions
+}
+
+function commandPortion(key, receipt) {
+  const passed = receipt.code === 0
+  return { key, complete: true, failed: !passed,
+    totals: { total: 1, passed: Number(passed), failed: Number(!passed), skipped: 0 },
+    files: [{ name: key, status: passed ? 'passed' : 'failed',
+      startTime: Date.parse(receipt.startedAt), endTime: Date.parse(receipt.finishedAt),
+      assertionResults: [{ title: key, fullName: key, status: passed ? 'passed' : 'failed',
+        duration: Date.parse(receipt.finishedAt) - Date.parse(receipt.startedAt),
+        failureMessages: passed ? [] : [receipt.error ?? `Command exited ${receipt.code}`] }] }] }
+}
+
+export function collectPortions(directory, root, expected, limits) {
+  return expected.map(({ key, kind }) => {
+    let receipt
+    let receiptError
+    try {
+      receipt = JSON.parse(readReport(portionPath(directory, key, 'command.json'), limits.logBytes))
+    } catch (error) { receiptError = error.message }
+    try {
+      if ((kind === 'command' || kind === 'bootstrap') && receiptError) throw new Error(receiptError)
+      if (receipt && (receipt.key !== key || !Number.isSafeInteger(receipt.code)
+        || !Number.isFinite(Date.parse(receipt.startedAt)) || !Number.isFinite(Date.parse(receipt.finishedAt))
+        || Date.parse(receipt.finishedAt) < Date.parse(receipt.startedAt))) {
+        throw new Error('Corrupt command result')
+      }
+      if (kind === 'command') return commandPortion(key, receipt)
+      if (kind === 'bootstrap') return { key, complete: true, failed: receipt.code !== 0, totals: emptyCounts(), files: [] }
+      const expectedFiles = JSON.parse(readReport(portionPath(directory, key, 'inventory.json'), limits.vitestBytes))
+      if (!Array.isArray(expectedFiles) || !expectedFiles.length || new Set(expectedFiles).size !== expectedFiles.length) {
+        throw new Error('Missing or corrupt test inventory')
+      }
+      const options = { root, expectedFiles, maxBytes: limits.vitestBytes }
+      const report = kind === 'node'
+        ? readNodeReport(portionPath(directory, key, 'node.ndjson'), options)
+        : readVitestReport(portionPath(directory, key, 'vitest.json'), options)
+      return { key, ...report, complete: report.complete && Boolean(receipt),
+        failed: report.failed || Boolean(receipt && receipt.code !== 0), error: receiptError }
+    } catch (error) {
+      return { key, complete: false, failed: Boolean(receipt && receipt.code !== 0), totals: emptyCounts(), files: [], error: error.message }
+    }
+  })
+}
+
+function ownedGroups(token) {
+  const groups = new Set()
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue
+    try {
+      const environment = readFileSync(`/proc/${entry}/environ`)
+      if (!environment.includes(Buffer.from(`GRAPHQL_VERIFICATION_PROCESS_TOKEN=${token}\0`))) continue
+      const stat = readFileSync(`/proc/${entry}/stat`, 'utf8')
+      const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')
+      if (fields[0] !== 'Z') groups.add(Number(fields[2]))
+    } catch (error) {
+      if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error
+    }
+  }
+  return groups
+}
+
+export async function runSuiteProcess(command, { root, env, directory, limits, executionTimeoutMs,
+  cancellationTimeoutMs, signal, logName = 'root' }) {
+  if (signal?.aborted) return { code: 1, processStopped: true, terminalOutcome: 'cancelled' }
+  const token = randomUUID()
+  const log = boundedLog(join(directory, 'parts', `${logName}.log`), limits.logBytes)
+  const child = spawn(command[0], command.slice(1), { cwd: root, detached: true,
+    env: { ...env, GRAPHQL_VERIFICATION_PROCESS_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stdout.on('data', (chunk) => log.write(chunk))
+  child.stderr.on('data', (chunk) => log.write(chunk))
+  let terminalOutcome
+  let closing
+  let closeError
+  const close = (outcome) => {
+    terminalOutcome ??= outcome
+    closing ??= (async () => {
+      const groups = new Set(child.pid ? [child.pid] : [])
+      try { for (const group of ownedGroups(token)) groups.add(group) }
+      catch (error) { closeError = error }
+      const results = await Promise.allSettled([...groups]
+        .map((pid) => stopGroup(pid, { graceMs: cancellationTimeoutMs })))
+      for (const result of results) if (result.status === 'rejected') closeError ??= result.reason
+    })()
+  }
+  const cancel = () => close('cancelled')
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
+  const timer = setTimeout(() => close('timed_out'), executionTimeoutMs)
+  const result = await new Promise((done) => {
+    child.once('error', (error) => done({ code: 1, error: error.message }))
+    child.once('close', (code) => done({ code: code ?? 1 }))
+  })
+  clearTimeout(timer)
+  signal?.removeEventListener('abort', cancel)
+  let processStopped = false
+  try {
+    if (closing) await closing
+    if (closeError) throw closeError
+    for (const group of ownedGroups(token)) await stopGroup(group, { graceMs: cancellationTimeoutMs })
+    processStopped = (!child.pid || !groupUsed(child.pid)) && ownedGroups(token).size === 0
+  } catch (error) {
+    result.error = error.message
+    terminalOutcome = 'incomplete'
+  }
+  return { ...result, processStopped, terminalOutcome: terminalOutcome ?? (result.code === 0 ? 'passed' : 'failed'),
+    log: log.close() }
+}
+
+export function sampleVerificationResources({ mutableDirectory, cgroupDirectory }) {
+  const filesystem = statfsSync(mutableDirectory)
+  const read = (name) => readFileSync(join(cgroupDirectory, name), 'utf8').trim()
+  const cpu = read('cpu.stat').match(/^usage_usec (\d+)$/m)
+  const values = { mutableBytes: (filesystem.blocks - filesystem.bfree) * filesystem.bsize,
+    mutableInodes: filesystem.files - filesystem.ffree, memoryPeakBytes: Number(read('memory.peak')),
+    pidsPeak: Number(read('pids.peak')), cpuUsageUsec: cpu ? Number(cpu[1]) : NaN }
+  if (Object.values(values).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error('Resource measurement is unavailable or invalid')
+  }
+  return { sampledAt: new Date().toISOString(), ...values }
+}
+
+export function finalizeVerification(context, { root, directory, state, terminalOutcome, processStopped }) {
+  const portions = collectPortions(directory, root, state.expected, context.limits)
+  const summary = suiteSummary(context.identity, portions, { startedAt: state.startedAt,
+    finishedAt: new Date().toISOString(), terminalOutcome, processStopped })
+  const files = portions.flatMap((portion) => portion.files)
+  const details = { portions: portions.map(({ key, complete, failed, totals, missing, error }) =>
+    ({ key, complete, failed, totals, missing, error })), terminalOutcome, processStopped }
+  try {
+    writeReport(join(directory, 'parts', 'portions.json'), details, context.limits.vitestBytes)
+    writeReport(join(directory, 'vitest.json'), { ...mergedVitestReport(files, state.startedAt, summary.outcome),
+      verification: summary },
+      context.limits.vitestBytes)
+    writeReport(join(directory, 'junit.xml'), junitReport(files, summary.outcome, context.identity), context.limits.junitBytes)
+    const archive = logArchive(join(directory, 'parts'), context.limits.logsArchiveBytes)
+    // Binary output uses the same atomic writer and declaration limit.
+    writeReport(join(directory, 'logs.tar.gz'), archive, context.limits.logsArchiveBytes)
+  } catch (error) {
+    summary.completeness = 'partial'
+    if (!['cancelled', 'timed_out'].includes(summary.outcome)) summary.outcome = 'incomplete'
+    writeReport(join(directory, 'parts', 'publication-error.json'), { message: error.message }, context.limits.logBytes)
+  }
+  writeReport(join(directory, 'summary.json'), summary, context.limits.summaryBytes)
+  return summary
+}
+
+export async function verifyRepository(context, { root = repository, signal } = {}) {
+  validateVerificationContext(context)
+  const directory = resolve(root, dirname(reportPaths.summary))
+  if (existsSync(directory)) throw new Error('Verification output directory already exists; use a fresh attempt')
+  privateDirectory(join(directory, 'parts'))
+  const state = { identity: context.identity, startedAt: new Date().toISOString(),
+    expected: expectedPortions(root, context.identity.suite) }
+  writeReport(join(directory, 'parts', 'state.json'), state, context.limits.vitestBytes)
+  const environment = { ...process.env, GRAPHQL_VERIFICATION_ROOT: resolve(root),
+    GRAPHQL_VERIFICATION_REPORT_DIR: directory, GRAPHQL_VERIFICATION_LOG_BYTES: String(context.limits.logBytes),
+    GRAPHQL_VERIFICATION_REPORT_BYTES: String(context.limits.vitestBytes),
+    GRAPHQL_VERIFICATION_UNIT_WORKERS: String(context.identity.parameters.unitWorkers), COREPACK_ENABLE_NETWORK: '0' }
+  let result = { terminalOutcome: 'incomplete', processStopped: true }
+  let measurementTimer
+  try {
+    const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+    if (commit !== context.identity.commit) throw new Error('Source commit differs from the accepted execution')
+    verifyEffectivePackagePolicy(root, environment)
+    verifyOfflinePreseed(root, context.preseedReceipt)
+    writeReport(join(directory, 'parts', 'preseed-receipt.json'), context.preseedReceipt, context.limits.logBytes)
+    const samples = []
+    const sampledPeaks = {}
+    const sample = () => {
+      try {
+        const reading = sampleVerificationResources(context.measurement)
+        samples.push(reading)
+        for (const [name, value] of Object.entries(reading)) {
+          if (typeof value === 'number') sampledPeaks[name] = Math.max(sampledPeaks[name] ?? 0, value)
+        }
+      }
+      catch (error) { samples.push({ sampledAt: new Date().toISOString(), error: error.message }) }
+      // Retain a bounded rolling set; cumulative cgroup peaks survive sample rotation.
+      if (samples.length > 1000) samples.shift()
+    }
+    if (context.measurement) { sample(); measurementTimer = setInterval(sample, 1000) }
+    privateDirectory(context.storeDirectory)
+    const execute = async (command, logName) => {
+      const remainingMs = context.executionTimeoutMs - (Date.now() - Date.parse(state.startedAt))
+      if (remainingMs <= 0) return { terminalOutcome: 'timed_out', processStopped: true }
+      return runSuiteProcess(command, { root, env: environment, directory, limits: context.limits,
+        executionTimeoutMs: remainingMs, cancellationTimeoutMs: context.cancellationTimeoutMs, signal, logName })
+    }
+    result = await execute(offlineInstallCommand(context), 'install')
+    writeReport(portionPath(directory, 'root:install', 'command.json'), { key: 'root:install',
+      startedAt: state.startedAt, finishedAt: new Date().toISOString(), code: result.code ?? 1 }, context.limits.logBytes)
+    if (result.terminalOutcome === 'passed' && context.identity.suite !== 'install') {
+      verifyOfflinePreseed(root, context.preseedReceipt)
+      verifyEffectivePackagePolicy(root, environment)
+      result = await execute(verificationCommand(context), 'root')
+    }
+    if (context.measurement) {
+      sample()
+      writeReport(join(directory, 'parts', 'resource-samples.json'), { samples, sampledPeaks }, context.limits.vitestBytes)
+    }
+  } catch (error) {
+    if (!['cancelled', 'timed_out'].includes(result.terminalOutcome)) result.terminalOutcome = 'incomplete'
+    writeReport(join(directory, 'parts', 'runner-error.json'), { message: error.message }, context.limits.logBytes)
+  } finally {
+    clearInterval(measurementTimer)
+  }
+  return finalizeVerification(context, { root, directory, state, ...result })
+}
+
+async function main(argv) {
+  if (argv[0] !== '--context' || !argv[1] || ![2, 4].includes(argv.length)
+    || (argv.length === 4 && (argv[2] !== '--finalize'
+      || !['cancelled', 'timed_out', 'failed', 'incomplete'].includes(argv[3])))) {
+    throw new Error('Usage: verify-repository.mjs --context <trusted JSON> [--finalize <terminal outcome>]')
+  }
+  const context = validateVerificationContext(JSON.parse(readReport(resolve(argv[1]), 1024 * 1024)))
+  let summary
+  if (argv[2] === '--finalize') {
+    const directory = resolve(repository, dirname(reportPaths.summary))
+    const state = JSON.parse(readReport(join(directory, 'parts', 'state.json'), context.limits.vitestBytes))
+    if (JSON.stringify(state.identity) !== JSON.stringify(context.identity)) throw new Error('Finalization identity mismatch')
+    // The installed runtime invokes this mode only after positive container closure.
+    summary = finalizeVerification(context, { root: repository, directory, state,
+      terminalOutcome: argv[3], processStopped: true })
+  } else {
+    const controller = new AbortController()
+    const cancel = () => controller.abort()
+    process.on('SIGINT', cancel)
+    process.on('SIGTERM', cancel)
+    try { summary = await verifyRepository(context, { signal: controller.signal }) }
+    finally { process.off('SIGINT', cancel); process.off('SIGTERM', cancel) }
+  }
+  console.log(JSON.stringify({ outcome: summary.outcome, completeness: summary.completeness, totals: summary.totals }))
+  process.exitCode = summary.outcome === 'passed' ? 0 : summary.outcome === 'timed_out' ? 124 : 1
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main(process.argv.slice(2)).catch((error) => { console.error(`[verification] ${error.message}`); process.exitCode = 1 })
+}
