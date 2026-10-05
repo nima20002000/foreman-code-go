@@ -143,7 +143,7 @@ for (const harness of ['codex', 'opencode', 'claude'] as const) {
   it.each(['succeeded', 'failed'] as const)(`${harness}: saves an unrecorded native %s result without another input`, async outcome => {
     const f = await fixture(harness, 'agent', { journalStatus: 'uncertain' })
     const result = outcome === 'succeeded' ? f.result : {
-      outcome, error: { code: 'NATIVE_TURN_FAILED', message: 'Recorded native failure' },
+      outcome, error: { code: 'NATIVE_TURN_FAILED', message: 'Recorded native failure', retryable: false },
     }
     f.observed.terminalResult = result
     try {

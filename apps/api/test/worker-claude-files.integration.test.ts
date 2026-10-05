@@ -6,7 +6,6 @@ import Fastify from 'fastify'
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import { describe, expect, it, onTestFinished } from 'vitest'
@@ -52,13 +51,14 @@ async function fixture(readOnly: boolean) {
     expiresAt: new Date(Date.now() + 600_000) })
   const operators = new PostgresOperatorRepository(db.pool)
   const initial = await operators.ensure()
-  const selected = await operators.update({ ...DEFAULT_HARNESS_DEFAULTS.claude, model: 'recorded',
+  const recorded = workerConversationFixture('operator', 'claude')
+  if (recorded.configuration.harness.harness !== 'claude') throw new Error('Claude configuration required')
+  const selected = await operators.update({ ...recorded.configuration.harness, model: 'recorded',
     sandbox: readOnly ? 'read-only' : 'workspace-write' }, initial.configuration.id)
   const repository = new PostgresOperatorConversationRepository(db.pool)
   const conversation = await repository.create(selected.operator.id, selected.configuration, sender.principal.id)
   const requestId = randomUUID()
   await repository.beginTurn(conversation.id, { requestId, content: 'Read the attached document.' }, sender.principal.id)
-  const recorded = workerConversationFixture('operator', 'claude')
   const session = recorded.session
   await repository.bind(conversation.id, requestId, session.providerVersion, session.nativeSessionId)
   const correlationId = nativeCorrelation(conversation.id, requestId)
