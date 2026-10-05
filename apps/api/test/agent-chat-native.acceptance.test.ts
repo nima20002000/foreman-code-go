@@ -23,7 +23,7 @@ function configuration(harness: 'codex' | 'opencode'): AgentConfigurationVersion
   return AgentConfigurationVersionSchema.parse({
     id: `cfg-${randomUUID()}`, workspaceId: 'ws-native-chat', agentId: 'agent-native-chat', version: 1, productRole: 'coder',
     harness: harness === 'codex'
-      ? { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' }
+      ? { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }
       : { harness: 'opencode', model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna', variant: 'low', nativeAgent: 'build', thinking: false, autoApprove: false },
     prompt: { system: 'Answer in at most five words.' }, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
   })

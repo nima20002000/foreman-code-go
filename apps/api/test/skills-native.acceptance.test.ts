@@ -50,7 +50,8 @@ function log(entry: Record<string, unknown>) {
 type Factory = (directory: string) => NativeHarnessSessionManager
 const binaries = harnessBinaries(process.env)
 const harnesses: [string, HarnessConfiguration, Factory][] = [
-  ['codex', { ...DEFAULT_HARNESS_DEFAULTS.codex, reasoningEffort: 'low' }, () => new CodexAppServerSessionManager(binaries.codexBinary)],
+  ['codex', { ...DEFAULT_HARNESS_DEFAULTS.codex, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+    reasoningEffort: 'medium' }, () => new CodexAppServerSessionManager(binaries.codexBinary)],
   ['opencode', DEFAULT_HARNESS_DEFAULTS.opencode, (directory) => new OpenCodeNativeSessionManager({ ownerAgentId: 'agent-q',
     server: new ManagedOpenCodeServer({ binary: binaries.openCodeBinary, workingDirectory: directory, ownerAgentId: 'agent-q',
       ...(DEFAULT_HARNESS_DEFAULTS.opencode.harness === 'opencode' && DEFAULT_HARNESS_DEFAULTS.opencode.advanced ? { advancedConfiguration: DEFAULT_HARNESS_DEFAULTS.opencode.advanced } : {}) }) })],

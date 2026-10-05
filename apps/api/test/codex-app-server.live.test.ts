@@ -21,7 +21,7 @@ function request(directory: string): HarnessExecutionRequest {
       id: 'nim2598-live-configuration', workspaceId: 'nim2598-live-workspace', agentId: 'nim2598-live-agent', version: 1,
       prompt: { system: 'Follow explicit shell instructions by using the native shell tool; never simulate tool results.' },
       assignedSkills: [], harness: {
-        harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+        harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
         advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
       },
       contentHash: 'sha256:nim2598-live', createdAt: new Date().toISOString(),
