@@ -9,6 +9,7 @@ import { authorizeDeviceHost } from '../../src/modules/devices/hostAuthorization
 import { ProductionHarnessRegistry } from '../../src/modules/harnesses/productionRegistry.js'
 import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
 import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/suites/codex.js'
+import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/suites/opencode.js'
 import { qualificationRevisionWithIdentity } from '../../src/modules/harnesses/qualification/identity.js'
 import { qualifyScheduleHarness } from './qualifyScheduleHarness.js'
 import type { Sch11Fixture } from './sch11Fixture.js'
@@ -48,7 +49,10 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
         harnessInstallationId: installation.harnessInstallationId,
         installationFingerprint: installation.installationFingerprint } })).value)
   }
-  const suites = { codex: qualificationRevisionWithIdentity(codexQualificationSuite.revision), opencode: 'opencode-live-4' }
+  const suites = {
+    codex: qualificationRevisionWithIdentity(codexQualificationSuite.revision),
+    opencode: qualificationRevisionWithIdentity(opencodeQualificationSuite.revision),
+  }
   return {
     settings, service, suites,
     get registry() { return registry },
