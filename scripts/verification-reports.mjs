@@ -236,7 +236,9 @@ export function logArchive(directory, maxBytes) {
   if (realpathSync(directory) !== resolve(directory)) throw new Error('Archive directory contains a symlink')
   // Bound the uncompressed input too, so publication cannot allocate an unbounded buffer.
   const entries = []
-  let remaining = Math.max(0, Math.min(maxBytes, 128 * 1024 * 1024) - 4096)
+  const expandedLimit = Math.min(maxBytes, 128 * 1024 * 1024)
+  const gzipOverhead = Math.ceil(expandedLimit / 16384) * 5 + 4096
+  let remaining = Math.max(0, expandedLimit - gzipOverhead)
   let index = 0
   const inventory = { includedFiles: 0, truncatedFiles: 0, omittedFiles: 0, sourceBytes: 0 }
   const visit = (path) => {

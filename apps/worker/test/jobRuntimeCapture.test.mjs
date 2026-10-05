@@ -132,6 +132,9 @@ test('verification context binds reviewed seed provenance to committed dependenc
     review: { reviewedByPrincipalId: 'owner', decisionDigest: 'b'.repeat(64), reviewedAt: '2026-10-02T01:00:00Z' } };
   const receipt = await buildCiRuntimeContext({ repository, output,
     offlineSeed: { directory: seedRoot, receiptPath, unitCodex } });
+  const observation = await import(pathToFileURL(join(output, 'verification-observation.mjs')).href);
+  assert.equal(await observation.probeExecutableScratch(f.directory), 0);
+  assert.ok(!(await readdir(f.directory)).some(name => name.startsWith('qualification-')));
   assert.deepEqual(await readFile(join(output, 'tools/codex')), binary);
   assert.deepEqual(receipt.unitCodex, { executable: '/opt/graphql-ci/tools/codex',
     version: unitCodex.version, binarySha256: unitCodex.binarySha256, review: unitCodex.review });

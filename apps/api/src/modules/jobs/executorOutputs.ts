@@ -10,7 +10,7 @@ import { JobVerificationPassSchema, JobVerificationReportSchema, VerificationJob
 import { z } from 'zod'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { JobVerificationRuntimeMeasurementSchema, JobVerificationPrivateGitSchema,
-  JobVerificationPreseedFactsSchema, type JobVerificationRuntimeMeasurement }
+  JobVerificationPreseedFactsSchema, JobVerificationRepositoryContextSchema, type JobVerificationRuntimeMeasurement }
   from '@foreman-code/contracts/job-verification-runtime'
 import { jobSupervisorIdentity } from './executor.js'
 import { requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
@@ -84,7 +84,7 @@ export function verificationRepositoryContext(input: {
   measurement: JobVerificationRuntimeMeasurement
   preseedFacts: unknown
   gitMounts: VerifiedJobGitMounts
-  requiredPortions: z.infer<typeof import('@foreman-code/contracts/job-verification-runtime').JobVerificationRepositoryContextSchema>['requiredPortions']
+  requiredPortions: z.infer<typeof JobVerificationRepositoryContextSchema>['requiredPortions']
 }) {
   const execution = VerificationJobExecutionSchema.parse(input.execution)
   const measured = JobVerificationRuntimeMeasurementSchema.parse(input.measurement)
