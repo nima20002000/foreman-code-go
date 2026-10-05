@@ -6,7 +6,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, withInteractionResponse,
+  type ApprovalResponseOption, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
@@ -20,7 +21,8 @@ const hosts: RemoteExecutionHost[] = []
 afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 async function setup(expectedToken?: string) {
   const root = await mkdtemp(join(tmpdir(), 'w08-host-')); roots.push(root)
-  const journal = await RemoteOperationJournal.open(join(root, 'journal'), { initializeNewInstallation: true })
+  const journalPath = join(root, 'journal')
+  const journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
   journals.push(journal)
   const mainId = randomUUID(), deviceId = randomUUID(), installationId = randomUUID(), digest = 'a'.repeat(64)
   const configuration: AgentConfigurationVersion = { id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1, prompt: { system: 'test' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex, contentHash: 'sha256:test', createdAt: '2026-10-01T00:00:00.000Z' }
@@ -37,9 +39,45 @@ async function setup(expectedToken?: string) {
   const ports: RemoteExecutionHostPorts = { journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => { if (!placement.source.materializationId || !placement.source.materializationDigest) throw new Error('Original fixture has no materialized source'); return ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }) }, preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null }
   const host = new RemoteExecutionHost(ports)
   hosts.push(host)
-  return { host, manager, session, journal, intent, placement, request, state, ports }
+  return { host, manager, session, journal, journalPath, intent, placement, request, state, ports }
 }
 describe('actual worker native-port adapter', () => {
+  it.each(['questions', 'form'] as const)('delivers validated %s values once and recovers the complete response', async kind => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.host.startTurn('operation', 'prompt', 'execution:execution')
+    await f.host.drain()
+    const offered: ApprovalResponseOption = { ...CODEX_APPROVAL_OPTIONS_FIXTURE[0]!, input: kind === 'form'
+      ? { kind, schema: { type: 'object', required: ['count'], properties: { count: { type: 'integer', minimum: 1 } } } }
+      : { kind, questions: [{ id: 'answer', header: 'Answer', question: 'Enter a value', isSecret: false,
+        isOther: true, options: null }] } }
+    const response = kind === 'form' ? { count: 2 } : { answer: { answers: ['Entered'] } }
+    const selected = withInteractionResponse(offered, response)
+    f.manager.pending = async () => ({ session: f.session,
+      turn: { nativeTurnId: 'native-turn', nativeRequestId: 'question' },
+      nativeRequestType: 'input', request: {}, responseOptions: [offered] })
+    const respond = vi.fn(async () => {})
+    f.manager.respond = respond
+    const status = await f.journal.status('operation')
+    if (status.status !== 'known') throw new Error('Missing receipt')
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'response', operationId: f.intent.operationId,
+      attemptId: f.intent.attemptId, executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
+      owner: f.intent.owner, native: status.receipt.native, action: { kind: 'respond', interactionId: 'interaction',
+        interactionRevision: '1', nativeInteractionId: 'question', response: selected } }
+    await expect(f.host.control({ ...command, action: { ...command.action,
+      response: { ...selected, response: {} } } })).rejects.toThrow()
+    expect(respond).not.toHaveBeenCalled()
+    await f.host.control(command)
+    await f.host.control(command)
+    expect(respond).toHaveBeenCalledTimes(1)
+    expect(respond).toHaveBeenCalledWith(f.session, 'question', selected)
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.journalPath)
+    journals.push(reopened)
+    expect((await reopened.control(command)).dispatch).toBe(false)
+    expect((await reopened.status('operation'))).toMatchObject({ receipt: { controls: [command] } })
+  })
+
   it('reuses a streamed history and acknowledges a refreshed turn before its next event', async () => {
     const f = await setup()
     const events = [1, 2].map(sequence => ({ sequence, type: 'native.notification',

@@ -1,7 +1,8 @@
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
-import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@foreman-code/contracts'
+import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema,
+  withInteractionResponse, type NativeSessionReference, type HarnessExecutionRequest } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
@@ -330,7 +331,10 @@ export class RemoteExecutionHost {
       const pending = await resident.manager.pending(resident.session)
       if (!pending || pending.turn.nativeRequestId !== command.action.nativeInteractionId || pending.session.nativeSessionId !== command.native?.sessionId || pending.turn.nativeTurnId !== command.native?.turnId) throw new Error('Original native question no longer pending')
       const selectedOption = ApprovalResponseOptionSchema.parse(command.action.response)
-      if (!pending.responseOptions.some(option => isDeepStrictEqual(option, selectedOption))) throw new Error('Response option is not offered by the original native question')
+      const offered = pending.responseOptions.find(option => option.optionId === selectedOption.optionId)
+      if (!offered || !isDeepStrictEqual(withInteractionResponse(offered, selectedOption.response), selectedOption)) {
+        throw new Error('Response option is not offered by the original native question')
+      }
       await this.ports.journal.interaction(command.operationId, { interactionId: command.action.interactionId, interactionRevision: command.action.interactionRevision, nativeInteractionId: command.action.nativeInteractionId, native: command.native! })
     }
     const recorded = await this.ports.journal.control(command)

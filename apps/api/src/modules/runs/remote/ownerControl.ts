@@ -7,6 +7,7 @@ import type { RunOwnership } from '../ownership.js'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import type { RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 import { DomainError } from '../../errors.js'
+import { selectedInteractionResponse } from '../../interactions/delivery.js'
 
 export type RemoteControlInput = Parameters<RemoteNativeManagerOptions['controlFor']>[0]
 /** SQL-only preparation inside the admitted Main transaction. The caller must
@@ -30,7 +31,7 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
   } else {
     const rows = await sql.query<{ record: unknown }>('select record from durable_interactions where execution_id=$1 and native_session_id=$2 and native_request_id=$3 for share', [binding.intent.executionId, command.native.sessionId, command.nativeRequestId])
     const interaction = rows.rows.length === 1 ? DurableInteractionSchema.parse(rows.rows[0]!.record) : undefined
-    const selected = interaction?.responseOptions.find(option => option.optionId === interaction.selectedOptionId)
+    const selected = interaction && selectedInteractionResponse(interaction)
     if (!interaction || !selected || !['decided', 'delivery_pending', 'delivery_failed'].includes(interaction.status) || !sameWorkflowValue(selected, command.option)
       || interaction.revision < 1 || interaction.runId !== owner.runId || interaction.executionId !== binding.intent.executionId
       || interaction.nativeSessionId !== command.native.sessionId || interaction.nativeRequestId !== command.nativeRequestId) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The actual committed exact native response decision is required.', 409)

@@ -1,4 +1,4 @@
-import type { DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
+import { withInteractionResponse, type DurableInteraction, type NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */
@@ -40,6 +40,12 @@ export interface NativeResponseDeliveryEvidence {
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined
+}
+
+export function selectedInteractionResponse(interaction: DurableInteraction) {
+  const offered = interaction.responseOptions.find((option) => option.optionId === interaction.selectedOptionId)
+  if (!offered) return undefined
+  return withInteractionResponse(offered, object(interaction.nativeResponse)?.response)
 }
 
 /** Codex 0.154 has no response ACK, but its retained history can prove that the

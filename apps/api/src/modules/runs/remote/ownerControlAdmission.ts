@@ -7,6 +7,7 @@ import { assertGraphTransaction, type GraphTransactionSql } from '../../run-grap
 import type { RunOwnership } from '../ownership.js'
 import { DomainError } from '../../errors.js'
 import { prepareRemoteOwnerControl, type RemoteControlInput } from './ownerControl.js'
+import { selectedInteractionResponse } from '../../interactions/delivery.js'
 
 /** SQL-only admission. The caller delivers only after this G1 transaction COMMITs.
  * A committed admission is reconciliation-only even when its network ACK was lost. */
@@ -54,7 +55,7 @@ export async function readAdmittedRemoteOwnerControl(sql: GraphTransactionSql, o
     || control.executionId !== binding.intent.executionId || control.bindingHash !== binding.intent.bindingHash
     || control.action.kind !== 'respond' || control.action.interactionId !== claim.interaction.id
     || !control.native || control.native.sessionId !== claim.interaction.nativeSessionId || control.action.nativeInteractionId !== claim.interaction.nativeRequestId
-    || !sameWorkflowValue(control.action.response, claim.interaction.responseOptions.find(option => option.optionId === claim.interaction.selectedOptionId))) {
+    || !sameWorkflowValue(control.action.response, selectedInteractionResponse(claim.interaction))) {
     throw new DomainError('REMOTE_CONTROL_ADMISSION_CONFLICT', 'The retained response admission identifies a different original operation.', 409)
   }
   return control

@@ -6,7 +6,8 @@ import type { NativeResponseJournal } from '../../harnesses/recovery/responseJou
 import type { InteractionNativeRuntime } from '../runtimePorts.js'
 import type { InteractionResponder } from '../service.js'
 import type { GraphResumeClaim } from '../deliveryPostgres.js'
-import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from '../delivery.js'
+import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, selectedInteractionResponse,
+  type NativeDeliveryOutcome } from '../delivery.js'
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
@@ -35,11 +36,8 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   const claim = await deps.repository.delivery.claim(id, randomUUID(), reconcileOnly)
   if (!claim) return read(deps, id)
   const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
-  const offered = current.responseOptions.find((item) => item.optionId === current.selectedOptionId)
-  if (!offered) return fail('INTERACTION_OPTION_INVALID')
-  const response = current.nativeResponse
-  const values = response && typeof response === 'object' && !Array.isArray(response) ? response.response : undefined
-  const option = withInteractionResponse(offered, values)
+  const option = selectedInteractionResponse(current)
+  if (!option) return fail('INTERACTION_OPTION_INVALID')
   const expectedSession = { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId }
   if (claim.mode === 'reconcile') {
     let result: NativeDeliveryOutcome = { state: 'uncertain' }

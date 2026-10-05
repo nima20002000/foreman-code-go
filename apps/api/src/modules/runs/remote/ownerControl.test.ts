@@ -1,12 +1,14 @@
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, type DurableInteraction } from '@foreman-code/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, withInteractionResponse, type ApprovalResponseOption,
+  type DurableInteraction } from '@foreman-code/contracts'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
 import { prepareRemoteOwnerControl } from './ownerControl.js'
+import { readAdmittedRemoteOwnerControl } from './ownerControlAdmission.js'
 
 const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: 'a'.repeat(64) }
 const intent = { schemaVersion: 1 as const, protocolVersion: 1 as const, mainId: randomUUID(), runId: 'run', nodeId: 'node', executionId: 'execution',
@@ -23,22 +25,44 @@ function fixture() {
     graphThreadId: 'run', request: {}, approval: { handler: 'user' }, responseOptions: [option], status: 'decided', selectedOptionId: option.optionId,
     selectedSemantic: option.semantic, nativeResponse: { decision: 'approved' }, deliveryState: 'not_started', decidedAt: now, createdAt: now, updatedAt: now }
   const state = { receipt: receipt as RemoteOperationReceipt | undefined, interaction: interaction as DurableInteraction | undefined,
-    cleanup: new Date(now) as Date | undefined, owned: true, queries: [] as string[] }
+    cleanup: new Date(now) as Date | undefined, owned: true, queries: [] as string[], control: undefined as unknown }
   const raw = { query: async (text: string) => {
     state.queries.push(text)
     const rows = text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
       : text.startsWith('select record') ? state.interaction ? [{ record: state.interaction }] : []
-        : text.startsWith('select requested_at') ? state.cleanup ? [{ requested_at: state.cleanup }] : [] : []
+        : text.startsWith('select requested_at') ? state.cleanup ? [{ requested_at: state.cleanup }] : []
+          : text.startsWith('select remote_owner_control') ? [{ remote_owner_control: state.control }] : []
     return { rows, rowCount: rows.length }
   } } as unknown as pg.ClientBase
   const owner = { runId: 'run', assertOwned: () => { if (!state.owned) throw new Error('owner lost') }, readOneShotFence: async () => ({ ownerId: 'owner', fence: 'fence' }) } as unknown as RunOwnership
   const db = new ExclusiveGraphConnection(raw, () => owner.assertOwned())
   const binding = { intent, placement: { bindingHash: intent.bindingHash } } as AcceptedExecutionBinding
-  const prepare = (kind: 'stop' | 'respond') => db.transaction(sql => prepareRemoteOwnerControl(sql, owner, binding,
-    kind === 'stop' ? { kind, native } : { kind, native, nativeRequestId: 'question', option }))
-  return { state, db, prepare }
+  const prepare = (kind: 'stop' | 'respond', selected = option) => db.transaction(sql => prepareRemoteOwnerControl(sql, owner, binding,
+    kind === 'stop' ? { kind, native } : { kind, native, nativeRequestId: 'question', option: selected }))
+  const recover = () => db.transaction(sql => readAdmittedRemoteOwnerControl(sql, owner, binding, {
+    interaction: state.interaction!, mode: 'reconcile', attempt: 1, ownerToken: 'owner', correlationId: 'response',
+  }))
+  return { state, db, prepare, recover }
 }
 describe('SQL-only admitted remote control preparation', () => {
+  it('binds entered form values to the committed decision during preparation and recovery', async () => {
+    const f = fixture()
+    const offered: ApprovalResponseOption = { ...option, input: { kind: 'form', schema: {
+      type: 'object', required: ['count'], properties: { count: { type: 'integer', minimum: 1 } },
+    } } }
+    f.state.interaction!.responseOptions = [offered]
+    f.state.interaction!.nativeResponse = { optionId: offered.optionId, semantic: offered.semantic, response: { count: 2 } }
+    const selected = withInteractionResponse(offered, { count: 2 })
+    await expect(f.prepare('respond', withInteractionResponse(offered, { count: 3 }))).rejects.toThrow('native response decision')
+    const command = await f.prepare('respond', selected)
+    expect(command.action).toMatchObject({ response: selected })
+    f.state.control = JSON.parse(JSON.stringify(command))
+    expect(await f.recover()).toEqual(command)
+    f.state.interaction!.nativeResponse = { response: { count: 3 } }
+    await expect(f.recover()).rejects.toThrow('different original operation')
+    await f.db.close()
+  })
+
   it('prepares the exact committed decision without issuing IO or mutation', async () => {
     const f = fixture()
     expect(await f.prepare('respond')).toMatchObject({ commandId: 'respond:interaction:4', native, owner: intent.owner,
