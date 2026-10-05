@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import { groupUsed } from './integration-process.mjs'
 import { collectPortions, expectedPortions, finalizeVerification, prepareVerificationDirectory, runSuiteProcess,
   sampleVerificationResources, validateVerificationContext, verificationCommand, verifyOfflinePreseed,
-  verifyPrivateGitHead } from './verify-repository.mjs'
+  verifyPrivateGitHead, verificationScratchEnvironment } from './verify-repository.mjs'
 import { portionPath, readNodeReport, runVerificationCommand, suiteSummary, writeReport } from './verification-reports.mjs'
 
 function context(suite = 'unit') {
@@ -49,6 +49,37 @@ function receipt(directory, key, code = 0) {
   writeReport(portionPath(directory, key, 'command.json'), { key, code,
     startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:00:01.000Z' }, 8192)
 }
+
+test('cold-cache verification recreates private executable scratch directories without using the caller home', () => {
+  const f = fixture()
+  const scratch = join(f.root, 'scratch')
+  const configuration = { ...context(), mutableDirectory: scratch, storeDirectory: join(scratch, 'store') }
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const environment = verificationScratchEnvironment(configuration, { ...fixtureGitEnvironment, HOME: '/outside/home' })
+      assert.equal(environment.HOME, join(scratch, 'home'))
+      assert.equal(environment.TMPDIR, join(scratch, 'tmp'))
+      const created = execFileSync(process.execPath, ['-e',
+        "const fs=require('node:fs'),os=require('node:os'),path=require('node:path');" +
+        "process.stdout.write(fs.mkdtempSync(path.join(os.tmpdir(),'fixture-')))"],
+      { env: environment, encoding: 'utf8' })
+      assert.ok(created.startsWith(join(scratch, 'tmp', 'fixture-')))
+      assert.ok(existsSync(environment.XDG_CACHE_HOME))
+      rmSync(scratch, { recursive: true })
+    }
+  } finally { f.close() }
+})
+
+test('verification refuses a scratch directory symlink before recreating its caches', () => {
+  const f = fixture()
+  const scratch = join(f.root, 'scratch')
+  try {
+    mkdirSync(scratch)
+    symlinkSync(f.root, join(scratch, 'tmp'))
+    assert.throws(() => verificationScratchEnvironment({ ...context(), mutableDirectory: scratch,
+      storeDirectory: join(scratch, 'store') }, fixtureGitEnvironment), /Unsafe report directory/)
+  } finally { f.close() }
+})
 
 test('private HEAD is checked against its generated receipt while reports retain the approved source commit', () => {
   const f = fixture()

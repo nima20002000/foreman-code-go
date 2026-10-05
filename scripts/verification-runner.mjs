@@ -327,13 +327,24 @@ export function finalizeVerification(context, { root, directory, state, terminal
   return summary
 }
 
+export function verificationScratchEnvironment(context, base) {
+  validateVerificationContext(context)
+  const directories = { HOME: 'home', TMPDIR: 'tmp', XDG_CACHE_HOME: 'cache',
+    XDG_CONFIG_HOME: 'config', XDG_DATA_HOME: 'data' }
+  const environment = { ...base }
+  for (const [name, directory] of Object.entries(directories)) {
+    environment[name] = privateDirectory(join(context.mutableDirectory, directory))
+  }
+  return environment
+}
+
 export async function verifyRepository(context, { root = repository, signal } = {}) {
   validateVerificationContext(context)
   const directory = prepareVerificationDirectory(root)
   const state = { identity: context.identity, startedAt: new Date().toISOString(),
     expected: context.requiredPortions }
   writeReport(join(directory, 'parts', 'state.json'), state, context.limits.vitestBytes)
-  const environment = { ...process.env, FOREMAN_CODE_VERIFICATION_ROOT: resolve(root),
+  const environment = { ...verificationScratchEnvironment(context, process.env), FOREMAN_CODE_VERIFICATION_ROOT: resolve(root),
     FOREMAN_CODE_VERIFICATION_REPORT_DIR: directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: String(context.limits.logBytes),
     FOREMAN_CODE_VERIFICATION_REPORT_BYTES: String(context.limits.vitestBytes),
     FOREMAN_CODE_VERIFICATION_UNIT_WORKERS: String(context.identity.parameters.unitWorkers), COREPACK_ENABLE_NETWORK: '0' }
