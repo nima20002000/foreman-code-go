@@ -170,7 +170,7 @@ describe('Codex original placed inspection directory', () => {
         const commands: Array<{ args: string[]; cwd: string }> = []
         const qualify = f.dependencies.qualify
         f.dependencies.qualify = async (...args) => {
-          qualified.push(args[2])
+          qualified.push(args[1])
           return qualify(...args)
         }
         f.dependencies.runCommand = async (_binary, args, cwd) => {

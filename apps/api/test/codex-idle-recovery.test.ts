@@ -26,7 +26,7 @@ async function ownedFixture() {
   let failClose = false
   let schemaDrift = false
   const qualify = (scope: typeof recovery): CodexDiagnosticOperations['qualify'] =>
-    async (binary, _version, cwd, environment, _authentication, signal) => {
+    async (binary, cwd, environment, _authentication, signal) => {
       const result = await runCommand(binary, ['--version'], cwd, signal, environment, { recovery: scope })
       assert.equal(result.exitCode, 0)
       assert.equal(result.stdout.trim(), RECORDED_CODEX_VERSION)
