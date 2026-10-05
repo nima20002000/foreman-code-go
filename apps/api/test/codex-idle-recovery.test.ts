@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, it, vi } from 'vitest'
 import type { CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager, type CodexDiagnosticOperations, type CodexDiagnosticPin } from '../src/modules/harnesses/codexAppServer.js'
-import { assertCodexUnchanged, canonical, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { assertCodexUnchanged, codexExecutableIdentity, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
 import { qualifyNativeCodexModel } from '../src/modules/harnesses/codexQualification.js'
 import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
@@ -33,8 +33,7 @@ async function ownedFixture() {
       assert.equal(result.exitCode, 0)
       assert.equal(result.stdout.trim(), QUALIFIED_CODEX_VERSION)
       const path = await realpath(binary)
-      const info = await stat(path)
-      return { binary: path, identity: canonical([path, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs]),
+      return { binary: path, identity: await codexExecutableIdentity(path),
         providerVersion: QUALIFIED_CODEX_VERSION, protocol: fixtureProtocol,
         schemaManifestSha256: schemaDrift ? 'different-schema' : 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' }
     }

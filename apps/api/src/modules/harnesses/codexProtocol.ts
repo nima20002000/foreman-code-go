@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { access, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, createReadStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 
@@ -80,14 +80,18 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
   throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'The configured Codex executable is unavailable.')
 }
 
-async function identity(binary: string): Promise<string> {
-  const value = await stat(binary)
+export async function codexExecutableIdentity(binary: string): Promise<string> {
+  const path = await realpath(binary)
+  const value = await stat(path)
   if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex must be a regular executable file.')
-  return canonical([await realpath(binary), value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs])
+  // pnpm creates hardlinks across worktrees, changing ctime without replacing executable content.
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
+  return canonical([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, hash.digest('hex')])
 }
 
 export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {
-  if (await identity(qualified.binary) !== qualified.identity) {
+  if (await codexExecutableIdentity(qualified.binary) !== qualified.identity) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed during qualification; qualify the replacement before launch.')
   }
 }
@@ -246,7 +250,7 @@ export async function qualifyCodex(
   requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
   const resolved = await executable(binary, cwd, environment)
-  const fingerprint = await identity(resolved)
+  const fingerprint = await codexExecutableIdentity(resolved)
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
   const version = await command(['--version'])
   const actual = (version.stdout || version.stderr).trim()

@@ -107,6 +107,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       })
       child.stdout?.resume()
       child.stderr?.resume()
+      const errors: unknown[] = []
       try {
         const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(200_000) })
         expect(code).toBe(0)
@@ -154,9 +155,16 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         expect(existsSync(artifact.resources.root)).toBe(false)
         await resources.close()
         expect(existsSync(resources.environment.GRAPHQL_TEST_ROOT!)).toBe(false)
-      } finally {
-        await stopGroup(child.pid)
+      } catch (error) { errors.push(error) }
+      finally {
+        try { await stopGroup(child.pid) }
+        catch (error) { errors.push(error) }
+        if (existsSync(resources.environment.GRAPHQL_TEST_ROOT!)) {
+          try { await resources.close() }
+          catch (error) { errors.push(error) }
+        }
       }
+      if (errors.length) throw new AggregateError(errors, 'Acceptance retention probe failed')
     }, 240_000)
 
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {

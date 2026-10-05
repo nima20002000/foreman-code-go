@@ -126,7 +126,6 @@ export const opencodeQualificationSuite: QualificationSuite = {
           publicationErrors.push({ code, message })
           throw error
         }
-
       },
     } as unknown as FileMcpService
     registerFileToolsMcp(app, fileService)
