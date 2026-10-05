@@ -6,7 +6,8 @@ import {
 } from '@foreman-code/contracts/wave25'
 import { poisonGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, type CurrentNativeActivity } from './currentActivity.js'
-import { publicNodeProjectionDelta, readPublicNodeProjection } from './publicProjection.js'
+import { readPublicNodeProjection } from './publicProjection.js'
+import { readNativeProjectionFacts } from './nativeProjectionFacts.js'
 import { assertRunGraphPublication, graphSourceDigest, type RunGraphPublication } from './publication.js'
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from './records.js'
 import { RunGraphError } from './errors.js'
@@ -186,9 +187,8 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
       if (saved.rowCount !== 1) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
     })
   }
-  const beforeNodes = await readPublicNodeProjection(sql, scope, nodeIds, { native: beforeCandidates })
-  const afterNodes = await readPublicNodeProjection(sql, scope, nodeIds, { native: afterCandidates })
-  facts.push(...publicNodeProjectionDelta(beforeNodes, afterNodes))
+  facts.push(...await readNativeProjectionFacts(beforeCandidates, afterCandidates,
+    native => readPublicNodeProjection(sql, scope, nodeIds, { native })))
   const mutate = async () => { for (const write of writes) await write() }
   if (facts.length) {
     // Includes private fields in the source digest, never in the public graph facts.
