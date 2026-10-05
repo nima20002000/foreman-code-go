@@ -21,6 +21,19 @@ describe('reviewed verification admission capacity', () => {
     expect(await jobComputerCapacityDecision(capacityRows(profile, 4), target, profile))
       .toEqual({ fits: false, reason: 'busy' })
   })
+  it('accounts for the provisioned independent byte and inode quotas, including closed retained owners', async () => {
+    const profile = verificationCapacityFixture('main')
+    const fingerprint = profile.measurement!.fingerprint
+    fingerprint.quotaPool!.slots = fingerprint.quotaPool!.slots.slice(0, 4)
+    const target = { mainId, hostRef: profile.root.selection.hostRef }
+    expect(jobComputerCapacity(profile).diskBytes).toBe(profile.spec.resources.limits.diskBytes * 4)
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 2, 2), target, profile))
+      .toEqual({ fits: false, reason: 'busy' })
+    const inodes = profile.spec.resources.mutableInodes
+    const sql = { query: async () => ({ rows: [{ limits: profile.spec.resources.limits,
+      compute_closed: false, inodes: inodes * 4 }], rowCount: 1 }) } as unknown as JobSql
+    expect(await jobComputerCapacityDecision(sql, target, profile)).toEqual({ fits: false, reason: 'busy' })
+  })
   it('requires fresh laptop memory and includes the incoming claim in the headroom calculation', async () => {
     const profile = verificationCapacityFixture('device')
     const target = { mainId, hostRef: profile.root.selection.hostRef }
