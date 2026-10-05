@@ -689,7 +689,7 @@ export class OperatorChatService {
   private async complete(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false) {
     if (!await this.repository.journalTerminal(id, requestId, result, {
       ...(nativeMessageId ? { nativeMessageId } : {}), retryable,
-      requiresRuntimeClosure: this.runtimes.has(id),
+      requiresRuntimeClosure: this.runtimes.get(id)?.manager.requiresRuntimeClosure?.() ?? this.runtimes.has(id),
     })) return
     await this.settleTerminal(id, requestId)
   }
@@ -765,8 +765,7 @@ export class OperatorChatService {
   private async journalResidentTerminal(id: string, runtime: Runtime): Promise<void> {
     if (!runtime.session) return
     const row = await this.repository.active(id)
-    if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId
-      || await this.repository.terminal(id, row.active_request_id)) return
+    if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId) return
     const correlationId = nativeCorrelation(id, row.active_request_id)
     const history = await runtime.manager.reconcile(runtime.session, correlationId, AbortSignal.timeout(5_000))
     const submission = history.nativeSubmission
@@ -780,10 +779,42 @@ export class OperatorChatService {
       ...(history.nativeMessageId ? { nativeMessageId: history.nativeMessageId } : {}),
       ...(messageMatches ? { submission: submission! } : {}), retryable: false, requiresRuntimeClosure: true,
     })
+    await this.persistObservedHistory(id, row.active_request_id, runtime, history, messageMatches ? submission : undefined)
   }
   private async release(id: string) {
     await this.stopRuntime(id, this.runtimes.get(id))
     this.runtimes.delete(id); this.managers.release?.(id)
+  }
+  private async persistObservedHistory(id: string, requestId: string, runtime: Runtime, history: NativeHistory,
+    receipt?: NativeMessageSubmission) {
+    let precedingActivityId: string | null = null
+    const showThinking = runtime.configuration?.harness.harness === 'opencode'
+      ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
+    for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
+      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId ?? null, true, receipt)
+      const change = operatorActivity(event, runtime.manager.harness, requestId)
+      if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
+      await this.recordAssistantMessage(id, requestId, runtime, event,
+        runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
+    }
+    const currentOwner = await this.repository.active(id)
+    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== runtime.session!.nativeSessionId) return undefined
+    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
+    await this.repository.pending(id, requestId, pending)
+    if ((!this.responding.has(id) || this.closing) && receipt !== undefined) {
+      const state = await this.repository.get(id)
+      if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+        runtime.session!, receipt!, state)
+    }
+    if ((!this.responding.has(id) || this.closing) && history.responseDeliveries?.length) {
+      const state = await this.repository.get(id)
+      for (const proof of history.responseDeliveries) {
+        const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)
+        if (state && identity) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+          runtime.session!, identity, history.responseDeliveries, state)
+      }
+    }
+    return pending
   }
   private async observe(id: string, requestId: string, runtime: Runtime, signal = this.lifetime.signal): Promise<void> {
     if (!runtime.session) return
@@ -814,34 +845,8 @@ export class OperatorChatService {
         retryable: false, requiresRuntimeClosure: true,
       })
     }
-    let precedingActivityId: string | null = null
-    const showThinking = runtime.configuration?.harness.harness === 'opencode'
-      ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
-      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId ?? null, true, messageIdentity ? receipt : undefined)
-      const change = operatorActivity(event, runtime.manager.harness, requestId)
-      if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
-      await this.recordAssistantMessage(id, requestId, runtime, event,
-        runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
-    }
-    const currentOwner = await this.repository.active(id)
-    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
-    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
-    await this.repository.pending(id, requestId, pending)
-    if (!this.responding.has(id) && messageIdentity) {
-      const state = await this.repository.get(id)
-      if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
-        runtime.session, receipt!, state)
-    }
-    if (!this.responding.has(id) && history.responseDeliveries?.length) {
-      const state = await this.repository.get(id)
-      for (const proof of history.responseDeliveries) {
-        const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)
-        if (state && identity) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
-          runtime.session, identity, history.responseDeliveries, state)
-      }
-    }
-    if (history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
+    const pending = await this.persistObservedHistory(id, requestId, runtime, history, messageIdentity ? receipt : undefined)
+    if (!this.responding.has(id) && history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
       && history.terminalTurn.providerId === receipt!.nativeMessageId)) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {
@@ -1032,7 +1037,9 @@ export class OperatorChatService {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
           if (this.tasks.has(row.id)) return
           if (await this.repository.terminal(row.id, requestId)) {
-            await this.settleTerminal(row.id, requestId)
+            const resident = this.runtimes.get(row.id)
+            if (resident?.session) await this.observe(row.id, requestId, resident)
+            else await this.settleTerminal(row.id, requestId)
             return
           }
           if (row.active_phase === 'accepted' || row.active_phase === 'ready') {

@@ -145,6 +145,13 @@ export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarnes
 
 /** A resumed session can contain older turns. Never relabel their activity as this request. */
 export function currentOperatorHistory(history: NativeHistory, harness: AgentHarness): NativeHarnessEvent[] {
+  if (harness === 'claude') {
+    const receipt = history.nativeSubmission
+    if (receipt?.kind !== 'message' || history.correlationId !== receipt.clientCorrelationId) return []
+    return history.events.filter(event => event.payload.clientCorrelationId === receipt.clientCorrelationId
+      && event.payload.nativeSessionId === receipt.nativeSessionId && !event.payload.parentToolUseId
+      && !event.payload.subagentNativeId)
+  }
   if (!history.nativeTurnId) return []
   if (harness === 'codex') return history.events.filter((event) => event.payload.turnId === history.nativeTurnId)
   const messages = new Map<string, boolean>()

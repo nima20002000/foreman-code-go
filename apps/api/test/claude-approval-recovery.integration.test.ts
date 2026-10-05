@@ -69,7 +69,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
   return { manager, ready, frames, options: () => options }
 }
 
-it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-with-stored-proof', 'restart-wrong-generation'] as const)(
+it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-with-stored-proof', 'restart-wrong-generation', 'terminal-after-response'] as const)(
   'recovers %s Claude approval through authenticated MCP with no response or prompt replay', async scenario => {
     await nim2691TaskDatabase(async (pool, directory) => {
       await applyApplicationMigrations(pool)
@@ -160,9 +160,19 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const readReceipt = async () => (await pool.query('select result from management_command_receipts where command_id=$1', [input.commandId])).rows[0].result
         const original = await readReceipt()
         expect(original.status).toBe(scenario === 'aborted' ? 'uncertain' : 'pending')
-        if (scenario === 'resident-write-loss') {
+        if (scenario === 'resident-write-loss' || scenario === 'terminal-after-response') {
           await callbacks.hooks!.PostToolUse![0]!.hooks[0]!({ ...hook, hook_event_name: 'PostToolUse', tool_response: 'read-completed' },
             'read-tool', { signal: new AbortController().signal })
+        }
+        if (scenario === 'terminal-after-response') {
+          void owned.frames.offer({ type: 'user', uuid: 'completed-tool', session_id: session.nativeSessionId,
+            parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-tool', content: 'read-completed' }] } })
+          void owned.frames.offer({ type: 'assistant', uuid: 'after-approval-answer', session_id: session.nativeSessionId,
+            user_message_uuid: message.uuid, parent_tool_use_id: null,
+            message: { id: 'after-approval', content: [{ type: 'text', text: 'Tool completed after approval.' }] } })
+          void owned.frames.offer({ type: 'result', uuid: 'after-approval-terminal', session_id: session.nativeSessionId,
+            user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+          await vi.waitFor(async () => expect(await repository.terminal(id, 'model-request')).toBeDefined())
         }
         if (scenario.startsWith('restart')) {
           expect(Boolean(original.providerAcknowledgment)).toBe(storedProof)
@@ -175,13 +185,18 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         }
         await chat.reconcileActive()
         const receipt = await readReceipt()
-        const completed = scenario === 'resident-write-loss' || scenario === 'restart-with-stored-proof'
+        const completed = scenario === 'resident-write-loss' || scenario === 'restart-with-stored-proof' || scenario === 'terminal-after-response'
         expect(receipt.status).toBe(completed ? 'completed' : original.status)
         if (completed) expect(receipt.providerAcknowledgment.nativeIdentity).toMatchObject({ kind: 'message', nativeMessageId: message.uuid })
         const readback = await graphRpc(app, owner.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: id } })
         expect(readback.result?.isError).not.toBe(true)
         const state = graphRpcValue(readback.result) as OperatorConversationState
-        expect(state).toMatchObject({ nativeSubmission: { kind: 'message', nativeMessageId: message.uuid } })
+        if (scenario === 'terminal-after-response') {
+          expect(state.activeRequestId).toBeNull()
+          expect(state.messages).toContainEqual(expect.objectContaining({ content: 'Tool completed after approval.' }))
+          expect(state.activities).toContainEqual(expect.objectContaining({ kind: 'file_read', status: 'completed' }))
+          expect((await repository.terminal(id, 'model-request'))?.closureState).toBe('closed')
+        } else expect(state).toMatchObject({ nativeSubmission: { kind: 'message', nativeMessageId: message.uuid } })
         const activity = state.activitySnapshot?.activities.find(activity => activity.kind === 'interaction'
           && activity.interaction?.answerRecorded)
         const summary = activity?.kind === 'interaction' ? activity.interaction : undefined

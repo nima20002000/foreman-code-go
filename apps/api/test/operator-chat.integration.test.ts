@@ -1035,6 +1035,33 @@ async function startSettlingClaude(claude: ReturnType<typeof settlingClaude>) {
 }
 
 describe.skipIf(!connectionString)('Operator native terminal persistence', () => {
+  it('recovers a pre-query profile failure after restart without inventing process closure', async () => {
+    const claude = settlingClaude()
+    await configureSettlingClaude(claude)
+    const conversation = await chat.create(owner)
+    const allocation = claude.manager()
+    const resolver: NativeManagerResolver = () => allocation
+    const closeOwner = vi.fn<NonNullable<NativeManagerResolver['closeRecoveredRuntime']>>(async () => false)
+    resolver.closeRecoveredRuntime = closeOwner
+    const preparing = { ...authority, prepare: async () => { throw new Error('Profile admission failed before query') } }
+    chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', preparing)
+    const fault = vi.spyOn(repository, 'closurePending').mockRejectedValue(new Error('Crash after saving setup failure'))
+    const previous = chat
+    try {
+      await chat.send(conversation.id, { requestId: 'setup-failure', content: 'Start once' }, owner)
+      await waitFor(async () => Boolean(await repository.terminal(conversation.id, 'setup-failure')))
+      expect((await repository.terminal(conversation.id, 'setup-failure'))?.observation.requiresRuntimeClosure).toBe(false)
+      expect(allocation.requiresRuntimeClosure!()).toBe(false)
+      fault.mockRestore()
+      chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
+      await chat.reconcileActive()
+      expect((await chat.get(conversation.id, owner)).activeRequestId).toBeNull()
+      expect((await chat.get(conversation.id, owner)).lastResult?.outcome).toBe('failed')
+      expect(closeOwner).not.toHaveBeenCalled()
+      expect(claude.prompts).toEqual([])
+    } finally { fault.mockRestore(); await previous.shutdown() }
+  })
+
   it.each(['journalTerminal', 'closurePending', 'closureProven', 'finish'] as const)(
     'recovers a failed %s without replaying the native prompt', async method => {
       const claude = settlingClaude()
