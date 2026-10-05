@@ -8,7 +8,7 @@ import { parity } from '../../../scripts/acceptance/parity.mjs'
 import { assertTestDatabase, ownedTestDatabaseUrl } from '../../../scripts/test-resources.mjs'
 import * as schemas from '@foreman-code/contracts/wave25'
 import * as sdk from '@modelcontextprotocol/client'
-import { redactSecretText } from '../src/modules/harnesses/secrets.ts'
+import { redactKnownSecrets } from '../src/modules/harnesses/secrets.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const state = process.env.ENG07_STATE
@@ -18,6 +18,20 @@ const source = (path) => import(pathToFileURL(join(root, 'apps/api/src', path)).
 const send = (message) => { if (process.connected) process.send(message) }
 let close = async () => {}, closing = false
 let stage = 'ownership'
+async function recordFailure(failedStage, error) {
+  const secrets = Object.entries(process.env).filter(([key, value]) => value
+    && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
+  const diagnostic = redactKnownSecrets({ kind, stage: failedStage, code: publicError(error),
+    name: error?.name, message: String(error?.message ?? 'Unknown service failure'),
+    issues: error?.issues, details: error?.details, method: error?.method,
+    path: error?.path, status: error?.status }, secrets)
+  try {
+    await writeFile(join(state, `${kind}-failure.json`), JSON.stringify(diagnostic, null, 2),
+      { flag: 'wx', mode: 0o600 })
+  } catch {
+    send({ type: 'notice', code: 'STARTUP_DIAGNOSTIC_UNAVAILABLE' })
+  }
+}
 async function shutdown() {
   if (closing) return
   closing = true
@@ -98,21 +112,15 @@ async function main() {
           : await parity({ apiUrl, workspaceId: message.demo.workspaceId, workflowIds: message.demo.workflowIds,
             runId: message.runId, access: new PostgresAccessService(db.pool), ...sdk })
         send({ type: 'result', requestId: message.requestId, result })
-      } catch (error) { send({ type: 'failure', requestId: message.requestId, stage: message.type, code: publicError(error) }) }
+      } catch (error) {
+        await recordFailure(message.type, error)
+        send({ type: 'failure', requestId: message.requestId, stage: message.type, code: publicError(error) })
+      }
     })
   })
 }
 main().catch(async (error) => {
-  const secrets = Object.entries(process.env).filter(([key, value]) => value
-    && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
-  const diagnostic = { kind, stage, code: publicError(error), name: error?.name,
-    message: redactSecretText(String(error?.message ?? 'Unknown startup failure'), secrets) }
-  try {
-    await writeFile(join(state, `${kind}-failure.json`), JSON.stringify(diagnostic, null, 2),
-      { flag: 'wx', mode: 0o600 })
-  } catch {
-    send({ type: 'notice', code: 'STARTUP_DIAGNOSTIC_UNAVAILABLE' })
-  }
+  await recordFailure(stage, error)
   send({ type: 'failure', stage, code: publicError(error) })
   try { await close() } finally { process.exit(1) }
 })

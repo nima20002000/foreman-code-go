@@ -73,7 +73,9 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
       ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) })
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}))
-      throw Object.assign(new Error('Seed request failed; no automatic resubmission.'), { code: failure.error?.code })
+      throw Object.assign(new Error('Seed request failed; no automatic resubmission.'), {
+        code: failure.error?.code, method, path, status: response.status, details: failure.error?.details,
+      })
     }
     return response.json()
   }
