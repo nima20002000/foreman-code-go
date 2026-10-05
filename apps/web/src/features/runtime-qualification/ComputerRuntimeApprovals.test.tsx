@@ -4,9 +4,10 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
 import { JobRuntimeApprovalSchema, JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import { JobVerificationProfileSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { server } from '../../mocks/server'
-import { profile, approval } from '../../test/jobRuntimeFixture'
+import { profile, approval, verificationProfile } from '../../test/jobRuntimeFixture'
 import { ComputerRuntimeApprovals } from './ComputerRuntimeApprovals'
 
 const deviceId = '22222222-2222-4222-8222-222222222222', mainId = '11111111-1111-4111-8111-111111111111'
@@ -30,6 +31,18 @@ function handlers(pending = deviceApproval) {
   http.get(`${base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{ profile: deviceProfile, ready: false, reasons: [], sideEffects: false }], approvals: [pending] })))
   return base
 }
+it('shows why verification is pending owner review without offering an approval or implying qualification', async () => {
+  const base = handlers()
+  const pending = JobVerificationProfileSchema.parse({ ...verificationProfile, root })
+  server.use(http.get(`${base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{ profile: pending,
+    ready: false, reasons: ['approval_review_required'], sideEffects: false }], approvals: [] })))
+  renderPanel()
+  expect(await screen.findByRole('heading', { name: pending.name })).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('waiting for the owner to review')
+  expect(screen.getByText('install, unit')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+  expect(screen.queryByText('Approved for physical qualification')).not.toBeInTheDocument()
+})
 it('shows the pending exact fingerprint and approves through the real browser POST with persisted readback', async () => {
   let pending = deviceApproval
   const base = handlers(), user = userEvent.setup()

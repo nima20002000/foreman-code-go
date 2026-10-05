@@ -1,11 +1,11 @@
 import { useRef } from 'react'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
-import type { JobRuntimeApproval } from '@foreman-code/contracts/job-runtime'
+import type { JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { useWorkspacePages } from '../../shared/api/query'
 import { useApproveJobRuntime, useJobRuntimeProfiles } from '../../shared/api/jobRuntimeProfiles'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 
-function Approval({ approval, name }: { approval: JobRuntimeApproval; name: string }) {
+function Approval({ approval, name }: { approval: JobRuntimeApprovalRecord; name: string }) {
   const mutation = useApproveJobRuntime(approval.workspaceId)
   const commandId = useRef<string | undefined>(undefined)
   const expired = Date.parse(approval.expiresAt) <= Date.now()
@@ -43,7 +43,27 @@ function WorkspaceApprovals({ workspaceId, name, registration }: { workspaceId: 
       && value.fingerprint.registration.keyRevision === registration.keyRevision && value.fingerprint.registration.authorizationRevision === registration.authorizationRevision
       && ['awaiting-approval', 'approved'].includes(value.status) && profile?.revision === value.profileRevision && profile.specDigest === value.fingerprint.specDigest
   })
-  return approvals.length ? <section aria-label={`Runtime approvals for ${name}`}><h3>{name}</h3>
+  const pendingVerification = read.data.profiles.filter(item => {
+    const profile = item.profile
+    const host = profile.root.selection.hostRef
+    const binding = profile.root.registration
+    return profile.schemaVersion === 2 && !item.ready && item.reasons.includes('approval_review_required')
+      && host.kind === 'device' && host.mainId === registration.mainId && host.deviceId === registration.deviceId
+      && binding?.workerInstallationId === registration.workerInstallationId
+      && binding.keyRevision === registration.keyRevision && binding.authorizationRevision === registration.authorizationRevision
+  })
+  return approvals.length || pendingVerification.length ? <section aria-label={`Runtime approvals for ${name}`}><h3>{name}</h3>
+    {pendingVerification.map(({ profile }) => {
+      if (profile.schemaVersion !== 2) return null
+      return <article key={profile.id} aria-label={`Verification profile ${profile.name}`}>
+        <h4>{profile.name}</h4>
+        <p role="status">Verification is waiting for the owner to review approval lifetime and resource limits.</p>
+        <dl className="computer-facts">
+          <div><dt>Requested suites</dt><dd>{profile.spec.suites.join(', ')}</dd></div>
+          <div><dt>Requested CPU / memory / processes</dt><dd>{profile.spec.resources.limits.cpuLimit} CPU / {profile.spec.resources.limits.memoryBytes} bytes / {profile.spec.resources.limits.pidsLimit} processes</dd></div>
+        </dl>
+      </article>
+    })}
     {approvals.map(value => <Approval key={value.id} approval={value} name={read.data.profiles.find(item => item.profile.id === value.profileId)!.profile.name} />)}</section> : null
 }
 export function ComputerRuntimeApprovals({ registration }: { registration: DeviceRegistration }) {

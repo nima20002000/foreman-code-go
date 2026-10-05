@@ -1,3 +1,4 @@
+import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@graphql/contracts/job-verification-runtime'
 import {
   isAutoJobSpec, AutoJobDefinitionSpecSchema, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
   jobPolicyRequirements,
@@ -74,9 +75,9 @@ export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCa
     return 0
   })
 }
-export function jobComputerCapacity(profile: JobRuntimeProfile): JobRuntimeProfile['limits'] {
-  const runtime = profile.measurement?.runtime
-  if (!runtime?.deviceLimits || !runtime.quota) return profile.limits
+export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntimeProfile['limits'] {
+  const runtime = profile.schemaVersion === 1 ? profile.measurement?.runtime : profile.measurement?.fingerprint
+  if (!runtime?.deviceLimits || !runtime.quota) return jobRuntimeProfileLimits(profile)
   const allowance = runtime.deviceLimits
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE
   return { cpuLimit: allowance.cpuLimit - reserve.cpuLimit,
@@ -267,11 +268,11 @@ export class JobComputerSelection {
 }
 
 export async function jobComputerHasCapacity(sql: JobSql,
-  target: Pick<ResolvedJobDefinitionSpec['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfile): Promise<boolean> {
+  target: Pick<ResolvedJobDefinitionSpec['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord): Promise<boolean> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
   const rows = (await sql.query<{ limits: JobRuntimeProfile['limits'] }>(`select limits from job_computer_selections s
     where host_key=$1 and released_at is null and not ${closedJobComputerSql}
-    union all select (p.record->'limits') as limits from job_executions e
+    union all select coalesce(p.record->'limits',p.record #> '{spec,resources,limits}') as limits from job_executions e
     join job_runtime_profile_versions p on p.profile_id=e.accepted_spec #>> '{policy,isolationPolicyId}'
       and p.revision=(e.accepted_spec #>> '{policy,isolationPolicyRevision}')::bigint
     where not exists(select 1 from job_computer_selections s where s.execution_id=e.id)
@@ -284,7 +285,7 @@ export async function jobComputerHasCapacity(sql: JobSql,
   // Build qualification starts with one heavy slot; storage stays charged through publication and cleanup.
   if (rows.length >= 1) return false
   return (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
-    rows.reduce((total, row) => total + row.limits[field], profile.limits[field]) <= capacity[field])
+    rows.reduce((total, row) => total + row.limits[field], jobRuntimeProfileLimits(profile)[field]) <= capacity[field])
 }
 
 export async function releaseUnstartedJobComputer(sql: JobSql, identity: JobPreparationIdentity): Promise<void> {
