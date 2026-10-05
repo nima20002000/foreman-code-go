@@ -142,12 +142,16 @@ async function review(turn, prompt) {
     log({ reviewDecisionError: { interactionId, message: error.message } })
   }
   log({ reviewDecision: { interactionId, value: decision } })
-  if (!decision || decision.interaction?.deliveryState !== 'delivered') {
+  if (decision?.interaction?.selectedOptionId !== option.optionId) {
+    throw new Error('The reviewer decision was not recorded.')
+  }
+  // The product delivers only after this review's native terminal is committed.
+  complete(turn, 'Review decision recorded')
+  if (decision.interaction.deliveryState !== 'delivered') {
     while (!existsSync(join(root, 'retry-review'))) await new Promise(resolve => setTimeout(resolve, 20))
     decision = await mcpCall('interaction_respond', input)
     log({ retriedReviewDecision: { interactionId, value: decision } })
   }
-  complete(turn, 'Review delivered')
 }
 
 async function started(turn, prompt) {

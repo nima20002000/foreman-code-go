@@ -27,6 +27,9 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
       record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
     console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
       record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
+    console.error('Remote review delivery attempts', (await fixture.db.pool.query(`select interaction_id,attempt,state,error,
+      approval_write_started_at is not null as write_started,remote_owner_control is not null as remote_reserved
+      from interaction_delivery_attempts order by interaction_id,attempt`)).rows)
     console.error('Remote reviewer retention', (await fixture.db.pool.query(`select receipt->'intent'->>'executionId' as execution_id,
       receipt->>'phase' as phase,receipt->'retainedReviewer'->>'expiresAt' as retained_until,
       receipt->'terminal'->>'kind' as terminal,clock_timestamp() as observed_at from remote_execution_receipts`)).rows)
@@ -302,7 +305,10 @@ describe('production remote review and native recovery through authenticated MCP
       fixture.denyNextReservedResponse()
       await fixture.provider.releaseReview()
       const repository = new PostgresInteractionRepository(fixture.db.pool)
-      const uncertain = await waitForRemoteReview(() => repository.get(active.interaction.id),
+      const uncertain = await waitForRemoteReview(async () => {
+        await fixture.reconcile()
+        return repository.get(active.interaction.id)
+      },
         value => value?.deliveryState === 'uncertain', 'persisted uncertain approval after actual Main authorization denial')
       expect(uncertain?.selectedSemantic).toBe('approve_once')
       const command = fixture.deniedResponse()
