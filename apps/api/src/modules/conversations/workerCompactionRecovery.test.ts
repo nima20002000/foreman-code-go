@@ -1,0 +1,75 @@
+import { randomUUID } from 'node:crypto'
+import { appendFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { expect, it } from 'vitest'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { readClaudeCompactionHistory } from '../harnesses/claudeSdk/compactionHistory.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { WorkerConversationHost } from './workerHost.js'
+import { WorkerConversationManager } from './workerManager.js'
+import { MainWorkerConversationBridge } from './workerBridge.js'
+import { workerConversationCallbacks } from './workerCallbacks.js'
+import { workerConversationFixture } from './workerFixtures.test-support.js'
+
+it('recovers the worker’s persisted Claude boundary after Main restarts without creating or attaching a writer', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'worker-compaction-'))
+  const f = workerConversationFixture('operator', 'claude')
+  if (!('operatorId' in f.configuration) || f.configuration.harness.harness !== 'claude') throw new Error('Claude Operator fixture required')
+  const configuration = { ...f.configuration, harness: { ...f.configuration.harness, configDirectory: root } }
+  const binding = WorkerConversationBindingSchema.parse({ ...f.binding,
+    owner: { ...f.binding.owner, configurationHash: commandInputHash(configuration) } })
+  const session = { nativeSessionId: f.session.nativeSessionId, profilePath: root,
+    cwd: binding.workingDirectory, configRevision: configuration.id, deviceId: f.connection.deviceId }
+  const directory = join(root, 'projects', '-approved-project')
+  const transcript = join(directory, `${session.nativeSessionId}.jsonl`)
+  const frame = (uuid: string, trigger: string) => JSON.stringify({ type: 'system', subtype: 'compact_boundary',
+    uuid, sessionId: session.nativeSessionId, cwd: session.cwd,
+    compactMetadata: { trigger, preTokens: 12000 }, timestamp: '2026-10-05T00:00:00.000Z' }) + '\n'
+  const journal = await RemoteOperationJournal.open(join(root, 'operations.json'), { initializeNewInstallation: true })
+  const bridge = new MainWorkerConversationBridge()
+  let allocations = 0
+  let allowed = true
+  const callbacks = workerConversationCallbacks({ currentBinding: () => f.connection,
+    capture: () => ({ binding: f.connection, request: async payload => ({
+      payload: await bridge.handle(payload, f.connection, AbortSignal.timeout(1000)),
+    }) }) })
+  const host = new WorkerConversationHost({ ...callbacks, currentBinding: () => f.connection,
+    journal: journal.conversations, allocate: async () => { allocations++; throw new Error('Cold read opened a writer') } })
+  const manager = new WorkerConversationManager({ binding, configuration, bridge,
+    channel: { binding: f.connection, request: async payload => ({ payload: await host.handle(payload, f.connection) }) },
+    current: async () => { if (!allowed) throw new Error('Read grant revoked') } })
+  try {
+    await mkdir(directory, { recursive: true })
+    await appendFile(transcript, frame('old-manual', 'manual'))
+    const before = await readClaudeCompactionHistory(session)
+    await journal.conversations.receive(binding, f.connection)
+    await journal.conversations.reserveCreation(binding, 'first-message', commandInputHash('first-message'))
+    await journal.conversations.bindSession(binding, f.session, f.nativeOwner)
+    const reserved = await journal.conversations.reserveCompact(binding, 'compact-request', commandInputHash('compact-request'))
+    const claudeSession = { profilePath: root, cwd: session.cwd,
+      configRevision: session.configRevision, deviceId: session.deviceId }
+    const state = { ...reserved.state, status: 'uncertain' as const,
+      claudeSession, claudeCursor: before.cursor }
+    await journal.conversations.compactProgress(binding, state)
+    const boundaryId = randomUUID()
+    await appendFile(transcript, frame('automatic', 'auto') + frame(boundaryId, 'manual'))
+    const start = { kind: 'operator' as const, configuration, correlationId: 'recovery-read',
+      workingDirectory: binding.workingDirectory }
+    const recovered = await manager.readCompaction(f.session, start, state)
+    expect(recovered).toMatchObject({ requestId: state.requestId, nativeSessionId: session.nativeSessionId,
+      status: 'completed', nativeOperationId: boundaryId, beforeTokens: 12000 })
+    expect((await journal.conversations.read(binding))?.compactions[0]?.state).toEqual(recovered)
+    expect(allocations).toBe(0)
+    allowed = false
+    await expect(manager.readCompaction(f.session, start, state)).rejects.toThrow('Read grant revoked')
+    expect(allocations).toBe(0)
+  } finally {
+    await manager.dispose()
+    bridge.close()
+    await host.shutdown()
+    await journal.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})

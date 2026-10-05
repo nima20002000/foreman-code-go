@@ -86,6 +86,18 @@ const prompt = {
   sessionMode: SessionModeSchema.optional(), preferences: SessionPreferencesSchema.optional(),
 }
 const applicationAccess = z.object({ kind: z.literal('operator-chat-mcp'), token: z.string().min(1).max(16384) }).strict()
+export const WorkerResponseAvailabilityQuerySchema = z.object({
+  nativeRequestId: id, nativeRequestType: id, expectedNativeTurnId: id.optional(),
+  expectedNativeMessageId: id.optional(), expectedGeneration: id.optional(),
+}).strict()
+export const WorkerResponseAvailabilitySchema = z.object({
+  nativeSessionId: id, nativeRequestId: id, nativeRequestType: id, nativeTurnId: id.optional(),
+  nativeMessageId: id.optional(), generation: id.optional(), qualified: z.boolean(),
+  state: z.enum(['available', 'recovery_required', 'unavailable']),
+  path: z.enum(['live_callback', 'qualified_recovery']).nullable(),
+  reason: z.enum(['live_callback', 'qualified_recovery', 'request_consumed', 'callback_lost', 'session_closed',
+    'unqualified', 'identity_mismatch', 'response_in_flight', 'unsupported']),
+}).strict()
 export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('conversation.status'), ...binding }).strict(),
   z.object({ method: z.literal('conversation.open'), ...binding, operationId: id,
@@ -110,9 +122,16 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.cancel'), ...native, nativeTurnId: id.optional() }).strict(),
   z.object({ method: z.literal('conversation.respond'), ...native, nativeRequestId: id,
     option: z.lazy(() => ApprovalResponseOptionSchema) }).strict(),
+  z.object({ method: z.literal('conversation.response-availability'), ...native,
+    query: WorkerResponseAvailabilityQuerySchema }).strict(),
+  z.object({ method: z.literal('conversation.response-reconcile'), ...native, response: z.object({
+    nativeRequestId: id, nativeRequestType: id, option: z.lazy(() => ApprovalResponseOptionSchema),
+  }).strict() }).strict(),
   z.object({ method: z.literal('conversation.preferences'), ...native, preferences: SessionPreferencesSchema }).strict(),
   z.object({ method: z.literal('conversation.compact'), ...native, requestId: id, correlationId: id }).strict(),
   z.object({ method: z.literal('conversation.compact-reconcile'), ...native, state: CompactionStateSchema }).strict(),
+  z.object({ method: z.literal('conversation.compact-read'), ...native, state: CompactionStateSchema,
+    configuration: WorkerConversationConfigurationSchema, correlationId: id }).strict(),
   z.object({ method: z.literal('conversation.steer'), ...native, prompt: prompt.prompt,
     correlationId: id, expectedTurnId: id }).strict(),
   z.object({ method: z.literal('conversation.reconcile-steers'), ...native,

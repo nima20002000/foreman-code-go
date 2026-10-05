@@ -21,6 +21,7 @@ it('carries Plan and context through the issued-request bridge without creating 
   const histories = new Map<string, NativeHistory>()
   const modes: Array<string | undefined> = []
   const acknowledgments: string[] = []
+  const responseReads: unknown[] = []
   let creates = 0
   let allowed = true
   const native: NativeHarnessSessionManager = {
@@ -42,6 +43,17 @@ it('carries Plan and context through the issued-request bridge without creating 
     pending: async () => undefined, respond: async () => {}, cancel: async () => true, close: async () => {},
     history: async () => [...histories.values()].at(-1) ?? { events: [], pendingInteractions: [], nextSequence: 1 },
     reconcile: async (_session, correlationId) => histories.get(correlationId) ?? { events: [], pendingInteractions: [] },
+    reconcileResponse: async (_session, response) => {
+      responseReads.push(response)
+      return { events: [], pendingInteractions: [], responseDeliveries: [{ source: 'provider_history',
+        harness: 'codex', providerVersion: f.session.providerVersion, nativeSessionId: f.session.nativeSessionId,
+        nativeRequestId: response.nativeRequestId, nativeRequestType: response.nativeRequestType,
+        optionId: response.option.optionId, semantic: response.option.semantic }] }
+    },
+    inspectResponseAvailability: async (_session, query) => ({ nativeSessionId: f.session.nativeSessionId,
+      nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType,
+      nativeTurnId: 'observed-turn-2', generation: 'provider-callback-generation', qualified: true,
+      state: 'available', path: 'live_callback', reason: 'live_callback' }),
     sessionControlCapabilities: async () => unavailableSessionControls('non-qualifying-provider-fixture'),
     contextSnapshot: () => ({ nativeSessionId: f.session.nativeSessionId, model: 'fixture-model', generation: 'fixture',
       sequence: 1, observedAt: '2026-10-05T00:00:00.000Z', source: 'codex', accuracy: 'native',
@@ -77,6 +89,18 @@ it('carries Plan and context through the issued-request bridge without creating 
     expect(modes).toEqual(['plan', 'regular'])
     await manager.sessionControlCapabilities(session)
     expect(manager.contextSnapshot(session)).toMatchObject({ usedTokens: 80, lifetimeTokens: 640 })
+    const query = { nativeRequestId: 'native-request', nativeRequestType: 'approval', expectedNativeTurnId: 'observed-turn-2' }
+    expect(await manager.inspectResponseAvailability(session, query)).toMatchObject({ state: 'available', qualified: true })
+    expect(await manager.inspectResponseAvailability(session, { ...query, expectedNativeTurnId: 'other-turn' }))
+      .toMatchObject({ state: 'unavailable', reason: 'identity_mismatch' })
+    const response = { nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType,
+      option: { optionId: 'approve-once', label: 'Approve once', semantic: 'approve_once' as const,
+        persistence: 'request' as const, affectsOtherPendingRequests: false,
+        interruptsCurrentTurn: false, mutatesPersistentPolicy: false } }
+    expect((await manager.reconcileResponse(session, response)).responseDeliveries)
+      .toMatchObject([{ nativeSessionId: session.nativeSessionId, nativeRequestId: query.nativeRequestId,
+        optionId: response.option.optionId, semantic: response.option.semantic }])
+    expect(responseReads).toEqual([response])
     allowed = false
     await expect(manager.cancel(session)).rejects.toThrow('Current principal denied')
     allowed = true

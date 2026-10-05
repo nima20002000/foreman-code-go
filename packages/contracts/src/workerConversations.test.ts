@@ -32,6 +32,18 @@ it('keeps two nodes with the same Agent independently addressable', () => {
   expect(second.profile).toEqual(first.profile)
 })
 
+it('keeps approval recovery on its native request and rejects a prompt or grants in that request', () => {
+  const request = { method: 'conversation.response-reconcile', binding: binding(),
+    session: { harness: 'codex', providerVersion: 'provider-fixture', nativeSessionId: 'observed-session' },
+    response: { nativeRequestId: 'approval-request', nativeRequestType: 'command',
+      option: { optionId: 'approve-once', label: 'Approve once', semantic: 'approve_once',
+        persistence: 'request', affectsOtherPendingRequests: false,
+        interruptsCurrentTurn: false, mutatesPersistentPolicy: false } } }
+  expect(WorkerConversationRpcRequestSchema.parse(request)).toEqual(request)
+  expect(WorkerConversationRpcRequestSchema.safeParse({ ...request, prompt: 'Replay task' }).success).toBe(false)
+  expect(WorkerConversationRpcRequestSchema.safeParse({ ...request, grants: ['agent_chat:respond'] }).success).toBe(false)
+})
+
 it('rejects Main profiles and management MCP authority on worker Agent chats', () => {
   const target = binding('agent')
   expect(WorkerConversationBindingSchema.safeParse({ ...target, appMcpAccess: 'scoped' }).success).toBe(false)

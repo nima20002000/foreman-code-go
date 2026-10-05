@@ -22,6 +22,9 @@ it('recovers only the new manual boundary from the same persisted session and sc
     const before = await readClaudeCompactionHistory(session)
     await appendFile(path, `${JSON.stringify(frame('automatic-boundary', 'auto'))}\n${JSON.stringify(frame('new-boundary', 'manual'))}\n`)
     const after = await readClaudeCompactionHistory(session, before.cursor)
+    const reconstructed = { deviceId: session.deviceId, configRevision: session.configRevision,
+      profilePath, cwd, nativeSessionId }
+    expect((await readClaudeCompactionHistory(reconstructed, before.cursor)).boundaries).toEqual(after.boundaries)
     const state = { requestId: 'compact-command', nativeSessionId, nativeOperationId: null,
       claudeCursor: before.cursor, status: 'uncertain' as const, message: '', beforeTokens: null, observedAt: new Date().toISOString() }
     expect(recoveredClaudeCompaction(state, after.boundaries)).toMatchObject({ status: 'completed', nativeOperationId: 'new-boundary', beforeTokens: 123000 })

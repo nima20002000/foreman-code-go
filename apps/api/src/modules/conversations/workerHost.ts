@@ -12,6 +12,9 @@ import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
+import type { CompactionState } from '@foreman-code/contracts'
+import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
+import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 
 export interface WorkerConversationAllocation {
   manager: NativeHarnessSessionManager
@@ -30,6 +33,8 @@ export interface WorkerConversationHostPorts {
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<WorkerConversationAllocation>
   recover?(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<WorkerConversationAllocation>
+  readCompaction?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.compact-read' }>,
+    record: WorkerConversationReceipt, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<CompactionState>
   /** Native callbacks stay behind Main's persisted identity acknowledgement. */
   observeSession(binding: WorkerConversationBinding, session: NativeSessionReference,
     request: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
@@ -277,10 +282,32 @@ export class WorkerConversationHost {
     return { compaction: reserved.state }
   }
 
+  private async readCompaction(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.compact-read' }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    validateConfiguration(request.binding, request.configuration)
+    const record = await this.ports.journal.read(request.binding)
+    const original = record?.compactions.find(value => value.state.requestId === request.state.requestId)
+    if (!record || !original || !isDeepStrictEqual(record.session, request.session)
+      || request.state.nativeSessionId !== request.session.nativeSessionId) unavailable('The persisted compaction owner changed.')
+    let state = original.state
+    if (this.ports.readCompaction) state = await this.ports.readCompaction({ ...request, state }, record, connection, signal)
+    else if (request.configuration.harness.harness === 'claude') {
+      const profile = request.configuration.harness.configDirectory
+      if (state.claudeSession?.profilePath !== profile
+        || state.claudeSession?.cwd !== request.binding.workingDirectory
+        || state.claudeSession?.deviceId !== connection.deviceId) unavailable('The persisted Claude profile changed.')
+      state = await recoverPersistedClaudeCompaction(state)
+    } else unavailable('The selected native driver has no installed compaction reader.')
+    await this.authorize(request, connection, signal)
+    const compaction = await this.ports.journal.compactProgress(request.binding, state)
+    return { compaction, receipt: await this.ports.journal.read(request.binding) }
+  }
+
   async handle(raw: unknown, connection: Readonly<DeviceSessionBinding>, signal = this.lifetime.signal): Promise<unknown> {
     const request = WorkerConversationRpcRequestSchema.parse(raw)
     await this.authorize(request, connection, signal)
     if (request.method === 'conversation.status') return { receipt: await this.ports.journal.read(request.binding) }
+    if (request.method === 'conversation.compact-read') return this.readCompaction(request, connection, signal)
     if (request.method === 'conversation.inspect-entry') {
       const resident = await this.allocate(request, connection, signal)
       if (request.inspection.harness !== request.binding.harness
@@ -377,6 +404,19 @@ export class WorkerConversationHost {
       case 'conversation.respond':
         await manager.respond(request.session, request.nativeRequestId, request.option, signal)
         return { receipt: await this.ports.journal.read(request.binding) }
+      case 'conversation.response-reconcile': {
+        if (!manager.reconcileResponse) unavailable('The native driver cannot recover response delivery.')
+        return { history: await manager.reconcileResponse(request.session, request.response, signal),
+          context: manager.contextSnapshot?.(request.session) ?? null, receipt: record }
+      }
+      case 'conversation.response-availability': {
+        const query = { nativeRequestId: request.query.nativeRequestId, nativeRequestType: request.query.nativeRequestType,
+          ...(request.query.expectedNativeTurnId ? { expectedNativeTurnId: request.query.expectedNativeTurnId } : {}),
+          ...(request.query.expectedNativeMessageId ? { expectedNativeMessageId: request.query.expectedNativeMessageId } : {}),
+          ...(request.query.expectedGeneration ? { expectedGeneration: request.query.expectedGeneration } : {}) }
+        return manager.inspectResponseAvailability ? manager.inspectResponseAvailability(request.session, query, signal)
+          : unavailableNativeResponse(request.session, query, 'unsupported')
+      }
       case 'conversation.steer':
         if (!manager.steerTurn) unavailable('This native driver cannot steer a turn.')
         return manager.steerTurn(request.session, { prompt: request.prompt,

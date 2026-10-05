@@ -841,6 +841,12 @@ export function buildProductionApp(
       start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@foreman-code/contracts').CompactionState,
       principalId: string, signal: AbortSignal,
     ) => {
+      if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+        const manager = workerChats.create({ configuration, conversationId, workingDirectory: sessionStartDirectory(start),
+          appMcpAccess: 'none', observationPrincipalId: principalId })
+        try { return await manager.readCompaction!(session, start, state, signal) }
+        finally { await manager.dispose?.() }
+      }
       if (session.harness === 'claude') return recoverPersistedClaudeCompaction(state)
       const binding: ClaudeProfileOwner = 'operatorId' in configuration
         ? { kind: 'operator', conversationId, repository: operatorConversations, observationPrincipalId: principalId }

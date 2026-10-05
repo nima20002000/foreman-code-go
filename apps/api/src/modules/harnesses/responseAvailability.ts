@@ -44,6 +44,11 @@ export async function inspectNativeResponse(manager: NativeHarnessSessionManager
   try { result = await manager.inspectResponseAvailability(session, query, input.signal) }
   catch { return unavailableNativeResponse(session, query, 'callback_lost') }
   if (!input.isCurrent() || input.signal?.aborted) return unavailableNativeResponse(session, query, 'session_closed')
+  return normalizeResponseAvailability(session, query, result)
+}
+
+export function normalizeResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery,
+  result: NativeResponseAvailability): NativeResponseAvailability {
   if (result.nativeSessionId !== session.nativeSessionId || result.nativeRequestId !== query.nativeRequestId
     || result.nativeRequestType !== query.nativeRequestType
     || query.expectedNativeTurnId !== undefined && result.nativeTurnId !== query.expectedNativeTurnId

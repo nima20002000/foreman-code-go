@@ -22,7 +22,8 @@ import { DomainError } from '../errors.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
-  'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry'])
+  'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
+  'conversation.response-reconcile', 'conversation.response-availability'])
 interface OwnerRow {
   id: string; kind: 'operator' | 'agent'; workspace_id: string | null; workflow_id: string | null
   workflow_node_id: string | null; agent_id: string | null; owner_principal_id: string | null
@@ -30,6 +31,7 @@ interface OwnerRow {
   active_request_id: string | null; native_session_id: string | null; deleted_at: unknown
   record: { status?: string; origin?: { kind: string; runId?: string; executionId?: string; sourceNativeSessionId?: string } }
   payload: { ownerPrincipalId?: string } | null
+  worker_conversation_binding: unknown
 }
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -85,10 +87,16 @@ export function createProductionWorkerConversations(input: {
         ? { kind: 'operator', operatorId: configuration.operatorId }
         : { kind: 'agent', workspaceId: configuration.workspaceId, agentId: configuration.agentId,
           workflowId: original.workflow_id, workflowNodeId: original.workflow_node_id }
-      const binding = WorkerConversationBindingSchema.parse({ owner: { ...ownerFields,
+      const requestedBinding = WorkerConversationBindingSchema.parse({ owner: { ...ownerFields,
         conversationId: options.conversationId, configurationVersionId: configuration.id,
         configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess })
+      const binding = original.worker_conversation_binding
+        ? WorkerConversationBindingSchema.parse(original.worker_conversation_binding) : requestedBinding
+      const observationBinding = { ...binding, appMcpAccess: requestedBinding.appMcpAccess }
+      if (!isDeepStrictEqual(options.observationPrincipalId ? observationBinding : binding, requestedBinding)) {
+        unavailable('The original worker conversation binding changed.')
+      }
       const requestCallers = new WeakMap<WorkerConversationRpcRequest, string>()
       const current = async (request: WorkerConversationRpcRequest) => {
         const live = await row(options.conversationId)
@@ -145,7 +153,17 @@ export function createProductionWorkerConversations(input: {
         const actual = input.endpoint().captureRequest(host.deviceId, 'execution-v1')
         if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
       }
-      const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current })
+      const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
+        observeSession: async session => {
+          const saved = await input.pool.query(`update operator_conversations set worker_conversation_binding=$2::jsonb
+            where id=$1 and deleted_at is null
+              and record->>'status' is distinct from 'archived'
+              and coalesce(operator_configuration_version_id,agent_configuration_version_id)=$4
+              and (native_session_id is null or native_session_id=$3)
+              and (worker_conversation_binding is null or worker_conversation_binding=$2::jsonb)`,
+          [options.conversationId, JSON.stringify(binding), session.nativeSessionId, configuration.id])
+          if (saved.rowCount !== 1) unavailable('The native worker owner could not be retained.')
+        } })
       return { manager, inspector: manager.inspector }
     })
     admitted.manager.setSessionControlPrincipal = principalId => { caller = principalId }

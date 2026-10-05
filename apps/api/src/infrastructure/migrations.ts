@@ -1,4 +1,5 @@
 import { sessionControlsMigration } from './sessionControlsMigration.js'
+import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
@@ -821,6 +822,7 @@ export const migrations = [
   remoteNativeArtifactContextMigration,
   compactCommandActivityMigration,
   sessionControlsMigration,
+  workerConversationBindingMigration,
   runSubagentsMigration,
   jobAdmissionQueueMigration,
   jobQueueCleanupMigration,

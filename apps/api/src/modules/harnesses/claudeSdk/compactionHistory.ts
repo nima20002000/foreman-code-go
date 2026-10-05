@@ -14,7 +14,8 @@ export interface ClaudeCompactionCursor {
   scope: string
 }
 export function claudeSessionScopeHash(session: ClaudePersistedSession) {
-  return createHash('sha256').update(JSON.stringify(session)).digest('hex')
+  return createHash('sha256').update(JSON.stringify([session.deviceId, session.profilePath,
+    session.configRevision, session.cwd, session.nativeSessionId])).digest('hex')
 }
 
 /** Read only the admitted session's native log; no ambient profile or latest-session lookup. */
