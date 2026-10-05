@@ -105,8 +105,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   let chat: InstanceType<typeof OperatorChatService>
   let owner: ManagementPrincipal
   let nativeFixture: Awaited<ReturnType<typeof nativeConfigurationFixture>>
-  let nativeFinished: ReturnType<typeof deferred>
-  let nativeAccepted: ReturnType<typeof deferred>
+  let nativeFinished: ReturnType<typeof deferred<void>>
+  let nativeAccepted: ReturnType<typeof deferred<void>>
   let waitingForNative: boolean
   let setup: ReturnType<typeof vi.spyOn>, prepare: ReturnType<typeof vi.spyOn>
   const issued: Array<{ context: FileToolContext; token: string }> = []
