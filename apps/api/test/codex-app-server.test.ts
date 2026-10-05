@@ -21,7 +21,7 @@ import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
 import {
   calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
-  input, nativeThread, state, until, type Fixture,
+  input, nativeThread, processesForRequests, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
@@ -86,11 +86,25 @@ async function assertDead(pid: number): Promise<void> {
   await until(async () => { try { process.kill(pid, 0); return false } catch { return true } })
 }
 async function assertSpawnedEnvironment(expected: Record<string, string | null>, launches: number): Promise<void> {
-  const processes = (await calls(f.directory)).filter((entry) => typeof entry.pid === 'number')
+  const processes = await processesForRequests(f.directory, 'thread/start', 'thread/resume', 'thread/fork')
   assert.equal(processes.length, launches)
   assert.equal(new Set(processes.map((entry) => entry.pid)).size, launches)
   assert.deepEqual(processes.at(-1)!.environmentMatches,
     Object.fromEntries(Object.keys(expected).map((key) => [key, true])))
+  for (const entry of await calls(f.directory)) {
+    if (typeof entry.pid !== 'number') continue
+    assert(isObject(entry.environmentMatches))
+    for (const [key, value] of Object.entries(expected)) {
+      if (value === null) assert.equal(entry.environmentMatches[key], true, key)
+    }
+  }
+  await assertMetadataProcessesClosed()
+}
+async function assertMetadataProcessesClosed(): Promise<void> {
+  for (const entry of await processesForRequests(f.directory, 'model/list')) {
+    assert(typeof entry.pid === 'number')
+    await assertDead(entry.pid)
+  }
 }
 
 describe('Codex fixture user-message contract', () => {
@@ -218,7 +232,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const session = await manager.createSession(source)
     const { result } = await start(session)
     const lifetime = manager.originalSessionLifetime(session, source)!
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))
@@ -289,7 +303,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const read = manager.reattachOriginalSession(session, source, lifetime.residency)
     void read.catch(() => undefined)
     await until(async () => (await wire('thread/read')).length > 0)
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await assert.rejects(read)
@@ -373,8 +387,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       assert.equal((await calls(f.directory)).length, 0)
 
       const session = await manager.createSession(source)
+      const beforeRefresh = await calls(f.directory)
       await assertCode(manager.refreshProcessEnvironment(session, invalid.environment!), 'CODEX_ENVIRONMENT_INVALID')
-      assert.equal((await calls(f.directory)).filter((entry) => typeof entry.pid === 'number').length, 1)
+      assert.deepEqual(await calls(f.directory), beforeRefresh)
+      assert.equal((await processesForRequests(f.directory, 'thread/start')).length, 1)
+      await assertMetadataProcessesClosed()
       assert.equal((await wire('thread/resume')).length, 0)
       await manager.inspectConfiguration(session)
 
@@ -677,9 +694,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await flag('fail-resume')
     await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_REQUEST_FAILED')
-    const pids = (await calls(f.directory)).flatMap((entry) => typeof entry.pid === 'number' ? [entry.pid] : [])
+    const pids = (await processesForRequests(f.directory, 'thread/start', 'thread/resume'))
+      .flatMap(entry => typeof entry.pid === 'number' ? [entry.pid] : [])
     assert.equal(pids.length, 2)
     await assertDead(pids[1]!)
+    await assertMetadataProcessesClosed()
     await unflag('fail-resume')
     assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
   })
@@ -865,7 +884,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const old = await pending(session)
     const oldQuery = responseQuery(old)
     const original = await manager.inspectResponseAvailability(session, oldQuery)
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))

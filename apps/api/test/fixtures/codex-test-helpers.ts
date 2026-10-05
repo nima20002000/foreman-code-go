@@ -8,7 +8,7 @@ import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, typ
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
 import { isQualifiedCodexVersion, protocolFromBundle, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import type { MessagePhase, Thread, ThreadItem } from '../../src/modules/harnesses/codexMethodTypes.js'
-import type { JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
+import { isObject, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
 
@@ -40,6 +40,12 @@ export function input(directory: string, agentId = 'agent-a'): WorkflowNativeSes
 export async function calls(directory: string): Promise<JsonObject[]> {
   try { return (await readFile(join(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as JsonObject) }
   catch { return [] }
+}
+export async function processesForRequests(directory: string, ...methods: string[]): Promise<JsonObject[]> {
+  const records = await calls(directory)
+  const pids = new Set(records.flatMap(entry => isObject(entry.wire) && typeof entry.wire.method === 'string'
+    && methods.includes(entry.wire.method) ? [entry.processPid] : []))
+  return records.filter(entry => typeof entry.pid === 'number' && pids.has(entry.pid))
 }
 export async function emit(directory: string, value: unknown, agentId = 'agent-a'): Promise<void> {
   await appendFile(join(directory, `inbox-${agentId}.jsonl`), JSON.stringify(value) + '\n')

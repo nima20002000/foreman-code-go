@@ -15,7 +15,7 @@ const save = (name, value) => {
   fs.renameSync(temporary, destination)
 }
 const flag = (name) => fs.existsSync(path.join(root, name))
-const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify(value) + '\n')
+const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify({ processPid: process.pid, ...value }) + '\n')
 const args = process.argv.slice(2)
 const processDisabledMcp = new Set(args.flatMap((argument, index) => {
   if (argument !== '-c') return []
@@ -75,6 +75,11 @@ process.stdin.on('end', () => {
 })
 let created = 0
 const outstanding = new Map()
+const heldReplies = []
+const replyOrHold = (kind, reply) => {
+  if (flag(`hold-${kind}`)) heldReplies.push({ kind, reply })
+  else reply()
+}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
 const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
@@ -171,6 +176,12 @@ process.on('SIGTERM', () => { if (!flag('ignore-term')) process.exit(0) })
 const inbox = path.join(root, `inbox-${agent}.jsonl`)
 let offset = fs.existsSync(inbox) ? fs.readFileSync(inbox, 'utf8').length : 0
 setInterval(() => {
+  for (let index = heldReplies.length - 1; index >= 0; index--) {
+    const pending = heldReplies[index]
+    if (!flag(`release-${pending.kind}`)) continue
+    heldReplies.splice(index, 1)
+    pending.reply()
+  }
   if (!fs.existsSync(inbox)) return
   const contents = fs.readFileSync(inbox, 'utf8')
   const batch = contents.slice(offset); offset = contents.length
@@ -222,15 +233,17 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const persisted = loadThread(params.threadId)
     if (!persisted) { fail(message.id); return }
     const reply = () => result(message.id, { thread: params.includeTurns ? persisted : { ...persisted, turns: [] } })
-    if (flag('read-delay')) setTimeout(reply, 250)
-    else reply()
+    replyOrHold('thread-read', () => {
+      if (flag('read-delay')) setTimeout(reply, 250)
+      else reply()
+    })
   }
   else if (message.method === 'thread/turns/list') {
     const persisted = loadThread(params.threadId)
     if (!persisted) { fail(message.id); return }
     const entries = [...persisted.turns]
     if (params.sortDirection !== 'asc') entries.reverse()
-    result(message.id, { ...page(entries, params), prevCursor: null })
+    replyOrHold('turn-history', () => result(message.id, { ...page(entries, params), prevCursor: null }))
   }
   else if (message.method === 'thread/items/list') {
     const persisted = loadThread(params.threadId)
@@ -242,6 +255,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   }
   else if (message.method === 'turn/start') {
     const prompt = params.input[0].text
+    if (flag('hold-turn-rejection')) { replyOrHold('turn-rejection', () => fail(message.id)); return }
     if (prompt === 'reject') { fail(message.id); return }
     if (prompt === 'late-reject' || flag('late-reject-turn-start')) { setTimeout(() => fail(message.id), 800); return }
     const owner = loadThread(params.threadId)

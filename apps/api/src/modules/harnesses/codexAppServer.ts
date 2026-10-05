@@ -1393,6 +1393,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const observedTerminal = runtime.activeCorrelationId === correlationId
         && runtime.activeTurnId !== undefined && runtime.terminalResult !== undefined
       if (!locallyIdle && !observedTerminal) await this.synchronize(runtime, correlationId, signal)
+      const lateRejection = runtime.rejectedStarts.get(correlationId)
+        ?? this.responseJournal?.readTurnRejection(session, correlationId)
+      if (lateRejection) return { ...await this.history(session), correlationId,
+        nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
+          result: structuredClone(lateRejection) } }
       this.record(runtime, 'thread.reconciled', {
         correlationId, restarted, threadId: session.nativeSessionId,
         ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
@@ -2173,18 +2178,35 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private async synchronize(runtime: Runtime, correlationId?: string, signal?: AbortSignal): Promise<void> {
-    const response = object(await runtime.transport.request('thread/read', { threadId: runtime.session.nativeSessionId, includeTurns: false }, signal), 'CODEX_THREAD_READ_INVALID')
-    const thread = object(response.thread, 'CODEX_THREAD_READ_INVALID')
-    if (thread.id !== runtime.session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Reconciliation returned another thread.')
+    const transport = runtime.transport
+    const generation = runtime.generation
+    const registered = this.runtimes.get(runtime.session.nativeSessionId)
     const starting = runtime.starting
     if (starting && correlationId !== starting.correlationId) {
       throw new HarnessExecutionError('CODEX_CORRELATION_MISMATCH', 'Reconcile the correlation of the uncertain turn/start operation.')
+    }
+    const rejectedDuringRead = () => {
+      if (this.runtimes.get(runtime.session.nativeSessionId) !== registered || runtime.transport !== transport
+        || runtime.generation !== generation || runtime.closed || runtime.disposed) {
+        throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The native history owner changed during reconciliation.')
+      }
+      // A definite rejection can restore idle while an older native read is in flight.
+      return starting !== undefined && !starting.acknowledgedTurnId && runtime.starting === undefined
+        && runtime.phase === 'idle' && runtime.activeTurnId === starting.previous.activeTurnId
+        && runtime.activeCorrelationId === starting.previous.activeCorrelationId
+        && runtime.rejectedStarts.has(starting.correlationId)
     }
     const wantedCorrelation = starting?.correlationId ?? correlationId
     const wantedId = starting ? undefined : wantedCorrelation
       ? runtime.activeCorrelationId === wantedCorrelation ? runtime.activeTurnId
         : runtime.input.correlationId === wantedCorrelation ? runtime.input.nativeTurnId : undefined
       : runtime.input.nativeTurnId ?? runtime.activeTurnId
+    const response = object(await transport.request('thread/read', {
+      threadId: runtime.session.nativeSessionId, includeTurns: false,
+    }, signal), 'CODEX_THREAD_READ_INVALID')
+    if (rejectedDuringRead()) return
+    const thread = object(response.thread, 'CODEX_THREAD_READ_INVALID')
+    if (thread.id !== runtime.session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Reconciliation returned another thread.')
     const matches = (turn: JsonObject) => wantedId ? turn.id === wantedId
       : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.clientId === wantedCorrelation)
         : true
@@ -2195,10 +2217,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const seenCursors = new Set<string>()
       selected = undefined
       for (let page = 0; page < 20; page += 1) {
-        const result = object(await runtime.transport.request('thread/turns/list', {
+        const result = object(await transport.request('thread/turns/list', {
           threadId: runtime.session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
           ...(cursor ? { cursor } : {}),
         }, signal), 'CODEX_THREAD_READ_INVALID')
+        if (rejectedDuringRead()) return
         const candidates = Array.isArray(result.data) ? result.data.filter(isObject).filter(matches) : []
         if (wantedCorrelation && candidates.length > 1) throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this correlation.')
         if (candidates[0]) { selected = candidates[0]; break }

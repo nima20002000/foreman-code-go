@@ -10,12 +10,12 @@ import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTranspor
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { inheritedAgentEnvironment } from '../src/modules/harnesses/secrets.js'
-import { calls, errorCode, fixture, fixtureProtocol, input, state } from './fixtures/codex-test-helpers.js'
+import { calls, errorCode, fixture, fixtureProtocol, input, processesForRequests, state } from './fixtures/codex-test-helpers.js'
 
 async function ownedFixture() {
   const f = await fixture()
   await writeFile(f.binary, (await readFile(f.binary, 'utf8')).replace('log({ cli: args })',
-    'log({cli:args,hasAppToken:Boolean(process.env.GRAPHQL_MCP_TOKEN)})'))
+    'log({cli:args,hasAppToken:Boolean(process.env.FOREMAN_CODE_MCP_TOKEN || process.env.GRAPHQL_MCP_TOKEN)})'))
   const registry = new NativeProcessRegistry(join(f.directory, 'recovery'))
   const owner = 'idle-codex-owner'
   const recovery = registry.scope(owner)
@@ -81,6 +81,9 @@ describe('Codex idle lifecycle with a populated recovery owner', () => {
       const source = input(f.directory)
       if (operation === 'reload-ephemeral') (source.request.configuration.harness as CodexHarnessConfiguration).advanced!.sessionPersistence = 'ephemeral'
       const session = await f.manager.createSession(source)
+      const beforeInspection = await calls(f.directory)
+      const original = (await processesForRequests(f.directory, 'thread/start'))[0]!
+      assert(typeof original.pid === 'number')
       // Idle turn state does not make a live app-server's cgroup empty.
       await assert.rejects(runCommand(f.binary, ['--version'], f.directory, undefined, undefined, { recovery: f.recovery }), /active or unconfirmed/)
       if (operation === 'refresh') await f.manager.refreshProcessEnvironment(session,
@@ -98,9 +101,22 @@ describe('Codex idle lifecycle with a populated recovery owner', () => {
       else {
         assert.equal(wire.filter((entry) => entry.method === 'config/mcpServer/reload').length, 1)
         assert.equal(wire.filter((entry) => entry.method === 'thread/resume').length, 0)
-        assert.equal((await calls(f.directory)).filter((entry) => Array.isArray(entry.cli) && entry.cli[0] === 'app-server').length, 1)
+        assert.equal((await processesForRequests(f.directory, 'thread/start', 'thread/resume', 'thread/fork')).length, 1)
+        const reload = (await calls(f.directory)).find(entry =>
+          (entry.wire as Record<string, unknown> | undefined)?.method === 'config/mcpServer/reload')
+        assert.equal(reload?.processPid, original.pid)
+        process.kill(original.pid, 0)
       }
       assert.equal(await f.registry.closeOwner(f.diagnosticOwner), true)
+      const sessionPids = new Set((await processesForRequests(f.directory, 'thread/start', 'thread/resume', 'thread/fork'))
+        .map(entry => entry.pid))
+      const inspectionCalls = (await calls(f.directory)).slice(beforeInspection.length)
+      assert(inspectionCalls.filter(entry => Array.isArray(entry.cli) && !sessionPids.has(entry.processPid))
+        .every(entry => entry.hasAppToken === false))
+      for (const entry of await processesForRequests(f.directory, 'model/list')) {
+        assert(typeof entry.pid === 'number')
+        assert.throws(() => process.kill(entry.pid as number, 0), { code: 'ESRCH' })
+      }
       assert((await calls(f.directory)).filter((entry) => Array.isArray(entry.cli) && entry.cli[0] !== 'app-server').every((entry) => entry.hasAppToken === false))
       await assert.rejects(runCommand(f.binary, ['--version'], f.directory, undefined, undefined, { recovery: f.recovery }), /active or unconfirmed/)
     } finally {

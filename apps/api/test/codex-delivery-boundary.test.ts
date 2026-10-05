@@ -152,6 +152,46 @@ describe('Codex creation and prompt write boundaries', () => {
     assert.equal((await f.wire('turn/start')).length, 2)
   })
 
+  for (const read of ['thread-read', 'turn-history'] as const) {
+    it(`preserves a definite rejection while an older ${read} response is in flight`, async () => {
+      const manager = f.makeManager(undefined, {}, {
+        responseJournal: new NativeResponseJournal(join(f.directory, 'native-journal')),
+      })
+      const session = await manager.createSession(chatInput(f.directory))
+      await f.flag('hold-turn-rejection')
+      await assert.rejects(collect(manager.startTurn(session, {
+        prompt: 'reject', clientCorrelationId: 'rejected',
+      })), boundary('turn_submission', 'unknown'))
+      await f.flag(`hold-${read}`)
+      const reconciliation = manager.reconcile(session, 'rejected')
+      const method = read === 'thread-read' ? 'thread/read' : 'thread/turns/list'
+      await until(async () => (await f.wire(method)).length > 0)
+      await f.flag('release-turn-rejection')
+      await until(async () => (await manager.history(session)).events.some(event =>
+        event.type === 'turn.start_rejected' && event.payload.correlationId === 'rejected'))
+      await assert.rejects(collect(manager.startTurn(session, {
+        prompt: 'complete', clientCorrelationId: 'retry-while-reading',
+      })), (error: unknown) => {
+        assert(error instanceof NativeDeliveryError)
+        assert.equal(error.delivery, 'not_sent')
+        assert.equal(error.result.error?.code, 'CODEX_SESSION_BUSY')
+        return true
+      })
+      assert.equal((await f.wire('turn/start')).length, 1)
+      await f.flag(`release-${read}`)
+      const rejected = await reconciliation
+      assert.equal(rejected.nonSubmission?.clientCorrelationId, 'rejected')
+      assert.equal(rejected.nativeTurnId, undefined)
+      assert.deepEqual((await manager.reconcile(session, 'rejected')).nonSubmission, rejected.nonSubmission)
+      assert.equal((await manager.reconcile(session, 'another')).nonSubmission, undefined)
+      assert.equal((await f.wire('turn/start')).length, 1)
+      await f.unflag('hold-turn-rejection')
+      await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'retry' }))
+      assert((await manager.reconcile(session, 'retry')).nativeTurnId)
+      assert.equal((await f.wire('turn/start')).length, 2)
+    })
+  }
+
   for (const phase of ['preparation', 'pre-send'] as const) {
     it(`retains the ${phase} failure and failed cleanup without authorizing a retry`, async () => {
       const ports = filePorts()
