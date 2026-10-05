@@ -31,6 +31,7 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -367,6 +368,16 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
         const publicPage = RunEventsPageSchema.parse(publicEvents.json())
+        if (outcome !== (noRoute ? 'pending' : 'succeeded')) {
+          const records = (await pool.query<{ record: unknown }>(
+            'select record from harness_executions where run_id=$1 order by id', [runId])).rows
+          const nativeEvents = (await pool.query<{ record: unknown }>(
+            `select e.record from harness_native_events e join harness_executions x on x.id=e.execution_id
+             where x.run_id=$1 order by e.sequence`, [runId])).rows
+          await writeNativeAcceptanceEvidence(`handoff-failure-${randomUUID()}.json`,
+            nativePersistenceRedactor([]).value({ scenario: scenario.name, runId, state, outcome,
+              runError, records, nativeEvents, activityKinds, startupErrors }))
+        }
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
