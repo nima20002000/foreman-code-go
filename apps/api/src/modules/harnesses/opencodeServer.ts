@@ -278,6 +278,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         await this.ready(combined)
         this.validateReference(source)
         await this.assertConfiguration(configuration, directory, combined)
+        await this.options.server.importFileSession?.(source.nativeSessionId, directory, combined)
         const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
         }, combined, true, 'OPENCODE_SESSION_NOT_FOUND'))
@@ -313,6 +314,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         await this.ready(combined)
         this.validateReference(session)
         await this.assertConfiguration(configuration, directory, combined)
+        await this.options.server.importFileSession?.(session.nativeSessionId, directory, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
         await this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration, combined)
         await this.applyMcpControls(configuration, directory, combined)

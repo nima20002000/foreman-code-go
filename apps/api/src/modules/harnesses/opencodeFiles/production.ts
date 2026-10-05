@@ -26,6 +26,10 @@ export interface OpenCodeFileAdmissions {
 export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg.Pool, config: ApiConfig,
   conversationId: string, server: OpenCodeServerController, endpointHost: string,
   admissions: OpenCodeFileAdmissions = { resolve: resolveOpenCodeFileAdmission, adoptPublished: adoptOpenCodePublications }): OpenCodeChatFiles {
+  if (!server.bindFileConversation) {
+    throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server needs conversation-owned storage.')
+  }
+  server.bindFileConversation(conversationId)
   const journal = new OpenCodeFileCleanupJournal(config.fileStorageRoot ?? defaultFileStorageRoot(), conversationId)
   return {
     recover: (signal, retainedTurnIds) => journal.recover(async context => {

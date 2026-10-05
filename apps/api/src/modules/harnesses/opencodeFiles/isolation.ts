@@ -17,7 +17,8 @@ export class OpenCodeVaultIsolation {
   private readonly nonce = randomUUID()
   private verified = false
 
-  constructor(readonly root: string, private readonly materializations?: { root: string; owned: string }) {}
+  constructor(readonly root: string, private readonly materializations?: { root: string; owned: string },
+    private readonly storage?: { root: string; owned: string; hidden: string[] }) {}
 
   async launch(input: { binary: string; args: string[]; workingDirectory: string; environment: NodeJS.ProcessEnv },
     signal: AbortSignal) {
@@ -35,7 +36,9 @@ export class OpenCodeVaultIsolation {
       await directory.close()
     }
     const ancestors = new Set<string>()
-    for (const protectedRoot of [this.root, ...(this.materializations ? [this.materializations.root] : [])]) {
+    const protectedRoots = [this.root, ...(this.materializations ? [this.materializations.root] : []),
+      ...(this.storage ? [this.storage.root, ...this.storage.hidden] : [])]
+    for (const protectedRoot of protectedRoots) {
       for (let parent = dirname(protectedRoot); parent !== '/'; parent = dirname(parent)) ancestors.add(parent)
     }
     this.ancestors = [...ancestors].sort((a, b) => a.split('/').length - b.split('/').length)
@@ -51,6 +54,24 @@ export class OpenCodeVaultIsolation {
       } finally {
         await owned.close()
       }
+    }
+    let stored: { dev: number; ino: number } | undefined
+    if (this.storage) {
+      checkFileCondition(dirname(this.storage.owned) === this.storage.root,
+        'FILE_SOURCE_ISOLATION_REQUIRED', 'Native storage requires one conversation owner directory.')
+      const owned = await openDirectory(this.storage.owned)
+      try {
+        const stat = await owned.stat()
+        stored = { dev: stat.dev, ino: stat.ino }
+      } finally {
+        await owned.close()
+      }
+    }
+    const hiddenMounts: string[] = []
+    for (const path of this.storage?.hidden ?? []) {
+      const stat = await lstat(path)
+      hiddenMounts.push(...(stat.isDirectory() ? ['--tmpfs', path, '--remount-ro', path]
+        : ['--ro-bind', '/dev/null', path]))
     }
     const directories = []
     for (const path of this.ancestors) {
@@ -73,7 +94,7 @@ export class OpenCodeVaultIsolation {
     const hostInput = JSON.stringify({ binary: input.binary, args: input.args, workingDirectory: input.workingDirectory,
       root: this.root, source: this.source,
       ancestors: this.ancestors, directories, namespaces, nonce: this.nonce,
-      materializations: this.materializations, materialized })
+      materializations: this.materializations, materialized, storage: this.storage, stored })
     return { binary: launcher, args: [
       '--unshare-user', '--unshare-pid', '--unshare-ipc', '--disable-userns', '--assert-userns-disabled',
       '--as-pid-1', '--die-with-parent', '--cap-drop', 'ALL',
@@ -86,6 +107,12 @@ export class OpenCodeVaultIsolation {
         '--tmpfs', this.materializations.root,
         '--bind', this.materializations.owned, this.materializations.owned,
         '--remount-ro', this.materializations.root,
+      ] : []),
+      ...hiddenMounts,
+      ...(this.storage ? [
+        '--tmpfs', this.storage.root,
+        '--bind', this.storage.owned, this.storage.owned,
+        '--remount-ro', this.storage.root,
       ] : []),
       '--', process.execPath, '-e', openCodeIsolationHost, hostInput,
     ] }

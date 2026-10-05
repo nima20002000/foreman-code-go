@@ -247,9 +247,12 @@ export class NativeHarnessFactories {
       const options: ManagedOpenCodeServerOptions = {
         binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
-        ...(input.chatFiles && this.config.openCodeFileStorageRoot
+        ...(this.config.openCodeFileStorageRoot
           ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot,
-            managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
+            nativeStorage: { root: join(this.config.workspaceRoot ?? input.workingDirectory, 'opencode-sessions'),
+              owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
+        ...(input.chatFiles && this.config.openCodeFileStorageRoot
+          ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
