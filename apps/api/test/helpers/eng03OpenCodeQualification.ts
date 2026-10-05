@@ -18,12 +18,14 @@ import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualific
   NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
 import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { HarnessCatalogService } from '../../src/modules/harnesses/catalog.js'
+import { NativeHarnessConfigurationQualifier } from '../../src/modules/harnesses/nativeConfigurationQualifier.js'
+import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
-import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -43,8 +45,10 @@ export async function qualifyEng03OpenCode() {
     .map(([, value]) => value).filter((value): value is string => Boolean(value))
   let factories: NativeHarnessFactories | undefined
   let service: HarnessQualificationService | undefined
+  let catalog: HarnessCatalogService | undefined
   const close = async () => {
     clearQualificationGate()
+    await catalog?.shutdownChecks()
     factories?.stopAuxiliaries()
     const errors: unknown[] = []
     const phases = [
@@ -61,15 +65,6 @@ export async function qualifyEng03OpenCode() {
   }
   try {
     await applyApplicationMigrations(pool)
-    const settings = new PostgresSettingsRepository(pool)
-    const defaults = await settings.getHarnessDefaults()
-    await settings.saveHarnessDefaults({
-      ...defaults,
-      opencode: {
-        ...defaults.opencode,
-        model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
-      },
-    })
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
@@ -99,6 +94,8 @@ export async function qualifyEng03OpenCode() {
     } finally {
       await metadata.dispose()
     }
+    const commands = new PostgresCommandCoordinator(pool)
+    const settings = new PostgresSettingsRepository(pool)
     const selected = await registry.inspectBinary(binaries.opencode)
     const checker = await registry.inspectBinary(process.execPath)
     const guard = (binary: string, sha256: string) => async (signal?: AbortSignal) => {
@@ -149,7 +146,7 @@ export async function qualifyEng03OpenCode() {
     opencode: withNativeQualificationOwnership(diagnosticSuite, processes,
       (input) => guard(input.binary, input.binarySha256)) }
     service = new HarnessQualificationService(repository, registry, suites, binaries,
-      new PostgresCommandCoordinator(pool), settings, undefined, undefined,
+      commands, settings, undefined, undefined,
       (_harness, binary, timeoutMs) => nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory,
         process.env, timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
           beforeCommand: async (current, signal) => {
@@ -159,6 +156,16 @@ export async function qualifyEng03OpenCode() {
           } }))
     const authority = await new PostgresAccessService(pool).issue({ name: 'ENG03 owned qualification', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] })
+    catalog = new HarnessCatalogService(
+      new NativeHarnessConfigurationQualifier(binaries.codex, binaries.opencode, factories),
+      settings, commands, directory,
+    )
+    const saved = await settings.getManagedHarnessDefaults()
+    await catalog.updateDefaults(authority.principal, 'http', {
+      commandId: randomUUID(), expectedRevision: saved.revision,
+      defaults: { ...saved.defaults, opencode: { ...saved.defaults.opencode,
+        model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna', variant: 'low' } },
+    })
     const submitted = (await service.run(authority.principal, 'http', 'opencode')).qualification
     assert.ok(submitted.binarySha256)
     let qualification = submitted
