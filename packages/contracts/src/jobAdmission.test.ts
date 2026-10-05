@@ -47,6 +47,19 @@ describe('pending Job admission', () => {
     expect(JobQueueTicketSchema.safeParse({ ...ticket, deadlineAt: '2026-10-04T12:02:00.000Z' }).success).toBe(false)
     expect(JobQueueTicketSchema.safeParse({ ...ticket, workspaceId: 'foreign-workspace' }).success).toBe(false)
   })
+  it('reads selected-computer and pending-cleanup facts while retaining historical tickets without a projection', () => {
+    const { ticket, build } = verificationFixture()
+    const selectedComputer = { target: build.target, rootId: verificationId, bindingRevision: 1,
+      profileId: build.policy.isolationPolicyId, profileRevision: build.policy.isolationPolicyRevision }
+    const claimed = { ...ticket, state: 'claimed', reservationId: verificationId, selectedComputer, cleanupStatus: 'none' }
+    expect(JobQueueTicketSchema.parse(claimed)).toMatchObject({ selectedComputer, cleanupStatus: 'none' })
+    expect(JobQueueTicketSchema.parse({ ...claimed, state: 'terminal', terminalReason: 'cancelled',
+      cancelRequestedAt: verificationTime, finishedAt: verificationTime, cleanupStatus: 'pending' }))
+      .toMatchObject({ selectedComputer, cleanupStatus: 'pending' })
+    expect(JobQueueTicketSchema.parse(ticket)).toEqual(ticket)
+    expect(JobQueueTicketSchema.safeParse({ ...claimed, selectedComputer: { ...selectedComputer,
+      profileRevision: 0 } }).success).toBe(false)
+  })
   it('rejects ambiguous placement, caller scheduling priority and unversioned claim data', () => {
     const start = { commandId: 'start', definitionId: 'definition', expectedRevision: 1 }
     expect(JobQueuedStartSchema.parse(start)).toEqual(start)

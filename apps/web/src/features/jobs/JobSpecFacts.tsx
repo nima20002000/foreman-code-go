@@ -12,9 +12,22 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
     const { target } = ticket.placement
     computer = target.labelAtAcceptance ?? (target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'Main computer')
   }
+  if (ticket.selectedComputer) {
+    const { target } = ticket.selectedComputer
+    computer = target.labelAtAcceptance ?? (target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'Main computer')
+  }
   return <dl className="job-facts">
     <dt>Queue status</dt><dd>{queueLabel(ticket)}</dd>
     <dt>Computer</dt><dd>{computer}</dd>
+    {ticket.selectedComputer && <>
+      <dt>Reserved root</dt><dd>{ticket.selectedComputer.target.destination.canonicalProjectRoot}</dd>
+      <dt>Root binding</dt><dd>{ticket.selectedComputer.rootId} · revision {ticket.selectedComputer.bindingRevision}</dd>
+      <dt>Runtime profile</dt><dd>{ticket.selectedComputer.profileId} · revision {ticket.selectedComputer.profileRevision}</dd>
+    </>}
+    {ticket.cleanupStatus && ticket.cleanupStatus !== 'none' && <>
+      <dt>Cleanup</dt><dd>{ticket.cleanupStatus === 'pending'
+        ? 'Pending; computer capacity remains reserved' : 'Complete; computer capacity released'}</dd>
+    </>}
     <dt>Enqueued</dt><dd>{ticket.enqueuedAt}</dd>
     <dt>Queue deadline</dt><dd>{ticket.deadlineAt}</dd>
     <dt>Waiting reasons</dt><dd>{ticket.waitingReasons.map(reason => reason.replaceAll('_', ' ')).join(' · ') || 'None'}</dd>

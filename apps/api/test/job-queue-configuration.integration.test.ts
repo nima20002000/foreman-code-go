@@ -57,8 +57,11 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
     return f.jobs.getQueueTicket(principal, f.workspaceId, result.ticket.id)
   }
   function update(ticket: JobQueueTicket) {
+    const record = structuredClone(ticket)
+    delete record.selectedComputer
+    delete record.cleanupStatus
     return database.pool.query('update job_admission_queue set record=$2::jsonb where id=$1',
-      [ticket.id, JSON.stringify(ticket)])
+      [ticket.id, JSON.stringify(record)])
   }
   it('rejects changed request facts, history deletion, scope mismatch and invalid public revisions', async () => {
     const f = await fixture()

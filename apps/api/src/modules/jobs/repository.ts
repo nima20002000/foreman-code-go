@@ -1,5 +1,7 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, type JobDefinition, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
+import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, ResolvedJobDefinitionSpecSchema,
+  type JobDefinition, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
+import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { DomainError } from '../errors.js'
 import { JobQueueTicketSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
 export type JobSql = GraphSqlClient
@@ -31,11 +33,52 @@ export class JobRepository {
     return value
   }
   async queuePosition(sql: JobSql, ticket: JobQueueTicket): Promise<JobQueueTicket> {
-    if (!['waiting', 'blocked'].includes(ticket.state)) return { ...ticket, queuePosition: null }
+    const selection = (await sql.query<{
+      spec: unknown; root: unknown; attempt_id: string; operation_id: string; definition_version_id: string;
+    }>(`select s.spec,s.attempt_id,s.operation_id,s.definition_version_id,b.record as root
+      from job_computer_selections s join source_root_bindings b on b.workspace_id=s.workspace_id
+        and b.record->>'attestationId'=s.spec #>> '{target,destination,attestationId}'
+      where s.workspace_id=$1 and s.execution_id=$2`, [ticket.workspaceId, ticket.executionId])).rows[0]
+    let selectedComputer: JobQueueTicket['selectedComputer'] = null
+    if (selection) {
+      if (selection.attempt_id !== ticket.attemptId || selection.operation_id !== ticket.operationId
+        || selection.definition_version_id !== ticket.definition.versionId) {
+        throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The reserved computer belongs to another request.', 409)
+      }
+      const spec = ResolvedJobDefinitionSpecSchema.parse(selection.spec)
+      const root = SourceRootRecordSchema.parse(selection.root)
+      if (root.binding.workspaceId !== ticket.workspaceId
+        || root.selection.rootPolicyId !== spec.target.destination.rootPolicyId
+        || canonical(root.selection.hostRef) !== canonical(spec.target.hostRef)
+        || canonical(root.registration) !== canonical(spec.target.registration)
+        || root.binding.canonicalPath !== spec.target.destination.canonicalProjectRoot
+        || root.source.snapshotId !== spec.source.snapshotId || root.source.manifestDigest !== spec.source.manifestDigest) {
+        throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The reserved root differs from its selected computer.', 409)
+      }
+      selectedComputer = { target: spec.target, rootId: root.binding.rootId,
+        bindingRevision: root.binding.bindingRevision, profileId: spec.policy.isolationPolicyId,
+        profileRevision: spec.policy.isolationPolicyRevision }
+    }
+    const cleanup = (await sql.query<{ finished: boolean; occupied: boolean }>(`select
+      ($3='terminal' or exists(select 1 from job_executions e where e.id=$2 and e.workspace_id=$1
+        and e.record #>> '{process,phase}'='terminal')) as finished,
+      (exists(select 1 from job_computer_selections s where s.execution_id=$2 and s.workspace_id=$1
+          and s.released_at is null)
+        or exists(select 1 from source_execution_materializations m where m.execution_id=$2
+          and m.workspace_id=$1 and m.state<>'closed')
+        or exists(select 1 from source_storage_reservations r where r.owner_kind='materialization'
+          and r.owner_id=$4 and r.state in ('preparing','owned','uncertain'))
+        or exists(select 1 from source_preparation_reconciliations c where c.operation_id=$4
+          and c.workspace_id=$1 and c.status<>'closed')) as occupied`,
+    [ticket.workspaceId, ticket.executionId, ticket.state, ticket.operationId])).rows[0]!
+    let cleanupStatus: JobQueueTicket['cleanupStatus'] = 'none'
+    if (cleanup.finished && ticket.reservationId) cleanupStatus = cleanup.occupied ? 'pending' : 'complete'
+    const projected = { ...ticket, selectedComputer, cleanupStatus }
+    if (!['waiting', 'blocked'].includes(ticket.state)) return { ...projected, queuePosition: null }
     const row = (await sql.query<{ position: string }>(`select count(*)::text as position
       from job_admission_queue where workspace_id=$1 and enqueue_sequence<=$2::bigint
       and record->>'state' in ('waiting','blocked')`, [ticket.workspaceId, ticket.enqueueSequence])).rows[0]!
-    return JobQueueTicketSchema.parse({ ...ticket, queuePosition: Number(row.position) })
+    return JobQueueTicketSchema.parse({ ...projected, queuePosition: Number(row.position) })
   }
   async pendingQueue(sql: JobSql, workspaceId?: string): Promise<JobQueueTicket[]> {
     const rows = await sql.query<{ record: unknown }>(`select record from job_admission_queue

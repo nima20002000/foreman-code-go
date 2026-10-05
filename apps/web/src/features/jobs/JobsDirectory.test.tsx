@@ -88,11 +88,14 @@ it('loads older requests while retaining one visible active request and its canc
 })
 
 it('shows claimed, blocked fixed and cancelled requests while accepted requests open their original execution', async () => {
-  const claimed = { ...autoQueueTicket, state: 'claimed', reservationId: queueTicket.id }
+  const selectedComputer = { target: definition.spec.target,
+    rootId: queueTicket.id, bindingRevision: 1, profileId: 'selected-profile', profileRevision: 4 }
+  const claimed = { ...autoQueueTicket, state: 'claimed', reservationId: queueTicket.id, selectedComputer }
   const blocked = { ...queueTicket, id: '22222222-2222-4222-8222-222222222222', state: 'blocked',
     waitingReasons: ['disabled'] }
   const cancelled = { ...queueTicket, id: '33333333-3333-4333-8333-333333333333', state: 'terminal',
-    terminalReason: 'cancelled', cancelRequestedAt: queueTicket.enqueuedAt, finishedAt: queueTicket.enqueuedAt }
+    terminalReason: 'cancelled', cancelRequestedAt: queueTicket.enqueuedAt, finishedAt: queueTicket.enqueuedAt,
+    reservationId: queueTicket.id, selectedComputer, cleanupStatus: 'pending' }
   const admitted = { ...queueTicket, id: '44444444-4444-4444-8444-444444444444', state: 'accepted',
     reservationId: queueTicket.id }
   server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [claimed, blocked, cancelled, admitted], nextHistoryCursor: null })))
@@ -104,6 +107,11 @@ it('shows claimed, blocked fixed and cancelled requests while accepted requests 
   expect(within(queue).getByText('disabled')).toBeInTheDocument()
   expect(within(queue).getByText('cancelled')).toBeInTheDocument()
   expect(within(queue).getByText('Accepted')).toBeInTheDocument()
+  expect(within(queue).getAllByText('Qualified PC')).toHaveLength(4)
+  expect(within(queue).getAllByText('selected-profile · revision 4')).toHaveLength(2)
+  expect(within(queue).getAllByText(definition.spec.target.destination.canonicalProjectRoot)).toHaveLength(2)
+  expect(within(queue).getByText('Pending; computer capacity remains reserved')).toBeInTheDocument()
+  expect(within(queue).queryByText('Computer reserved; concrete facts appear in the accepted execution')).not.toBeInTheDocument()
   await userEvent.click(within(queue).getByRole('button', { name: `Open accepted execution of ${definition.name}` }))
   expect(open).toHaveBeenCalledWith(queueTicket.executionId)
 })

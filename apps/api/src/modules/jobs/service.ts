@@ -281,7 +281,15 @@ export class JobService {
             or exists(select 1 from source_execution_materializations m
               where m.operation_id=e.operation_id and m.state<>'closed')
             or exists(select 1 from job_computer_selections s
-              where s.execution_id=e.id and s.released_at is null)))))`
+              where s.execution_id=e.id and s.released_at is null))))
+        or exists(select 1 from job_computer_selections s where s.execution_id=q.execution_id
+          and s.workspace_id=q.workspace_id and s.released_at is null)
+        or exists(select 1 from source_execution_materializations m where m.execution_id=q.execution_id
+          and m.workspace_id=q.workspace_id and m.state<>'closed')
+        or exists(select 1 from source_storage_reservations r where r.owner_kind='materialization'
+          and r.owner_id=q.record->>'operationId' and r.state in ('preparing','owned','uncertain'))
+        or exists(select 1 from source_preparation_reconciliations c where c.operation_id=q.record->>'operationId'
+          and c.workspace_id=q.workspace_id and c.status<>'closed'))`
       const rows = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
         where q.workspace_id=$1 and ${active} order by q.enqueue_sequence`, [workspaceId])).rows
       const history = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
@@ -293,7 +301,8 @@ export class JobService {
       const historyTickets = history.slice(0, input.historyLimit).map(row => JobQueueTicketSchema.parse(row.record))
       const tickets: JobQueueTicket[] = []
       for (const row of rows) tickets.push(await this.repository.queuePosition(sql, JobQueueTicketSchema.parse(row.record)))
-      return JobQueuePageSchema.parse({ tickets: [...tickets, ...historyTickets],
+      for (const ticket of historyTickets) tickets.push(await this.repository.queuePosition(sql, ticket))
+      return JobQueuePageSchema.parse({ tickets,
         nextHistoryCursor: hasMore ? historyTickets.at(-1)!.enqueueSequence : null })
     }, source)
   }

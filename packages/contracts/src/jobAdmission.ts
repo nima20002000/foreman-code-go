@@ -110,6 +110,12 @@ export const JobQueueTicketSchema = z.object({
   cancelRequestedAt: TimestampSchema.nullable(),
   terminalReason: z.enum(['cancelled', 'timed_out', 'authorization_revoked', 'request_exceeds_maximum']).nullable(),
   finishedAt: TimestampSchema.nullable(),
+  cleanupStatus: z.enum(['none', 'pending', 'complete']).optional(),
+  selectedComputer: z.object({
+    target: JobTargetSchema,
+    rootId: z.uuid(), bindingRevision: PositiveInteger,
+    profileId: IdSchema, profileRevision: PositiveInteger,
+  }).strict().nullable().optional(),
 }).strict().superRefine((value, context) => {
   const spec = value.definition.spec
   validateRequestedResources(spec, value.resources, context)
