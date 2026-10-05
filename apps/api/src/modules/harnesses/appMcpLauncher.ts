@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
@@ -46,15 +47,33 @@ export interface LauncherInstallation {
   launcherAliases?: string[]
 }
 function installationPath(launcher: string): string { return `${launcher}.installation.json` }
-export function readLauncherInstallation(launcher: string): LauncherInstallation | undefined {
+function registrationPath(launcher: string): string { return `${launcher}.registration.json` }
+function readInstallationRecord(path: string): LauncherInstallation | undefined {
   try {
-    const value = JSON.parse(readFileSync(installationPath(launcher), 'utf8')) as LauncherInstallation
-    if (value.version === 1 && Array.isArray(value.executables)
+    const value = JSON.parse(readFileSync(path, 'utf8')) as LauncherInstallation
+    if (value?.version === 1 && Array.isArray(value.executables)
       && value.executables.every((entry) => typeof entry?.path === 'string' && typeof entry.realpath === 'string')
       && (value.launcherAliases === undefined || Array.isArray(value.launcherAliases)
         && value.launcherAliases.every((alias) => typeof alias === 'string' && isAbsolute(alias)))) return value
-  } catch { /* Legacy installations have no installation record. */ }
+  } catch (error) {
+    if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   return undefined
+}
+function mergeInstallations(current: LauncherInstallation | undefined, added: LauncherInstallation): LauncherInstallation {
+  const executables = [...(current?.executables ?? [])]
+  for (const executable of added.executables) {
+    if (!executables.some((entry) => entry.path === executable.path && entry.realpath === executable.realpath)) {
+      executables.push(executable)
+    }
+  }
+  const launcherAliases = [...new Set([...(current?.launcherAliases ?? []), ...(added.launcherAliases ?? [])])]
+  return { version: 1, executables, ...(launcherAliases.length ? { launcherAliases } : {}) }
+}
+export function readLauncherInstallation(launcher: string): LauncherInstallation | undefined {
+  const installation = readInstallationRecord(installationPath(launcher))
+  const registration = readInstallationRecord(registrationPath(launcher))
+  return registration ? mergeInstallations(installation, registration) : installation
 }
 /** Only exact installed commands or the current runtime can identify an app launcher.
  * Legacy entries can match the current runtime (including canonical aliases); an
@@ -102,22 +121,66 @@ export async function installAppLauncher(): Promise<void> {
 }
 export async function installManagedLauncher(sourceUrl: URL, destination: string): Promise<void> {
   const source = await readFile(sourceUrl, 'utf8')
-  await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
-  const temporary = `${destination}.${randomUUID()}.tmp`
-  try { await writeFile(temporary, source, { mode: 0o600, flag: 'wx' }); await rename(temporary, destination) }
-  finally { await rm(temporary, { force: true }) }
-  const installation = readLauncherInstallation(destination)
-  const executables = (installation?.executables ?? []).filter((entry) => entry.path !== process.execPath)
-  executables.push({ path: process.execPath, realpath: realpathSync(process.execPath) })
-  await writeLauncherInstallation(destination, { ...installation, version: 1, executables })
+  await withLauncherLock(destination, async () => {
+    const temporary = `${destination}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, source, { mode: 0o600, flag: 'wx' })
+      await rename(temporary, destination)
+    } finally {
+      await rm(temporary, { force: true })
+    }
+    await saveLauncherInstallation(destination, {
+      version: 1,
+      executables: [{ path: process.execPath, realpath: realpathSync(process.execPath) }],
+    })
+  })
 }
 export async function writeLauncherInstallation(destination: string, installation: LauncherInstallation): Promise<void> {
-  const metadata = installationPath(destination)
+  await withLauncherLock(destination, () => saveLauncherInstallation(destination, installation))
+}
+async function withLauncherLock<T>(destination: string, action: () => Promise<T>): Promise<T> {
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+  const directory = await open(dirname(destination), 'r')
+  try {
+    // Directory aliases share the same inode; the kernel releases the lock on process exit.
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('/usr/bin/flock', ['--exclusive', '3'], {
+        stdio: ['ignore', 'ignore', 'ignore', directory.fd],
+      })
+      child.once('error', reject)
+      child.once('close', code => code === 0 ? resolve() : reject(new Error('MCP launcher installation lock failed.')))
+    })
+    return await action()
+  } finally {
+    await directory.close()
+  }
+}
+async function saveLauncherInstallation(destination: string, installation: LauncherInstallation): Promise<void> {
+  const merged = mergeInstallations(readLauncherInstallation(destination), installation)
+  // Older APIs replace installation.json without preserving aliases or concurrent registrations.
+  await writeInstallationRecord(registrationPath(destination), merged)
+  await writeInstallationRecord(installationPath(destination), merged)
+}
+async function writeInstallationRecord(metadata: string, installation: LauncherInstallation): Promise<void> {
   const pending = `${metadata}.${randomUUID()}.tmp`
   try {
-    await writeFile(pending, JSON.stringify(installation), { mode: 0o600, flag: 'wx' })
+    const file = await open(pending, 'wx', 0o600)
+    try {
+      await file.writeFile(JSON.stringify(installation))
+      await file.sync()
+    } finally {
+      await file.close()
+    }
     await rename(pending, metadata)
-  } finally { await rm(pending, { force: true }) }
+    const directory = await open(dirname(metadata), 'r')
+    try {
+      await directory.sync()
+    } finally {
+      await directory.close()
+    }
+  } finally {
+    await rm(pending, { force: true })
+  }
 }
 export async function registerAppRoute(token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath()): Promise<() => Promise<void>> {
   return registerAppRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher)
