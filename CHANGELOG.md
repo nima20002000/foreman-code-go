@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2026-10-05
+
+### Added
+
+- Persistent build request queue with original deadlines, idempotent submission, capacity-aware Auto or fixed placement, and scoped cancellation.
+- Start placement overrides, reserved-computer and cleanup status, complete active-request discovery, and paginated queue history through Jobs, HTTP, and Operator MCP.
+
+### Changed
+
+- Reserve computer and source capacity before preparation, and continue claiming work for available computers while other requests prepare.
+- Require owner-reviewed Main queue configuration with explicit resource envelopes; retain capacity through uncertain execution and pending publication or cleanup.
+
+### Fixed
+
+- Recover queued, preparing, accepted, and unfinished settled Jobs after Main restart without replacing their saved definition or attempt identities.
+- Preserve historical command retries and fixed requests' immutable qualified profile versions after edits.
+- Close undelivered cancelled or disabled attempts through fenced non-entry and positive source closure, and keep pending cleanup visible until it completes.
+- Restore inspected runtime metadata without creating or extending qualification; retain original journal recovery and cancellation when fresh qualification is unavailable or expired.
+
+### Security
+
+- Preserve live workspace and computer grants, saved source and root bindings, revision conflicts, command receipts, and audited HTTP/MCP denials for queue operations and placement overrides.
+- Keep runtime qualification mandatory for new launches and restrict recovery and cleanup to the original owned attempt, releasing capacity only after confirmed closure.
+
 ## [0.0.5] - 2026-10-05
 
 ### Fixed
