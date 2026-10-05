@@ -89,7 +89,9 @@ export class IsolatedOpenCodeFixture extends FixtureServer {
       child.stderr.resume()
     } catch (error) {
       try { await this.closeNamespace() }
-      catch (cleanup) { throw new AggregateError([error, cleanup], 'Fixture startup and owned process cleanup failed.', { cause: error }) }
+      catch (cleanup) {
+        throw new AggregateError([error, cleanup], 'Fixture startup and owned process cleanup failed.', { cause: cleanup })
+      }
       throw error
     }
   }
