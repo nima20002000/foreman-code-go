@@ -18,12 +18,11 @@ create table current_workflow_publications (
 
 -- Ordinary V3 omits repeat. Present repeat retains the original nonempty,
 -- bounded validator; no empty plan, session flag or fake cap-one block is added.
--- Keep immutable historical rows, but remove the old mandatory-repeat constraint.
--- Retired demo records are not converted. Apply after coordinated current-data
--- reset when such records exist; immutable historical evidence files are untouched.
+-- Retained versions keep their original semantics; current publication requires 3.
+-- Remove the mandatory-repeat constraint only for current authored versions.
 alter table workflow_versions drop constraint workflow_versions_execution_semantics_version_check;
 alter table workflow_versions add constraint workflow_versions_execution_semantics_version_check
-  check (execution_semantics_version=3);
+  check (execution_semantics_version in (1,2,3));
 alter table workflow_versions alter column execution_semantics_version set default 3;
 alter table workflow_versions drop constraint repeat_version_record_pin;
 alter table workflow_versions add constraint repeat_version_record_pin check (
