@@ -21,7 +21,8 @@ import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './por
 import type { JobQueueConfiguration } from './ports.js'
 import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
-  JobAdmissionResultSchema, type JobQueueTicket } from '@graphql/contracts/job-admission'
+  JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  type JobQueueTicket } from '@graphql/contracts/job-admission'
 import { JobResourceRequestSchema } from '@graphql/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
@@ -270,12 +271,34 @@ export class JobService {
     return JobAdmissionResultSchema.parse({ kind: 'pending-admission', ticket })
   }
   listQueue(principal: ManagementPrincipal, workspaceId: string, source: 'http' | 'mcp' = 'http') {
+    return this.listQueuePage(principal, workspaceId, {}, source).then(page => page.tickets)
+  }
+  listQueuePage(principal: ManagementPrincipal, workspaceId: string, raw: unknown,
+    source: 'http' | 'mcp' = 'http') {
+    const input = parse(JobQueueListInputSchema, raw)
     return this.read(principal, workspaceId, 'jobs:read', async sql => {
-      const rows = (await sql.query<{ record: unknown }>(`select record from job_admission_queue
-        where workspace_id=$1 order by enqueue_sequence desc limit 100`, [workspaceId])).rows
+      const active = `(q.record->>'state' in ('waiting','blocked','claimed') or
+        (q.record->>'state'='accepted' and exists(select 1 from job_executions e where e.id=q.execution_id
+          and (e.record #>> '{process,phase}'<>'terminal'
+            or e.record #> '{process,processStopped}'<>'true'::jsonb
+            or e.record->>'publication' in ('pending','collecting')
+            or exists(select 1 from source_execution_materializations m
+              where m.operation_id=e.operation_id and m.state<>'closed')
+            or exists(select 1 from job_computer_selections s
+              where s.execution_id=e.id and s.released_at is null)))))`
+      const rows = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
+        where q.workspace_id=$1 and ${active} order by q.enqueue_sequence`, [workspaceId])).rows
+      const history = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
+        where q.workspace_id=$1 and not ${active}
+          and ($2::bigint is null or q.enqueue_sequence<$2::bigint)
+        order by q.enqueue_sequence desc limit $3`,
+      [workspaceId, input.historyBeforeSequence ?? null, input.historyLimit + 1])).rows
+      const hasMore = history.length > input.historyLimit
+      const historyTickets = history.slice(0, input.historyLimit).map(row => JobQueueTicketSchema.parse(row.record))
       const tickets: JobQueueTicket[] = []
       for (const row of rows) tickets.push(await this.repository.queuePosition(sql, JobQueueTicketSchema.parse(row.record)))
-      return tickets
+      return JobQueuePageSchema.parse({ tickets: [...tickets, ...historyTickets],
+        nextHistoryCursor: hasMore ? historyTickets.at(-1)!.enqueueSequence : null })
     }, source)
   }
   async cancelQueued(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {

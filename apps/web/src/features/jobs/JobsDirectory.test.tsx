@@ -27,7 +27,7 @@ it('retains a valid long job name and every command argument through keyboard na
   const open = vi.fn()
   server.use(http.get(`${root}/definitions`, () => HttpResponse.json({ definitions: [saved] })),
     http.get(`${root}/executions`, () => HttpResponse.json({ executions: [execution] })),
-    http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [] })))
+    http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [], nextHistoryCursor: null })))
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <JobsDirectory workspaceId={definition.workspaceId} onSelectExecution={open} />
   </QueryClientProvider>)
@@ -52,7 +52,7 @@ it('retains a valid long job name and every command argument through keyboard na
 })
 
 it('shows scoped Auto waiting and the original deadline with an unknown start estimate', async () => {
-  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [autoQueueTicket] })))
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [autoQueueTicket], nextHistoryCursor: null })))
   renderDirectory()
   const queue = screen.getByRole('region', { name: 'Job queue' })
   expect(await within(queue).findByText('Waiting for an eligible computer')).toBeInTheDocument()
@@ -66,6 +66,27 @@ it('shows scoped Auto waiting and the original deadline with an unknown start es
     .toBeInTheDocument()
 })
 
+it('loads older requests while retaining one visible active request and its cancel action', async () => {
+  const recent = { ...queueTicket, id: '22222222-2222-4222-8222-222222222222', state: 'terminal',
+    terminalReason: 'cancelled', cancelRequestedAt: queueTicket.enqueuedAt, finishedAt: queueTicket.enqueuedAt,
+    definition: { ...queueTicket.definition, name: 'Recent request' }, enqueueSequence: '200' }
+  const older = { ...recent, id: '33333333-3333-4333-8333-333333333333',
+    definition: { ...queueTicket.definition, name: 'Older request' }, enqueueSequence: '199' }
+  server.use(http.get(`${root}/queue`, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('historyBeforeSequence')
+    return HttpResponse.json({ tickets: [autoQueueTicket, cursor ? older : recent],
+      nextHistoryCursor: cursor ? null : '200' })
+  }))
+  renderDirectory()
+  const queue = screen.getByRole('region', { name: 'Job queue' })
+  await within(queue).findByText('Recent request')
+  await userEvent.click(within(queue).getByRole('button', { name: 'Load older requests' }))
+  await within(queue).findByText('Older request')
+  expect(within(queue).getAllByText('Waiting for an eligible computer')).toHaveLength(1)
+  expect(within(queue).getByRole('button', { name: `Cancel queued ${autoDefinition.name}` })).toBeEnabled()
+  expect(within(queue).queryByRole('button', { name: 'Load older requests' })).not.toBeInTheDocument()
+})
+
 it('shows claimed, blocked fixed and cancelled requests while accepted requests open their original execution', async () => {
   const claimed = { ...autoQueueTicket, state: 'claimed', reservationId: queueTicket.id }
   const blocked = { ...queueTicket, id: '22222222-2222-4222-8222-222222222222', state: 'blocked',
@@ -74,7 +95,7 @@ it('shows claimed, blocked fixed and cancelled requests while accepted requests 
     terminalReason: 'cancelled', cancelRequestedAt: queueTicket.enqueuedAt, finishedAt: queueTicket.enqueuedAt }
   const admitted = { ...queueTicket, id: '44444444-4444-4444-8444-444444444444', state: 'accepted',
     reservationId: queueTicket.id }
-  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [claimed, blocked, cancelled, admitted] })))
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [claimed, blocked, cancelled, admitted], nextHistoryCursor: null })))
   const open = vi.fn()
   renderDirectory({ onSelectExecution: open })
   const queue = screen.getByRole('region', { name: 'Job queue' })
@@ -90,7 +111,7 @@ it('shows claimed, blocked fixed and cancelled requests while accepted requests 
 it('submits queued cancellation with its current revision and renders the returned terminal request', async () => {
   let current = queueTicket
   let received: unknown
-  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [current] })),
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [current], nextHistoryCursor: null })),
     http.post(`${root}/queue/:ticketId/cancel`, async ({ request, params }) => {
       expect(params.ticketId).toBe(queueTicket.id)
       received = await request.json()
@@ -108,7 +129,7 @@ it('submits queued cancellation with its current revision and renders the return
 it('retries an uncertain cancellation with the same command and revision even after a denied retry', async () => {
   let current = queueTicket
   const bodies: unknown[] = []
-  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [current] })),
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [current], nextHistoryCursor: null })),
     http.post(`${root}/queue/:ticketId/cancel`, async ({ request }) => {
       bodies.push(await request.json())
       if (bodies.length === 1) return HttpResponse.error()
@@ -129,7 +150,7 @@ it('retries an uncertain cancellation with the same command and revision even af
 })
 
 it('hides cached queue tickets after read permission is lost', async () => {
-  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [autoQueueTicket] })))
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [autoQueueTicket], nextHistoryCursor: null })))
   const cache = renderDirectory()
   const queue = screen.getByRole('region', { name: 'Job queue' })
   await within(queue).findByText('Waiting for an eligible computer')

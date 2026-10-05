@@ -150,6 +150,16 @@ export const JobQueueCancelSchema = z.object({
   commandId: IdSchema, ticketId: z.uuid(), expectedRevision: PositiveInteger,
 }).strict()
 
+export const JobQueueListInputSchema = z.object({
+  historyBeforeSequence: z.string().regex(/^[1-9][0-9]*$/).max(19)
+    .refine(value => BigInt(value) <= 9223372036854775807n).optional(),
+  historyLimit: z.number().int().min(1).max(100).default(100),
+}).strict()
+export const JobQueuePageSchema = z.object({
+  tickets: z.array(JobQueueTicketSchema),
+  nextHistoryCursor: JobQueueListInputSchema.shape.historyBeforeSequence.unwrap().nullable(),
+}).strict()
+
 export const JobResourceReservationSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.uuid(), ticketId: z.uuid(), workspaceId: IdSchema,

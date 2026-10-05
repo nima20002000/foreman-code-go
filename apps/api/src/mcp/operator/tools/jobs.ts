@@ -2,7 +2,7 @@ import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellati
   JobCancellationRecoveryReadSchema } from '@graphql/contracts/job-cancellation-recovery'
 import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
-  JobQueueTicketSchema } from '@graphql/contracts/job-admission'
+  JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema } from '@graphql/contracts/job-admission'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobValidationSchema } from '@graphql/contracts/jobs'
@@ -87,12 +87,14 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     ticket: await service.getQueueTicket(context.principal, input.workspaceId, input.ticketId, 'mcp'),
   })))
   if (jobToolAvailable(context, 'job_queue_list')) server.registerTool('job_queue_list', {
-    description: 'Read up to 100 newest workspace-scoped standalone build queue tickets, including claimed, accepted and terminal requests. '
-      + 'Queue positions describe this workspace only. Reading never wakes, selects or starts work.',
-    inputSchema: scope, outputSchema: z.object({ tickets: z.array(JobQueueTicketSchema) }), annotations: read,
-  }, input => invoke(context, 'job_queue_list', async () => ({
-    tickets: await service.listQueue(context.principal, input.workspaceId, 'mcp'),
-  })))
+    description: 'Read every active workspace-scoped build request plus a page of completed request history. '
+      + 'Use nextHistoryCursor as historyBeforeSequence to read older history; active requests appear on every page. '
+      + 'historyLimit bounds history only. Queue positions describe this workspace. Reading never starts work.',
+    inputSchema: scope.extend(JobQueueListInputSchema.shape), outputSchema: JobQueuePageSchema, annotations: read,
+  }, input => invoke(context, 'job_queue_list', () => {
+    const { workspaceId, ...page } = input
+    return service.listQueuePage(context.principal, workspaceId, page, 'mcp')
+  }))
   if (jobToolAvailable(context, 'job_queue_cancel')) server.registerTool('job_queue_cancel', {
     description: 'Cancel a standalone build request with its current ticket revision and a retryable commandId. '
       + 'Waiting cancellation persists without contacting a computer. Claimed or accepted cancellation keeps the original attempt and retains capacity until confirmed closure. '

@@ -44,7 +44,7 @@ describe('job client identity and retry boundary', () => {
       .rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
   })
   it('reads scoped queue tickets and rejects a foreign workspace or ticket identity', async () => {
-    server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [queueTicket] })),
+    server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [queueTicket], nextHistoryCursor: null })),
       http.get(`${root}/queue/:id`, () => HttpResponse.json({ ticket: queueTicket })))
     expect(await jobsClient.queue(definition.workspaceId)).toEqual([queueTicket])
     expect(await jobsClient.queueTicket(definition.workspaceId, queueTicket.id)).toEqual(queueTicket)

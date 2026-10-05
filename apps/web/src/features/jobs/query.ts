@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { jobsClient } from './client'
 import { jobAccessLost, jobReadRetry, loadedChunks } from './model'
+import type { JobQueueTicket } from '@graphql/contracts/job-admission'
 
 export const jobKeys = {
   definitions: (workspaceId: string) => ['jobs', workspaceId, 'definitions'] as const,
@@ -20,10 +21,20 @@ export function useJobHistory(workspaceId: string) {
   return { ...query, data: query.isError ? undefined : query.data }
 }
 export function useJobQueue(workspaceId: string) {
-  const query = useQuery({ queryKey: jobKeys.queue(workspaceId),
-    queryFn: ({ signal }) => jobsClient.queue(workspaceId, { signal }), retry: jobReadRetry,
+  const query = useInfiniteQuery({ queryKey: jobKeys.queue(workspaceId), initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) => jobsClient.queuePage(workspaceId,
+      { historyBeforeSequence: pageParam }, { signal }),
+    getNextPageParam: page => page.nextHistoryCursor ?? undefined, retry: jobReadRetry,
     refetchInterval: query => jobAccessLost(query.state.error) ? false : 3000 })
-  return { ...query, data: query.isError ? undefined : query.data }
+  const tickets = new Map<string, JobQueueTicket>()
+  for (const page of query.data?.pages ?? []) {
+    for (const ticket of page.tickets) {
+      const previous = tickets.get(ticket.id)
+      if (!previous || previous.revision < ticket.revision) tickets.set(ticket.id, ticket)
+    }
+  }
+  const unavailable = jobAccessLost(query.error) || query.isError && !query.isFetchNextPageError
+  return { ...query, data: unavailable || !query.data ? undefined : [...tickets.values()] }
 }
 export function useJobQueueTicket(workspaceId: string, id: string) {
   const query = useQuery({ queryKey: jobKeys.queueTicket(workspaceId, id), enabled: Boolean(id),

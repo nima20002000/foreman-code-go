@@ -24,13 +24,17 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
       <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {isAutoJobSpec(definition.spec) ? 'Auto' : definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
     </section>
     <section aria-label="Job queue"><h2>Job queue</h2>
-      <p>Up to 100 recent requests in this workspace.</p>
+      <p>All active requests and recent completed requests in this workspace.</p>
       <p>Workflow-node queuing, Start placement overrides and start estimates are unavailable.</p>
       {queue.isError && <Alert title="Queue unavailable" tone="danger">{jobError(queue.error)}</Alert>}
       {queue.isPending && <p role="status">Loading queue…</p>}
       {queue.data?.length === 0 && <p>No queued requests.</p>}
       <div className="jobs-list">{queue.data?.map(ticket => <JobQueueRow key={ticket.id}
         ticket={ticket} onSelectExecution={onSelectExecution} />)}</div>
+      {queue.hasNextPage && !jobAccessLost(queue.error) && <Button disabled={queue.isFetchingNextPage}
+        onClick={() => { void queue.fetchNextPage() }}>
+        {queue.isFetchingNextPage ? 'Loading older requests…' : 'Load older requests'}
+      </Button>}
     </section>
     <section aria-label="Execution history"><h2>Execution history</h2>{Boolean(history.error) && <Alert title="History unavailable" tone="danger">{jobError(history.error)}</Alert>}{history.isPending && <p role="status">Loading execution history…</p>}
       {history.data?.length === 0 && <p>No executions yet. Use “Review and start” on a saved job.</p>}

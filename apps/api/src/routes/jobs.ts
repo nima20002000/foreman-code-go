@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { JobDefinitionSaveSchema, JobDefinitionSpecSchema } from '@graphql/contracts/jobs'
-import { JobQueuedStartSchema, JobQueueCancelSchema } from '@graphql/contracts/job-admission'
+import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema } from '@graphql/contracts/job-admission'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
 import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@graphql/contracts/job-cancellation-recovery'
@@ -22,9 +22,12 @@ export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
     admission: await service.enqueue(requirePrincipal(request), 'http', request.params.workspaceId,
       JobQueuedStartSchema.parse(request.body)),
   }))
-  app.get<{Params:Scope}>(`${root}/queue`, async request => ({
-    tickets: await service.listQueue(requirePrincipal(request), request.params.workspaceId),
-  }))
+  app.get<{Params:Scope;Querystring:Record<string,string>}>(`${root}/queue`, request => {
+    const query = { ...request.query }
+    const input = JobQueueListInputSchema.parse({ ...query,
+      ...(query.historyLimit === undefined ? {} : { historyLimit: Number(query.historyLimit) }) })
+    return service.listQueuePage(requirePrincipal(request), request.params.workspaceId, input)
+  })
   app.get<{Params:Scope}>(`${root}/queue/:ticketId`, async request => ({
     ticket: await service.getQueueTicket(requirePrincipal(request), request.params.workspaceId,
       z.uuid().parse(request.params.ticketId)),

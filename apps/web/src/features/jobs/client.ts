@@ -2,7 +2,8 @@ import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference
 import { z } from 'zod'
 import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec } from '@graphql/contracts/jobs'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
-  JobQueueTicketSchema } from '@graphql/contracts/job-admission'
+  JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  type JobQueueTicket } from '@graphql/contracts/job-admission'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
 const root = (workspaceId: string) => `/api/management/workspaces/${encodeURIComponent(workspaceId)}/jobs`
@@ -53,11 +54,17 @@ export const jobsClient = {
       || admission.execution.acceptedSpec.definitionRevision !== input.expectedRevision)) mismatch()
     return admission
   },
-  async queue(workspaceId: string, options?: RequestOptions) {
-    const { tickets } = await apiClient.request(`${root(workspaceId)}/queue`,
-      z.object({ tickets: z.array(JobQueueTicketSchema) }), options)
-    if (tickets.some(ticket => ticket.workspaceId !== workspaceId)) mismatch()
-    return tickets
+  async queue(workspaceId: string, options?: RequestOptions): Promise<JobQueueTicket[]> {
+    return (await jobsClient.queuePage(workspaceId, {}, options)).tickets
+  },
+  async queuePage(workspaceId: string, pageInput: z.input<typeof JobQueueListInputSchema> = {},
+    options?: RequestOptions): Promise<z.infer<typeof JobQueuePageSchema>> {
+    const input = JobQueueListInputSchema.parse(pageInput)
+    const query = new URLSearchParams({ historyLimit: String(input.historyLimit) })
+    if (input.historyBeforeSequence) query.set('historyBeforeSequence', input.historyBeforeSequence)
+    const page = await apiClient.request(`${root(workspaceId)}/queue?${query}`, JobQueuePageSchema, options)
+    if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId)) mismatch()
+    return page
   },
   async queueTicket(workspaceId: string, id: string, options?: RequestOptions) {
     const { ticket } = await apiClient.request(queuePath(workspaceId, id),
