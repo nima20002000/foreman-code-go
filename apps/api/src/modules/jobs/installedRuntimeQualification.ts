@@ -348,7 +348,11 @@ export async function releaseQualificationQuotaClaims(journal: RemoteOperationJo
     if (!slot) throw new Error('Original qualification quota namespace changed.')
     const file = await open(claim.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       .catch(error => { if (error.code === 'ENOENT') return null; throw error })
-    if (!file) continue
+    if (!file) {
+      const directory = await open(dirname(claim.path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      try { await directory.sync() } finally { await directory.close() }
+      continue
+    }
     try {
       const metadata = await file.stat()
       const identity = JSON.parse(await file.readFile('utf8'))
@@ -357,7 +361,11 @@ export async function releaseQualificationQuotaClaims(journal: RemoteOperationJo
         throw new Error('Original qualification quota claim changed.')
       }
       await rm(claim.namespace, { recursive: true, force: true })
+      const slotDirectory = await open(dirname(claim.namespace), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      try { await slotDirectory.sync() } finally { await slotDirectory.close() }
       await rm(claim.path)
+      const rootDirectory = await open(dirname(claim.path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      try { await rootDirectory.sync() } finally { await rootDirectory.close() }
     } finally { await file.close() }
   }
   if (receipt.quotaClaims.length) await journal.qualificationReleaseQuotaClaims(operationId)
