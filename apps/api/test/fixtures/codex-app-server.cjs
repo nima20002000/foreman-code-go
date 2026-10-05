@@ -8,7 +8,12 @@ const root = __dirname
 const read = (name, fallback) => {
   try { return JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')) } catch { return fallback }
 }
-const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value))
+const save = (name, value) => {
+  const destination = path.join(root, name)
+  const temporary = `${destination}.${process.pid}.tmp`
+  fs.writeFileSync(temporary, JSON.stringify(value))
+  fs.renameSync(temporary, destination)
+}
 const flag = (name) => fs.existsSync(path.join(root, name))
 const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify(value) + '\n')
 const args = process.argv.slice(2)

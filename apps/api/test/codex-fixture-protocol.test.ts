@@ -30,6 +30,34 @@ describe('Codex fixtures use the pinned protocol validator', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Codex executable fixture protocol', () => {
+  it('publishes complete persisted snapshots while a thread receives repeated input', async () => {
+    const f = await fixture()
+    const transport = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, fixtureProtocol,
+      async () => undefined, () => undefined, () => undefined,
+    )
+    try {
+      await transport.start()
+      const thread = await codexRequest(transport, 'thread/start', { cwd: f.directory })
+      const turn = await codexRequest(transport, 'turn/start', { threadId: thread.thread.id,
+        input: [{ type: 'text', text: 'wait', text_elements: [] }], clientUserMessageId: 'initial-input' })
+      for (let index = 0; index < 8; index += 1) {
+        const sending = codexRequest(transport, 'turn/steer', { threadId: thread.thread.id,
+          expectedTurnId: turn.turn.id, clientUserMessageId: `input-${index}`,
+          input: [{ type: 'text', text: 'x'.repeat(16_384), text_elements: [] }] })
+        await state(f.directory, thread.thread.id)
+        await sending
+        const snapshot = await state(f.directory, thread.thread.id)
+        assert.equal(snapshot.id, thread.thread.id)
+        assert.equal(snapshot.turns[0]!.id, turn.turn.id)
+        assert.equal(snapshot.turns[0]!.status, 'inProgress')
+        assert.equal((snapshot.turns[0]!.items as JsonObject[]).length, index + 2)
+      }
+    } finally {
+      await transport.close()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
   it('targets each thread independently and paginates its items while preserving resume settings', async () => {
     const f = await fixture()
     const notifications: Array<{ method: string; params: JsonObject }> = []
