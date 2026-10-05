@@ -103,6 +103,7 @@ describe('disposable test resources', () => {
         OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
         GRAPHQL_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log', WORKSPACE_STORAGE_ROOT: '/real/projects',
         GRAPHQL_APP_MCP_DIRECTORY: '/real/mcp', GRAPHQL_WEB_DIST: '/real/web',
+        GRAPHQL_PRODUCTION_DB_PASSWORD: 'real-production-password',
         GRAPHQL_API_ENV_FILE: '/real/api.env',
         GRAPHQL_TEST_CODEX_AUTH_FILE: auth, GRAPHQL_TEST_OPENAI_API_KEY: 'test-key',
         GRAPHQL_TEST_OPENCODE_AUTH_FILE: opencodeAuth, GRAPHQL_TEST_OPENCODE_API_KEY: 'test-opencode-key' },
@@ -117,6 +118,7 @@ describe('disposable test resources', () => {
       expect(environment.GRAPHQL_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
       expect(environment.GRAPHQL_WEB_DIST).toBeUndefined()
+      expect(environment.GRAPHQL_PRODUCTION_DB_PASSWORD).toBeUndefined()
       expect(await readFile(environment.GRAPHQL_API_ENV_FILE!, 'utf8')).toBe('')
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)

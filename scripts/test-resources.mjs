@@ -112,7 +112,7 @@ export function testEnvironment(environment, resource) {
   for (const key of Object.keys(clean)) {
     if (/^PG/.test(key) || (!key.startsWith('GRAPHQL_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
       || ['GRAPHQL_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE',
-        'GRAPHQL_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
+        'GRAPHQL_PRODUCTION_DB_PASSWORD', 'GRAPHQL_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
   }
   for (const key of new Set([...databaseVariables, ...Object.keys(clean).filter(key => key.endsWith('DATABASE_URL'))])) {
     clean[key] = resource.databaseUrl
