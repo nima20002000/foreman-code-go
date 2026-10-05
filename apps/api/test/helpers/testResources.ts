@@ -9,23 +9,23 @@ import { createRuntimeIdentity, testResourcesIdentity } from '@graphql/contracts
 import { assertTestDatabase, ownedTestDatabaseUrl, ownedTestPath } from '../../../../scripts/test-resources.mjs'
 
 /** Prepared native acceptance binds the API's effective storage and database to this invocation. */
-export async function assertOwnedTestApi(origin: URL, pool: pg.Pool): Promise<void> {
+export async function assertOwnedTestApi(origin: URL, pool: pg.Pool, environment = process.env): Promise<void> {
   if (origin.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
     || origin.username || origin.password || origin.search || origin.hash) {
     throw new Error('Native acceptance requires a loopback test API')
   }
-  const databaseUrl = ownedTestDatabaseUrl()
-  await assertTestDatabase(pool, { directory: process.env.GRAPHQL_TEST_ROOT!, token: process.env.GRAPHQL_TEST_OWNER!,
+  const databaseUrl = ownedTestDatabaseUrl('TEST_DATABASE_URL', environment)
+  await assertTestDatabase(pool, { directory: environment.GRAPHQL_TEST_ROOT!, token: environment.GRAPHQL_TEST_OWNER!,
     name: new URL(databaseUrl).pathname.slice(1), databaseUrl })
   const result = await pool.query<{ id: string }>('select id from application_installation where singleton=true')
-  const expected = createRuntimeIdentity(process.env.GRAPHQL_TEST_ROOT!, databaseUrl, result.rows[0]?.id ?? '')
+  const expected = createRuntimeIdentity(environment.GRAPHQL_TEST_ROOT!, databaseUrl, result.rows[0]?.id ?? '')
   const response = await fetch(new URL('/health/identity', origin), { redirect: 'error', signal: AbortSignal.timeout(10_000) })
   if (!response.ok) throw new Error('Test API identity is unavailable')
   const identity = RuntimeIdentitySchema.parse(await response.json())
   if (identity.databaseId !== expected.databaseId || identity.installationId !== expected.installationId) {
     throw new Error('Native acceptance API does not own the disposable test database')
   }
-  const resourcesId = testResourcesIdentity(process.env.GRAPHQL_TEST_ROOT!, process.env.GRAPHQL_TEST_OWNER!)
+  const resourcesId = testResourcesIdentity(environment.GRAPHQL_TEST_ROOT!, environment.GRAPHQL_TEST_OWNER!)
   if (identity.testResourcesId !== resourcesId) {
     throw new Error('Native acceptance API storage and harness homes do not belong to this invocation')
   }

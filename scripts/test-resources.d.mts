@@ -22,7 +22,7 @@ export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise
 export function createTestDatabase(admin: Sql, resource: TestRoot): Promise<TestDatabase>
 export function assertTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>
 export function dropTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>
-export function ownedTestDatabaseUrl(variable?: string): string
+export function ownedTestDatabaseUrl(variable?: string, environment?: NodeJS.ProcessEnv): string
 export function createFixtureDatabase(sql: Sql, name: string, options?: string): Promise<void>
 export function dropFixtureDatabase(sql: Sql, name: string): Promise<void>
 export function createFixtureSchema(sql: Sql, name: string): Promise<void>

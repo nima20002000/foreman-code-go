@@ -210,13 +210,13 @@ export async function provisionTestResources(environment = process.env) {
   }
 }
 
-export function ownedTestDatabaseUrl(variable = 'TEST_DATABASE_URL') {
-  const directory = process.env.GRAPHQL_TEST_ROOT
-  const token = process.env.GRAPHQL_TEST_OWNER
+export function ownedTestDatabaseUrl(variable = 'TEST_DATABASE_URL', environment = process.env) {
+  const directory = environment.GRAPHQL_TEST_ROOT
+  const token = environment.GRAPHQL_TEST_OWNER
   assertTestRoot(directory, token)
-  const value = process.env[variable]
+  const value = environment[variable]
   requireTestServerUrl(value)
-  if (value !== process.env.TEST_DATABASE_URL) throw new Error('Test database selector does not match its owned database')
+  if (value !== environment.TEST_DATABASE_URL) throw new Error('Test database selector does not match its owned database')
   return value
 }
 

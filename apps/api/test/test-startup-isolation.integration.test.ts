@@ -78,7 +78,11 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
   try {
     await ready(child, port)
     const pool = new pg.Pool({ connectionString: environment.TEST_DATABASE_URL, max: 1 })
-    try { await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool) }
+    try {
+      const origin = new URL(`http://127.0.0.1:${port}`)
+      await expect(assertOwnedTestApi(origin, pool)).rejects.toThrow('does not own the disposable test database')
+      await assertOwnedTestApi(origin, pool, environment)
+    }
     finally { await pool.end() }
     await delay(50)
     expect(JSON.parse(await readFile(observation, 'utf8'))).toEqual({ ambientKey: false, logFile: null })
@@ -109,7 +113,8 @@ it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
     let restarted: ChildProcess | undefined
     try {
       await ready(child, port)
-      await expect(assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool)).rejects.toThrow('identity is unavailable')
+      await expect(assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment))
+        .rejects.toThrow('identity is unavailable')
       expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
       expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
       await stopGroup(child.pid, { signal: 'SIGTERM' })
@@ -120,7 +125,7 @@ it.each(['CODEX_HOME', 'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT'])(
       restarted.stdout?.resume()
       restarted.stderr?.resume()
       await ready(restarted, port)
-      await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool)
+      await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment)
     } finally {
       await stopGroup(restarted?.pid, { signal: 'SIGTERM' })
       await stopGroup(child.pid, { signal: 'SIGTERM' })
