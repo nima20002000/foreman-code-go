@@ -15,7 +15,6 @@ import { createClaudeSdkRunner } from '../harnesses/claudeSdk/runner.js'
 import { loadOfficialClaudeSdk } from '../harnesses/claudeSdk/official.js'
 import { allocateClaudeNativeHarness } from '../harnesses/claudeSdk/composition.js'
 import { claudeProductionMcpInspector } from '../harnesses/claudeSdk/productionMcpInspector.js'
-import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../harnesses/appMcpLauncher.js'
 import type { NativeProcessRegistry, NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
@@ -77,7 +76,6 @@ export async function allocateInstalledWorkerClaude(input: {
   const authority = createWorkerClaudeAuthority({ configuration: compiled.configuration,
     version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
     request: input.callbacks.claudeAuthority })
-  let manager: ClaudeNativeSessionManager
   let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
   let token: string | undefined
   let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
@@ -129,7 +127,7 @@ export async function allocateInstalledWorkerClaude(input: {
     ownerForStart: source => ({ ownerId: binding.owner.conversationId, attemptId: source.correlationId ?? owner,
       generation: recovery.launchId ?? owner }),
   })
-  manager = allocation.manager
+  const manager = allocation.manager
   authority.bind(manager)
   const inspect = claudeProductionMcpInspector({ manager: () => manager, start: inspectionStart,
     workingDirectory: binding.workingDirectory, cliVersion: original.accepted.currentBinding.pin.cliVersion })

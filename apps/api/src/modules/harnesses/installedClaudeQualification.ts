@@ -16,6 +16,7 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import type { HostHarnessProfileQualifier } from './instanceSettings/profileChecks.js'
 import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
+import { runOwnedClaudeOperation } from './claudeSdk/ownedOperation.js'
 
 export function createInstalledClaudeQualifier(input: {
   stateDirectory: string
@@ -56,7 +57,7 @@ export function createInstalledClaudeQualifier(input: {
     const resolver = createClaudeCurrentPinResolver({ sdk: original.sdk, ownedVersionProbe: async observation => {
       await assertCurrent()
       const recovery = input.registry.reserveLaunch(`claude-profile-version:${request.checkId}`)
-      try {
+      return runOwnedClaudeOperation(async () => {
         const environment: NodeJS.ProcessEnv = { PATH: original.installation.launcher.environment.path }
         const result = await runCommand(observation.launcher, ['--version'], input.stateDirectory,
           signal, environment, { recovery, maxOutputBytes: 16_384 })
@@ -65,11 +66,11 @@ export function createInstalledClaudeQualifier(input: {
         if (result.exitCode !== 0 || !version) throw new DomainError(
           'CLAUDE_VERSION_UNAVAILABLE', 'The owned CLI inspection returned no Claude version.', 409)
         return { ...observation, version, positiveProcessClosure: true }
-      } finally {
+      }, async () => {
         await input.registry.abandonReservedLaunch(recovery)
         if (!await input.registry.closeOwner(recovery.owner)) throw new DomainError(
           'CLAUDE_PROCESS_CLOSURE_PENDING', 'Claude version inspection has not stopped.', 409)
-      }
+      })
     } })
     const current = await resolver({ hostGeneration: original.installation.connectionGeneration,
       harnessInstallationId: original.installation.harnessInstallationId,
@@ -89,14 +90,14 @@ export function createInstalledClaudeQualifier(input: {
       connectionGeneration: original.installation.connectionGeneration,
       environmentGeneration: original.installation.environmentGeneration })
     const recovery = input.registry.reserveLaunch(`claude-profile-check:${request.checkId}`)
-    try {
+    return runOwnedClaudeOperation(async () => {
       return await qualifyClaudeNativeProfile({ value, checkId: request.checkId, binding, pin: current.pin,
         directory: join(input.stateDirectory, 'claude-native-qualification'), recovery, signal, assertCurrent })
-    } finally {
+    }, async () => {
       await input.registry.abandonReservedLaunch(recovery)
       if (!await input.registry.closeOwner(recovery.owner)) throw new DomainError(
         'CLAUDE_PROCESS_CLOSURE_PENDING', 'Claude profile qualification has not stopped.', 409)
-    }
+    })
   }
   return {
     qualify(value, request) {
