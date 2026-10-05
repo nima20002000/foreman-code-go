@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { subagentCapabilities } from '@foreman-code/contracts/subagents'
+import { subagentCapabilities, RunSubagentInputSchema, RunSubagentInterruptSchema } from '@foreman-code/contracts/subagents'
 import { CODEX_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { SubagentPanel } from './SubagentPanel'
@@ -60,8 +60,15 @@ describe('Subagent panel', () => {
   })
 
   it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('sends input and interruption for qualified %s children', async nativeMode => {
-    const input = vi.fn(() => HttpResponse.json(receipt()))
-    const interrupt = vi.fn(() => HttpResponse.json(receipt({ operation: 'run_subagent_interrupt_v1' })))
+    const input = vi.fn(async ({ request }: { request: Request }) => {
+      const submitted = RunSubagentInputSchema.parse(await request.json())
+      return HttpResponse.json(receipt({ commandId: submitted.commandId, expectedRevision: submitted.expectedRevision }))
+    })
+    const interrupt = vi.fn(async ({ request }: { request: Request }) => {
+      const submitted = RunSubagentInterruptSchema.parse(await request.json())
+      return HttpResponse.json(receipt({ commandId: submitted.commandId, expectedRevision: submitted.expectedRevision,
+        operation: 'run_subagent_interrupt_v1' }))
+    })
     const capabilities = subagentCapabilities(nativeMode, '0.154.0')
     capabilities.sendInput = { support: 'supported', qualification: 'passed' }
     capabilities.interrupt = { support: 'supported', qualification: 'passed' }
@@ -107,7 +114,7 @@ describe('Subagent panel', () => {
     neither.availableActions.interrupt = false
     server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(neither)))
     mount()
-    await screen.findByText("View only — OpenCode subagents can't be messaged or interrupted from here.")
+    await screen.findByText('Controls are unavailable for this subagent right now.')
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
   })
@@ -152,6 +159,27 @@ describe('Subagent panel', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await screen.findByText('Message delivered to the subagent.')
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toEqual(bodies[0])
+  })
+  it('keeps a mismatched command receipt unconfirmed and rechecks the original request', async () => {
+    const bodies: unknown[] = []
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(qualified())),
+      http.post(`${base}/:subagentId/input`, async ({ request }) => {
+        const body = RunSubagentInputSchema.parse(await request.json())
+        bodies.push(body)
+        return HttpResponse.json(receipt({ expectedRevision: body.expectedRevision,
+          commandId: bodies.length === 1 ? 'another-command' : body.commandId }))
+      }))
+    mount()
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Message to subagent' }),
+      { target: { value: 'One owned request' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't confirm delivery.")
+    expect(screen.queryByText('Message delivered to the subagent.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('Message delivered to the subagent.')).toBeVisible()
     expect(bodies).toHaveLength(2)
     expect(bodies[1]).toEqual(bodies[0])
   })
