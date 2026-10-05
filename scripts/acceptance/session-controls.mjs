@@ -94,6 +94,60 @@ async function restart(row) {
   }
   throw new Error('Application did not recover after restart.')
 }
+async function nativeCheckpoint(row, command, requestId, phase) {
+  assert.ok(command?.command && Array.isArray(command.args), 'Supply the actual native owner checkpoint command.')
+  const result = await promisify(execFile)(command.command, [...command.args, JSON.stringify({
+    phase, requestId, conversationId: row.conversationId, nativeHost: row.nativeHost, nativeProfile: row.nativeProfile,
+  })], { cwd: command.cwd, timeout: 180000, maxBuffer: 1024 * 1024 })
+  const observed = JSON.parse(result.stdout)
+  assert.equal(observed.requestId, requestId)
+  assert.equal(observed.nativeHost, row.nativeHost)
+  assert.equal(observed.nativeProfile, row.nativeProfile)
+  return observed
+}
+
+async function restartUnsettled(row, scenario) {
+  const before = await idle(row)
+  const input = { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision }
+  // The checkpoint suspends the actual native owner at its output boundary, using its normal process controls.
+  // It reads the native request journal; it does not substitute provider responses or SDK methods.
+  await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'arm')
+  const lost = new AbortController()
+  const submission = fetch(endpoint(row, '/session-controls'), { method: 'POST', headers: headers(row),
+    body: JSON.stringify(input), signal: lost.signal }).catch(error => {
+    if (!lost.signal.aborted) throw error
+  })
+  const native = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'dispatched')
+  assert.equal(native.dispatchCount, 1)
+  assert.equal(native.nativeSessionId, before.nativeSessionId)
+  assert.equal(native.terminalObserved, false)
+  const admitted = await read(row)
+  assert.equal(admitted.compaction?.requestId, input.requestId)
+  assert.equal(admitted.compaction.dispatchPhase, 'dispatched')
+  assert.ok(['accepted', 'running', 'uncertain'].includes(admitted.compaction.status),
+    'The API must still be unsettled when restart begins.')
+  lost.abort()
+  await submission
+  const restarted = await restart(row)
+  assert.equal(restarted.compaction?.requestId, input.requestId)
+  assert.ok(['accepted', 'running', 'uncertain'].includes(restarted.compaction.status),
+    'The new API must observe the outstanding native request before its result is released.')
+  await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'release')
+  const recovered = await settled(row, input.requestId)
+  assert.equal(recovered.compaction.status, scenario.expectedStatus)
+  assert.equal(recovered.nativeSessionId, before.nativeSessionId)
+  const observed = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
+  assert.equal(observed.dispatchCount, 1, 'Read-only recovery dispatched compaction again.')
+  assert.equal(observed.terminalStatus, scenario.expectedStatus)
+  const replay = await request(endpoint(row, '/session-controls'), row, input)
+  assert.equal(replay.compaction.requestId, input.requestId)
+  assert.equal(replay.compactions.filter(compaction => compaction.requestId === input.requestId).length, 1)
+  const afterReplay = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
+  assert.equal(afterReplay.dispatchCount, 1)
+  await send(row, 'Reply briefly without changing files. This is a follow-up after recovered compaction.')
+  return { requestId: input.requestId, native, recovered: recovered.compaction, observed, afterReplay }
+}
+
 function activities(value) { return value.state?.activities ?? value.activities ?? [] }
 function boundaries(value) { return activities(value).filter(activity => activity.title === 'Context compacted') }
 async function preferences(row, desired) {
@@ -250,27 +304,18 @@ for (const row of matrix.rows) {
       assert.equal(rejected.isError, true)
       assert.equal((await read(row)).desiredMode, 'regular')
     } finally { await denied.close() }
-    for (const content of row.compactionInputs) await send(row, content)
-    const compactInput = { kind: 'compact', requestId: randomUUID(), expectedRevision: (await read(row)).revision }
-    const lost = new AbortController()
-    const submission = fetch(endpoint(row, '/session-controls'), { method: 'POST', headers: headers(row),
-      body: JSON.stringify(compactInput), signal: lost.signal }).catch(error => {
-      if (!lost.signal.aborted) throw error
-    })
-    const deadline = Date.now() + 180000
-    while ((await read(row)).compaction?.requestId !== compactInput.requestId) {
-      assert.ok(Date.now() < deadline, 'The response-loss command was not admitted.')
-      await new Promise(resolve => setTimeout(resolve, 100))
+    assert.ok(Array.isArray(row.restartRecovery) && row.restartRecovery.length,
+      'Supply native output checkpoints for restart during unsettled dispatch.')
+    const expectedOutcomes = row.harness === 'claude' ? ['completed', 'no-op', 'failed'] : ['completed']
+    for (const outcome of expectedOutcomes) {
+      assert.ok(row.restartRecovery.some(scenario => scenario.expectedStatus === outcome),
+        `Missing unsettled ${row.harness} ${outcome} restart case.`)
     }
-    lost.abort()
-    await submission
-    await settled(row, compactInput.requestId)
-    await restart(row)
-    const retry = await request(endpoint(row, '/session-controls'), row, compactInput)
-    assert.equal(retry.compaction.requestId, compactInput.requestId)
-    assert.equal(retry.compaction.status, 'completed')
-    assert.equal(retry.compactions.filter(compaction => compaction.requestId === compactInput.requestId).length, 1)
-    assert.equal(retry.nativeSessionId, before.nativeSessionId)
+    row.recoveryEvidence = []
+    for (const scenario of row.restartRecovery) {
+      for (const content of scenario.inputs ?? []) await send(row, content)
+      row.recoveryEvidence.push(await restartUnsettled(row, scenario))
+    }
   } finally { await client.close() }
   const finalNativeProof = await checkedProfile(row)
   assert.deepEqual(finalNativeProof.target, nativeProof.target)
@@ -279,7 +324,7 @@ for (const row of matrix.rows) {
     model: row.model, nativeCliVersion: row.nativeCliVersion, normalRequestId: normal.input.requestId,
     nativeSessionId: after.nativeSessionId, compactRequestId: command.requestId, compactResult: compacted.compaction,
     hostKind: row.hostKind, nativeProof, finalNativeProof, beforeContext: before.context, afterContext: after.context, planTaskRequestId: task.input.requestId,
-    appliedMode: after.appliedMode, preferences: { desired: after.desired, applied: after.applied } })
+    restartRecovery: row.recoveryEvidence, appliedMode: after.appliedMode, preferences: { desired: after.desired, applied: after.applied } })
 }
 evidence.nativeQualification = true
 await writeFile(process.argv[3], `${JSON.stringify(evidence, null, 2)}\n`, { flag: 'wx', mode: 0o600 })

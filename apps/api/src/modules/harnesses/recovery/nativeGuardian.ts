@@ -181,8 +181,8 @@ process.on('message',input=>{
         if(config.claudeSessionScope) {
           capture=claudeCompactionCapture(config.claudeSessionScope,()=>{if(disconnected)stop()})
           let stdoutClosed=false,stderrClosed=false
-          process.stdout.on('error',error=>{if(error.code==='EPIPE')stdoutClosed=true;else stop()})
-          process.stderr.on('error',error=>{if(error.code==='EPIPE')stderrClosed=true;else stop()})
+          process.stdout.on('error',error=>{if(error.code==='EPIPE'){stdoutClosed=true;native.stdout.resume()}else stop()})
+          process.stderr.on('error',error=>{if(error.code==='EPIPE'){stderrClosed=true;native.stderr.resume()}else stop()})
           native.stdin.on('error',stop)
           process.stdin.on('data',chunk=>{
             capture.consume('input',chunk)

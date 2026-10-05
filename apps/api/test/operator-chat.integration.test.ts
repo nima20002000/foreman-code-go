@@ -408,6 +408,42 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     } finally { await client.close(); await app.close() }
   }, 30000)
 
+  it('serves an unsettled control read while the native dispatch is still running', async () => {
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed session' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let dispatched!: () => void
+    const entered = new Promise<void>(resolve => { dispatched = resolve })
+    let calls = 0
+    Object.assign(manager, {
+      sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'), compact: { supported: true, reason: null } }),
+      compactSession: async (session: NativeSessionReference, input: import('../src/modules/harnesses/port.js').NativeCompactInput) => {
+        calls++
+        await input.onDispatch?.()
+        const state = { requestId: input.requestId, nativeSessionId: session.nativeSessionId, nativeOperationId: 'native-control',
+          status: 'running' as const, message: 'Still compacting', beforeTokens: 100, observedAt: new Date().toISOString() }
+        await input.onProgress(state)
+        dispatched()
+        await gate
+        return { ...state, status: 'completed' as const }
+      },
+    })
+    const before = await chat.readSessionControls(conversation.id, owner)
+    const request = { kind: 'compact' as const, requestId: randomUUID(), expectedRevision: before.revision }
+    const operation = chat.changeSessionControls(conversation.id, request, owner)
+    try {
+      await entered
+      const state = await Promise.race([chat.readSessionControls(conversation.id, owner),
+        new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('Read waited for compact settlement')), 2000))])
+      expect(state.compaction).toMatchObject({ requestId: request.requestId, status: 'running', dispatchPhase: 'dispatched' })
+      expect(calls).toBe(1)
+    } finally { release(); await operation }
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Follow-up' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+  })
+
   it('keeps uncertain compaction fenced through response loss and recovers without another dispatch', async () => {
     let dispatches = 0
     let confirmed = false
