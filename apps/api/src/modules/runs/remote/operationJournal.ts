@@ -17,7 +17,7 @@ import { RemoteJobOperationReceiptRecordSchema, RemoteJobDispatchIntentSchema, R
 
 import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
-import { JobNativeOwnerSchema, JobOCICertificateSchema, type JobNativeOwner } from '../../jobs/executorJournal.js'
+import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
@@ -416,7 +416,8 @@ export class RemoteOperationJournal {
         || intent.inputDigest !== `sha256:${execution.acceptedSpec.specDigest}` || !same(intent.owner, execution.owner)) {
         throw new Error('Job cancellation execution ownership mismatch')
       }
-      if (data.jobOwners.some(owner => owner.operationId === intent.operationId)) {
+      const owner = data.jobOwners.find(value => value.operationId === intent.operationId)
+      if (owner && (!isPreparatoryVerificationOwner(owner, execution) || !same(owner.connection, connection))) {
         throw new Error('Original Job native entry owner requires physical reconciliation')
       }
       const receipt = this.acceptJob(data, intent, execution, connection, workerIncarnationId)
@@ -569,6 +570,27 @@ export class RemoteOperationJournal {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.jobOwners.find(value => value.operationId === operationId) ?? null)
+  }
+  jobReleasePreparatoryOwner(operationId: string, scope: {
+    executionId: string; attemptId: string; bindingHash: string; materializationId: string; closureEvidenceDigest: string
+  }) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      const execution = receipt.execution
+      if (receipt.entryAttempted || receipt.native || !receipt.stopFence || !receipt.terminal?.processStopped
+        || receipt.terminal.outcome !== 'cancelled' || receipt.terminal.closureEvidenceDigest !== scope.closureEvidenceDigest
+        || execution.id !== scope.executionId || execution.attemptId !== scope.attemptId
+        || execution.acceptedSpec.bindingHash !== scope.bindingHash
+        || execution.acceptedSpec.source.materializationId !== scope.materializationId) {
+        throw new Error('Original positively closed before-entry scope required for owner retirement.')
+      }
+      const owner = data.jobOwners.find(value => value.operationId === operationId)
+      if (!owner) return
+      if (!isPreparatoryVerificationOwner(owner, execution) || !same(owner.connection, receipt.connection)) {
+        throw new Error('Original Job native entry owner requires physical reconciliation')
+      }
+      data.jobOwners = data.jobOwners.filter(value => value.operationId !== operationId)
+    })
   }
   jobPrepareVerification(operationId: string, raw: NonNullable<JobNativeOwner['verification']>) {
     return this.change(data => {

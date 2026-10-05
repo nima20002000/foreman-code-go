@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { z } from 'zod'
 import { RemoteJobDispatchIntentSchema, RemoteJobConnectionIdentitySchema } from '@foreman-code/contracts/remote-job-execution'
 import { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
@@ -25,3 +27,15 @@ export const JobNativeOwnerSchema = z.object({
     finalizedAt: z.string().datetime().nullable() }).strict().optional(),
 }).strict()
 export type JobNativeOwner = z.infer<typeof JobNativeOwnerSchema>
+
+export function isPreparatoryVerificationOwner(owner: JobNativeOwner, execution: JobExecutionRecord): boolean {
+  if (execution.schemaVersion !== 2 || owner.operationId !== execution.operationId
+    || owner.launches.length || owner.container || !owner.verification) return false
+  const identity = owner.verification.context.identity
+  const spec = execution.acceptedSpec
+  return identity.executionId === execution.id && identity.attemptId === execution.attemptId
+    && identity.commit === spec.source.commit && identity.definitionVersionId === spec.definitionVersionId
+    && isDeepStrictEqual(identity.profile, spec.profile)
+    && isDeepStrictEqual(identity.resources, spec.verification.resources)
+    && identity.suite === spec.verification.suite
+}
