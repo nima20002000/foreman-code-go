@@ -13,6 +13,7 @@ export interface NativeLaunchObservation {
   readonly boundary?: Readonly<NativeCgroupBoundary>
   readonly lifecycle: 'active' | 'ended' | 'closure-unconfirmed' | 'closed'
   readonly closureEvidence?: 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty'
+    | 'native_exit_removed_cgroup' | 'cgroup_v2_removed'
 }
 export interface NativeRegistrySnapshot { readonly revision: string; readonly launches: readonly NativeLaunchObservation[] }
 export interface NativeRegistryChange extends NativeRegistrySnapshot { readonly gap: boolean }
@@ -101,7 +102,11 @@ function readLaunch(root: string, ownerKey: string, id: string): NativeLaunchObs
     const row = recordObject(closed)
     if (row.id !== id || row.owner !== launch.owner) throw new Error('Native observation closure owner mismatch.')
     if (row.format !== 1) {
-      if (row.format !== 2 || row.boot !== launch.bootId || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty'].includes(String(row.evidence))) throw new Error('Invalid native observation closure evidence.')
+      const evidence = ['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty',
+        'native_exit_removed_cgroup', 'cgroup_v2_removed']
+      if (row.format !== 2 || row.boot !== launch.bootId || !evidence.includes(String(row.evidence))) {
+        throw new Error('Invalid native observation closure evidence.')
+      }
       Object.assign(launch, { lifecycle: 'closed', closureEvidence: row.evidence })
     }
   }

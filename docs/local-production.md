@@ -109,10 +109,14 @@ corepack pnpm test:production:installed
 This uses the installed compiled release and authenticated Operator MCP. It tests
 an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
 a production PostgreSQL container restart, and recovery after killing the API's
-main process during native work. It verifies persisted readback and unchanged
-native execution/session bindings. It archives its own workspace and revokes its
+main process or the entire service during native work. After service-wide SIGKILL,
+it stops through MCP and verifies cleanup after another restart. Kernel removal of
+an empty native cgroup can confirm closure even when SIGKILL prevents an exit
+receipt; recovery requires the original parent and guardian to have exited and
+verifies the full, unchanged cgroup hierarchy. It verifies persisted readback and
+unchanged native execution/session bindings. It archives its own workspace and revokes its
 credentials; conversation and run history remain available for inspection. Run it
-when no personal work is active because the two recovery checks restart services.
+when no personal work is active because the recovery checks restart services.
 The API unit delegates its cgroup subtree to native guardians and restarts after
 both failure and unexpected clean shutdown. An explicit systemd stop stays stopped.
 

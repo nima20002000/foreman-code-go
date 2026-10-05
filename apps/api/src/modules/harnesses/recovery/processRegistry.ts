@@ -1,14 +1,14 @@
-import { isDeepStrictEqual } from 'node:util'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { lstatSync, readdirSync, renameSync, rmSync, readFileSync, statfsSync, statSync } from 'node:fs'
+import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
 import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../../../infrastructure/logger.js'
-import { bootIdentity, identityAlive, processIdentity, sessionAlive, type LinuxProcessIdentity } from './linuxIdentity.js'
-import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeCgroupBoundary } from './cgroupBoundary.js'
+import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
+import { cgroupBoundary, cgroupPopulated, cgroupRemoved, killCgroup, retireCgroup,
+  type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
 import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
@@ -99,36 +99,20 @@ async function stopGuardian(launch: LaunchRecord, birth: BirthRecord, signal?: A
   })
 }
 
-function exitedWithRemovedBoundary(directory: string, launch: LaunchRecord, birth: BirthRecord): boolean {
-  if (!birth.containment || identityAlive(launch.parent) || identityAlive(birth.guardian)) return false
-  const provider = readRecord(join(directory, 'provider.json'))
-  const exit = readRecord(join(directory, 'provider-exit.json'))
-  if (!provider || !exit) return false
-  const processRecord = recordObject(provider)
-  const result = recordObject(exit)
-  if (processRecord.format !== 1 || result.format !== 1 || processRecord.id !== launch.id || result.id !== launch.id
-    || processRecord.owner !== launch.owner || result.owner !== launch.owner
-    || processRecord.boot !== launch.boot || result.boot !== launch.boot
-    || !isDeepStrictEqual(processRecord.guardian, birth.guardian)
-    || !isDeepStrictEqual(processRecord.provider, result.provider)) return false
-  const native = recordObject(result.provider)
-  if (!Number.isSafeInteger(native.pid) || typeof native.startTicks !== 'string'
-    || identityAlive({ pid: Number(native.pid), startTicks: native.startTicks })
-    || sessionAlive(birth.guardian.session)) return false
-  if (!(Number.isInteger(result.code) && Number(result.code) >= 0 && Number(result.code) <= 255 && result.signal === null
-    || result.code === null && typeof result.signal === 'string' && Object.hasOwn(constants.signals, result.signal))) return false
-  const fullHierarchy = readFileSync('/proc/self/mountinfo', 'utf8').split('\n').some(line => {
-    const fields = line.split(' ')
-    return fields[3] === '/' && fields[4] === '/sys/fs/cgroup' && line.includes(' - cgroup2 ')
-  })
-  if (!fullHierarchy || statfsSync('/sys/fs/cgroup').type !== 0x63677270
-    || String(statSync('/sys/fs/cgroup', { bigint: true }).dev) !== birth.containment.device) return false
-  try { lstatSync(birth.containment.path); return false } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT'
-  }
-}
+type ClosureEvidence = 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty' | 'cgroup_v2_removed'
 
-type ClosureEvidence = 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty' | 'native_exit_removed_cgroup'
+function observeCgroupClosure(launch: LaunchRecord, birth: BirthRecord): ClosureEvidence | undefined {
+  if (!birth.containment) return undefined
+  try {
+    if (!cgroupPopulated(birth.containment)) return 'cgroup_v2_empty'
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT'
+      || identityAlive(launch.parent) || identityAlive(birth.guardian)
+      || !cgroupRemoved(birth.containment)) throw error
+    return 'cgroup_v2_removed'
+  }
+  return undefined
+}
 
 function closedRecord(directory: string, launch: LaunchRecord): boolean {
   const value = readRecord(join(directory, 'closed.json'))
@@ -139,7 +123,8 @@ function closedRecord(directory: string, launch: LaunchRecord): boolean {
   // Requalify legacy records below; never promote their old marker into proof.
   if (row.format === 1) return false
   if (row.format !== 2 || row.boot !== launch.boot
-    || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup'].includes(String(row.evidence))) {
+    || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup',
+      'cgroup_v2_removed'].includes(String(row.evidence))) {
     throw new Error('Invalid native closure evidence.')
   }
   return true
@@ -370,15 +355,8 @@ export class NativeProcessRegistry {
         }
       } else {
         const birth = birthRecord(rawBirth, launch)
-        if (birth.containment) {
-          try {
-            if (!cgroupPopulated(birth.containment)) { confirmClosed(directory, launch, 'cgroup_v2_empty'); return }
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT'
-              || !exitedWithRemovedBoundary(directory, launch, birth)) throw error
-            confirmClosed(directory, launch, 'native_exit_removed_cgroup'); return
-          }
-        }
+        const evidence = observeCgroupClosure(launch, birth)
+        if (evidence) { confirmClosed(directory, launch, evidence); return }
         if (birth.containment && !forced && (Date.now() >= forceAt || !identityAlive(birth.guardian))) {
           killCgroup(birth.containment)
           forced = true
@@ -419,8 +397,8 @@ function assertOwnerIdle(directory: string, owner: string): void {
     }
     const rawBirth = readRecord(join(previous, 'birth.json'))
     if (rawBirth !== undefined) {
-      const boundary = birthRecord(rawBirth, intent).containment
-      if (boundary && !cgroupPopulated(boundary)) { confirmClosed(previous, intent, 'cgroup_v2_empty'); continue }
+      const evidence = observeCgroupClosure(intent, birthRecord(rawBirth, intent))
+      if (evidence) { confirmClosed(previous, intent, evidence); continue }
     } else {
       const rawDispatch = readRecord(join(previous, 'dispatched.json'))
       if (rawDispatch === undefined) {

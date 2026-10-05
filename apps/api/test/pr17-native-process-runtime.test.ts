@@ -13,7 +13,7 @@ import { runJsonlProcess, spawnOwnedStdioProcess, stopProcess } from '../src/mod
 import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { bootIdentity, identityAlive, processIdentity, sessionAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { privateDirectory, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
-import { cgroupBoundary, cgroupPopulated } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
+import { cgroupBoundary, cgroupPopulated, cgroupRemoved } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 
 const owner = 'pr17-native-fixture-owner'
 function fixture() {
@@ -154,6 +154,9 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
       assert.throws(() => cgroupBoundary({ kind: 'cgroup-v2', path: '/sys/fs/cgroup/../wrong', device: '1', inode: '2' }, randomUUID()))
       assert.throws(() => cgroupPopulated({ kind: 'cgroup-v2', path: f.root, device: '1', inode: '2' }), /identity changed/)
       assert.throws(() => cgroupPopulated({ kind: 'cgroup-v2', path: join(f.root, 'missing'), device: '1', inode: '2' }))
+      assert.equal(cgroupRemoved({ kind: 'cgroup-v2', path: join(f.root, 'missing'), device: '1', inode: '2' }), false)
+      assert.equal(cgroupRemoved({ kind: 'cgroup-v2', path: `/sys/fs/cgroup/graphql-native-${randomUUID()}`,
+        device: '0', inode: '2' }), false)
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 

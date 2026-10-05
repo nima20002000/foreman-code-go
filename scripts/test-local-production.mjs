@@ -47,6 +47,10 @@ async function main() {
   const { ManagementActionSchema } = await import(pathToFileURL(join(contracts, 'management/index.js')))
   const { makeCurrentWorkflowFixture } = await import(pathToFileURL(join(contracts, 'wave25/index.js')))
   const { PostgresAccessService } = await import(pathToFileURL(join(release, 'apps/api/dist/modules/access/postgres.js')))
+  const recoveryModules = join(release, 'apps/api/dist/modules/harnesses/recovery')
+  const { NativeProcessRegistry } = await import(pathToFileURL(join(recoveryModules, 'processRegistry.js')))
+  const { cgroupRemoved } = await import(pathToFileURL(join(recoveryModules, 'cgroupBoundary.js')))
+  const registry = new NativeProcessRegistry(join(environment.HARNESS_WORKSPACE_ROOT, 'native-process-registry'))
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
   const ready = () => waitForProductionReady({ origin, expected })
   await ready()
@@ -183,6 +187,43 @@ async function main() {
     writer = await connect(writerCredential)
     await settled(recovering)
     assert.deepEqual(await nativeSessions(recovering), sessions, 'Recovery must retain original execution/session bindings')
+
+    for (const harness of ['codex', 'opencode']) {
+      denied = await connect(deniedCredential)
+      const killed = await startWorkflow(harness, longTask)
+      await positivelyStarted(killed)
+      const bindings = await nativeSessions(killed)
+      const owners = new Set(bindings.map(binding => `execution:${binding.id}`))
+      const launches = registry.snapshot().launches.filter(launch => owners.has(launch.owner))
+      assert.ok(launches.length > 0, 'Native work must have registered launch boundaries')
+      for (const launch of launches) assert.ok(launch.boundary, 'Native work must be contained before the crash')
+      const beforeKill = await systemctl('show', '--property=MainPID', '--value', unit)
+      await systemctl('kill', '--kill-whom=all', '--signal=KILL', unit)
+      await waitUntil(() => systemctl('show', '--property=MainPID', '--value', unit),
+        value => value !== '0' && value !== beforeKill, 'service-wide SIGKILL restart', 120_000)
+      await ready()
+      for (const launch of launches) {
+        assert.equal(cgroupRemoved(launch.boundary), true, 'Systemd must have pruned the killed native tree')
+      }
+      await Promise.all(clients.map(client => client.close()))
+      clients.length = 0
+      writer = await connect(writerCredential)
+      denied = await connect(deniedCredential)
+      await assert.rejects(call(denied, 'run_stop', { ...killed, commandId: randomUUID() }), /not found|ACCESS_DENIED/)
+      await call(writer, 'run_stop', { ...killed, commandId: randomUUID() })
+      const stopped = await settled(killed)
+      assert.notEqual(stopped.run.outcome, 'pending')
+      assert.deepEqual(await nativeSessions(killed), bindings, 'Stop must retain the killed execution/session bindings')
+      await systemctl('restart', unit)
+      await ready()
+      await Promise.all(clients.map(client => client.close()))
+      clients.length = 0
+      writer = await connect(writerCredential)
+      const persisted = await call(writer, 'run_record_get', killed)
+      assert.equal(persisted.cleanupPending, false, 'Confirmed cleanup must survive another API restart')
+      assert.equal(persisted.run.outcome, stopped.run.outcome)
+      assert.deepEqual(await nativeSessions(killed), bindings)
+    }
   } catch (error) {
     failure = error
   } finally {

@@ -41,6 +41,39 @@ export function cgroupPopulated(boundary: NativeCgroupBoundary): boolean {
   })
 }
 
+/** cgroupfs only removes empty trees. Qualify absence against the full, unchanged hierarchy. */
+export function cgroupRemoved(boundary: NativeCgroupBoundary): boolean {
+  const root = '/sys/fs/cgroup'
+  if (!boundary.path.startsWith(`${root}/`) || normalize(boundary.path) !== boundary.path) return false
+  const mounts = readFileSync('/proc/self/mountinfo', 'utf8').trim().split('\n').map(line => line.split(' '))
+  const hierarchy = mounts.filter(fields => fields[4] === root)
+  if (hierarchy.length !== 1 || hierarchy[0]![3] !== '/'
+    || hierarchy[0]![hierarchy[0]!.indexOf('-') + 1] !== 'cgroup2') return false
+  if (mounts.some(fields => fields[4]?.startsWith(`${root}/`)
+    && (boundary.path === fields[4] || boundary.path.startsWith(`${fields[4]}/`)))) return false
+
+  let fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try {
+    for (const part of boundary.path.slice(root.length + 1).split('/')) {
+      const directory = `/proc/self/fd/${fd}`
+      if (fstatSync(fd, { bigint: true }).dev.toString() !== boundary.device
+        || statfsSync(directory).type !== 0x63677270) return false
+      let child: number
+      try {
+        child = openSync(`${directory}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+        throw error
+      }
+      closeSync(fd)
+      fd = child
+    }
+    return false
+  } finally {
+    closeSync(fd)
+  }
+}
+
 export function killCgroup(boundary: NativeCgroupBoundary): void {
   withBoundary(boundary, (directory) => writeFileSync(`${directory}/cgroup.kill`, '1'))
 }
