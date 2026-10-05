@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import test from 'node:test'
-import { nativeAcceptanceConfiguration, nativeAcceptanceFiles } from './test-native-acceptance.mjs'
+import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles } from './test-native-acceptance.mjs'
+
+test('native launchers retain the running Node interpreter when HOME is isolated', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-runtime-'))
+  const launcher = join(directory, 'launcher')
+  try {
+    await writeFile(join(directory, 'node'), '#!/bin/sh\nexit 81\n', { mode: 0o700 })
+    const program = [
+      '#!/usr/bin/env node',
+      'console.log(JSON.stringify({runtime:process.execPath,home:process.env.HOME,',
+      'credential:process.env.NATIVE_TEST_CREDENTIAL}))',
+      '',
+    ].join('\n')
+    await writeFile(launcher, program, { mode: 0o700 })
+    const source = { ...process.env, PATH: [directory, process.env.PATH].join(delimiter),
+      HOME: directory, NATIVE_TEST_CREDENTIAL: 'fixture-credential' }
+    const original = { ...source }
+    const environment = nativeAcceptanceEnvironment(source)
+    const output = execFileSync(launcher, { env: environment, encoding: 'utf8', timeout: 5_000 })
+    assert.deepEqual(JSON.parse(output), {
+      runtime: process.execPath, home: directory, credential: 'fixture-credential',
+    })
+    assert.deepEqual(source, original)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('acceptance keeps its caller-selected database, evidence and pinned binary', () => {
   const environment = {

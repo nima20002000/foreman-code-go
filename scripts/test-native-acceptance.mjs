@@ -2,13 +2,19 @@ import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { Pool } = require('pg')
+
+export function nativeAcceptanceEnvironment(source) {
+  // Runtime-selection shims cannot reuse their home cache after diagnostics isolate HOME.
+  const paths = [dirname(process.execPath), ...(source.PATH ?? '').split(delimiter)]
+  return { ...source, PATH: [...new Set(paths.filter(Boolean))].join(delimiter) }
+}
 
 export function nativeAcceptanceConfiguration(environment) {
   return {
@@ -68,7 +74,7 @@ async function main() {
   const opencode = configuration.opencodeBinary ?? execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
     configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
-      const environment = { ...process.env,
+      const environment = { ...nativeAcceptanceEnvironment(process.env),
         RUN_ENG03_C_NATIVE_TESTS: '1',
         ENG03_A_TEST_DATABASE_URL: databaseUrl,
         ENG03_A_OPENCODE_BINARY: opencode,
