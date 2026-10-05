@@ -145,7 +145,10 @@ describe('Codex creation and prompt write boundaries', () => {
     const replacement = f.makeManager(undefined, {}, { responseJournal: new NativeResponseJournal(journalPath) })
     await replacement.attachSession(session, { ...source, correlationId: 'rejected' })
     assert.deepEqual((await replacement.reconcile(session, 'rejected')).nonSubmission, result)
-    await collect(replacement.startTurn(session, { prompt: 'retry', clientCorrelationId: 'retry' }))
+    await collect(replacement.startTurn(session, { prompt: 'retry', clientCorrelationId: 'rejected' }))
+    const retried = await replacement.reconcile(session, 'rejected')
+    assert(retried.nativeTurnId)
+    assert.equal(retried.nonSubmission, undefined)
     assert.equal((await f.wire('turn/start')).length, 2)
   })
 

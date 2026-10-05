@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { ExecutionResultSchema, NativeSessionReferenceSchema,
   type ExecutionResult, type NativeSessionReference } from '@foreman-code/contracts'
@@ -12,8 +12,9 @@ const fields = ['source', 'harness', 'providerVersion', 'nativeSessionId', 'nati
   'nativeRequestType', 'optionId', 'semantic'] as const
 const semantics = ['approve_once', 'allow_turn', 'allow_session', 'reject', 'cancel',
   'provider_scoped_allow', 'persistent_policy_change']
-const TurnRejectionSchema = z.object({ format: z.literal(1), session: NativeSessionReferenceSchema,
-  correlationId: z.string().min(1), result: ExecutionResultSchema.refine(result => result.outcome !== 'succeeded') }).strict()
+const TurnAttemptSchema = z.object({ format: z.literal(1), session: NativeSessionReferenceSchema,
+  correlationId: z.string().min(1), attemptId: z.uuid(),
+  result: ExecutionResultSchema.refine(result => result.outcome !== 'succeeded').optional() }).strict()
 
 function rejectedTurnKey(session: NativeSessionReference, correlationId: string): string {
   return 'turn-rejection-' + createHash('sha256').update(JSON.stringify([
@@ -53,24 +54,37 @@ function same(left: NativeResponseDeliveryEvidence, right: NativeResponseDeliver
 export class NativeResponseJournal {
   constructor(private readonly root: string) {}
 
-  recordTurnRejection(session: NativeSessionReference, correlationId: string, result: ExecutionResult): void {
-    const record = TurnRejectionSchema.parse({ format: 1, session, correlationId, result })
+  beginTurnAttempt(session: NativeSessionReference, correlationId: string): string {
+    const record = TurnAttemptSchema.parse({ format: 1, session, correlationId, attemptId: randomUUID() })
     const directory = privateDirectory(this.root)
     const path = join(directory, `${rejectedTurnKey(session, correlationId)}.json`)
+    writeRecord(path, record)
+    return record.attemptId
+  }
+
+  recordTurnRejection(session: NativeSessionReference, correlationId: string, attemptId: string,
+    result: ExecutionResult): void {
+    const record = TurnAttemptSchema.parse({ format: 1, session, correlationId, attemptId, result })
+    const directory = privateDirectory(this.root)
+    const path = join(directory, `${rejectedTurnKey(session, correlationId)}-${attemptId}.json`)
     try { writeRecord(path, record, true) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      const existing = TurnRejectionSchema.parse(readRecord(path))
+      const existing = TurnAttemptSchema.parse(readRecord(path))
       if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error('Conflicting native turn rejection.', { cause: error })
       syncDirectory(directory)
     }
+    const latestPath = join(directory, `${rejectedTurnKey(session, correlationId)}.json`)
+    const latest = TurnAttemptSchema.parse(readRecord(latestPath))
+    if (latest.attemptId === attemptId) writeRecord(latestPath, record)
   }
 
   readTurnRejection(session: NativeSessionReference, correlationId: string): ExecutionResult | undefined {
     const directory = privateDirectory(this.root)
     const stored = readRecord(join(directory, `${rejectedTurnKey(session, correlationId)}.json`))
     if (stored === undefined) return undefined
-    const record = TurnRejectionSchema.parse(stored)
-    if (JSON.stringify(record.session) !== JSON.stringify(session) || record.correlationId !== correlationId) {
+    const record = TurnAttemptSchema.parse(stored)
+    if (record.session.harness !== session.harness || record.session.providerVersion !== session.providerVersion
+      || record.session.nativeSessionId !== session.nativeSessionId || record.correlationId !== correlationId) {
       throw new Error('The native turn rejection belongs to another request.')
     }
     return record.result

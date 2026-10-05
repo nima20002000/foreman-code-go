@@ -141,6 +141,7 @@ interface TurnSnapshot {
 }
 interface StartingTurn {
   correlationId: string
+  nativeAttemptId?: string
   previous: TurnSnapshot
   cancelRequested: boolean
   preparationController: AbortController
@@ -902,6 +903,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
         preparationSignal.throwIfAborted()
         if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
+        runtime.rejectedStarts.delete(starting.correlationId)
+        if (this.responseJournal) {
+          starting.nativeAttemptId = this.responseJournal.beginTurnAttempt(session, starting.correlationId)
+        }
         nativeSubmissionAttempted = true
         runtimeTimingPoint('harness', 'native.submit', { nativeSessionId: session.nativeSessionId })
         const result = await codexRequest(runtime.transport, 'turn/start', {
@@ -1982,7 +1987,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       code: 'CODEX_TURN_START_REJECTED', message: 'Codex rejected this message before starting a turn.', retryable: true,
     } }
     runtime.rejectedStarts.set(starting.correlationId, result)
-    this.responseJournal?.recordTurnRejection(runtime.session, starting.correlationId, result)
+    if (starting.nativeAttemptId) {
+      this.responseJournal?.recordTurnRejection(runtime.session, starting.correlationId, starting.nativeAttemptId, result)
+    }
     this.restoreRejectedStart(runtime, starting)
   }
 
