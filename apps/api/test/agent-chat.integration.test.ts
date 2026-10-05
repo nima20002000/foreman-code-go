@@ -26,6 +26,9 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
+import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
+import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
+import { workspaceRootHostScope } from '../src/modules/sources/rootPolicies.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_agent_chat_test'
 
@@ -217,6 +220,82 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     } finally { await service.shutdown() }
   })
 
+  it('admits a saved node directory through authenticated MCP and retains it before the first message', async () => {
+    const nativeFixture = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'single')
+    const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
+    const deviceId = randomUUID()
+    const installationId = randomUUID()
+    const instanceId = randomUUID()
+    const baseId = randomUUID()
+    const rootPolicyId = randomUUID()
+    const hostRef = { kind: 'device' as const, mainId, deviceId }
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    const configuration = AgentConfigurationVersionSchema.parse({ ...nativeFixture.configurations[0]!,
+      harnessProfileSelection: { instanceId, instanceRevision: '1', target: { hostRef,
+        applicationInstallationId: installationId, harnessInstallationId: 'recorded-installation', installationFingerprint: 'recorded-bytes' } } })
+    nativeFixture.configurations = [configuration]
+    const placement = SavedNodePlacementSchema.parse({ schemaVersion: 1, hostRef,
+      rootPolicyId, rootPolicyRevision: '1', locationRevision: '1', projectRoot: '/worker/saved-project',
+      cwdPolicy: 'project-subdirectory', relativeCwd: 'src', instanceId, instanceRevision: '1',
+      harnessInstallationId: 'recorded-installation' })
+    nativeFixture.version.definition.nodes[0]!.placement = placement
+    const seeded = await seedAgent3(pool, root, nativeFixture, { run: false })
+    const approved = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef,
+      applicationInstallationId: installationId, configurationRevision: '1',
+      bases: [{ baseId, canonicalPath: '/worker', filesystem, accessModes: ['read-only'] }],
+      managedRuntimeRoot: '/worker/runtime', runtimeFilesystem: filesystem })
+    const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId, rootPolicyRevision: '1',
+      workspaceId: seeded.scope.workspaceId, hostRef, applicationInstallationId: installationId,
+      registration: { workerInstallationId: installationId, keyRevision: 1, authorizationRevision: 1 },
+      locationRevision: '1', ownerPrincipalId: writer.id, allowedBaseId: baseId, configurationRevision: '1',
+      relativePath: 'saved-project', accessMode: 'read-only', canonicalProjectRoot: placement.projectRoot,
+      filesystem, directoryIdentityHash: 'a'.repeat(64), managedRuntimeRoot: approved.managedRuntimeRoot,
+      runtimeFilesystem: filesystem, attestationId: randomUUID(), attestationDigest: 'b'.repeat(64) })
+    const hostScope = workspaceRootHostScope(hostRef)
+    await pool.query(`insert into workspace_root_host_configurations
+      (host_scope,configuration_revision,main_id,application_installation_id,record,digest) values($1,1,$2,$3,$4::jsonb,$5)`,
+    [hostScope, mainId, installationId, JSON.stringify(approved), 'recorded-root-digest'])
+    await pool.query('insert into workspace_root_host_configuration_heads(host_scope,configuration_revision) values($1,1)', [hostScope])
+    await pool.query(`insert into workspace_root_policies
+      (root_policy_id,root_policy_revision,workspace_id,host_scope,location_revision,record) values($1,1,$2,$3,1,$4::jsonb)`,
+    [rootPolicyId, seeded.scope.workspaceId, hostScope, JSON.stringify(policy)])
+    const { service } = makeService()
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const client = new Client({ name: 'node-directory-writer', version: '1' })
+    const reader = new Client({ name: 'node-directory-reader', version: '1' })
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => writerToken } }))
+      await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
+      const node = seeded.version.definition.nodes[0]!
+      const context = { workflowId: seeded.scope.workflowId,
+        workflowNodeId: node.id, agentId: configuration.agentId }
+      const target = { workspaceId: seeded.scope.workspaceId, context }
+      const control = { ...target, request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: 0 } }
+      const updated = await client.callTool({ name: 'agent_chat_controls_update', arguments: control })
+      expect(updated.isError).not.toBe(true)
+      const controls = SessionControlStateSchema.parse(updated.structuredContent)
+      expect(controls.conversationId).toBeTruthy()
+      expect(controls.nativeSessionId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const row = await new PostgresAgentChatRepository(pool).get(controls.conversationId!)
+      expect(row?.record).toMatchObject({ workingDirectory: '/worker/saved-project/src',
+        directoryBinding: { workflowVersionId: seeded.version.id, placement, policy } })
+      const denied = await reader.callTool({ name: 'agent_chat_controls_update', arguments: {
+        ...control, request: { ...control.request, requestId: randomUUID(), mode: 'regular', expectedRevision: controls.revision } } })
+      expect(denied.isError).toBe(true)
+      const persisted = SessionControlStateSchema.parse((await reader.callTool({
+        name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+      expect(persisted.desiredMode).toBe('plan')
+      expect(persisted.conversationId).toBe(controls.conversationId)
+    } finally {
+      await Promise.all([client.close(), reader.close()])
+      await app.close()
+      await service.shutdown()
+    }
+  })
   it('creates only an application conversation for fresh control admission and applies Plan on the first message', async () => {
     const { service } = makeService()
     const context = { workspaceId: fixture.scope.workspaceId, ...query(codexNode) }
