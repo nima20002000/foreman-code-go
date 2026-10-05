@@ -8,6 +8,7 @@ const path=z.string().startsWith('/').refine(value=>!value.includes('\0')&&!valu
 export const InstalledWorkflowConfigurationSchema=z.object({schemaVersion:z.literal(1),
   codexBinary:path,appMcpLauncher:path,expectedVersion:z.string().trim().min(1).max(64),payloadPaths:z.array(path).max(16),
   opencode:z.object({binary:path,expectedVersion:z.string().trim().min(1).max(64),payloadPaths:z.array(path).max(16)}).strict().optional(),
+  claude:z.object({binary:path,installedLockPath:path}).strict().optional(),
 }).strict()
 export type InstalledWorkflowConfiguration=z.infer<typeof InstalledWorkflowConfigurationSchema>
 export interface InstalledWorkflowConfigurationLocation {path:string;ownerUid:number}

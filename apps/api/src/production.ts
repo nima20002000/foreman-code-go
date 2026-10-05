@@ -63,6 +63,7 @@ import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/b
 import { productionClaudeMetadata } from './modules/harnesses/claudeSdk/productionMetadata.js'
 import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults.js'
 import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
+import { installedClaudeProfilePin } from './modules/harnesses/claudeSdk/installedProfilePin.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
@@ -565,6 +566,14 @@ export function buildProductionApp(
     async current(binding, value, client) {
       if (value.driverId === 'claude') {
         requireClaudeProductionCredentialDelivery(value.configuration)
+        if (value.target.hostRef.kind === 'device') {
+          const registry = harnessRegistry.pinOverride(value)
+          const proof = await hostProfileEvidence.latest(value.instanceId, value.revision, client)
+          const pin = installedClaudeProfilePin(value, registry, proof)
+          harnessRegistry.installations.assertCurrent(registry)
+          return { registry, pin, applicationInstallationId: value.target.applicationInstallationId,
+            suiteRevision: 'claude-profile-check-v1' }
+        }
         const current = infrastructure?.claudeCurrentProfile ?? (infrastructure?.mode === 'replay' ? undefined : claudeDiscovery.current)
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
         return current(binding, value, client)

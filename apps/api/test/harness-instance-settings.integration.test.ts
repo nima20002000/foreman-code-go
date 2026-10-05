@@ -117,10 +117,31 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
     expect((await app.inject({ method: 'POST', url: '/api/management/harness-instances/save', headers: { authorization: `Bearer ${reader.token}` }, payload: args })).statusCode).toBe(403)
     expect((await pool.query("select count(*)::int as count from management_audit where outcome='denied' and source='http' and action='harness_instance_save'")).rows[0].count).toBe(1)
     expect((await writer.callTool({ name: 'harness_instance_save', arguments: { ...args, commandId: randomUUID(), instanceId: randomUUID(), target: { ...args.target, applicationInstallationId: randomUUID() } } })).isError).toBe(true)
+    const claudeArgs = { ...args, commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0,
+      presetId: 'claude', target: { ...args.target, harnessInstallationId: 'claude-sdk' },
+      configuration: { harness: 'claude', model: 'profile-model', authMode: 'subscription',
+        configDirectory: '/worker/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
+        instructions: '', mcpServers: {} } }
+    const claudeSaved = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({
+      name: 'harness_instance_save', arguments: claudeArgs })).structuredContent)
+    const claudeCheck = { commandId: randomUUID(), instanceId: claudeSaved.value.instanceId,
+      expectedRevision: claudeSaved.value.revision, target: claudeSaved.value.target }
+    expect((await denied.callTool({ name: 'harness_instance_check', arguments: claudeCheck })).isError).toBe(true)
+    expect(nativeReplay).toHaveBeenCalledTimes(1)
+    const claudeChecked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({
+      name: 'harness_instance_check', arguments: claudeCheck })).structuredContent)
+    expect(claudeChecked).toMatchObject({ value: { configuration: { harness: 'claude' }, qualification: 'qualified' },
+      proof: { driverId: 'claude', target: claudeArgs.target } })
+    await service.closeChecks()
+    service = createService()
+    const cold = HostHarnessOverrideListSchema.parse((await denied.callTool({
+      name: 'harness_instances_list', arguments: listInput })).structuredContent)
+    expect(cold.overrides.find(value => value.instanceId === claudeArgs.instanceId)).toEqual(claudeChecked.value)
+    expect(nativeReplay).toHaveBeenCalledTimes(2)
     await pool.query('update device_registrations set record=$2::jsonb where id=$1', [deviceId, JSON.stringify({ ...registration, status: 'revoked', authorizationRevision: 2 })])
     expect((await writer.callTool({ name: 'harness_instance_save', arguments: args })).isError).toBe(true)
     expect((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).isError).toBe(true)
-    expect((await pool.query('select count(*)::int as count from harness_instance_settings')).rows[0].count).toBe(2)
+    expect((await pool.query('select count(*)::int as count from harness_instance_settings')).rows[0].count).toBe(3)
     expect(JSON.stringify((await pool.query('select record from harness_instance_settings')).rows)).not.toContain('credential')
   } finally {
     await Promise.all(clients.map(client => client.close())); await app?.close()

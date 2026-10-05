@@ -30,6 +30,8 @@ export const HostHarnessInstallationSchema = z.object({
   driverId: Identity, driverRevision: Identity, protocolRevision: Identity,
   environmentGeneration: Identity, connectionGeneration: Identity,
   launcher: HarnessLauncherEvidenceSchema, observedVersion: z.string().nullable(), installed: z.boolean(),
+  claudeSdk: z.object({ version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+    integrity: z.string().regex(/^sha512-[A-Za-z0-9+/=]+$/u) }).strict().optional(),
   authenticated: z.boolean().nullable(), compatible: z.boolean().nullable(), qualified: z.boolean().nullable(),
 }).strict()
 export type HostHarnessInstallationDto = z.infer<typeof HostHarnessInstallationSchema>

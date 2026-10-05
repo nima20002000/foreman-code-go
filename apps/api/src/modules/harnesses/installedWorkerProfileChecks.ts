@@ -13,6 +13,7 @@ import { createInstalledNativeQualifier } from './installedNativeQualification.j
 import { inspectInstalledOpenCode } from './installedOpenCodeInspection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
+import { createInstalledClaudeQualifier } from './installedClaudeQualification.js'
 
 export async function createInstalledWorkerProfileChecks(input: {
   stateDirectory: string
@@ -24,6 +25,7 @@ export async function createInstalledWorkerProfileChecks(input: {
   const configuration = await readInstalledWorkflowConfiguration(input.configuration)
   if (!configuration) return null
   const qualifiers = new Set<ReturnType<typeof createInstalledNativeQualifier>>()
+  const claude = createInstalledClaudeQualifier(input)
   let closing = false
   const extension = createHostHarnessProfileCheckExtension({
     hostRef: { kind: 'device', mainId: input.pairing.mainId, deviceId: input.pairing.deviceId },
@@ -33,6 +35,7 @@ export async function createInstalledWorkerProfileChecks(input: {
         throw new DomainError('HARNESS_INVENTORY_STALE', 'The profile check connection changed.', 409)
       }
       const harness = value.configuration.harness
+      if (harness === 'claude') return claude.qualify(value, request)
       if (harness !== 'codex' && harness !== 'opencode') throw new DomainError(
         'HARNESS_DRIVER_UNAVAILABLE', 'The installed native profile checker does not support this driver.', 409)
       if (harness === 'opencode' && !configuration.opencode) throw new DomainError(
@@ -94,6 +97,7 @@ export async function createInstalledWorkerProfileChecks(input: {
   })
   return { extension, async close() {
     closing = true
+    await claude.close()
     const results = await Promise.allSettled([...qualifiers].map(qualifier => qualifier.close()))
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Worker profile checks did not close.')
