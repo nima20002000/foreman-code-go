@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile, access,rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -14,6 +15,16 @@ import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAutho
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
+import { InstalledOpenCodeServer } from '../../harnesses/installedOpenCodeDependencies.js'
+import { ManagedOpenCodeServer } from '../../harnesses/opencodeTransport.js'
+import { FixtureServer, json } from '../../../../test/opencode-fixtures.js'
+import { fileToolFixture } from '../../../../test/support/fileTools.js'
+import { FileByteStorage } from '../../files/storage.js'
+import { TemporaryFileService } from '../../files/service.js'
+import { createBufferedNativeOutputs, NativeOutputMemoryBudget } from './bufferedNativeOutput.js'
+import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
+import type { AgentFilePublishResult } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@graphql/contracts/files'
 import * as installedInspection from '../../harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
@@ -54,7 +65,6 @@ import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../repeatResolution.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
-import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 
@@ -237,7 +247,10 @@ describe('positive installed native closure consumption',()=>{
   })
 })
 
-async function sourceFixture(relativeCwd='') {
+async function sourceFixture(relativeCwd='', options: {
+  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+} = {}) {
+  const harness = options.harness ?? 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
   await mkdir(runtime,{mode:0o700});await mkdir(project,{mode:0o700});await mkdir(namespace,{recursive:true,mode:0o700})
   if(relativeCwd)await mkdir(join(project,relativeCwd),{recursive:true,mode:0o700})
@@ -258,7 +271,8 @@ async function sourceFixture(relativeCwd='') {
   const placement=freezePlacement({schemaVersion:1,mainId:binding.mainId,mainInstallationId:binding.mainId,runId:'run',nodeId:'node',hostRef:approvedRoots.hostRef,registration:sourceRoot.registration,
     destination:{canonicalProjectRoot:project,canonicalCwd:join(project,relativeCwd),managedRuntimeRoot:runtime,directoryIdentityHash:'a'.repeat(64),rootPolicyId,rootPolicyRevision:'1',locationRevision:'1',attestationId:'attestation',attestationHash:'a'.repeat(64)},
     source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
-    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:'codex',driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:'installed-codex',installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:'codex-native-adapter-v1',credentialScopeRefs:[]}})
+    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:harness,driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:`installed-${harness}`,installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:`${harness}-native-adapter-v1`,credentialScopeRefs:[],
+      ...(options.artifactOutputKeys ? { artifactOutputs: { version: 1 as const, outputKeys: options.artifactOutputKeys } } : {})}})
   const intent=deriveDispatch(placement,{executionId:'execution',attemptId:'attempt',operationId:'operation',technicalAttempt:1,occurrenceId:null,occurrenceIndex:0,inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
   const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
   attempt.placementHash=sourceBindingHash(sourceRoot,attempt,intent.operationId)
@@ -270,7 +284,7 @@ async function sourceFixture(relativeCwd='') {
   const owner:SourceOperationOwner={identity:{operationId:intent.operationId,ownerPrincipalId:'owner',expiresAt:'2099-01-01T00:00:00.000Z'},root:sourceRoot,attempt,source,record:nativePlacement.materialization,physicalClosureConfirmed:false}
   const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner,
     transfers:{resolveVerifiedReceipt:vi.fn().mockRejectedValue(new Error('Verify-only fixture')),openVerified:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))},transferContext:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))})
-  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS.codex,contentHash:'fixture',createdAt:new Date().toISOString()}
+  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS[harness],contentHash:'fixture',createdAt:new Date().toISOString()}
   const request={executionId:intent.executionId,runId:intent.runId,workspaceId:'workspace',workflowNodeId:intent.nodeId,workingDirectory:workingTree.canonicalCwd,
     runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input:{}}
   return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
@@ -914,8 +928,15 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function constructionFixture() {
-  const f = await sourceFixture()
+async function constructionFixture(fixtureOptions: {
+  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+  openCodeNativeOutputs?: InstalledWorkflowHostOptions['openCodeNativeOutputs']
+} = {}) {
+  const harness = fixtureOptions.harness ?? 'codex'
+  const version = harness === 'codex' ? '0.154.0' : '1.18.31'
+  const suiteRevision = harness === 'codex' ? 'codex-live-4' : 'opencode-live-1'
+  const binary = `/unit/${harness}`
+  const f = await sourceFixture('', fixtureOptions)
   f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
   if (f.placement.payload.kind !== 'agent') throw new Error('Expected Agent placement')
   const payload = f.placement.payload
@@ -924,33 +945,33 @@ async function constructionFixture() {
   const target = { hostRef: f.placement.hostRef, applicationInstallationId: binding.workerInstallationId,
     harnessInstallationId: payload.harnessInstallationId, installationFingerprint: payload.installationFingerprint }
   const installation = { hostRef: target.hostRef, harnessInstallationId: target.harnessInstallationId,
-    installationFingerprint: target.installationFingerprint, driverId: 'codex', driverRevision: '1',
+    installationFingerprint: target.installationFingerprint, driverId: harness, driverRevision: '1',
     protocolRevision: payload.protocolRevision, environmentGeneration: 'unit-worker-environment',
     connectionGeneration: harnessConnectionGeneration(binding),
-    launcher: { requested: '/unit/codex', resolvedLauncher: '/unit/codex', fingerprint: target.installationFingerprint,
-      payloadFingerprints: [{ path: '/unit/codex', fingerprint: 'a'.repeat(64) }], status: 'installed', interpreter: null,
+    launcher: { requested: binary, resolvedLauncher: binary, fingerprint: target.installationFingerprint,
+      payloadFingerprints: [{ path: binary, fingerprint: 'a'.repeat(64) }], status: 'installed', interpreter: null,
       diagnostics: [], environment: { generation: 'unit-worker-environment', provenance: 'worker', cwd: f.root, path: '/usr/bin' },
-      checkedAt: timestamp }, observedVersion: '0.154.0', installed: true, authenticated: true, compatible: true, qualified: true }
+      checkedAt: timestamp }, observedVersion: version, installed: true, authenticated: true, compatible: true, qualified: true }
   const override = { instanceId: payload.instanceId, revision: 1, instanceRevision: payload.instanceRevision,
-    target, presetId: 'unit-preset', enabled: true, driverId: 'codex', configuration: f.request.configuration.harness,
+    target, presetId: 'unit-preset', enabled: true, driverId: harness, configuration: f.request.configuration.harness,
     configurationFingerprint: commandInputHash(withAdvancedDefaults(f.request.configuration.harness)), qualification: 'qualified' }
-  const qualification = { harness: 'codex', version: '0.154.0', binarySha256: 'a'.repeat(64), status: 'qualified',
-    profile: 'codex-0.156', suiteRevision: 'codex-live-4', checks: [{ id: 'unit-native-check', passed: true, detail: null }],
+  const qualification = { harness, version, binarySha256: 'a'.repeat(64), status: 'qualified',
+    profile: harness === 'codex' ? 'codex-0.156' : 'opencode-1.18.31', suiteRevision, checks: [{ id: 'unit-native-check', passed: true, detail: null }],
     failureReason: null, startedAt: timestamp, checkedAt: timestamp }
   const facts = ExecutionFactsResultSchema.parse({ version: 1, intent: f.intent, placement: f.placement,
     configuration: f.request.configuration, executionPlacement: f.nativePlacement,
     harness: { installation, override, qualification, profileProof: {
       target, instanceRevision: override.instanceRevision, configurationFingerprint: override.configurationFingerprint,
-      driverId: 'codex', driverRevision: '1', protocolRevision: payload.protocolRevision,
-      suiteRevision: 'codex-profile-check-v1', environmentGeneration: installation.environmentGeneration,
+      driverId: harness, driverRevision: '1', protocolRevision: payload.protocolRevision,
+      suiteRevision: `${harness}-profile-check-v1`, environmentGeneration: installation.environmentGeneration,
       connectionGeneration: installation.connectionGeneration, authenticated: true, compatible: true,
       qualified: true, checkedAt: timestamp,
     } } })
   // Main, installed-binary and native-process observations are unit doubles; the host, journal and source guards are real.
-  const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex').mockImplementation(async () => ({
+  const inspect = vi.spyOn(installedInspection, harness === 'codex' ? 'inspectInstalledCodex' : 'inspectInstalledHarness').mockImplementation(async () => ({
     inventory: { instances: [], installations: [facts.harness.installation] },
     currentTarget: { binding, target, installation: facts.harness.installation,
-      binarySha256: 'a'.repeat(64), expectedVersion: '0.154.0' },
+      binarySha256: 'a'.repeat(64), expectedVersion: version },
   }))
   let authorized = true
   const readMain = vi.fn(async (raw: unknown): Promise<DeviceApplicationResult> => {
@@ -972,8 +993,9 @@ async function constructionFixture() {
       attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt: '2099-01-01T00:00:00.000Z' } }
   })
   const file = join(f.root, 'installed-workflow.json')
-  await writeFile(file, JSON.stringify({ schemaVersion: 1, codexBinary: '/unit/codex', appMcpLauncher: '/unit/launcher.mjs',
-    expectedVersion: 'codex-cli 0.154.0', payloadPaths: [] }), { mode: 0o600 })
+  const selection = harness === 'codex' ? { codexBinary: binary, expectedVersion: version, payloadPaths: [] }
+    : { opencode: { binary, expectedVersion: version, payloadPaths: [] } }
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, ...selection, appMcpLauncher: '/unit/launcher.mjs' }), { mode: 0o600 })
   const journal = await RemoteOperationJournal.open(join(f.root, 'construction-journal'), { initializeNewInstallation: true })
   journals.push(journal)
   const n = nativeFixture()
@@ -988,7 +1010,9 @@ async function constructionFixture() {
     configuration: { path: file, ownerUid: process.getuid!() }, currentBinding,
     captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding: currentBinding(), request: readMain },
     sources: f.sources, approvedRoots: async () => f.approvedRoots,
-    codexSuiteRevision: 'codex-live-4', signal: new AbortController().signal, registry: n.registry, journal: openJournal }
+    codexSuiteRevision: 'codex-live-4', openCodeSuiteRevision: 'opencode-live-1',
+    ...(fixtureOptions.openCodeNativeOutputs ? { openCodeNativeOutputs: fixtureOptions.openCodeNativeOutputs } : {}),
+    signal: new AbortController().signal, registry: n.registry, journal: openJournal }
   const host = await createInstalledWorkflowHost(options)
   if (host.kind !== 'configured') throw new Error('Expected configured installed host')
   const handler = host.extensions[0]!.handle!
@@ -1015,6 +1039,159 @@ function delayedFacts(readMain: Awaited<ReturnType<typeof constructionFixture>>[
 }
 
 describe('installed workflow construction concurrency', () => {
+  it.each(['completion', 'Stop'] as const)('publishes through an installed OpenCode turn before %s', async ending => {
+    const provider = new FixtureServer()
+    provider.agents = [{ name: 'build', permission: [] }, { name: 'plan', permission: [] }]
+    provider.nextSessionIds = ['original-session']
+    // Only the external provider/process boundary is replayed; the installed host,
+    // qualification reader, session manager, MCP listener and output registry are real.
+    vi.spyOn(InstalledOpenCodeServer.prototype, 'ensure').mockImplementation(async function (this: InstalledOpenCodeServer, signal) {
+      await provider.ensure(signal)
+      this.expectedVersion = provider.expectedVersion
+      this.generation = provider.generation
+    })
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'restart').mockImplementation(async function (this: ManagedOpenCodeServer, environment) {
+      await provider.restart(environment)
+      this.expectedVersion = provider.expectedVersion
+      this.generation = provider.generation
+    })
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'credentialEnvironmentFingerprint', 'get')
+      .mockImplementation(() => provider.credentialEnvironmentFingerprint)
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'residentGeneration', 'get').mockImplementation(() => provider.generation)
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'request').mockImplementation((...args) => provider.request(...args))
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'requestResident').mockImplementation((path, signal, generation) =>
+      provider.request(path, {}, signal, generation))
+    vi.spyOn(ManagedOpenCodeServer.prototype, 'dispose').mockImplementation(() => provider.dispose())
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
+    const file = await fileToolFixture()
+    const canonical = await mkdtemp(join(process.cwd(), '.installed-opencode-files-'))
+    roots.push(canonical)
+    const files = new TemporaryFileService(file.repository, new FileByteStorage(canonical, MAX_FILE_BYTES),
+      { resolve: async () => file.scope }, undefined, file.clock)
+    let published: AgentFilePublishResult | undefined
+    const f = await constructionFixture({ harness: 'opencode', artifactOutputKeys: ['report'],
+      openCodeNativeOutputs: context => {
+        if (file.scope.chat.kind !== 'agent' || context.placement.payload.kind !== 'agent') throw new Error('Expected Agent')
+        file.scope.chat.agentId = context.placement.payload.agentId
+        file.scope.chat.runId = context.intent.runId
+        file.scope.chat.executionId = context.intent.executionId
+        return createBufferedNativeOutputs({ budget: new NativeOutputMemoryBudget(),
+          assertCurrent: signal => context.assertCurrent(undefined, signal),
+          assertQualified: (qualification, signal) => {
+            if (!('directory' in qualification)) throw new Error('Expected OpenCode output qualification')
+            return context.qualifyOpenCodeNativeOutput(qualification, signal)
+          },
+          authorize: async (pin, _operation, signal) => {
+            await context.assertCurrent(pin, signal)
+            return file.scope
+          },
+          publish: async (publication, source, callback, signal) => {
+            const snapshot = await source.sealed(publication, callback, signal)
+            const bytes = await snapshot.read(0, snapshot.byteSize, signal)
+            const target = { conversationId: file.scope.chat.conversationId }
+            await files.allocateAgentResult(file.principal, target, { requestId: publication.commandId,
+              filename: publication.filename, mediaType: publication.mediaType, sha256: snapshot.sha256,
+              byteSize: snapshot.byteSize }, 'agent_output', publication.commandId)
+            await files.upload(file.principal, target, publication.commandId, Readable.from([bytes]))
+            published = await files.finalize(file.principal, target, publication.commandId)
+            context.observeArtifactPublication({ transferId: randomUUID(), publication }, published)
+            return published
+          },
+        }).opencode
+      } })
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
+    vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
+    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+      f.snapshot.mockReturnValue({ revision: 'closed', launches: [{ ...f.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      return true
+    })
+    const settled = deferred()
+    const uncertain = deferred()
+    const recordTerminal = f.journal.terminal.bind(f.journal)
+    vi.spyOn(f.journal, 'terminal').mockImplementation(async (operationId, evidence) => {
+      const receipt = await recordTerminal(operationId, evidence)
+      settled.resolve()
+      return receipt
+    })
+    const recordUncertainty = f.journal.uncertain.bind(f.journal)
+    vi.spyOn(f.journal, 'uncertain').mockImplementation(async (operationId, reason) => {
+      const receipt = await recordUncertainty(operationId, reason)
+      uncertain.resolve()
+      return receipt
+    })
+    let registration: { config: { url: string; headers: { Authorization: string } } } | undefined
+    const submitted = deferred()
+    provider.beforeRequest = (path, request) => {
+      if (new URL(path, 'http://provider.invalid').pathname !== '/mcp' || request.method !== 'POST') return undefined
+      registration = JSON.parse(String(request.body)) as typeof registration
+      return json(true)
+    }
+    provider.onPrompt = () => { submitted.resolve() }
+    const call = (method: string, fields: Record<string, unknown> = {}) => f.handler({ method,
+      intent: f.intent, placement: f.placement, ...fields }, f.context)
+    const tool = async (name: string, args: unknown, authorization = registration?.config.headers.Authorization) => {
+      if (!registration || !authorization) throw new Error('Original output MCP registration missing')
+      const response = await fetch(registration.config.url, { method: 'POST', headers: {
+        Authorization: authorization, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }) })
+      const body = await response.text()
+      if (response.status !== 200) return { status: response.status, result: undefined }
+      const message = body.startsWith('event:') ? body.split('\n').find(line => line.startsWith('data:'))!.slice(5) : body
+      return { status: response.status, result: (JSON.parse(message) as { result: {
+        isError?: boolean; structuredContent?: { artifactId: string; operation: string }
+      } }).result }
+    }
+    try {
+      const prepared = await call('prepare', { request: f.request, executionPlacement: f.nativePlacement,
+        applicationAccess: { kind: 'scoped-worker-mcp', token: 'original-main-token', agentId: f.request.configuration.agentId,
+          executionId: f.intent.executionId, operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash } })
+      expect(prepared.payload).toMatchObject({ session: { harness: 'opencode', nativeSessionId: 'original-session' } })
+      await call('start-turn', { prompt: 'Create the report.', correlationId: 'execution:execution' })
+      expect(await Promise.race([submitted.promise.then(() => 'submitted'), uncertain.promise.then(() => 'uncertain')]))
+        .toBe('submitted')
+      const command = { operation: 'create', commandId: randomUUID(), filename: 'report.txt', mediaType: 'text/plain' }
+      expect((await tool('files.native_output_create', command, 'Bearer foreign')).status).toBe(401)
+      const created = await tool('files.native_output_create', command)
+      expect(created.result?.isError).not.toBe(true)
+      const artifactId = created.result?.structuredContent?.artifactId
+      expect(artifactId).toBeDefined()
+      await tool('files.native_output_append', { operation: 'append', commandId: randomUUID(), artifactId,
+        offset: 0, contentBase64: Buffer.from('installed original output').toString('base64') })
+      await tool('files.native_output_seal', { operation: 'seal', commandId: randomUUID(), artifactId })
+      const commandId = randomUUID()
+      expect((await tool('files.native_output_publish', { operation: 'publish', publication: {
+        commandId, artifactId, filename: 'report.txt', mediaType: 'text/plain' } })).result?.isError).not.toBe(true)
+      if (!published) throw new Error('Original publication missing')
+      const restored = new TemporaryFileService(file.repository, new FileByteStorage(canonical, MAX_FILE_BYTES),
+        { resolve: async () => file.scope }, undefined, file.clock)
+      const readback = await restored.download(file.principal, { conversationId: file.scope.chat.conversationId }, {
+        fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId })
+      const parts: Buffer[] = []
+      for await (const part of readback.stream) parts.push(Buffer.from(part as Uint8Array))
+      expect(Buffer.concat(parts).toString()).toBe('installed original output')
+      if (ending === 'completion') {
+        provider.complete('execution:execution', JSON.stringify({ data: { original: true },
+          artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId }] } }), 'original-session')
+        expect(await Promise.race([settled.promise.then(() => 'closed'), uncertain.promise.then(() => 'uncertain')]))
+          .toBe('closed')
+      } else {
+        await call('control', { command: { schemaVersion: 1, protocolVersion: 1, commandId: randomUUID(),
+          operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } } })
+      }
+      const history = await call('history')
+      expect(history.payload).toMatchObject({ status: { receipt: { terminal: {
+        kind: ending === 'completion' ? 'completed' : 'cancelled' } } } })
+      expect(provider.calls.filter(request => new URL(request.path, 'http://provider.invalid').pathname === '/session'
+        && request.method === 'POST')).toHaveLength(1)
+      expect(provider.calls.filter(request => request.path.includes('/prompt_async'))).toHaveLength(1)
+    } finally { await f.host.close() }
+  })
+
   it.each(['qualification', 'thread acknowledgement'] as const)(
     'closes an original pending %s on reconnect while the worker remains alive', async stage => {
       const f = await constructionFixture()

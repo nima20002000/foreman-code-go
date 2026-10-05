@@ -588,6 +588,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if (settings.harness !== 'opencode') unavailable('accepted_configuration_conflict')
           const server = new InstalledOpenCodeServer({ binary: binary!,
             workingDirectory: configurationContext.workingDirectory, ownerAgentId: actual.capture.facts.configuration.agentId,
+            appMcpAccess: 'scoped',
             processRecovery: actual.scope, assertInstallation: async effectSignal => {
               effectSignal?.throwIfAborted()
               await before()
@@ -597,6 +598,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           { reader: actual.reader, suiteRevision: input.openCodeSuiteRevision
             ?? qualificationRevisionWithIdentity(opencodeQualificationSuite.revision) })
           const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: actual.capture.facts.configuration.agentId,
+            appMcpAccess: 'scoped',
             ...(outputs ? { nativeOutputs: outputs } : {}) })
           actual.manager = manager
           return manager
