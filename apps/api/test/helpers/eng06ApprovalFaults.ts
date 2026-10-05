@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
 import type { DurableInteraction, NativeSessionReference } from '@foreman-code/contracts'
@@ -107,7 +108,7 @@ export class ApprovalTransportFaults {
       ...raw,
       async createSession(input, signal) {
         open()
-        if (input.kind === 'operator') throw new Error('This fixture owns workflow sessions only')
+        if (!isWorkflowStart(input)) throw new Error('This fixture owns workflow sessions only')
         const session = await raw.createSession(input, signal)
         await faults.processes.start(input.request.executionId, session.nativeSessionId)
         attached.set(session.nativeSessionId, session)

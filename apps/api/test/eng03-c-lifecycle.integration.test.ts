@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
@@ -60,7 +61,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
       error: { code: 'SYNTHETIC_PROCESS_EXIT', message: 'Task-owned provider exited.', retryable: false } }
     vi.spyOn(f.provider, 'createSession').mockImplementation(async (input) => {
       const session = await create(input)
-      if (input.kind !== 'operator' && input.request.workflowNodeId === failing) failedSession = session.nativeSessionId
+      if (isWorkflowStart(input) && input.request.workflowNodeId === failing) failedSession = session.nativeSessionId
       return session
     })
     vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {

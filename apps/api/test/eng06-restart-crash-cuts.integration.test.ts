@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -102,7 +103,7 @@ function failEntryAtProvider(t: Runtime, allAttempts = false) {
   const create = t.provider.createSession.bind(t.provider)
   vi.spyOn(t.provider, 'createSession').mockImplementation(async (input) => {
     const session = await create(input)
-    if (input.kind !== 'operator' && input.request.workflowNodeId === t.f.version.entryNodeId
+    if (isWorkflowStart(input) && input.request.workflowNodeId === t.f.version.entryNodeId
       && (allAttempts || !first)) {
       first ??= input.request.executionId
       failed.add(session.nativeSessionId)

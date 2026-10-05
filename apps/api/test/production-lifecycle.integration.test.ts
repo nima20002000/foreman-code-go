@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { mkdir, rename, rm } from 'node:fs/promises'
@@ -95,7 +96,7 @@ beforeEach(async () => {
     } }
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
-    if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
+    if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
     const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
     connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
@@ -195,12 +196,12 @@ beforeEach(async () => {
   // Replace only the external HTTP/SSE server. The real OpenCode adapter emits
   // its original history and submission evidence into production capture ports.
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'createSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, input, signal) {
-    if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
+    if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
     serverFor(this, input)
     return originalCreate.call(this, input, signal)
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'attachSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, reference, input, signal) {
-    if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
+    if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
     native.attaches++
     serverFor(this, input)
     return originalAttach.call(this, reference, input, signal)

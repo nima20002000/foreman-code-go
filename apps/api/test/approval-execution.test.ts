@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import assert from 'node:assert/strict'
 
 import type {
@@ -509,7 +510,7 @@ it('reconstructs cold attachment from the ensured durable execution rather than 
   assert.equal(observation.execution.id, f.candidate.id)
   const attached = f.manager.attaches[0]!
   assert.notEqual(attached.kind, 'operator')
-  if (attached.kind === 'operator') throw new Error('expected workflow')
+  if (!isWorkflowStart(attached)) throw new Error('expected workflow')
   assert.equal(attached.request.executionId, f.candidate.id)
   assert.equal(attached.request.runtimeDirectory, f.candidate.runtimeDirectory)
   assert.deepEqual(attached.request.input, f.candidate.input)
