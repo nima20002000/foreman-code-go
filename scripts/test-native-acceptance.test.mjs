@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { promisify } from 'node:util'
 import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
   nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
 
@@ -115,3 +116,21 @@ test('the root acceptance command forwards file selection and rejects invalid pa
   assert.notEqual(result.status, 0)
   assert.match(result.stdout + result.stderr, /Invalid acceptance test file:/)
 })
+
+test('the package acceptance command forwards explicit selectors through its shell wrapper', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'acceptance-arguments-'))
+  const bin = join(root, 'bin')
+  const capture = join(root, 'arguments')
+  try {
+    await mkdir(bin)
+    // Substitute commands only; no native execution or qualification occurs in this argument test.
+    await writeFile(join(bin, 'corepack'), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    await writeFile(join(bin, 'node'), '#!/bin/sh\nif [ "$2" = "--" ]; then shift 2; exec "$@"; fi\nprintf "%s\\n" "$@" >"$CAPTURE"\n', { mode: 0o700 })
+    const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+    const selected = 'test/opencode-qualification.acceptance.test.ts'
+    await promisify(execFile)('sh', ['-c', `${manifest.scripts['test:acceptance']} --files ${selected}`], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CAPTURE: capture },
+    })
+    const args = (await readFile(capture, 'utf8')).trimEnd().split('\n').slice(1)
+    assert.deepEqual(nativeAcceptanceFiles(args), [selected])
+  } finally { await rm(root, { recursive: true, force: true }) }})
