@@ -55,6 +55,23 @@ import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
+
+function nativeFailure(error: unknown, depth = 0): Record<string, unknown> {
+  if (!(error instanceof Error)) return { name: typeof error }
+  const redact = nativePersistenceRedactor([])
+  const result: Record<string, unknown> = {
+    name: error.name,
+    code: 'code' in error ? redact.text(String(error.code)).slice(0, 200) : null,
+    message: redact.text(error.message).slice(0, 2_000),
+  }
+  if (depth < 3) {
+    if (error.cause !== undefined) result.cause = nativeFailure(error.cause, depth + 1)
+    if (error instanceof AggregateError) {
+      result.errors = [...error.errors].slice(0, 4).map(child => nativeFailure(child, depth + 1))
+    }
+  }
+  return result
+}
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
