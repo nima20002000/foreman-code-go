@@ -23,6 +23,9 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 ### Fixed
 
+- Keep each computer's native qualification independent when multiple hosts check the same installed binary.
+- Deliver approvals on the initial native connection and retain response history after the provider process closes.
+- Finish source cleanup after the original native finalizer and use cleanup read authority without renewing model-tool access.
 - Preserve original execution, process and journal ownership through reconnects, Main restart, worker crashes and credential renewal.
 - Continue verified original sessions after a host preset changes while retaining latest enabled settings for new launches.
 - Keep retained remote Orchestrator source claims active until the original process closes, preserving ownership and storage accounting during review turns.
