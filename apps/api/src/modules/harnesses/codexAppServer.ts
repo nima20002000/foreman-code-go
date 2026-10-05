@@ -24,6 +24,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
+import { inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
@@ -252,16 +253,12 @@ function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
 }
 function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-  for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_') || key === APP_MCP_TOKEN
-      || scopedNames.includes(key) || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key)) delete environment[key]
-  }
+  const environment = inheritedAgentEnvironment()
+  for (const key of scopedNames) delete environment[key]
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
       // Operator and Worker credentials share GRAPHQL_MCP_TOKEN; the server resolves the role from the token.
-      if ((key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-        || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key))) {
+      if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || isDatabaseCredentialVariable(key)) {
         throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
       }
       environment[key] = value

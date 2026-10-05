@@ -101,7 +101,11 @@ const approval = (nativeTurn, id) => {
     availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
   } })
 }
-log({ pid: process.pid, agent })
+const expectedEnvironment = read('expected-environment.json', {})
+const environmentMatches = Object.fromEntries(Object.entries(expectedEnvironment).map(([key, expected]) => [
+  key, expected === null ? !Object.hasOwn(process.env, key) : process.env[key] === expected,
+]))
+log({ pid: process.pid, agent, environmentMatches })
 process.on('exit', () => { log({ exited: process.pid }) })
 process.on('SIGTERM', () => { if (!flag('ignore-term')) process.exit(0) })
 const inbox = path.join(root, `inbox-${agent}.jsonl`)

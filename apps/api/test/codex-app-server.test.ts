@@ -77,6 +77,13 @@ async function assertCode(action: Promise<unknown>, code: string): Promise<void>
 async function assertDead(pid: number): Promise<void> {
   await until(async () => { try { process.kill(pid, 0); return false } catch { return true } })
 }
+async function assertSpawnedEnvironment(expected: Record<string, string | null>, launches: number): Promise<void> {
+  const processes = (await calls(f.directory)).filter((entry) => typeof entry.pid === 'number')
+  assert.equal(processes.length, launches)
+  assert.equal(new Set(processes.map((entry) => entry.pid)).size, launches)
+  assert.deepEqual(processes.at(-1)!.environmentMatches,
+    Object.fromEntries(Object.keys(expected).map((key) => [key, true])))
+}
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
@@ -216,6 +223,84 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal(session.harness, 'codex')
     assert(session.nativeSessionId)
   })
+
+  it('filters inherited database secrets on launch, credential refresh and cold resume', async () => {
+    const environment = source.environment!
+    const inherited = {
+      DATABASE_URL: 'postgresql://test-only-owner:test-only-password@localhost/test-only-database',
+      TEST_DATABASE_URL: 'postgresql://test-only-owner:test-only-password@localhost/test-only-database',
+      PGPASSWORD: 'test-only-password',
+      GRAPHQL_PRODUCTION_DB_PASSWORD: 'test-only-production-password',
+      OPERATOR_TOKEN: 'test-only-operator-token',
+      GRAPHQL_OPERATOR_TOKEN: 'test-only-operator-token',
+      GRAPHQL_APP_TOKEN: 'test-only-app-token',
+      GRAPHQL_MCP_TOKEN: 'test-only-ambient-token',
+      TEST_VISIBLE_SETTING: 'retained-setting',
+      NO_COLOR: 'ambient-color',
+    }
+    const expected: Record<string, string | null> = {
+      ...Object.fromEntries(Object.keys(inherited).map((key) => [key, null])),
+      GRAPHQL_MCP_TOKEN: environment.variables.GRAPHQL_MCP_TOKEN!,
+      TEST_VISIBLE_SETTING: inherited.TEST_VISIBLE_SETTING,
+      TEST_AGENT_ID: 'agent-a',
+      NO_COLOR: '1',
+    }
+    for (const [key, value] of Object.entries(inherited)) vi.stubEnv(key, value)
+    try {
+      await json('expected-environment.json', expected)
+      const session = await manager.createSession(source)
+      await assertSpawnedEnvironment(expected, 1)
+
+      source.environment = {
+        agentId: environment.agentId,
+        variables: { ...environment.variables, GRAPHQL_MCP_TOKEN: 'replacement-scoped-token' },
+      }
+      expected.GRAPHQL_MCP_TOKEN = 'replacement-scoped-token'
+      await json('expected-environment.json', expected)
+      await manager.refreshProcessEnvironment(session, source.environment!)
+      await assertSpawnedEnvironment(expected, 2)
+      assert.equal((await wire('thread/resume')).length, 1)
+
+      await manager.closeForRestart(session)
+      const replacement = makeManager()
+      assert.deepEqual(await replacement.attachSession(session, source), session)
+      await assertSpawnedEnvironment(expected, 3)
+      assert.equal((await wire('thread/start')).length, 1)
+      assert.equal((await wire('thread/resume')).length, 2)
+      await collect(replacement.startTurn(session, { prompt: 'complete', clientCorrelationId: 'environment-recovered' }))
+      assert.equal((await replacement.history(session)).terminalResult?.outcome, 'succeeded')
+      for (const [key, value] of Object.entries(inherited)) assert.equal(process.env[key], value)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }, 15_000)
+
+  for (const key of ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD']) {
+    it(`rejects ${key} reinjection on launch, credential refresh and cold resume`, async () => {
+      const invalid = structuredClone(source)
+      invalid.environment = {
+        agentId: source.environment!.agentId,
+        variables: { ...source.environment!.variables, [key]: 'test-only-database-secret' },
+      }
+      await assertCode(manager.createSession(invalid), 'CODEX_ENVIRONMENT_INVALID')
+      assert.equal((await calls(f.directory)).length, 0)
+
+      const session = await manager.createSession(source)
+      await assertCode(manager.refreshProcessEnvironment(session, invalid.environment!), 'CODEX_ENVIRONMENT_INVALID')
+      assert.equal((await calls(f.directory)).filter((entry) => typeof entry.pid === 'number').length, 1)
+      assert.equal((await wire('thread/resume')).length, 0)
+      await manager.inspectConfiguration(session)
+
+      await manager.closeForRestart(session)
+      const replacement = makeManager()
+      const before = await calls(f.directory)
+      await assertCode(replacement.attachSession(session, invalid), 'CODEX_ENVIRONMENT_INVALID')
+      assert.deepEqual(await calls(f.directory), before)
+      assert.deepEqual(await replacement.attachSession(session, source), session)
+      await collect(replacement.startTurn(session, { prompt: 'complete', clientCorrelationId: 'valid-environment' }))
+      assert.equal((await replacement.history(session)).terminalResult?.outcome, 'succeeded')
+    }, 15_000)
+  }
 
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
     const session = await manager.createSession(source)
