@@ -351,7 +351,8 @@ it('approval waiting is not bounded by an active run timer', async () => {
   await f.engine.resumeInteraction(item); assert.equal(f.run.outcome, 'succeeded')
 })
 it('does not report its own restart cancellation from background reconciliation', async () => {
-  const f = fixture(), entered = deferred()
+  const f = fixture(), entered = deferred(), item = f.addInteraction(1, true)
+  f.waiting(item)
   const errors: unknown[] = []
   f.control.work = async context => {
     entered.resolve()
