@@ -20,7 +20,7 @@ import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.
 import type { ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
 import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
 import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
-import { deferred } from './helpers/agentChatF5.js'
+import { deferred } from './helpers/wave25Agent3.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
 
 // Codex uses an executable protocol fixture. OpenCode uses its installed server
@@ -106,6 +106,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   let owner: ManagementPrincipal
   let nativeFixture: Awaited<ReturnType<typeof nativeConfigurationFixture>>
   let nativeFinished: ReturnType<typeof deferred>
+  let nativeAccepted: ReturnType<typeof deferred>
+  let waitingForNative: boolean
   let setup: ReturnType<typeof vi.spyOn>, prepare: ReturnType<typeof vi.spyOn>
   const issued: Array<{ context: FileToolContext; token: string }> = []
   const managers = new Map<string, NativeHarnessSessionManager>()
@@ -123,6 +125,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
     nativeFinished = deferred()
+    nativeAccepted = deferred()
+    waitingForNative = false
+    const accepted = nativeAccepted
     nativeFixture = await nativeConfigurationFixture({ files: true, respond: async () => 'done',
       beforeFinish: async () => { await nativeFinished.promise } })
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
@@ -164,6 +169,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       mode: 'native', openCodeServer: options => {
         serverOptions.push(options)
         const server = new RecordedOpenCodeServer({ ...options, pure: true })
+        server.onPromptAccepted = () => accepted.resolve()
         servers.push(server)
         return server
       },
@@ -192,6 +198,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   }, 30000)
 
   afterEach(async () => {
+    if (waitingForNative) nativeAccepted.reject(new Error('Operator fixture is closing.'))
     nativeFinished?.resolve()
     try { await chat?.shutdown() } finally {
       try { await app?.close() } finally {
@@ -207,6 +214,31 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       }
     }
   })
+
+  async function waitForFileCredential(harness: 'codex' | 'opencode', conversationId: string, requestId: string) {
+    if (harness === 'opencode') {
+      waitingForNative = true
+      const unsubscribe = chat.events.subscribe(conversationId, event => {
+        if (event.data.requestId === requestId && (event.type === 'error' || event.data.turnState === 'error')) {
+          nativeAccepted.reject(new Error('Operator native admission failed: ' + JSON.stringify(event.data)))
+        }
+      })
+      try {
+        // Queue admission precedes native startup; the credential deadline follows the actual native ACK.
+        await Promise.all([nativeAccepted.promise, chat.get(conversationId, owner).then(state => {
+          expect(state.turnState, state.error ?? 'Operator native admission failed').not.toBe('error')
+        })])
+      } finally {
+        unsubscribe()
+        waitingForNative = false
+      }
+    }
+    await until(async () => {
+      const state = await chat.get(conversationId, owner)
+      expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
+      return issued.length === 1
+    }, 10000)
+  }
 
   it.each(['codex-cli 0.154.0', 'codex-cli 0.156.1'])(
     'R2-1 %s: a completed text-first Operator thread retains callable file tools on attachment resume', async (version) => {
@@ -367,11 +399,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       const command = { requestId: randomUUID(), content: '', attachments: [ref] }
       const read = vi.spyOn(tools, 'readAccepted')
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => {
-        const state = await chat.get(conversation.id, owner)
-        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
-        return issued.length === 1
-      }, 10000)
+      await waitForFileCredential(harness, conversation.id, command.requestId)
       const context = issued[0]!.context
       expect(context.scope).toEqual({ kind: 'temporary', chat: {
         kind: 'operator', ownerPrincipalId: owner.id, operatorId: current.operator.id, conversationId: conversation.id,
@@ -472,11 +500,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       }
       const command = { requestId: randomUUID(), content: '', attachments }
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => {
-        const state = await chat.get(conversation.id, owner)
-        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
-        return issued.length === 1
-      }, 10000)
+      await waitForFileCredential(harness, conversation.id, command.requestId)
       const { context, token } = issued[0]!
       const receipt = async () => (await pool.query<{ input_hash: string; payload: unknown; message_id: string }>(
         'select input_hash,payload,message_id from operator_conversation_turns where conversation_id=$1 and request_id=$2',
