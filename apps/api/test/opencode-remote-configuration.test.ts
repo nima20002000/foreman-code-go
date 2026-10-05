@@ -10,8 +10,9 @@ it.each(['reference', 'static', 'other-header', 'endpoint', 'transport'] as cons
     const endpoint = 'http://127.0.0.1:41781/mcp'
     vi.spyOn(commands, 'runCommand').mockImplementation(async (_binary, args, _directory, _signal, environment) => {
       if (args[0] === '--version') return { exitCode: 0, stdout: '1.18.31', stderr: '' }
-      const injected = await environment?.beforeSpawn?.()
-      const marker = injected?.variables.GRAPHQL_MCP_TOKEN ?? ''
+      const beforeSpawn = environment?.beforeSpawn
+      const injected = typeof beforeSpawn === 'function' ? await beforeSpawn() : undefined
+      const marker = injected ? injected.variables.GRAPHQL_MCP_TOKEN ?? '' : ''
       const config = { mcp: { graphql: {
         type: marker && mode === 'transport' ? 'local' : 'remote',
         url: marker && mode === 'endpoint' ? 'http://127.0.0.1:41782/mcp' : endpoint,
