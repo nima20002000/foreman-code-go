@@ -80,11 +80,13 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
     const measured = await readHostHarnessMeasurements(sql, harness, binarySha256, suites[harness])
-    const matching = measured.filter(row => row.qualification.status === 'qualified'
-      && measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
-    if (matching.length !== 1) unavailable('main_qualification_identity_missing')
-    installation.observedVersion = matching[0]!.qualification.version
-    measuredQualification = matching[0]!.qualification
+    const matching = measured.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
+      .sort((left, right) => Date.parse(right.qualification.checkedAt ?? right.qualification.startedAt)
+        - Date.parse(left.qualification.checkedAt ?? left.qualification.startedAt))
+    const latest = matching[0]?.qualification
+    if (!latest || latest.status !== 'qualified') return unavailable('main_qualification_identity_missing')
+    installation.observedVersion = latest.version
+    measuredQualification = latest
   }
   let selectedQualification = measuredQualification ?? profileProof.completedNativeQualification?.record
   if (!selectedQualification) {
