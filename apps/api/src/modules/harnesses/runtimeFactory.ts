@@ -254,6 +254,7 @@ export class NativeHarnessFactories {
               owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
         ...(input.chatFiles && this.config.openCodeFileStorageRoot
           ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
+        ...(input.role === 'workflow' && recovery ? { restartDetachable: true as const } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),

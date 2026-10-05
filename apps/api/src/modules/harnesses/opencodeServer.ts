@@ -190,6 +190,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private get generation(): number { return this.options.server.generation ?? 0 }
   private get providerVersion(): string { return this.healthVersion ?? this.options.server.expectedVersion }
 
+  recoverEnvironment(): ChildProcessEnvironment | undefined {
+    return this.options.server.recoverEnvironment?.()
+  }
+
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
     await this.exclusive(() => this.ready(this.signal(signal)))
     return NativeHarnessCapabilitiesSchema.parse({
@@ -1307,8 +1311,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'File input cleanup requires closing its dedicated native process.')
       }
       if (this.sessions.size === 1) {
-        await this.disposeUnusedServer()
-        await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000))
+        const detached = restart && await this.options.server.detachForRestart?.()
+        if (!detached) {
+          await this.disposeUnusedServer()
+          await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000))
+        }
       } else if (state.turn?.files) await this.finishFiles(state.turn, 'terminal')
       if (restart) this.restartClosures.set(session.nativeSessionId, structuredClone(session))
       this.sessions.delete(session.nativeSessionId)
@@ -1408,10 +1415,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (this.boundEnvironmentFingerprint === fingerprint) return
     if (this.boundEnvironmentFingerprint) throw new HarnessExecutionError('OPENCODE_CREDENTIAL_CONTEXT_MISMATCH', 'Use explicit idle renewal to change this manager credential context.')
     if (environment) {
-      if (!this.options.server.restart) throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_UNSUPPORTED', 'This controller cannot bind the scoped App credential.')
-      await this.options.server.restart(selected, signal)
-      this.readyGeneration = undefined
-      this.healthVersion = undefined
+      const retained = this.options.server.residentGeneration !== undefined
+        && this.options.server.credentialEnvironmentFingerprint === fingerprint
+      if (!retained) {
+        if (!this.options.server.restart) throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_UNSUPPORTED', 'This controller cannot bind the scoped App credential.')
+        await this.options.server.restart(selected, signal)
+        this.readyGeneration = undefined
+        this.healthVersion = undefined
+      }
     }
     this.boundEnvironmentFingerprint = fingerprint
   }
