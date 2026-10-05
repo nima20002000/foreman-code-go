@@ -246,7 +246,10 @@ export function createClaudeSdkRunner(input: {
       if (errors.length) closeFailure = new AggregateError(errors, 'Claude SDK close failed')
       else { stopped = true; closeFailure = undefined }
     }
-    const externalAbort = () => { void session.close().catch(() => undefined) }
+    const externalAbort = () => {
+      abort.abort(options.signal?.reason)
+      void session.close().catch(() => undefined)
+    }
     const session: ClaudeSdkSession = {
       output: outputQueue,
       get nativeSessionId() { return nativeSessionId },

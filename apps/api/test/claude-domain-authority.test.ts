@@ -4,6 +4,7 @@ import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
+import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/fixture', permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'AskUserQuestion'], permissionRules: [], instructions: '', mcpServers: {} }
 const session = { harness: 'claude' as const, nativeSessionId: 'native-session', providerVersion: 'fixture-cli' }
 const identity = { ownerPrincipalId: 'sender', attemptId: 'model-request', nativeSessionId: session.nativeSessionId, nativeMessageId: 'input-message', clientCorrelationId: 'accepted-correlation', generation: 'sdk-generation', toolUseId: 'tool-use', nativeRequestId: 'control-request', nativeRequestType: 'can_use_tool' as const }
@@ -15,11 +16,15 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
     payload: { ownerPrincipalId: 'sender', nativeSubmission: { kind: 'message', nativeSessionId: session.nativeSessionId, nativeMessageId: identity.nativeMessageId, clientCorrelationId: identity.clientCorrelationId } },
     pending_interaction: null as unknown, response_delivery: null as string | null }
   let receipts: unknown[] = []
+  const callbacks = claudeCallbackDatabase()
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
+    const callbackResult = callbacks(text, values)
+    if (callbackResult) return callbackResult
     const result = (rows: unknown[], rowCount = rows.length) => ({ rows, rowCount, command: 'SELECT', oid: 0, fields: [] })
     if (text.includes('from management_principals where id=')) return result(principals.has(values[0] as string) ? [principals.get(values[0] as string)] : [])
     if (text.includes('join operator_conversation_turns t')) { expect(values[0]).toBe('conversation'); expect([null, 'model-request']).toContain(values[1]); return result([structuredClone(row)]) }
-    if (text.includes('select principal_id,result from management_command_receipts')) return result(receipts)
+    if (text.includes('select principal_id,result from management_command_receipts')
+      || text.includes('select result from management_command_receipts')) return result(receipts)
     if (text.includes('set pending_interaction=')) {
       expect(values[0]).toBe('conversation'); expect(values[1]).toBe('model-request')
       row.pending_interaction = values[2] ? JSON.parse(values[2] as string) : null
@@ -167,7 +172,10 @@ it('workflow response uses original-source readback plus active delivery lease a
   const run = WorkflowRunV3Schema.parse({ id: 'run', workspaceId: 'ws', workflowId: 'wf', workflowVersionId: version.id, executionSemanticsVersion: 3, agentConfigurationVersionIds: version.agentConfigurationVersionIds, approval, executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {}, createdAt })
   const execution = HarnessExecutionSchema.parse({ id: 'exec', runId: run.id, workflowNodeId: 'node', agentId: 'agent', agentConfigurationVersionId: cfg.id, attempt: 2, nativeSessionId: session.nativeSessionId, state: 'waiting', input: {}, createdAt })
   const persisted: { interaction?: unknown } = {}; let claimed = false
-  const query = vi.fn(async (sql: string) => {
+  const callbacks = claudeCallbackDatabase()
+  const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    const callbackResult = callbacks(sql, values)
+    if (callbackResult) return callbackResult
     const rows = sql.includes('e.record as execution') ? [{ run, version, execution, configuration: cfg, attempt: 2, stopped: false, execution_closed: false, native_reference: session, finalized: false, generation: '1', native_owner: 'agent', budget_active: true }]
       : sql.includes("record->>'authorizationPrincipalId'") ? [{ principal_id: 'sender' }]
       : sql.includes('from management_principals where id=') ? [{ id: 'sender', name: 'Synthetic sender', audience: 'operator', grants: [{ actions: ['runs:start'], scope: {} }], expires_at: new Date('2099-01-01'), revoked_at: null, delegated_from: null }]

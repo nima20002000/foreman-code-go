@@ -20,6 +20,7 @@ import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
 
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const createdAt = '2026-10-01T00:00:00.000Z'
@@ -72,7 +73,11 @@ function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sh
   const execution = HarnessExecutionSchema.parse({ id: 'execution', runId: 'run', workflowNodeId: 'node', agentId: 'agent', agentConfigurationVersionId: agent.id, attempt: 1, state: 'starting', input: {}, createdAt })
   const row = { kind, owner_principal_id: 'sender', workspace_id: 'workspace', workflow_id: 'workflow', origin_run_id: surface === 'selected-run' ? 'selected-run' : null,
     active_request_id: 'request-1', native_session_id: null, provider_version: null, cancel_requested: false, deleted_at: null, record: { status: 'open' }, payload: { ownerPrincipalId: 'sender' } }
-  const query = vi.fn(async (sql: string) => {
+  const callbacks = claudeCallbackDatabase()
+  const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    const callbackResult = callbacks(sql, values)
+    if (callbackResult) return callbackResult
+    if (sql.includes("payload#>>'{nativeSubmission,clientCorrelationId}'")) return { rows: [], rowCount: 0 }
     const rows = sql.includes('e.record as execution') ? [{ run, version, execution, configuration: agent, attempt: 1, stopped: false,
       execution_closed: false, native_reference: null, finalized: false, generation: null, native_owner: null, budget_active: true }]
       : sql.includes("record->>'authorizationPrincipalId'") ? [{ principal_id: 'sender' }]
