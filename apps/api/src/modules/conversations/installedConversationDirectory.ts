@@ -7,6 +7,24 @@ import { openRootDirectory } from '../sources/rootAttestation.js'
 import { anchored, identity, openPrivateRoot, openChildDirectory } from '../sources/privateFilesystem.js'
 import { DomainError } from '../errors.js'
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
+import { requiredLocationAccess } from '../workspaces/location.js'
+
+async function inspectApprovedDirectory(approved: ApprovedRootAllowlist, path: string,
+  accessMode: 'read-only' | 'read-write') {
+  const base = approved.bases.find(value => {
+    const child = relative(value.canonicalPath, path)
+    return value.accessModes.includes(accessMode) && !isAbsolute(child) && child !== '..' && !child.startsWith('../')
+  })
+  if (!base) throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE',
+    'The chat folder or a writable folder is outside the worker’s approved roots.', 409)
+  const directory = await openRootDirectory(base.canonicalPath, relative(base.canonicalPath, path), base.filesystem)
+  try {
+    if (await realpath(anchored(directory)) !== path) {
+      throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The selected chat folder changed.', 409)
+    }
+    return await identity(directory)
+  } finally { await directory.close() }
+}
 
 /** Pins the selected project to the worker's existing human-approved root configuration. */
 export async function installedConversationDirectory(input: {
@@ -20,6 +38,16 @@ export async function installedConversationDirectory(input: {
   if (!isDeepStrictEqual(approved.hostRef, target.hostRef)
     || approved.applicationInstallationId !== target.applicationInstallationId) {
     throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE', 'This worker has no approved roots for the selected profile.', 409)
+  }
+  const harness = input.configuration.harness
+  const writablePaths = harness.harness === 'codex' ? harness.advanced?.additionalWritableDirectories ?? [] : []
+  const writable = await Promise.all(writablePaths.map(path => inspectApprovedDirectory(approved, path, 'read-write')))
+  const assertWritable = async () => {
+    for (const [index, path] of writablePaths.entries()) {
+      if (!isDeepStrictEqual(await inspectApprovedDirectory(approved, path, 'read-write'), writable[index])) {
+        throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'A configured writable folder was replaced.', 409)
+      }
+    }
   }
   if (input.binding.owner.kind === 'operator') {
     const expected = workerOperatorDirectory(approved.managedRuntimeRoot, input.binding.owner)
@@ -49,27 +77,14 @@ export async function installedConversationDirectory(input: {
       if (!isDeepStrictEqual(await input.approvedRoots(), approved) || !isDeepStrictEqual(await inspect('read'), original)) {
         throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The worker root or Operator chat folder changed.', 409)
       }
+      await assertWritable()
       signal?.throwIfAborted()
     } }
   }
-  const sandbox = input.configuration.harness.harness === 'codex' ? input.configuration.harness.sandbox : undefined
-  const accessMode = sandbox === 'read-only' ? 'read-only' : 'read-write'
-  const base = approved.bases.find(value => {
-    const path = relative(value.canonicalPath, input.binding.workingDirectory)
-    return value.accessModes.includes(accessMode) && !isAbsolute(path) && path !== '..' && !path.startsWith('../')
-  })
-  if (!base) throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE',
-    'The chat folder or its accepted sandbox access is outside the worker’s approved roots.', 409)
-  const inspect = async () => {
-    const directory = await openRootDirectory(base.canonicalPath,
-      relative(base.canonicalPath, input.binding.workingDirectory), base.filesystem)
-    try {
-      if (await realpath(anchored(directory)) !== input.binding.workingDirectory) {
-        throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The selected chat folder changed.', 409)
-      }
-      return await identity(directory)
-    } finally { await directory.close() }
-  }
+  if (!('agentId' in input.configuration)) throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE',
+    'The selected node chat requires its Agent configuration.', 409)
+  const accessMode = requiredLocationAccess([input.configuration])
+  const inspect = () => inspectApprovedDirectory(approved, input.binding.workingDirectory, accessMode)
   const original = await inspect()
   return {
     async assertCurrent(signal?: AbortSignal) {
@@ -78,6 +93,7 @@ export async function installedConversationDirectory(input: {
       if (!isDeepStrictEqual(current, approved)) throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED',
         'The worker’s approved chat roots changed.', 409)
       const observed = await inspect()
+      await assertWritable()
       signal?.throwIfAborted()
       if (!isDeepStrictEqual(observed, original)) {
         throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The selected chat directory was replaced.', 409)

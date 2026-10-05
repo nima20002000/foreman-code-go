@@ -8,13 +8,17 @@ import { installedConversationDirectory } from './installedConversationDirectory
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 
-it('uses the approved folder and rejects replacement of that folder or its root permission', async () => {
+it.each(['codex', 'claude'])('%s uses a read-only approved folder and rejects its replacement or permission change', async harness => {
   const root = await mkdtemp(join(tmpdir(), 'conversation-root-'))
   const base = join(root, 'base')
   const project = join(base, 'project')
   const runtime = join(root, 'runtime')
   const f = workerConversationFixture('agent')
+  if (harness === 'claude') f.configuration.harness = { harness: 'claude', model: 'profile-model',
+    authMode: 'subscription', configDirectory: '/selected/profile', permissionMode: 'default',
+    sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
   try {
     await mkdir(project, { recursive: true, mode: 0o700 })
     await mkdir(runtime, { mode: 0o700 })
@@ -35,6 +39,45 @@ it('uses the approved folder and rejects replacement of that folder or its root 
     await mkdir(project, { mode: 0o700 })
     await expect(directory.assertCurrent()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_CHANGED' })
     roots.bases[0]!.accessModes = ['read-write']
+    await expect(directory.assertCurrent()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_CHANGED' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it.each(['operator', 'agent'] as const)('%s checks every additional writable folder before native startup and while it is owned', async role => {
+  const root = await mkdtemp(join(tmpdir(), 'conversation-writable-root-'))
+  const f = workerConversationFixture(role)
+  const base = join(root, 'projects')
+  const project = join(base, 'project')
+  const extra = join(base, 'extra')
+  const runtime = join(root, 'runtime')
+  try {
+    await mkdir(project, { recursive: true, mode: 0o700 })
+    await mkdir(extra, { mode: 0o700 })
+    await mkdir(runtime, { mode: 0o700 })
+    const baseHandle = await openPrivateRoot(base)
+    const runtimeHandle = await openPrivateRoot(runtime)
+    let roots
+    try {
+      roots = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef: f.binding.profile.target.hostRef,
+        applicationInstallationId: f.connection.workerInstallationId, configurationRevision: '1',
+        bases: [{ baseId: randomUUID(), canonicalPath: base, filesystem: await identity(baseHandle), accessModes: ['read-write'] }],
+        managedRuntimeRoot: runtime, runtimeFilesystem: await identity(runtimeHandle) })
+    } finally { await baseHandle.close(); await runtimeHandle.close() }
+    if (f.configuration.harness.harness !== 'codex') throw new Error('Codex fixture required')
+    const configuration = { ...f.configuration, harness: { ...f.configuration.harness,
+      sandbox: 'workspace-write' as const, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+        additionalWritableDirectories: [extra] } } }
+    const workingDirectory = f.binding.owner.kind === 'operator'
+      ? workerOperatorDirectory(runtime, f.binding.owner) : project
+    const binding = { ...f.binding, workingDirectory }
+    const directory = await installedConversationDirectory({ binding, configuration, approvedRoots: async () => roots })
+    await directory.assertCurrent()
+    await expect(installedConversationDirectory({ binding,
+      configuration: { ...configuration, harness: { ...configuration.harness,
+        advanced: { ...configuration.harness.advanced, additionalWritableDirectories: [root] } } },
+      approvedRoots: async () => roots })).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_UNAVAILABLE' })
+    await rename(extra, `${extra}-original`)
+    await mkdir(extra, { mode: 0o700 })
     await expect(directory.assertCurrent()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_CHANGED' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
