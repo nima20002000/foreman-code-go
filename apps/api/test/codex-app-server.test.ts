@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { CODEX_INTERACTION_SUPPORT,
   type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { afterEach, beforeEach, describe, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -1066,25 +1066,36 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it.each(['form', 'openai/form', 'openaiForm'])('validates %s data-entry forms before writing the user response', async (mode) => {
+    let phase = 'creating session'
+    onTestFailed(() => { console.error(`Codex ${mode} data-entry failure during ${phase}`) })
     const session = await manager.createSession(source)
+    phase = 'starting turn'
     const { result } = await start(session)
+    phase = 'injecting form'
     await inject(session, 'mcpServer/elicitation/request', { mode, serverName: 'app', message: 'Enter email', _meta: null,
       requestedSchema: { type: 'object', additionalProperties: false,
         properties: { email: { type: 'string', format: 'email' } }, required: ['email'] } }, 4002)
+    phase = 'waiting for form'
     const value = await pending(session)
     const option = value.responseOptions[0]!
     assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
     for (const response of [{}, { email: 'invalid' }, { email: 'user@example.com', extra: true }]) {
+      phase = `rejecting invalid form: ${JSON.stringify(response)}`
       await assert.rejects(manager.respond(session, value.turn.nativeRequestId!, { ...option, response }))
     }
     assert.equal((await manager.pending(session))?.turn.nativeRequestId, value.turn.nativeRequestId)
     assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
+    phase = 'delivering valid form'
     await manager.respond(session, value.turn.nativeRequestId!, { ...option, response: { email: 'user@example.com' } })
+    phase = 'reading delivered form'
     assert.deepEqual((await wire()).find((entry) => entry.id === 4002 && entry.result)!.result,
       { action: 'accept', content: { email: 'user@example.com' }, _meta: null })
     assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     assert.equal(await manager.pending(session), undefined)
-    await finish(f.directory, session.nativeSessionId); await result
+    phase = 'finishing turn'
+    await finish(f.directory, session.nativeSessionId)
+    phase = 'draining terminal turn'
+    await result
   })
 
   it('does not resend answered questions for repeated or conflicting callback identities', async () => {

@@ -1,7 +1,7 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withInteractionResponse } from '@graphql/contracts'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFailed, vi } from 'vitest'
 import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
@@ -121,13 +121,18 @@ describe('Codex child controls through the pinned protocol', () => {
 
 describe('Codex session manager child control wiring over stdio', () => {
   it.each(['command', 'file', 'questions', 'form'] as const)('routes a continued child %s request through its own callback lifecycle', async kind => {
+    let phase = 'creating fixture'
+    onTestFailed(() => { console.error(`Codex child ${kind} callback failure during ${phase}`) })
     const f = await fixture()
     const manager = new CodexAppServerSessionManager(f.binary)
     try {
       const source = input(f.directory)
+      phase = 'creating parent'
       const root = await manager.createSession(source)
+      phase = 'seeding child'
       const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
       const lease = manager.subagentControl(child, () => {})!
+      phase = 'continuing child'
       await lease.sendInput!(childControlReceipt(child, { nativeTurnId: null, nativeGeneration: lease.generation }), 'wait')
       const turnId = String((await state(f.directory, 'native-child')).turns.at(-1)!.id)
       const callbacks = {
@@ -141,8 +146,10 @@ describe('Codex session manager child control wiring over stdio', () => {
           requestedSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] } } },
       }
       const callback = callbacks[kind]
+      phase = 'injecting callback'
       await emit(f.directory, { id: 6001, method: callback.method,
         params: { threadId: 'native-child', turnId, ...callback.params } })
+      phase = 'waiting for callback'
       const pending = await until(async () => lease.pendingInteraction?.())
       expect(pending.session.nativeSessionId).toBe('native-child')
       expect(pending.turn.nativeTurnId).toBe(turnId)
@@ -153,7 +160,9 @@ describe('Codex session manager child control wiring over stdio', () => {
       const receipt = childControlReceipt(child, { operation: 'run_subagent_respond_v1', id: 'response',
         nativeGeneration: lease.generation, nativeTurnId: turnId,
         response: { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType, option } })
+      phase = 'delivering callback response'
       await lease.respond!(receipt)
+      phase = 'reading callback result'
       expect(lease.pendingInteraction!()).toBeUndefined()
       const replies = (await calls(f.directory)).filter(entry => {
         const wire = entry.wire as { id?: number; result?: unknown } | undefined
@@ -161,10 +170,13 @@ describe('Codex session manager child control wiring over stdio', () => {
       })
       expect(replies).toHaveLength(1)
       expect((await state(f.directory, root.nativeSessionId)).turns).toHaveLength(0)
+      phase = 'rejecting duplicate response'
       await expect(lease.respond!(receipt)).rejects.toThrow()
+      phase = 'closing parent'
       await manager.close(root)
       expect(() => lease.pendingInteraction!()).toThrow()
     } finally {
+      phase = `disposing fixture after ${phase}`
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
