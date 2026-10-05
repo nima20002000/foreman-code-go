@@ -194,28 +194,25 @@ async function fixture(t) {
       workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: source, filesystem,
       accessMode: 'exclusive-write', snapshotId: sourcePin.snapshotId, manifestDigest: sourcePin.manifestDigest },
     ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', registration, attestationId: 'attestation', attestationDigest: 'd'.repeat(64), boundAt: '2026-10-01T00:00:00.000Z' };
-  const backingFile = join(directory, 'backing-metadata-fixture');
-  await writeFile(backingFile, Buffer.alloc(4096), { mode: 0o400 });
+  // Only file metadata is captured here; this does not qualify an ext4 workload volume.
+  const backingFile = await realpath('/etc/machine-id');
+  const backing = await stat(backingFile);
+  assert.equal(backing.uid, 0);
+  assert.equal(backing.mode & 0o222, 0);
+  assert.equal(backing.nlink, 1);
+  assert.ok(backing.isFile() && backing.blocks * 512 >= backing.size);
   const executable = await realpath('/usr/bin/true');
   const input = { schemaVersion: 1, target: { hostRef, registration, mainInstallationId: pairing.mainId }, root,
     runtimeExecutable: executable, ociExecutable: executable, findmntExecutable: executable, runtimeRoot: runtime, backingFile,
-    controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: directory, LANG: 'C.UTF-8' }, imageDigest: `sha256:${'e'.repeat(64)}`, toolchainDigest: 'f'.repeat(64), diskBytes: 4096 };
+    controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: directory, LANG: 'C.UTF-8' }, imageDigest: `sha256:${'e'.repeat(64)}`, toolchainDigest: 'f'.repeat(64), diskBytes: backing.size };
   for (const [name, value] of [['identity.json', identity], ['pairing.json', pairing], ['approved-roots.json', approved],
     ['workflow-operations.json', { retainedOriginal: 'workflow' }], ['job-runtime-operations.json', { retainedOriginal: 'job' }]]) {
     await writeFile(join(state, name), JSON.stringify(value), { mode: 0o600 });
   }
   const inputPath = join(directory, 'input.json'); await writeFile(inputPath, JSON.stringify(input), { mode: 0o600 });
-  // Explicit metadata double for a privileged backing file; no sudo/provisioning or
-  // real-runtime qualification. All CLI guards, source/binary pins and IO remain real.
-  const hook = join(directory, 'backing-metadata-double.mjs');
-  await writeFile(hook, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
-const original=fs.promises.open;
-fs.promises.open=async function(path,...args){const handle=await original.call(this,path,...args);
-if(path===${JSON.stringify(backingFile)}){const actual=handle.stat.bind(handle);handle.stat=async options=>{const info=await actual(options);info.uid=0n;info.mode=(info.mode&~0o222n);return info;};}
-return handle;};syncBuiltinESMExports();\n`, { mode: 0o600 });
   const originalFiles = Object.fromEntries(await Promise.all((await readdir(state)).map(async name => [name, hash(await readFile(join(state, name)))])));
-  const run = (args = [], metadataDouble = false) => spawnSync(process.execPath,
-    [...(metadataDouble ? ['--import', hook] : []), join(artifact, 'src/cli.mjs'), 'capture-job-runtime', '--state', state, '--input', inputPath, ...args],
+  const run = (args = []) => spawnSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'capture-job-runtime', '--state', state, '--input', inputPath, ...args],
     { encoding: 'utf8', timeout: 15000, env: { PATH: '/usr/bin:/bin', HOME: directory, LANG: 'C.UTF-8' } });
   const unchanged = async () => {
     for (const [name, digest] of Object.entries(originalFiles)) assert.equal(hash(await readFile(join(state, name))), digest, name);
@@ -227,9 +224,10 @@ return handle;};syncBuiltinESMExports();\n`, { mode: 0o600 });
 test('packaged capture uses the passive helper, publishes protected pins once and retains original identity/journals', { skip: !artifact }, async t => {
   const f = await fixture(t);
   assert.equal(typeof f.worker.captureInstalledRuntimeConfiguration, 'function');
-  // The unprivileged real backing file must be denied by the actual helper.
-  await assert.rejects(f.worker.captureInstalledRuntimeConfiguration(f.input), /root-owned/);
-  const result = f.run([], true);
+  const unowned = join(f.directory, 'unowned-backing');
+  await writeFile(unowned, Buffer.alloc(f.input.diskBytes), { mode: 0o400 });
+  await assert.rejects(f.worker.captureInstalledRuntimeConfiguration({ ...f.input, backingFile: unowned }), /root-owned/);
+  const result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { configurationPath: join(f.state, 'job-runtime.json'), captured: true, qualified: false, executionAuthorized: false });
   assert.equal(result.stderr, '');
@@ -242,7 +240,7 @@ test('packaged capture uses the passive helper, publishes protected pins once an
   assert.match(output.pins.configurationDigest, /^[a-f0-9]{64}$/);
   for (const field of ['ready', 'measurement', 'qualified', 'credential']) assert.equal(field in output, false);
   assert.ok(!result.stdout.includes('a'.repeat(64)));
-  const repeat = f.run([], true);
+  const repeat = f.run();
   assert.equal(repeat.status, 1); assert.equal(repeat.stderr.trim(), 'job_runtime_configuration_exists');
   assert.equal(hash(await readFile(path)), hash(bytes)); await f.unchanged();
 });
@@ -257,7 +255,7 @@ test('packaged capture rejects private-file and destination violations without a
     if (kind === 'output-symlink') await symlink(join(f.state, 'identity.json'), join(f.state, 'job-runtime.json'));
     if (kind === 'missing-identity') { await rm(join(f.state, 'identity.json')); delete f.originalFiles['identity.json']; }
     if (kind === 'missing-roots') { await rm(join(f.state, 'approved-roots.json')); delete f.originalFiles['approved-roots.json']; }
-    const before = await readdir(f.state), result = f.run([], true);
+    const before = await readdir(f.state), result = f.run();
     assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.ok(!result.stderr.includes('a'.repeat(64)));
     assert.deepEqual(await readdir(f.state), before); await f.unchanged();
     if (kind === 'existing-output') assert.equal(await readFile(join(f.state, 'job-runtime.json'), 'utf8'), 'retained config');
@@ -278,17 +276,17 @@ test('packaged capture rejects caller pins, identity drift and roots outside the
     if (kind === 'stale-inode') input.root.binding.filesystem.inode = '0';
     if (kind === 'read-only') input.root.binding.accessMode = 'read-only';
     await writeFile(f.inputPath, JSON.stringify(input));
-    const before = await readdir(f.state), result = f.run([], true);
+    const before = await readdir(f.state), result = f.run();
     assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.deepEqual(await readdir(f.state), before); await f.unchanged();
   });
 });
 
 test('packaged capture refuses active worker ownership and unsupported overwrite/relative-input options', { skip: !artifact }, async t => {
   const f = await fixture(t), before = await readdir(f.state), unlock = await acquireWorkerLock(f.state);
-  try { const result = f.run([], true); assert.equal(result.status, 1); assert.equal(result.stderr.trim(), 'worker_already_running'); }
+  try { const result = f.run(); assert.equal(result.status, 1); assert.equal(result.stderr.trim(), 'worker_already_running'); }
   finally { await unlock(); }
   for (const args of [['--force'], ['--overwrite'], ['--input', 'relative.json']]) {
-    const result = f.run(args, true); assert.equal(result.status, 1); assert.match(result.stderr, /usage/);
+    const result = f.run(args); assert.equal(result.status, 1); assert.match(result.stderr, /usage/);
   }
   assert.deepEqual(await readdir(f.state), before); await f.unchanged();
 });
