@@ -199,7 +199,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       ...(first === 'opencode' || second === 'opencode'
         ? { opencode: { path: openCodeBinary, version: await version(openCodeBinary) } } : {}) },
-    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna',
+    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)

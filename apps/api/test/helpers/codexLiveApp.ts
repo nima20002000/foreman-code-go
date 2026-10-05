@@ -86,7 +86,7 @@ export async function createCodexLiveApplication(binary: string, directory: stri
       expiresAt: new Date(Date.now() + 600_000) })
     const operators = new PostgresOperatorRepository(pool)
     const initial = await operators.ensure()
-    const configured = await operators.update({ harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-6-luna',
+    const configured = await operators.update({ harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-5.6-luna',
       reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
       advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION) }, initial.configuration.id)
     const services = { commands: new PostgresCommandCoordinator(pool) } as OperatorServices
