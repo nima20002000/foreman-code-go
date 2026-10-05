@@ -510,6 +510,33 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
+  it('refreshes only the managed HTTP credential while retaining the same in-process SDK server', async () => {
+    const instance: { self?: unknown } = {}
+    instance.self = instance
+    const fileServer = { type: 'sdk', name: 'graphql-files', instance }
+    const http = { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' }
+    const base = { graphql: http, 'graphql-files': fileServer }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: base }, appMcpAccess: 'management' })
+    const tokenFree = { ...start, environment: { agentId: 'operator', variables: {} } }
+    const credentialed = { ...start, environment: { agentId: 'operator',
+      variables: { FOREMAN_CODE_MCP_TOKEN: 'scoped-credential' } } }
+    const servers = { ...base, graphql: { ...http, headers: { Authorization: 'Bearer scoped-credential' } } }
+    try {
+      await f.manager.prepareInspection(tokenFree)
+      const inspected = await f.manager.refreshInspectionCredentials(credentialed, servers)
+      expect(inspected.httpCredentialAcknowledgement?.endpoint).toBe(http.url)
+      expect(f.setServers).toHaveBeenCalledWith(servers)
+      expect(f.queries).toHaveBeenCalledOnce()
+      await expect(f.manager.refreshInspectionCredentials(credentialed, {
+        ...servers, 'graphql-files': { ...fileServer, instance: {} },
+      })).rejects.toThrow('unrelated native MCP servers')
+      await expect(f.manager.refreshInspectionCredentials(credentialed, {
+        ...servers, graphql: { ...servers.graphql, url: 'http://127.0.0.1:9999/mcp' },
+      })).rejects.toThrow('server names, endpoints')
+      expect(f.setServers).toHaveBeenCalledOnce()
+    } finally { await f.manager.dispose?.() }
+  })
+
   it.each([
     ['GRAPHQL_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN'],
     ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'],

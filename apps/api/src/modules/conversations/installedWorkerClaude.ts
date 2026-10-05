@@ -17,7 +17,7 @@ import { claudeProductionMcpInspector } from '../harnesses/claudeSdk/productionM
 import { appMcpServerName, isSupportedAppMcpServerName } from '../harnesses/appMcpLauncher.js'
 import type { NativeProcessRegistry, NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
-import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
+import { createUnboundWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import { installedConversationDirectory } from './installedConversationDirectory.js'
 import { createInstalledClaudeConversationProfile } from './installedClaudeConversationProfile.js'
 import { createWorkerClaudeAuthority } from './workerClaudeAuthority.js'
@@ -26,6 +26,7 @@ import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 import { createWorkerClaudeFiles } from './workerClaudeFiles.js'
+import type { NativeSessionStart } from '../harnesses/port.js'
 
 export async function allocateInstalledWorkerClaude(input: {
   binding: WorkerConversationBinding
@@ -80,15 +81,10 @@ export async function allocateInstalledWorkerClaude(input: {
   const authority = createWorkerClaudeAuthority({ configuration: compiled.configuration,
     version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
     request: input.callbacks.claudeAuthority })
-  let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
+  let mcp: Awaited<ReturnType<typeof createUnboundWorkerMcpEndpoint>> | undefined
   let token: string | undefined
   let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
-  const start: WorkerConversationAllocation['start'] = async options => {
-    await before(input.signal)
-    reserve()
-    if (options.applicationAccess && options.applicationAccess.token !== token) {
-      throw new DomainError('CLAUDE_MCP_CREDENTIAL_DELIVERY_REQUIRED', 'The scoped credential must be acknowledged before message input.', 409)
-    }
+  const buildStart = (options: Parameters<WorkerConversationAllocation['start']>[0]): NativeSessionStart => {
     const owner = binding.owner
     if (owner.kind === 'operator' && 'operatorId' in configuration) return { kind: 'operator', configuration,
       correlationId: options.correlationId, workingDirectory: binding.workingDirectory,
@@ -99,23 +95,37 @@ export async function allocateInstalledWorkerClaude(input: {
       workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
       workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
   }
+  const start: WorkerConversationAllocation['start'] = async options => {
+    await before(input.signal)
+    reserve()
+    if (options.applicationAccess && options.applicationAccess.token !== token) {
+      await deliverScopedCredential(options.applicationAccess.token, input.signal, options)
+    }
+    return buildStart(options)
+  }
   const inspectionStart = () => start({ correlationId: `inspection:${binding.owner.conversationId}`, instructionsDelivered: true })
   const serverName = appMcpServerName(compiled.mcpServers)
   const configured = compiled.mcpServers[serverName]
+  const fileSdk = !reader && input.purpose === 'chat' ? await loadInstalledClaudeSdk(original.sdk.entrypoint) : undefined
+  if (appAccess === 'scoped' && configured?.type === 'http') {
+    mcp = await createUnboundWorkerMcpEndpoint({ launcher: input.launcher, signal: input.signal })
+  }
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
     reserve()
     return loadOfficialClaudeSdk(compiled.configuration.configDirectory, recovery, binary, original.sdk.entrypoint)
   } })
   const callbacks = createClaudeSdkCallbacks({ manager: () => manager, bridge: authority.bridge })
-  const fileServer = !reader && input.purpose === 'chat' ? createWorkerClaudeFiles({
-    sdk: await loadInstalledClaudeSdk(original.sdk.entrypoint), manager: () => manager,
+  const fileServer = fileSdk ? createWorkerClaudeFiles({
+    sdk: fileSdk, manager: () => manager,
     authority, allowMutation: compiled.configuration.sandbox !== 'read-only', signal: input.signal,
   }) : undefined
+  const nativeServers = { ...(appAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers)
+    .filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
+  ...(mcp && configured?.type === 'http' ? { [serverName]: { ...configured, url: mcp.endpoint } } : {}),
+  ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }
   const sdkOptions: Record<string, unknown> = { ...compiled,
-    mcpServers: { ...(appAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers)
-      .filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
-    ...(fileServer ? { 'graphql-files': fileServer.server } : {}) },
+    mcpServers: nativeServers,
     includePartialMessages: true, ...callbacks }
   delete sdkOptions.configuration
   delete sdkOptions.qualification
@@ -138,6 +148,26 @@ export async function allocateInstalledWorkerClaude(input: {
   })
   const manager = allocation.manager
   authority.bind(manager)
+  async function deliverScopedCredential(nextToken: string, signal: AbortSignal,
+    startup: Parameters<WorkerConversationAllocation['start']>[0]) {
+    if (appAccess !== 'scoped' || binding.owner.kind !== 'operator' || configured?.type !== 'http' || !mcp) {
+      throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This native owner has no scoped Operator HTTP MCP connection.', 403)
+    }
+    await before(signal)
+    await manager.prepareInspection(buildStart(startup), signal)
+    if (token !== nextToken) {
+      const relay = await prepareWorkerConversationMcp({ source: input.source(), token: nextToken,
+        request: input.request, signal: input.signal })
+      await mcp.bindRelay(relay)
+      environment = relay.environment
+      token = nextToken
+    }
+    const snapshot = await manager.refreshInspectionCredentials(buildStart(startup), { ...nativeServers,
+      [serverName]: { ...configured, url: mcp.endpoint, headers: { Authorization: `Bearer ${nextToken}` } },
+    }, signal)
+    if (snapshot.httpCredentialAcknowledgement?.endpoint !== mcp.endpoint) throw new DomainError(
+      'CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK has not acknowledged the scoped worker credential.', 409)
+  }
   const inspect = claudeProductionMcpInspector({ manager: () => manager, start: inspectionStart,
     workingDirectory: binding.workingDirectory, cliVersion: original.accepted.currentBinding.pin.cliVersion })
   let launch: NativeLaunchObservation | undefined
@@ -153,24 +183,9 @@ export async function allocateInstalledWorkerClaude(input: {
       return result
     } },
     async deliverClaudeCredential(nextToken, signal) {
-      if (appAccess !== 'scoped' || binding.owner.kind !== 'operator' || configured?.type !== 'http') {
-        throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This native owner has no scoped Operator HTTP MCP connection.', 403)
-      }
-      await before(signal)
-      if (token !== nextToken) {
-        await mcp?.close()
-        const relay = await prepareWorkerConversationMcp({ source: input.source(), token: nextToken,
-          request: input.request, signal: input.signal })
-        mcp = await createWorkerMcpEndpoint({ relay, launcher: input.launcher, signal: input.signal })
-        environment = relay.environment
-        token = nextToken
-      }
-      if (!mcp) throw new DomainError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The private paired MCP route is unavailable.', 409)
-      const snapshot = await manager.refreshInspectionCredentials(await inspectionStart(), { ...compiled.mcpServers,
-        [serverName]: { ...configured, url: mcp.endpoint, headers: { Authorization: `Bearer ${nextToken}` } },
-      }, signal)
-      if (snapshot.httpCredentialAcknowledgement?.endpoint !== mcp.endpoint) throw new DomainError(
-        'CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK has not acknowledged the scoped worker credential.', 409)
+      await deliverScopedCredential(nextToken, signal, {
+        correlationId: `inspection:${binding.owner.conversationId}`, instructionsDelivered: true,
+      })
     },
     async nativeOwner(session: NativeSessionReference) {
       const rows = input.registry.snapshot().launches.filter(value => value.owner === owner && value.lifecycle === 'active')

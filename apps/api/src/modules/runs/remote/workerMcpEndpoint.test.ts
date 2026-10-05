@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
+import { createUnboundWorkerMcpEndpoint, createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 
 const roots: string[] = []
 const endpoints: Awaited<ReturnType<typeof createWorkerMcpEndpoint>>[] = []
@@ -18,6 +18,30 @@ async function setup() {
   return { endpoint, token, expiresAt, request, route: join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`) }
 }
 describe('actual worker-private HTTP relay with Main authorization double, no paired/native proof', () => {
+  it('keeps inspection unauthorized and the native URL stable when the actual Main lease arrives', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worker-unbound-mcp-'))
+    roots.push(root)
+    const endpoint = await createUnboundWorkerMcpEndpoint({ launcher: join(root, 'foreman-code-mcp.mjs'),
+      signal: new AbortController().signal })
+    endpoints.push(endpoint)
+    const url = endpoint.endpoint
+    const request = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const,
+      body: '{"result":"authorized Main response"}' }))
+    const call = (token: string) => fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: '{}' })
+    expect((await call('not-issued')).status).toBe(401)
+    expect(request).not.toHaveBeenCalled()
+    const lease = (token: string) => ({ environment: { agentId: 'admitted-operator',
+      variables: { FOREMAN_CODE_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60000).toISOString(), request })
+    await endpoint.bindRelay(lease('first-scoped-lease'))
+    expect(endpoint.endpoint).toBe(url)
+    expect((await call('first-scoped-lease')).status).toBe(200)
+    await endpoint.bindRelay(lease('second-scoped-lease'))
+    expect(endpoint.endpoint).toBe(url)
+    expect((await call('first-scoped-lease')).status).toBe(401)
+    expect((await call('second-scoped-lease')).status).toBe(200)
+    expect(request).toHaveBeenCalledTimes(2)
+    await endpoint.close()
+  })
   it('forwards only the exact scoped bearer and retains real authorized expiry in the existing route', async () => {
     const f = await setup()
     const route = JSON.parse(await readFile(f.route, 'utf8'))

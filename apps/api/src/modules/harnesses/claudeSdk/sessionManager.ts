@@ -929,6 +929,7 @@ export function createClaudeNativeSessionManager(options: {
       const configured = options.sdkOptions.mcpServers && typeof options.sdkOptions.mcpServers === 'object' ? options.sdkOptions.mcpServers as Record<string, unknown> : {}
       const topology = (entries: Readonly<Record<string, unknown>>) => JSON.stringify(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => {
         const config = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+        if (config.type === 'sdk') return [name, { type: 'sdk', name: config.name }]
         const { headers: rawHeaders, env: rawEnv, ...scope } = config
         const headers = rawHeaders && typeof rawHeaders === 'object' ? Object.fromEntries(Object.entries(rawHeaders).filter(([key]) => key.toLowerCase() !== 'authorization')) : {}
         const env = rawEnv && typeof rawEnv === 'object' ? { ...rawEnv as Record<string, unknown> } : {}
@@ -937,8 +938,11 @@ export function createClaudeNativeSessionManager(options: {
       }))
       if (topology(configured) !== topology(servers)) throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery changed accepted SDK server names, endpoints, commands or arguments.')
       const managedName = expectedMcp.serverName
-      for (const [name, config] of Object.entries(configured)) if (name !== managedName && JSON.stringify(config) !== JSON.stringify(servers[name])) {
-        throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
+      for (const [name, config] of Object.entries(configured)) {
+        if (name === managedName) continue
+        const sdkServer = config && typeof config === 'object' && Reflect.get(config, 'type') === 'sdk'
+        const same = sdkServer ? config === servers[name] : JSON.stringify(config) === JSON.stringify(servers[name])
+        if (!same) throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
       const snapshot = await deliverCredentials(runtime, start, servers, signal)
       runtime.start = structuredClone(start)
