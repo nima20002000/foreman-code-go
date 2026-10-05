@@ -13,6 +13,7 @@ import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { buildApp } from '../src/app.js'
 import { requirePrincipal } from '../src/modules/access/http.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
 
 async function browserTables(pool: Awaited<ReturnType<typeof currentDatabase>>['pool']) {
   return (await pool.query<{ tablename: string }>(
@@ -56,6 +57,25 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
       await applyApplicationMigrations(db.pool)
       expect(await human.current()).toEqual(before)
       await expect(access.authenticate(before.id)).rejects.toMatchObject({ code: 'AUTH_INVALID' })
+    } finally { await db.close() }
+  })
+
+  it('retains the sole root Operator selected by the previous ownerless development path across restart', async () => {
+    const db = await currentDatabase()
+    try {
+      const access = new PostgresAccessService(db.pool)
+      const owner = await access.issue({ name: 'Previously selected development Operator', audience: 'operator',
+        grants: [{ actions: ['settings:read'], scope: { workspaceIds: ['existing-workspace'] } }],
+        expiresAt: new Date(Date.now() + 600_000) })
+      await browserOwnerUpgrade(db.pool, owner.principal.id, { ownerMapping: 'empty' })
+      const principals = (await db.pool.query('select * from management_principals order by id')).rows
+      await applyApplicationMigrations(db.pool)
+      expect(await new PostgresLocalHumanAccess(db.pool, access).current()).toEqual(owner.principal)
+      expect(await access.authenticate(owner.token)).toEqual(owner.principal)
+      expect((await db.pool.query('select * from management_principals order by id')).rows).toEqual(principals)
+      await applyApplicationMigrations(db.pool)
+      expect(await new PostgresLocalHumanAccess(db.pool, new PostgresAccessService(db.pool)).current())
+        .toEqual(owner.principal)
     } finally { await db.close() }
   })
 

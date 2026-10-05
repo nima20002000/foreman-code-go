@@ -13,12 +13,19 @@ import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_000 }, () => {
-  it('reconciles a lost Start response after upgrade and restart without another native execution', async () => {
+  it.each(['mapped owner', 'default development browser'] as const)(
+    'reconciles a lost Start response for %s after upgrade and restart without another native execution', async identity => {
     const fixture = await currentOperatorIntegration({
       fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [],
     })
     let restarted: ReturnType<typeof buildApp> | undefined
     try {
+      if (identity === 'default development browser') {
+        const id = 'principal-local-development-browser'
+        await fixture.db.pool.query('update management_principals set id=$1 where id=$2',
+          [id, fixture.writer.principal.id])
+        fixture.writer.principal.id = id
+      }
       const candidate = await fixture.create()
       const saved = (await fixture.services.workflows.current.save(fixture.writer.principal, 'http', candidate)).value
       const input = RunStartV3InputSchema.parse({
@@ -33,7 +40,8 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
         input: { user: 'Original Start journal' },
       })
       const path = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/runs`
-      await browserOwnerUpgrade(fixture.db.pool, fixture.writer.principal.id)
+      await browserOwnerUpgrade(fixture.db.pool, fixture.writer.principal.id,
+        { ownerMapping: identity === 'mapped owner' ? 'present' : 'empty' })
       // Discard the response; reconciliation has only the original command journal.
       const response = await fetch(new URL(path, fixture.address), { method: 'POST',
         headers: { authorization: `Bearer ${fixture.writer.token}`, 'content-type': 'application/json' },
@@ -55,6 +63,8 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
       const starts = fixture.provider.counts.starts
       const executions = await fixture.runs.listRepeatExecutions(original.id)
       await applyApplicationMigrations(fixture.db.pool)
+      expect(await new PostgresLocalHumanAccess(fixture.db.pool, fixture.access).current())
+        .toEqual(fixture.writer.principal)
       const runtime = fixture.compose()
       const access = new PostgresAccessService(fixture.db.pool)
       const commands = new PostgresCommandCoordinator(fixture.db.pool)

@@ -9,11 +9,20 @@ export const localHumanMigration = { version: 2026100401, sql: `
     principal_id text not null unique references management_principals(id)
   );
   do $$
-  declare browser_table text; owner_id text;
+  declare browser_table text; owner_id text; eligible_ids text[];
   begin
     if to_regclass(format('%I.browser_auth_owner', current_schema())) is not null then
       execute format('select principal_id from %I.browser_auth_owner where singleton = true', current_schema())
         into owner_id;
+    end if;
+    if owner_id is null then
+      select id into owner_id from management_principals
+        where id = 'principal-local-development-browser' and audience = 'operator' and delegated_from is null;
+    end if;
+    if owner_id is null then
+      select array_agg(id) into eligible_ids from management_principals
+        where audience = 'operator' and delegated_from is null and revoked_at is null and expires_at > now();
+      if cardinality(eligible_ids) = 1 then owner_id := eligible_ids[1]; end if;
     end if;
     if owner_id is null then
       insert into management_principals(id,name,audience,token_hash,grants,expires_at)
