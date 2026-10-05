@@ -161,7 +161,7 @@ describe('Claude response ownership through SDK callbacks', () => {
       append: async () => {},
       load: async () => f.transcript.map((raw, index) => {
         const row = raw as Record<string, unknown>
-        return { ...row, sessionId: row.session_id,
+        return { ...row, type: String(row.type), uuid: String(row.uuid), sessionId: row.session_id,
           parentUuid: row.parentUuid ?? (index ? (f.transcript[index - 1] as { uuid: string }).uuid : null) }
       }),
     }
