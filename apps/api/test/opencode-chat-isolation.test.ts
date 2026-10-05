@@ -3,8 +3,7 @@ import { describe, it } from 'vitest'
 import { buildOpenCodeChatConfigContent, assertOpenCodeChatMcpDisabled } from '../src/modules/harnesses/opencodeTransport.js'
 
 describe('OpenCode chat App MCP isolation', () => {
-  it.each(['foreman-code', 'graphql'])(
-    'disables configured current and legacy App MCP entries when selecting %s', (serverName) => {
+  it.each(['foreman-code', 'graphql'])('isolates App MCP entries selected through %s', (serverName) => {
     const inherited = { model: 'fixture', mcp: {
       'foreman-code': { type: 'local', enabled: true },
       graphql: { type: 'local', enabled: true },
