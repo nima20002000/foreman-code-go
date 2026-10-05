@@ -1,3 +1,4 @@
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -282,7 +283,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       }
       const measured = profile.measurement.suites.find(value => value.suite === spec.verification.suite)
       if (!measured || canonical(measured.resources) !== canonical(spec.verification.resources)
-        || spec.verification.parameters.unitWorkers > measured.maxUnitWorkers
+        || spec.verification.parameters.unitWorkers > Math.min(measured.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)
         || spec.verification.parameters.integrationShards > measured.maxIntegrationShards) {
         throw new DomainError('JOB_SUITE_UNQUALIFIED','The requested suite or budget has not been measured on this profile.',409)
       }

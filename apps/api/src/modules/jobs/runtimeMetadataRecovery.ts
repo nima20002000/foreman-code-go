@@ -1,5 +1,6 @@
 import type pg from 'pg'
-import { JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeProfileRecordSchema, type JobRuntimeProfileRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
 import { componentLogger } from '../../infrastructure/logger.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 
@@ -23,7 +24,12 @@ export class JobRuntimeMetadataRecovery {
         where a.record->>'status'='complete' and p.record->>'status'<>'revoked'`)
       .then(result => {
         for (const row of result.rows) {
-          const profile = JobRuntimeProfileSchema.parse(row.record)
+          const parsed = JobRuntimeProfileRecordSchema.safeParse(row.record)
+          if (!parsed.success) {
+            componentLogger('jobs').error({ err: parsed.error }, 'Stored Job runtime metadata is invalid')
+            continue
+          }
+          const profile = parsed.data
           if (!profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) continue
           const key = `${profile.id}:${profile.revision}`
           if (this.captures.has(key)) continue
@@ -39,7 +45,7 @@ export class JobRuntimeMetadataRecovery {
       }).finally(() => { this.scan = undefined })
   }
 
-  private async refresh(profile: JobRuntimeProfile): Promise<boolean> {
+  private async refresh(profile: JobRuntimeProfileRecord): Promise<boolean> {
     if (await this.host.currentMetadata(this.pool, profile)) return false
     if (this.host.capture) await this.host.capture(profile)
     else await this.host.descriptor(profile)
@@ -52,7 +58,7 @@ export class JobRuntimeMetadataRecovery {
       join job_runtime_profile_versions v on v.profile_id=e.accepted_spec #>> '{policy,isolationPolicyId}'
         and v.revision=(e.accepted_spec #>> '{policy,isolationPolicyRevision}')::bigint
       where e.id=$1`, [executionId])).rows[0]
-    if (row) await this.refresh(JobRuntimeProfileSchema.parse(row.record))
+    if (row) await this.refresh(JobRuntimeProfileRecordSchema.parse(row.record))
   }
 
   async close(): Promise<void> {

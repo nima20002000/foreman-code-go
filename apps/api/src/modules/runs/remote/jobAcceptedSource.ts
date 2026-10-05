@@ -1,9 +1,11 @@
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual as same } from 'node:util'
 import { join } from 'node:path'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { RemoteJobAcceptedSourceReadoutRecord } from '@foreman-code/contracts/remote-job-execution'
-import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeProfileRecordSchema, jobRuntimeProfilePolicy, jobRuntimeProfileLimits }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from '../../jobs/repository.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { sourceSha256, verifySourceManifest } from '../../sources/manifest.js'
@@ -35,7 +37,7 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
   if (!rootRow) conflict()
   const root = SourceRootRecordSchema.parse(rootRow.record)
   const source = { approvedSourceId: spec.source.approvedSourceId, snapshotId: spec.source.snapshotId, manifestDigest: spec.source.manifestDigest }
-  const projectRoot = join(binding.canonicalPath, receipt.materializationId, 'tree')
+  const projectRoot = join(sourceMaterializationParent(receipt), 'tree')
   if (!same(root.binding, binding) || !same(root.source, source) || !same(root.selection.hostRef, target.hostRef) || !same(root.registration, target.registration) ||
     root.attestationId !== destination.attestationId || root.attestationDigest !== destination.attestationHash ||
     root.selection.rootPolicyId !== destination.rootPolicyId || root.selection.rootPolicyRevision !== destination.rootPolicyRevision ||
@@ -56,10 +58,12 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
   const version = (await sql.query<{ record: unknown }>('select record from job_runtime_profile_versions where profile_id=$1 and revision=$2 for share',
     [spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision])).rows[0]
   if (!version) conflict()
-  const profile = JobRuntimeProfileSchema.parse(version.record), original = profile.root
+  const profile = JobRuntimeProfileRecordSchema.parse(version.record), original = profile.root
+  const policy = jobRuntimeProfilePolicy(profile)
+  const limits = jobRuntimeProfileLimits(profile)
   if (profile.id !== spec.policy.isolationPolicyId || profile.revision !== spec.policy.isolationPolicyRevision || profile.workspaceId !== execution.workspaceId ||
-    !same(profile.policy, spec.policy) || !same(original.selection, root.selection) || !same(original.registration, root.registration) ||
+    !same(policy, spec.policy) || !same(original.selection, root.selection) || !same(original.registration, root.registration) ||
     original.binding.workspaceId !== execution.workspaceId || original.binding.canonicalPath !== binding.canonicalPath || !same(original.binding.filesystem, binding.filesystem) ||
-    !Number.isSafeInteger(profile.limits.diskBytes) || profile.limits.diskBytes <= 0 || receipt.verifiedBytes > profile.limits.diskBytes) conflict()
-  return { execution, materialization, root, diskQuotaBytes: profile.limits.diskBytes }
+    !Number.isSafeInteger(limits.diskBytes) || limits.diskBytes <= 0 || receipt.verifiedBytes > limits.diskBytes) conflict()
+  return { execution, materialization, root, diskQuotaBytes: limits.diskBytes }
 }

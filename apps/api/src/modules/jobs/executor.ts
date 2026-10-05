@@ -13,7 +13,7 @@ import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema, JobE
 import type { z } from 'zod'
 import { JobVerificationRuntimeMeasurementSchema, type JobVerificationRuntimeMeasurement }
   from '@foreman-code/contracts/job-verification-runtime'
-import { JobVerificationDispatchValiditySchema, type JobNetworkPolicy } from '@foreman-code/contracts/job-verification-policy'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION, JobVerificationDispatchValiditySchema, type JobNetworkPolicy } from '@foreman-code/contracts/job-verification-policy'
 export { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
@@ -92,7 +92,7 @@ export function requireVerificationRuntime(
     || (typeof runtime.network === 'string' ? runtime.network : runtime.network.mode) !== 'none'
     || !runtime.rootless || !runtime.cgroupV2 || !runtime.filesystemBounded || !runtime.descendantContainment
     || !runtime.runtimeVersion || !runtime.ociRuntimeVersion || !runtime.kernelVersion
-    || spec.verification.parameters.unitWorkers > suite.maxUnitWorkers
+    || spec.verification.parameters.unitWorkers > Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)
     || spec.verification.parameters.integrationShards > suite.maxIntegrationShards
     || !isDeepStrictEqual(spec.verification.resources, suite.resources)) {
     throw new Error('The accepted verification has no matching measured offline runtime.')

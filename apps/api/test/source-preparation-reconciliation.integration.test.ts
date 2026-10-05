@@ -1,3 +1,4 @@
+import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -28,6 +29,10 @@ import { CarrierRemoteSourceMaterializationHost } from '../src/modules/sources/o
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { verificationFixture } from './helpers/jobVerificationFixture.js'
+import { jobPolicyRequirementsRecord, type ResolvedJobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
+import { createVerificationProfile } from '../src/modules/jobs/verificationProfiles.js'
+import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
 import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
@@ -232,7 +237,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     } finally {release();pause=null;await pending}
   },60000)
 
-  async function queuedFixture() {
+  async function queuedFixture(kind: 'build' | 'verification' = 'build') {
     const authority = await access.issue({ name: 'Queued source writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
         'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'jobs:cancel',
@@ -241,11 +246,22 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     queueServices.push(f.jobs)
     const saved = JobDefinitionSchema.parse((await database.pool.query<{ record: unknown }>(
       'select record from job_definitions where id=$1', [definitionId])).rows[0]!.record)
-    const spec = jobSpec()
-    Object.assign(spec, saved.spec)
+    let spec: ResolvedJobDefinitionSpecRecord = { ...jobSpec(), ...saved.spec }
+    if (kind === 'verification') {
+      const verification = verificationFixture().spec
+      spec = { ...verification, source: spec.source, target: spec.target, argv: verification.argv }
+    }
     const computer = f.computers[0]!
+    const profile = 'verification' in spec ? createVerificationProfile({
+      id: spec.policy.isolationPolicyId, revision: spec.policy.isolationPolicyRevision, workspaceId,
+      name: 'Verification cleanup runtime', root, sourceCommit: spec.source.commit,
+      spec: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+        resources: spec.verification.resources, policy: JobVerificationPolicyRequirementsSchema.parse(jobPolicyRequirementsRecord(spec.policy)),
+        suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } },
+      previous: null, now: new Date().toISOString(),
+    }) : { ...computer.candidate.profile, root }
     const candidate = { ...computer.candidate, spec, ready: true, reasons: [],
-      profile: { ...computer.candidate.profile, root }, sourceReservation: {
+      profile, sourceReservation: {
         scopeId: `${binding.mainId}:${binding.deviceId}:${binding.workerInstallationId}:${root.binding.filesystem.device}:${root.binding.filesystem.mountId}`,
         reservedBytes: 2097152,
       } }
@@ -254,7 +270,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await f.settings.update(authority.principal, 'http', { commandId: randomUUID(), target,
       expectedRevision: preference.preference.revision, buildEnabled: true, buildPriority: 100 })
     const executionPolicy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
-    const placement = new JobComputerSelection(f.settings, { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, executionPolicy)
+    const placement = new JobComputerSelection(f.settings, { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, executionPolicy, async () => 32 * 2 ** 30)
     let afterMaterialization: (() => Promise<void>) | undefined
     const delivered: string[] = []
     function create() {
@@ -326,7 +342,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const ticketId = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
       return jobs.getQueueTicket(principal, workspaceId, ticketId)
     }
-    return { ...runtime, principal: authority.principal, create, enqueue, delivered,
+    return { ...runtime, principal: authority.principal, create, enqueue, delivered, placement, definition,
       pausePreparation: (callback?: () => Promise<void>) => { afterMaterialization = callback } }
   }
 
@@ -402,4 +418,55 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       await restarted.jobs.wakeQueue()
       expect((await restarted.jobs.getQueueTicket(writer.principal, workspaceId, next.id)).state).toBe('accepted')
     })
+  it.each(['cancelled', 'timed_out'] as const)(
+    'reclaims partially materialized verification preparation after %s and restart', async reason => {
+      const f = await queuedFixture('verification')
+      let resume!: () => void
+      let entered!: () => void
+      const paused = new Promise<void>(resolve => { resume = resolve })
+      const preparing = new Promise<void>(resolve => { entered = resolve })
+      f.pausePreparation(async () => { entered(); await paused })
+      const ticket = await f.enqueue()
+      const pending = f.jobs.wakeQueue()
+      await preparing
+      allowPreparationClosure = false
+      try {
+        const current = await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id)
+        if (reason === 'cancelled') {
+          await f.jobs.cancelQueued(f.principal, 'mcp', workspaceId, {
+            commandId: randomUUID(), ticketId: ticket.id, expectedRevision: current.revision,
+          })
+        } else {
+          await database.pool.query("update job_preparations set created_at=now()-interval '1 hour' where execution_id=$1",
+            [ticket.executionId])
+        }
+      } finally { resume() }
+      await expect(pending).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(1)
+      await f.jobs.closeQueue()
+      await f.dispatch.close()
+      allowPreparationClosure = true
+      f.pausePreparation()
+      const restarted = f.create()
+      await restarted.jobs.wakeQueue()
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(0)
+      expect((await database.pool.query<{ status: string; closure: unknown }>(
+        'select status,closure from source_preparation_reconciliations where operation_id=$1', [ticket.operationId]))
+        .rows[0]).toMatchObject({ status: 'closed', closure: expect.objectContaining({
+          executionId: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId,
+        }) })
+      expect(f.delivered).toEqual([])
+      const sql = await database.pool.connect()
+      try {
+        await sql.query('begin')
+        const claim = await f.placement.claim(sql, f.principal, f.definition, {
+          executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),
+        })
+        expect(claim.spec).toMatchObject({ verification: { suite: 'unit' } })
+        await sql.query('rollback')
+      } finally { sql.release() }
+    })
+
 })

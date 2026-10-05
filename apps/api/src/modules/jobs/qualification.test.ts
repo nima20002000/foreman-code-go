@@ -1,4 +1,4 @@
-import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { inflateSync } from 'node:zlib'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
@@ -13,11 +13,8 @@ import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQua
   validateJobQualificationMounts, prepareQualificationPrivateGit, createPhysicalJobRuntimeProducer, type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
 import { validateVerificationIsolationObservation } from './qualification.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
-import { requireVerificationRuntime, type QualifiedJobProfile } from './executor.js'
-import { JobVerificationRuntimeMeasurementSchema, JOB_VERIFICATION_BASE_CHECKS }
-  from '@foreman-code/contracts/job-verification-runtime'
-import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
-import { JOB_RUNTIME_PROVISIONING_SUITE } from '@foreman-code/contracts/job-runtime'
+import { requireVerificationRuntime } from './executor.js'
+import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { verificationRepositoryContext } from './executorOutputs.js'
@@ -43,53 +40,6 @@ function candidate(): JobQualificationCandidate {
     sourceParent: '/approved/source', runtimeRoot: '/approved/runtime', spoolBytes: 131072, ttlSeconds: 600 })
 }
 
-function verificationRuntimeFixture() {
-  const f = verificationFixture()
-  const now = new Date().toISOString()
-  const expiry = new Date(Date.now() + 3_600_000).toISOString()
-  const baseline = candidate().fingerprint
-  const resources = f.resources
-  const fingerprint = {
-    ...baseline, schemaVersion: 3 as const, profileId: f.profile.profileId, profileRevision: f.profile.profileRevision,
-    limits: resources.limits, imageDigest: f.profile.imageDigest, toolchainDigest: f.profile.toolchainDigest,
-    resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
-    provisioningSuite: JOB_RUNTIME_PROVISIONING_SUITE,
-    deviceLimits: { cpuLimit: 4, memoryBytes: 8 * 2 ** 30, pidsLimit: 1024, diskBytes: 64 * 2 ** 30 },
-    quota: { volumeId: id, mountIdentityDigest: digest, volumeCapacityBytes: 64 * 2 ** 30,
-      growthMode: 'filesystem-project-quota' as const, reservedHostBytes: 2 ** 30, controlProjectId: 1, workloadProjectId: 2,
-      controlHardLimitBytes: 2 ** 30, controlUsageBytes: 0, workloadHardLimitBytes: resources.limits.diskBytes,
-      workloadUsageBytes: 0, controlHardInodes: 1000, controlUsedInodes: 0,
-      workloadHardInodes: resources.mutableInodes, workloadUsedInodes: 0, quotaRevision: 1, quotaDigest: digest,
-      accountingEnabled: true as const, enforcementEnabled: true as const,
-      inheritanceVerified: true as const, rootlessAccountingVerified: true as const },
-    aggregateCgroupIdentityDigest: digest, imageManifestDigest: f.profile.imageDigest, imageConfigDigest: f.profile.imageDigest,
-    network: f.profile.network, resources,
-    approvalConfig: { schemaVersion: 1 as const, revision: 1, approvalLifetimeMs: 3_600_000,
-      review: { reviewedByPrincipalId: 'owner', reviewedAt: now, decisionDigest: digest } }, tools: [], seedReceiptSha256: digest,
-    sourceCommit: f.build.source.commit,
-  }
-  const profile = { ...f.profile, rootId: baseline.root.binding.rootId, fingerprintDigest: hash(fingerprint),
-    approvalExpiresAt: expiry, qualificationExpiresAt: expiry }
-  const measurement = JobVerificationRuntimeMeasurementSchema.parse({ schemaVersion: 2, identity: profile, fingerprint,
-    origin: 'real-runtime', approvedAt: now, checkedAt: now, expiresAt: expiry,
-    checks: [...JOB_VERIFICATION_BASE_CHECKS, 'network-none'].map(check => ({ id: check, passed: true, evidenceDigest: digest })),
-    suites: [{ suite: 'unit', resources, coldCachePeakBytes: 2 ** 30, coldCachePeakInodes: 1000,
-      maxConcurrentHeavyJobs: 1, maxUnitWorkers: 1, maxIntegrationShards: 1, evidenceDigest: digest }],
-  })
-  const target = { ...f.spec.target, hostRef: baseline.hostRef, mainId: baseline.mainInstallationId,
-    mainInstallationId: baseline.mainInstallationId, destination: { ...f.spec.target.destination,
-      canonicalProjectRoot: `/approved/source/${f.acceptedBuild.source.materializationId}/tree`,
-      canonicalCwd: `/approved/source/${f.acceptedBuild.source.materializationId}/tree` } }
-  const spec = AcceptedVerificationJobSpecSchema.parse({ ...f.acceptedBuild, ...f.spec, target, schemaVersion: 2,
-    source: { ...f.acceptedBuild.source }, profile, reservationId: id, lifecycle: verificationJobLifecycle(now, f.spec.policy),
-    resourcePolicyRevision: 1, resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1 })
-  const runtime: QualifiedJobProfile = { ...resources.limits, workspaceLayout: JOB_PRIVATE_GIT_LAYOUT,
-    policyId: profile.profileId, policyRevision: profile.profileRevision, imageDigest: profile.imageDigest,
-    toolchainDigest: profile.toolchainDigest, qualificationId: profile.qualificationId,
-    runtimeVersion: 'measured-podman', ociRuntimeVersion: 'measured-crun', kernelVersion: 'measured-kernel',
-    rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none' }
-  return { spec, measurement, runtime }
-}
 
 describe('offline verification launch validation with structured physical observations', () => {
   it('rejects another source commit before using the approved runtime', () => {
@@ -97,6 +47,14 @@ describe('offline verification launch validation with structured physical observ
     expect(() => requireVerificationRuntime({ ...f.spec,
       source: { ...f.spec.source, commit: 'c'.repeat(40) } }, f.measurement, f.runtime))
       .toThrow('no matching measured offline runtime')
+  })
+  it('caps worker entry at the reviewed ceiling even when measurements allow more', () => {
+    const f = verificationRuntimeFixture()
+    f.measurement.suites[0]!.maxUnitWorkers = 16
+    const request = (unitWorkers: number) => ({ ...f.spec, verification: { ...f.spec.verification,
+      parameters: { ...f.spec.verification.parameters, unitWorkers } } })
+    expect(() => requireVerificationRuntime(request(12), f.measurement, f.runtime)).not.toThrow()
+    expect(() => requireVerificationRuntime(request(16), f.measurement, f.runtime)).toThrow('matching measured')
   })
   it('derives the trusted ordinary wrapper context from accepted identities, declared limits and qualified workers', () => {
     const f = verificationRuntimeFixture()
