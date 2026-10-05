@@ -9,7 +9,7 @@ import { DEFAULT_FILE_RETENTION_SECONDS, FilePageSchema, FileWithRevisionSchema,
   type FileWithRevision } from '@foreman-code/contracts/files'
 import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
-import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
+import { RunActivitiesPageSchema, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
@@ -136,7 +136,9 @@ beforeEach(() => {
       const runId = String(params.runId)
       const snapshot = reply(runId, scope).snapshot
       if (snapshot.kind !== 'available') throw new Error('The Activities fixture requires a saved Run')
-      const runScope = { ...scope, runId, workflowVersionId: snapshot.workflowVersionId }
+      const runScope: RunGraphScope = {
+        ...scope, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3,
+      }
       return HttpResponse.json(RunActivitiesPageSchema.parse({
         scope: runScope, mode: 'initial', highWater: '1', retainedFrom: '1',
         nextCursor: `cursor-${runId}`, olderCursor: null, hasMore: false,
