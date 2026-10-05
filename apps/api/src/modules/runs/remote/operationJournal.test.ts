@@ -3,12 +3,13 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RemoteOperationJournal } from './operationJournal.js'
 import type { DispatchIntent } from '@foreman-code/contracts/node-placement'
 import type { RemoteOwnerControl, RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { bootIdentity, processIdentity, identityAlive } from '../../harnesses/recovery/linuxIdentity.js'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@graphql/contracts/device-application'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 afterEach(async () => { await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -20,6 +21,70 @@ const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: di
 const stop: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: 'operation', attemptId: 'attempt', executionId: 'execution', bindingHash: digest, owner: intent.owner, action: { kind: 'stop' } }
 async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal); return { path, journal } }
 describe('durable remote ownership', () => {
+  it('archives repeated settled review results and recovers every result without a lifetime turn cutoff', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.reserveTurn(intent.operationId, { correlationId: 'execution:execution', promptDigest: digest })
+    await journal.acknowledgeTurn(intent.operationId, native.turnId)
+    await journal.markRunning(intent.operationId)
+    await journal.retainReviewer(intent.operationId, { agentId: 'reviewer', expiresAt: '2099-01-01T00:00:00.000Z' },
+      { events: [], pendingInteractions: [], terminalTurn: { correlationId: 'execution:execution',
+        providerId: native.turnId, result: { outcome: 'succeeded' } } })
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(8192) } }
+    const assignments = Array.from({ length: 160 }, (_, index) => ({
+      jobId: `job-${index}`, interactionId: `interaction-${index}`, reviewerAgentId: 'reviewer',
+      correlationId: `review:${index}`, session: { harness: 'codex' as const,
+        providerVersion: 'fixture', nativeSessionId: native.sessionId },
+    }))
+    for (const [index, assignment] of assignments.entries()) {
+      await journal.reserveReviewTurn(intent.operationId, assignment, digest, index)
+      await journal.enterReviewTurn(intent.operationId, assignment.correlationId)
+      await journal.acknowledgeReviewTurn(intent.operationId, assignment.correlationId, `turn-${index}`)
+      const history = { events: [{ sequence: index, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z',
+        payload: { text: `original review ${index}` } }], pendingInteractions: [],
+      correlationId: assignment.correlationId, nativeTurnId: `turn-${index}`, firstRetainedSequence: index,
+      nextSequence: index + 1, terminalTurn: { correlationId: assignment.correlationId, providerId: `turn-${index}`, result } }
+      const settled = await journal.settleReviewTurn(intent.operationId, history)
+      expect(settled.reviewTurns?.at(-1)).toMatchObject({ settled: true, resultDigest: expect.any(String) })
+      expect(settled.reviewTurns?.at(-1)?.result).toBeUndefined()
+      expect(settled.reviewTurns!.length).toBeLessThanOrEqual(16)
+      expect(Buffer.byteLength(JSON.stringify(settled))).toBeLessThan(DEVICE_APPLICATION_JSON_BYTES)
+    }
+    await journal.close()
+    const recovered = await RemoteOperationJournal.open(path)
+    journals.push(recovered)
+    for (const assignment of assignments) {
+      expect(await recovered.reviewResult(intent.operationId, assignment.correlationId)).toEqual(result)
+      expect((await recovered.reserveReviewTurn(intent.operationId, assignment, digest, -1)).reserved).toBe(false)
+    }
+    expect(await recovered.reviewHistory(intent.operationId, assignments[0]!.correlationId)).toMatchObject({
+      correlationId: assignments[0]!.correlationId, nativeTurnId: 'turn-0', firstRetainedSequence: 0, nextSequence: 1,
+      events: [{ sequence: 0, payload: { text: 'original review 0' } }],
+      terminalTurn: { correlationId: assignments[0]!.correlationId, providerId: 'turn-0', result },
+    })
+    const selected = await recovered.loadReviewTurn(intent.operationId, assignments[0]!.correlationId)
+    expect(selected).toMatchObject({ assignment: assignments[0], providerId: 'turn-0', settled: true })
+    expect(await recovered.status(intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      reviewTurns: expect.arrayContaining([expect.objectContaining({ providerId: 'turn-0' }),
+        expect.objectContaining({ providerId: 'turn-159' })]),
+    } })
+    await expect(recovered.reserveReviewTurn(intent.operationId, { ...assignments[0]!, correlationId: 'changed' },
+      digest, -1)).rejects.toThrow('input conflict')
+    await expect(recovered.reserveReviewTurn(intent.operationId, { ...assignments[0]!, interactionId: 'changed' },
+      digest, -1)).rejects.toThrow('input conflict')
+    await expect(recovered.settleReviewTurn(intent.operationId, { events: [], pendingInteractions: [],
+      terminalTurn: { correlationId: assignments[0]!.correlationId, providerId: 'turn-0',
+        result: { outcome: 'succeeded', output: { text: 'changed' } } } })).rejects.toThrow('result conflict')
+    const archived = join(`${path}.reviews`, createHash('sha256').update(intent.operationId).digest('hex'),
+      `${createHash('sha256').update(assignments[0]!.correlationId).digest('hex')}.json`)
+    await writeFile(archived, JSON.stringify({ operationId: 'changed', turn: {} }))
+    await expect(recovered.reviewResult(intent.operationId, assignments[0]!.correlationId)).rejects.toThrow()
+    const current = { ...stop, native: { ...native, turnId: 'turn-159' } }
+    expect((await recovered.control(current)).dispatch).toBe(true)
+  })
+
   it('enters Stop delivery for the acknowledged review turn while preserving the original workflow identity', async () => {
     const { journal } = await setup()
     await journal.accept(intent, connection, randomUUID())
@@ -152,6 +217,51 @@ describe('durable remote ownership', () => {
     await entered.acknowledgeControl(stop)
     expect(await entered.controlDelivery(stop)).toBe('acknowledged')
     expect(await entered.enterControlDelivery(stop)).toBe(false)
+  })
+  it('keeps a reserved response from entering after Stop fences the original operation across restart', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.markRunning(intent.operationId)
+    await journal.interaction(intent.operationId, { interactionId: 'question', interactionRevision: '1',
+      nativeInteractionId: 'native-question', native })
+    const response: RemoteOwnerControl = { ...stop, commandId: 'respond', native,
+      action: { kind: 'respond', interactionId: 'question', interactionRevision: '1',
+        nativeInteractionId: 'native-question', response: { answer: 'yes' } } }
+    await journal.control(response)
+    await journal.control(stop)
+    await journal.close()
+    const recovered = await RemoteOperationJournal.open(path)
+    journals.push(recovered)
+    expect(await recovered.controlDelivery(response)).toBe('reserved')
+    expect(await recovered.enterControlDelivery(response)).toBe(false)
+    expect(await recovered.controlDelivery(response)).toBe('reserved')
+    expect(await recovered.enterControlDelivery(stop)).toBe(true)
+  })
+  it('enters the original reserved response once after recorded Main owner renewal and restart', async () => {
+    const { path, journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.markRunning(intent.operationId)
+    await journal.interaction(intent.operationId, { interactionId: 'question', interactionRevision: '1',
+      nativeInteractionId: 'native-question', native })
+    const response: RemoteOwnerControl = { ...stop, commandId: 'respond', native,
+      action: { kind: 'respond', interactionId: 'question', interactionRevision: '1',
+        nativeInteractionId: 'native-question', response: { answer: 'yes' } } }
+    await journal.control(response)
+    await journal.reconcileOwner({ commandId: 'renew', operationId: intent.operationId, previousOwner: intent.owner,
+      nextOwner: { grantId: 'renewed', epoch: '2' }, native, evidenceDigest: digest })
+    await journal.close()
+    const recovered = await RemoteOperationJournal.open(path)
+    journals.push(recovered)
+    expect(await recovered.controlDelivery(response)).toBe('reserved')
+    expect(await recovered.enterControlDelivery(response)).toBe(true)
+    expect(await recovered.enterControlDelivery(response)).toBe(false)
+    await expect(recovered.control({ ...response, commandId: 'replacement' })).rejects.toThrow('Stale control ownership')
+    await recovered.acknowledgeControl(response)
+    expect(await recovered.controlDelivery(response)).toBe('acknowledged')
   })
   it('recovers a killed service while fencing its surviving native descendant', async () => {
     const root = await mkdtemp(join(tmpdir(), 'journal-crash-'))

@@ -43,7 +43,9 @@ export type RemoteReviewerRequest = z.infer<typeof RemoteReviewerRequestSchema>
 export const RemoteReviewerTurnSchema = z.object({
   assignment: RemoteReviewerAssignmentSchema, promptDigest: PlacementDigestSchema,
   afterSequence: z.number().int().min(-1),
-  providerId: z.string().min(1).optional(), entered: z.boolean(), settled: z.boolean(), result: z.lazy(() => ExecutionResultSchema).optional(),
+  providerId: z.string().min(1).optional(), entered: z.boolean(), settled: z.boolean(),
+  result: z.lazy(() => ExecutionResultSchema).optional(), resultDigest: PlacementDigestSchema.optional(),
+  historyDigest: PlacementDigestSchema.optional(),
 }).strict()
 export const RemoteOperationReceiptSchema = z.object({
   schemaVersion: z.literal(1), intent: DispatchIntentSchema,
@@ -55,7 +57,7 @@ export const RemoteOperationReceiptSchema = z.object({
   uncertainty: z.string().max(500).optional(),
   retainedReviewer: z.object({ agentId: z.string().min(1), expiresAt: z.string().datetime(),
     workflowTurnId: z.string().min(1), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),
-  reviewTurns: z.array(RemoteReviewerTurnSchema).max(128).optional(),
+  reviewTurns: z.array(RemoteReviewerTurnSchema).optional(),
 }).strict().superRefine((value, context) => {
   validateHistoricalDeviceExecutionAdmission(value, context)
   if (Object.keys(DeviceExecutionAdmissionFields).some(field => value[field as keyof typeof DeviceExecutionAdmissionFields] !== undefined
