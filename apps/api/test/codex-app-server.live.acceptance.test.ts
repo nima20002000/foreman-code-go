@@ -10,7 +10,6 @@ import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppS
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 // Workflow and live acceptance share the native session manager.
 
-const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
 const binary = process.env.CODEX_BINARY ?? 'codex'
 function outputText(output: unknown): string { return isObject(output) && typeof output.text === 'string' ? output.text : '' }
 function request(directory: string): HarnessExecutionRequest {
@@ -30,7 +29,7 @@ function request(directory: string): HarnessExecutionRequest {
 }
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
-describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualified Codex app-server acceptance', () => {
+describe('authenticated qualified Codex app-server acceptance', () => {
   it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
     const directory = process.cwd()
     const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))

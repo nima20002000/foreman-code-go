@@ -118,7 +118,7 @@ Physical test is skipped unless `RUN_RSYNC_PHYSICAL=1`. Supply
 `RSYNC_PHYSICAL_LOCAL_BINARY`, `RSYNC_PHYSICAL_LOCAL_SHA256`,
 `RSYNC_PHYSICAL_REMOTE_BINARY`, `RSYNC_PHYSICAL_REMOTE_SHA256`, and optional
 `RSYNC_PHYSICAL_REPORT` path, then run the same scheduler command with
-`vitest run src/modules/byte-transfer/rsync.physical.test.ts`.
+`vitest run src/modules/byte-transfer/rsync.physical.acceptance.test.ts`.
 
 The physical harness uses already authorized strict SSH, unique private roots,
 0/1MiB/8MiB random bytes, source mutation after freeze, real push/pull hash/length

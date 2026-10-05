@@ -7,8 +7,7 @@ import { NodeRsyncExecutor, RsyncStagingTransport, RSYNC_SSH_ARGS, type RsyncEnd
   type RsyncStagingPorts, type RsyncExecutor } from './rsync.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
 
-const enabled = process.env.RUN_RSYNC_PHYSICAL === '1'
-it.skipIf(!enabled)('actual PC/Dexter private staging push, pull, empty, source freeze and interrupted resume', async () => {
+it('actual PC/Dexter private staging push, pull, empty, source freeze and interrupted resume', async () => {
   const binary = process.env.RSYNC_PHYSICAL_LOCAL_BINARY!, binaryHash = process.env.RSYNC_PHYSICAL_LOCAL_SHA256!
   const remoteBinary = process.env.RSYNC_PHYSICAL_REMOTE_BINARY!, remoteHash = process.env.RSYNC_PHYSICAL_REMOTE_SHA256!
   expect(binary).toBeTruthy(); expect(binaryHash).toMatch(/^[a-f0-9]{64}$/)
