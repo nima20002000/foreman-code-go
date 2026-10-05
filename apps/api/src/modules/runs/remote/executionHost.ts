@@ -102,7 +102,11 @@ export class RemoteExecutionHost {
       const command = frame.command
       if (command.operationId !== frame.intent.operationId || command.executionId !== frame.intent.executionId
         || command.attemptId !== frame.intent.attemptId || command.bindingHash !== frame.intent.bindingHash
-        || !isDeepStrictEqual(command.owner, frame.intent.owner)) throw new Error('Control delivery ownership mismatch')
+        || !isDeepStrictEqual(command.owner, frame.intent.owner)
+          && (recorded.status !== 'known'
+            || !recorded.receipt.controls.some(prior => isDeepStrictEqual(prior, command)))) {
+        throw new Error('Control delivery ownership mismatch')
+      }
       const phase = await this.ports.journal.controlDelivery(command)
       return { phase: phase ?? 'unknown', status: await this.ports.journal.status(frame.intent.operationId) }
     }
@@ -300,6 +304,7 @@ export class RemoteExecutionHost {
       || !isDeepStrictEqual(resident.session, review.session)
       || resident.request.configuration.agentId !== review.reviewerAgentId) throw new Error('Reviewer session binding mismatch')
     await this.ports.authorizeReview(resident.intent, resident.placement, review)
+    await this.ports.journal.loadReviewTurn(resident.intent.operationId, review.correlationId)
   }
   startTurn(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest) {
     return this.track(() => this.startTurnOwned(operationId, prompt, correlationId, review))
@@ -387,6 +392,9 @@ export class RemoteExecutionHost {
   }
   async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp', correlationId?: string) {
     const resident = await this.resident(operationId, 'read')
+    if (correlationId && correlationId !== `execution:${resident.intent.executionId}`) {
+      await this.ports.journal.loadReviewTurn(operationId, correlationId)
+    }
     const status = await this.ports.journal.status(operationId)
     const correlation = correlationId ?? (status.status === 'known'
       ? status.receipt.reviewTurns?.at(-1)?.assignment.correlationId : undefined) ?? `execution:${resident.intent.executionId}`
@@ -395,6 +403,8 @@ export class RemoteExecutionHost {
       throw new Error('Unknown reviewer reconciliation correlation')
     if (resident.settlementEvidence) await this.settle(resident, `execution:${resident.intent.executionId}`)
     if (method === 'history') {
+      const review = status.status === 'known'
+        ? status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlation) : undefined
       const workflow = correlation === `execution:${resident.intent.executionId}` && status.status === 'known'
         ? status.receipt.retainedReviewer : undefined
       let history: NativeHistory
@@ -402,13 +412,12 @@ export class RemoteExecutionHost {
         if (!resident.workflowHistory) throw new Error('Original workflow history requires durable recovery')
         history = structuredClone(resident.workflowHistory)
       } else {
-        history = resident.settlementHistory ? structuredClone(resident.settlementHistory)
-          : await resident.manager.reconcile(resident.session, correlation)
+        const archived = review?.settled ? await this.ports.journal.reviewHistory(operationId, correlation) : undefined
+        history = archived ?? (resident.settlementHistory ? structuredClone(resident.settlementHistory)
+          : await resident.manager.reconcile(resident.session, correlation))
       }
       if (!workflow && correlation === `execution:${resident.intent.executionId}` && history.terminalTurn?.correlationId === correlation)
         await this.settle(resident, correlation)
-      const review = status.status === 'known'
-        ? status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlation) : undefined
       if (review && history.correlationId === correlation && history.nativeTurnId) {
         await this.ports.journal.acknowledgeReviewTurn(operationId, correlation, history.nativeTurnId)
         if (history.terminalTurn?.correlationId === correlation) await this.ports.journal.settleReviewTurn(operationId, history)

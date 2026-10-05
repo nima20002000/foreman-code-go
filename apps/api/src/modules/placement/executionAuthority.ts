@@ -53,22 +53,29 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   if (connection.mainId !== authenticated.mainId || connection.deviceId !== authenticated.deviceId
     || connection.workerInstallationId !== authenticated.workerInstallationId || connection.keyRevision !== authenticated.keyRevision
     || connection.authorizationRevision !== authenticated.authorizationRevision) denied()
-  if (input.action !== 'read' && connection.bootId !== authenticated.bootId) denied()
-  const reconnected = connection.bootId === authenticated.bootId
+  if (input.action !== 'read' && input.action !== 'stop' && connection.bootId !== authenticated.bootId) denied()
+  const changedBoot = connection.bootId !== authenticated.bootId
+  const reconnected = !changedBoot
     && connection.connectionGeneration !== authenticated.connectionGeneration
-  if (reconnected) {
+  let resident = false
+  if (reconnected || changedBoot) {
     const stored = (await sql.query<{ receipt: unknown }>(
       'select receipt from remote_execution_receipts where operation_id=$1 for share', [current!.operationId])).rows[0]
     const receipt = RemoteOperationReceiptSchema.safeParse(stored?.receipt)
-    if (input.action === 'start' || !receipt.success || !receipt.data.native
-      || !sameWorkflowValue(receipt.data.intent, current) || !sameWorkflowValue(receipt.data.connection, connection)) denied()
+    if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
+      || !sameWorkflowValue(receipt.data.connection, connection))) denied()
+    resident = receipt.success && receipt.data.native !== undefined
+    if (input.action === 'start' || input.action !== 'read' && !resident) denied()
   }
   // Cleanup observes and cancels the admitted owner even when it can no longer launch.
   if (!cleanup) {
     await locations.revalidateRunAuthorization(row!.authorization_principal_id, row!.workspace_id, row!.workflow_id,
       sql, true)
-    await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id),
-      row!.workspace_id, reconnected ? { purpose: 'resident' } : undefined)
+    // A restarted OS can read the admitted owner's closure; it cannot qualify that process to continue.
+    if (!changedBoot && (!reconnected || resident)) {
+      await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id),
+        row!.workspace_id, reconnected ? { purpose: 'resident' } : undefined)
+    }
   }
   if (input.action === 'start') {
     if (!await readNativePlacement(sql, current!.executionId)) denied()
@@ -107,8 +114,12 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         const originalConnection = DeviceConnectionIdentitySchema.parse(origin?.connection)
         const reconnected = originalConnection.bootId === context.binding.bootId
           && originalConnection.connectionGeneration !== context.binding.connectionGeneration
-        // verify() has qualified the original native receipt before allowing this generation to read its facts.
-        const harness = await producer.harnessFacts(sql, placement!, reconnected ? { purpose: 'resident' } : undefined)
+        const stored = reconnected ? (await sql.query<{ receipt: unknown }>(
+          'select receipt from remote_execution_receipts where operation_id=$1 for share',
+          [input.intent.operationId])).rows[0] : undefined
+        const receipt = stored && RemoteOperationReceiptSchema.parse(stored.receipt)
+        const resident = reconnected && receipt?.native !== undefined
+        const harness = await producer.harnessFacts(sql, placement!, resident ? { purpose: 'resident' } : undefined)
         return { payload: ExecutionFactsResultSchema.parse({ version: 1, intent: input.intent, placement, executionPlacement: native, configuration, harness }) }
       }
       const policy = input.action === 'retain-reviewer' || input.action === 'review'

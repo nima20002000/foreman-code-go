@@ -30,7 +30,7 @@ function fixture() {
   if (placement.hostRef.kind !== 'device') throw new Error('Expected device placement')
   const connection = { mainId, deviceId: placement.hostRef.deviceId, ...registration,
     bootId: randomUUID(), connectionGeneration: 1 }
-  const state = { grant: true, origin: connection, cleanup: false, stopped: false }
+  const state = { grant: true, origin: connection, cleanup: false, stopped: false, receipt: true }
   const receipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
     phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
     turnInput: { correlationId: 'execution:execution', promptDigest: digest },
@@ -40,7 +40,7 @@ function fixture() {
       workflow_id: 'workflow', execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup }], rowCount: 1 }
     if (text.includes('execution_dispatch_owner_grants')) return { rows: [], rowCount: state.grant ? 1 : 0 }
     if (text.includes('remote_dispatch_origins')) return { rows: [{ connection: state.origin }], rowCount: 1 }
-    if (text.includes('remote_execution_receipts')) return { rows: [{ receipt }], rowCount: 1 }
+    if (text.includes('remote_execution_receipts')) return { rows: state.receipt ? [{ receipt }] : [], rowCount: state.receipt ? 1 : 0 }
     return { rows: [], rowCount: 1 }
   } } as unknown as GraphTransactionSql
   const locations = { revalidateRunAuthorization: vi.fn(async () => {}) }
@@ -74,7 +74,7 @@ describe('remote cleanup authorization', () => {
     expect(f.locations.revalidateRunAuthorization).not.toHaveBeenCalled()
   })
 
-  it.each(['owner-grant', 'dispatch-owner', 'registration', 'device', 'boot'])('preserves the %s fence during cleanup', async defect => {
+  it.each(['owner-grant', 'dispatch-owner', 'registration', 'device'])('preserves the %s fence during cleanup', async defect => {
     const f = fixture()
     f.state.cleanup = true
     if (defect === 'owner-grant') f.state.grant = false
@@ -82,7 +82,6 @@ describe('remote cleanup authorization', () => {
     if (defect === 'registration') ports.installation.mockResolvedValue({ authorizationRevision: 2, keyRevision: 1 })
     const authenticated = { ...f.connection }
     if (defect === 'device') authenticated.deviceId = randomUUID()
-    if (defect === 'boot') authenticated.bootId = randomUUID()
     await expect(f.authorize('stop', authenticated)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 })
@@ -108,5 +107,35 @@ describe('authenticated original execution reconnection', () => {
     const replacement = { ...f.connection, connectionGeneration: 2 }
     await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
     await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+
+  it('reads an acknowledged owner after an OS restart without authorizing continuation or new entry', async () => {
+    const f = fixture()
+    const restarted = { ...f.connection, bootId: randomUUID(), connectionGeneration: 2 }
+    f.pins.mockRejectedValue(new Error('New OS has no current launch qualification'))
+    await expect(f.authorize('read', restarted)).resolves.toBeUndefined()
+    expect(f.locations.revalidateRunAuthorization).toHaveBeenCalled()
+    expect(f.pins).not.toHaveBeenCalled()
+    for (const action of ['control', 'start', 'stop'] as const) {
+      await expect(f.authorize(action, restarted)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    }
+    f.state.cleanup = true
+    await expect(f.authorize('stop', restarted)).resolves.toBeUndefined()
+    delete (f.receipt as { native?: unknown }).native
+    await expect(f.authorize('read', restarted)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+
+  it('can consult the original worker journal when Main lost the preparation acknowledgment', async () => {
+    const f = fixture()
+    f.state.receipt = false
+    const replacement = { ...f.connection, connectionGeneration: 2 }
+    f.pins.mockRejectedValue(new Error('This channel cannot qualify a new launch'))
+    await expect(f.authorize('read', replacement)).resolves.toBeUndefined()
+    expect(f.locations.revalidateRunAuthorization).toHaveBeenCalled()
+    expect(f.pins).not.toHaveBeenCalled()
+    await expect(f.authorize('control', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    await expect(f.authorize('start', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    f.state.grant = false
+    await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 })
