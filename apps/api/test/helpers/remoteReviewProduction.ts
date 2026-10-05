@@ -425,7 +425,9 @@ export async function remoteReviewProduction() {
           const code = 'code' in message && typeof message.code === 'string'
             && /^[A-Z][A-Z0-9_]{1,127}$/.test(message.code) ? message.code : undefined
           const detail = 'message' in message ? String(message.message) : 'Main reconciliation failed.'
-          finish(new Error(code ? `${code}: ${detail}` : detail))
+          const error = new Error(code ? `${code}: ${detail}` : detail)
+          if ('stack' in message && typeof message.stack === 'string') error.stack = message.stack
+          finish(error)
         }
       }
       const timer = setTimeout(() => finish(new Error('Production Main reconciliation timed out.')), 30_000)
