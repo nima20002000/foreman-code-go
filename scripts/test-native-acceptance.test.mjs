@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
-  nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
+  nativeAcceptanceOpenCodeBinary, nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
 
 test('native launchers retain the running Node interpreter when HOME is isolated', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-runtime-'))
@@ -63,6 +63,18 @@ test('acceptance keeps executable lookup deferred and respects explicit provider
     '/installed/opencode')
   assert.equal(nativeAcceptanceConfiguration({ OPENCODE_BINARY: '/installed/opencode',
     ENG03_A_OPENCODE_BINARY: '/qualified/opencode' }).opencodeBinary, '/qualified/opencode')
+})
+
+test('Codex-only acceptance does not require an unrelated OpenCode installation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-discovery-'))
+  try {
+    await symlink('/usr/bin/which', join(directory, 'which'))
+    const environment = { PATH: directory }
+    assert.equal(nativeAcceptanceOpenCodeBinary(environment), undefined)
+    assert.equal(nativeAcceptanceOpenCodeBinary({ ...environment,
+      ENG03_A_OPENCODE_BINARY: '/approved/pinned/opencode' }), '/approved/pinned/opencode')
+    assert.deepEqual(environment, { PATH: directory })
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
 test('the native gate includes local-human isolation and production recovery by default', () => {
