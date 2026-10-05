@@ -34,6 +34,7 @@ class FakeNative implements NativeHarnessSessionManager {
   created: NativeSessionStart[] = []; attached: NativeSessionStart[] = []; forked: Array<{ source: string; input: NativeSessionStart }> = []
   prompts: string[] = []; steers: NativeSteerInput[] = []; cancels = 0
   hold = false
+  deferCancelTerminal = false
   private turn = 0
   private readonly histories = new Map<string, NativeHistory>()
   private active: { id: string; correlation: string; release: () => void } | undefined
@@ -87,7 +88,7 @@ class FakeNative implements NativeHarnessSessionManager {
   async cancel() {
     this.cancels++
     if (!this.active) return false
-    this.finish({ outcome: 'canceled' })
+    if (!this.deferCancelTerminal) this.finish({ outcome: 'canceled' })
     return true
   }
   async pending() { return undefined }
@@ -721,10 +722,23 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       await conflict('/responses', 'agent_chat_respond', { ...respond, optionId: 'codex-reject' })
       expect(responses).toBe(1)
       expect((await read()).pendingInteraction?.turn.nativeRequestId).toBe('approval-two')
+      native.deferCancelTerminal = true
+      const cancelDelivery = vi.spyOn(native, 'cancel')
+        .mockRejectedValueOnce(new Error('Cancel transport disconnected before acknowledgment'))
+        .mockResolvedValueOnce(false)
       const interrupt = { requestId: randomUUID() }
       const interrupted = await http('/interrupt', interrupt)
       expect(interrupted.statusCode, interrupted.body).toBe(200)
       const interruptReceipt = await receipt(interrupt.requestId)
+      await service.recover()
+      await service.recover()
+      await service.recover()
+      expect(cancelDelivery).toHaveBeenCalledTimes(3)
+      expect(native.cancels).toBe(1)
+      expect((await read()).activeTurn?.requestId).toBe(active.activeTurn!.requestId)
+      expect(native.prompts).toHaveLength(2)
+      native.finish({ outcome: 'canceled' })
+      native.deferCancelTerminal = false
       await settled(service, read)
       await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
       const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
