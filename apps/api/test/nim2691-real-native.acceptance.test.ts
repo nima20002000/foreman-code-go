@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
 import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
@@ -23,6 +23,10 @@ import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConn
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
+import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
+import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 
@@ -104,6 +108,32 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const database = createDatabase(config.database)
       const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
       let app: ReturnType<typeof buildProductionApp>['app'] | undefined
+      let observedRunId: string | undefined
+      const secrets = new Set(Object.entries(process.env)
+        .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
+        .map(([, value]) => value!))
+      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const createSession = CodexAppServerSessionManager.prototype.createSession
+      const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+        .mockImplementation(async function (this: CodexAppServerSessionManager, source, signal) {
+          for (const value of Object.values(source.environment?.variables ?? {})) secrets.add(value)
+          try { return await createSession.call(this, source, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'create_session',
+              error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
+      const observeExact = ApprovalExecutionCoordinator.prototype.observeExact
+      const executionObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'observeExact')
+        .mockImplementation(async function (this: ApprovalExecutionCoordinator, input) {
+          try { return await observeExact.call(this, input) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'observe_execution',
+              executionId: input.execution.id, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       try {
         await database.migrate()
         await checkpoints.setup()
@@ -256,6 +286,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expectedLocationRevision: 1, input: { task: 'Say hello once.' } } })
         expect(started.statusCode, started.body).toBe(202)
         const runId = started.json().run.id as string
+        observedRunId = runId
         const approved = new Set<string>()
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
@@ -508,7 +539,29 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           from worker_credential_bindings b join management_principals p on p.id=b.principal_id
           where b.run_id=$1 and p.revoked_at is null`, [runId])).rows[0]
         expect(Number(liveCredentials?.count)).toBe(0)
+      } catch (error) {
+        const directory = process.env.ENG03_A_EVIDENCE_DIR
+        if (directory) {
+          try {
+            const executions = observedRunId ? (await pool.query(
+              "select id,record->>'state' as state,record#>'{result,error}' as error from harness_executions where run_id=$1 order by id limit 16",
+              [observedRunId],
+            )).rows : []
+            const evidence = nativePersistenceRedactor([...secrets]).value({
+              scenario: scenario.name, runId: observedRunId, nativeFailures, executions,
+              failure: describeNativeFailure(error, [...secrets]),
+            })
+            const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
+            await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
+            console.info('Private native workflow failure evidence:', path)
+          } catch (evidenceError) {
+            throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', { cause: error })
+          }
+        }
+        throw error
       } finally {
+        executionObserver.mockRestore()
+        sessionObserver.mockRestore()
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
         await rm(projectPath, { recursive: true, force: true })
