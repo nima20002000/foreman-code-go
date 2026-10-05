@@ -9,6 +9,7 @@ import { DEFAULT_FILE_RETENTION_SECONDS, FilePageSchema, FileWithRevisionSchema,
   type FileWithRevision } from '@foreman-code/contracts/files'
 import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
+import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
@@ -131,6 +132,18 @@ beforeEach(() => {
     http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
       workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
     })),
+    http.get('*/api/management/workspaces/workspace-1/runs/:runId/activities', ({ params }) => {
+      const runId = String(params.runId)
+      const snapshot = reply(runId, scope).snapshot
+      if (snapshot.kind !== 'available') throw new Error('The Activities fixture requires a saved Run')
+      const runScope = { ...scope, runId, workflowVersionId: snapshot.workflowVersionId }
+      return HttpResponse.json(RunActivitiesPageSchema.parse({
+        scope: runScope, mode: 'initial', highWater: '1', retainedFrom: '1',
+        nextCursor: `cursor-${runId}`, olderCursor: null, hasMore: false,
+        items: [{ id: `activity-${runId}`, scope: runScope, sequence: '1', occurredAt: snapshot.capturedAt,
+          source: 'backend', kind: 'run', status: 'recorded', severity: 'info', summary: `Saved run ${runId}`, refs: {} }],
+      }))
+    }),
   )
 })
 afterEach(() => {
@@ -151,6 +164,7 @@ describe('FIL-17 + SCH selected Board', () => {
     const graph = within(board)
     expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-a')).toBeVisible()
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
@@ -175,6 +189,7 @@ describe('FIL-17 + SCH selected Board', () => {
     const graph = within(board)
     expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-a')).toBeVisible()
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
     if (width === 320) {
@@ -186,10 +201,14 @@ describe('FIL-17 + SCH selected Board', () => {
     await choose(user, runs, 'run-b')
     expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
+    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-b')).toBeVisible()
+    expect(screen.queryByText('Saved run run-a')).not.toBeInTheDocument()
     expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
     await choose(user, runs, 'run-a')
     expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-a')).toBeVisible()
+    expect(screen.queryByText('Saved run run-b')).not.toBeInTheDocument()
     expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
   })
 
