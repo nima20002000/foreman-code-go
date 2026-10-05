@@ -52,7 +52,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       await manager.dispose()
       await rm(directory, { recursive: true, force: true })
     }
-  })
+  }, 120_000)
 
   it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
     const directory = process.cwd()
