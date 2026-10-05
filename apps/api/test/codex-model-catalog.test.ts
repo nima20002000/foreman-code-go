@@ -1,9 +1,9 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { afterEach, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { parseCodexModelCatalog } from '../src/modules/harnesses/codexModelCatalog.js'
+import { parseCodexModelCatalog, readNativeCodexModelCatalog, type CodexModelInspection } from '../src/modules/harnesses/codexModelCatalog.js'
 import { qualifyNativeCodexModel } from '../src/modules/harnesses/codexQualification.js'
-import { calls, fixture, fixtureQualification } from './fixtures/codex-test-helpers.js'
+import { calls, fixture, fixtureQualification, fixtureProtocol } from './fixtures/codex-test-helpers.js'
 import { join } from 'node:path'
 
 const model = { slug: 'test-model', supported_reasoning_levels: [{ effort: 'medium' }],
@@ -81,3 +81,41 @@ it.each(['models-refresh-failed', 'models-refresh-failed-on-close'])(
     expect(wire.filter(entry => entry.method === 'model/list')).toHaveLength(1)
     expect(wire.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method))).toBe(false)
   })
+
+function recordedInspection(request: () => Promise<unknown>, close: () => Promise<void>): CodexModelInspection {
+  return { qualified: { binary: '/recorded-codex', identity: 'recorded', protocol: fixtureProtocol,
+    providerVersion: 'codex-cli 0.154.0', schemaManifestSha256: 'recorded', stableSchemaGitBlob: 'recorded',
+    referenceSchemaManifestSha256: 'recorded' }, assertUnchanged: async () => undefined,
+    transportFactory: () => ({ start: async () => undefined, reject: async () => undefined, request, close }) }
+}
+
+it('rejects empty continuation pages and confirms cleanup without unbounded metadata reads', async () => {
+  let reads = 0
+  let closed = false
+  const inspection = recordedInspection(async () => {
+    reads += 1
+    return { data: [], nextCursor: `cursor-${reads}` }
+  }, async () => { closed = true })
+  await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID' } } })
+  expect(reads).toBe(1)
+  expect(closed).toBe(true)
+})
+
+it('does not publish a catalog when the caller cancels during confirmed cleanup', async () => {
+  let closing!: () => void
+  const beganClosing = new Promise<void>(resolve => { closing = resolve })
+  let release!: () => void
+  const cleanup = new Promise<void>(resolve => { release = resolve })
+  const controller = new AbortController()
+  const inspection = recordedInspection(async () => ({ data: [], nextCursor: null }), async () => {
+    closing()
+    await cleanup
+  })
+  const read = readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}, controller.signal)
+  const rejected = expect(read).rejects.toThrow('canceled metadata inspection')
+  await beganClosing
+  controller.abort(new Error('canceled metadata inspection'))
+  release()
+  await rejected
+})
