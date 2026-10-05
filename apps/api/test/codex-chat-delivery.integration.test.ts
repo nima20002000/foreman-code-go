@@ -687,7 +687,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         itemId: 'questions', isBlocking: true, autoResolutionMs: null,
         questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',
           isOther: true, isSecret: true, options: null }],
-      } : { mode: 'form', serverName: 'app', message: 'Enter details', _meta: null,
+      } : { mode: 'openai/form', serverName: 'app', message: 'Enter details', _meta: null,
         requestedSchema: { type: 'object', additionalProperties: false,
           properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
       const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
@@ -764,7 +764,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         itemId: 'questions', isBlocking: true, autoResolutionMs: null,
         questions: [{ id: 'answer', header: 'Answer', question: 'What should happen next?',
           isOther: true, isSecret: false, options: null }],
-      } : { mode: 'form', serverName: 'app', message: 'Enter details', _meta: null,
+      } : { mode: 'openai/form', serverName: 'app', message: 'Enter details', _meta: null,
         requestedSchema: { type: 'object', additionalProperties: false,
           properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } }
       const method = kind === 'questions' ? 'item/tool/requestUserInput' : 'mcpServer/elicitation/request'
