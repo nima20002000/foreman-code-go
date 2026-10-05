@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SessionControlStateSchema } from '@graphql/contracts'
+import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { OperatorComposer } from '../../operator-chat/OperatorComposer'
 import { ConversationComposer } from '../ConversationComposer'
 import { SessionControls } from './SessionControls'
@@ -89,9 +89,32 @@ it('renders the shared numeric budget field and submits a plain token value', as
   render(<SessionControls controls={controls} />)
   fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
   fireEvent.click(screen.getByText('Context options for this chat'))
-  const budget = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
-  fireEvent.change(budget, { target: { value: '150000' } })
-  fireEvent.blur(budget)
+  const input = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
+  fireEvent.change(input, { target: { value: '150000' } })
+  fireEvent.blur(input)
   await waitFor(() => expect(controls.change).toHaveBeenCalledWith({ kind: 'preferences',
     preferences: { ...state.desired, autoCompactTokens: 150000 } }))
+})
+
+it('refreshes the budget from persisted readback and ignores an untouched blur', () => {
+  const controls = controller()
+  controls.state = { ...state, desired: { ...state.desired, autoCompactTokens: 150000 },
+    capabilities: { ...state.capabilities, modelCapacity: 200000, autoCompactBudget: { supported: true, reason: null } } }
+  const view = render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  let input = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
+  fireEvent.change(input, { target: { value: '160000' } })
+  fireEvent.blur(input)
+  expect(controls.change).toHaveBeenCalledTimes(1)
+  vi.mocked(controls.change).mockClear()
+  controls.state = { ...controls.state!, desired: { ...state.desired, autoCompactTokens: 180000 } }
+  view.rerender(<SessionControls controls={controls} />)
+  input = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
+  expect(input).toHaveValue(180000)
+  fireEvent.focus(input)
+  fireEvent.blur(input)
+  expect(controls.change).not.toHaveBeenCalled()
+  fireEvent.change(input, { target: { value: '180000' } })
+  fireEvent.blur(input)
+  expect(controls.change).not.toHaveBeenCalled()
 })
