@@ -59,6 +59,7 @@ int main(int argc, char **argv) {
     },
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),
     retryReview: () => writeFile(join(directory, 'retry-review'), '', { mode: 0o600 }),
+    blockRequesterSession: () => writeFile(join(directory, 'block-requester-session'), '', { mode: 0o600 }),
   }
 }
 

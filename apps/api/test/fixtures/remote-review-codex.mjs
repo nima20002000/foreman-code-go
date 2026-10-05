@@ -194,7 +194,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     thread = { id: randomUUID(), ephemeral: params.ephemeral === true, turns: [], settings: configuration(params),
       instructions: `${params.baseInstructions ?? ''}\n${params.developerInstructions ?? ''}` }
     save()
-    reply(message.id, { ...thread.settings, thread: view(false) })
+    if (thread.instructions.includes('fixture-requester') && existsSync(join(root, 'block-requester-session'))) {
+      log({ requesterSessionBlocked: { pid: process.pid } })
+    } else {
+      reply(message.id, { ...thread.settings, thread: view(false) })
+    }
   } else if (message.method === 'thread/resume') {
     thread = JSON.parse(readFileSync(join(root, `thread-${params.threadId}.json`), 'utf8'))
     thread.settings = configuration(params)
