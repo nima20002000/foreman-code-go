@@ -105,6 +105,12 @@ export function native2Fixture(completed = true) {
     appendNativeEvent: async (event: unknown, owner?: unknown, lease?: unknown, _approval?: unknown, _legacy?: unknown, evidence?: unknown) => {
       calls.push('raw-event'); persisted.push({ event, owner, lease, evidence })
     },
+    appendNativeEvents: async (frames: readonly { event: unknown; evidence: unknown }[], owner?: unknown, lease?: unknown) => {
+      for (const { event, evidence } of frames) {
+        calls.push('raw-event')
+        persisted.push({ event, owner, lease, evidence })
+      }
+    },
   }
   const captureChannel = createWorkflowNativeCaptureChannel()
   const interactions = { coordination: {
@@ -161,6 +167,7 @@ export function native2Fixture(completed = true) {
     close: async (reference: NativeSessionReference) => { calls.push(`close:${reference.nativeSessionId}`) },
     capabilities: forbidden('capabilities'), createSession: forbidden('createSession'),
     attachSession: forbidden('attachSession'), startTurn: forbidden('startTurn'), respond: forbidden('respond'), cancel: forbidden('cancel'),
+    startTurnBatches: forbidden('startTurnBatches'),
     history: async () => history(), reconcile: async () => history(),
     observeBoundary: async (reference: NativeSessionReference) => {
       assertOwned()
