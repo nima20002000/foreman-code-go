@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-10-05
+
+### Fixed
+
+- Drain native workflow output in bounded publications so parallel turns and approval waits complete without duplicate native submissions.
+- Detach failed event observers promptly while preserving the original native sessions for recovery.
+- Preserve caller-selected native acceptance database servers, evidence directories and pinned binaries through isolated test bootstrap.
+
 ## [0.0.4] - 2026-10-05
 
 ### Added
