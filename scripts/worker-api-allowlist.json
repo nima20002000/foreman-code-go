@@ -1,5 +1,6 @@
 [
   "apps/api/src/infrastructure/logger.ts",
+  "apps/api/src/infrastructure/runtimeTiming.ts",
   "apps/api/src/modules/byte-transfer/carrier.ts",
   "apps/api/src/modules/byte-transfer/installedEntrypoints.ts",
   "apps/api/src/modules/byte-transfer/installedRsyncSelection.ts",
@@ -43,6 +44,7 @@
   "apps/api/src/modules/harnesses/codexNormalization.ts",
   "apps/api/src/modules/harnesses/codexProtocol.ts",
   "apps/api/src/modules/harnesses/codexQualification.ts",
+  "apps/api/src/modules/harnesses/codexRuntimeTiming.ts",
   "apps/api/src/modules/harnesses/codexStdioTransport.ts",
   "apps/api/src/modules/harnesses/compatibility/errors.ts",
   "apps/api/src/modules/harnesses/compatibility/probe.ts",
