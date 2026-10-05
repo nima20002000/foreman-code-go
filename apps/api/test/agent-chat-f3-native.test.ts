@@ -4,7 +4,7 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -118,9 +118,17 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
         const input: WorkflowNativeSessionStart = { request: request() }
         const result = operation === 'attach' ? manager.attachSession(openCodeSource, input) : manager.forkSession(openCodeSource, input)
         await assert.rejects(result, (error: unknown) => {
-          assert(error instanceof OpenCodeNativeDeliveryError)
-          assert.equal(error.certainty, status === 404 ? 'definite' : 'uncertain')
-          assert.equal(error.code, status === 404 ? 'OPENCODE_SESSION_NOT_FOUND'
+          let cause = error
+          if (operation === 'fork') {
+            assert(error instanceof NativeDeliveryError)
+            assert.equal(error.operation, 'session_creation')
+            assert.equal(error.delivery, status === 404 ? 'not_sent' : 'unknown')
+            assert.equal(error.cleanup, 'confirmed')
+            cause = error.cause
+          }
+          assert(cause instanceof OpenCodeNativeDeliveryError)
+          assert.equal(cause.certainty, status === 404 ? 'definite' : 'uncertain')
+          assert.equal(cause.code, status === 404 ? 'OPENCODE_SESSION_NOT_FOUND'
             : operation === 'attach' ? 'OPENCODE_SERVER_REQUEST_FAILED' : 'OPENCODE_NATIVE_DELIVERY_REJECTED')
           return true
         })

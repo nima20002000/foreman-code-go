@@ -493,7 +493,13 @@ it('[F17] session creation uses mutation certainty for accepted-body failures an
       return undefined
     }
     await assert.rejects(sessionFor(manager(server)), (error: unknown) => {
-      assert(error instanceof OpenCodeNativeDeliveryError); assert.equal(error.certainty, 'uncertain'); return true
+      assert(error instanceof NativeDeliveryError)
+      assert.equal(error.operation, 'session_creation')
+      assert.equal(error.delivery, 'unknown')
+      assert.equal(error.cleanup, 'confirmed')
+      assert(error.cause instanceof OpenCodeNativeDeliveryError)
+      assert.equal(error.cause.certainty, 'uncertain')
+      return true
     })
     assert(server.sessionInfos.has('ses_committed'))
     assert.equal(server.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)

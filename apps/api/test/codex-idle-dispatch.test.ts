@@ -41,8 +41,13 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
     schedule: setTimeout, cancelTimer: clearTimeout,
     transport: (...args) => {
       disconnect = () => args[6](new Error('fixture transport disconnected'))
+      let closed = false
       return {
-        start: async () => undefined, close: async () => { closes += 1 },
+        start: async () => undefined,
+        close: async () => {
+          if (!closed) closes += 1
+          closed = true
+        },
         respond: async () => undefined, reject: async () => undefined,
         request: async (method, params) => {
           requests.push(method)
@@ -105,6 +110,7 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
       const f = fixture()
       const controller = new AbortController()
       const cleanup = f.holdCleanup()
+      let shutdown: Promise<void> | undefined
       try {
         const session = await f.manager.createSession(f.source)
         const running = operation === 'reload' ? f.manager.reloadNativeMcp(session, controller.signal)
@@ -113,10 +119,11 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
         await f.workFinished.promise
         if (ending === 'caller-abort') controller.abort(new Error('fixture caller canceled'))
         else if (ending === 'disconnect') f.disconnect()
-        else await f.manager.shutdown().catch(() => undefined) // The pending lifecycle retains its cleanup lock.
+        else shutdown = f.manager.shutdown()
         const shutdownCloses = f.closes()
         cleanup.release()
         await rejected
+        await shutdown
         assert.equal(f.requests.filter((method) => method === 'config/mcpServer/reload' || method === 'thread/resume').length, 0)
         assert.equal(f.closes(), shutdownCloses)
       } finally {

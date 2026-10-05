@@ -112,7 +112,9 @@ describe('Codex child controls through the pinned protocol', () => {
       .rejects.toBeInstanceOf(SubagentDispatchRejectedError)
     live.loseOwner()
     expect(lease.matches(childControlRecord())).toBe(false)
-    await expect(lease.sendInput!(childControlReceipt(), 'Input')).rejects.toThrow('Owner lost')
+    await expect(lease.sendInput!(childControlReceipt(), 'Input')).rejects.toMatchObject({
+      name: 'SubagentDispatchRejectedError', cause: expect.objectContaining({ message: 'Owner lost' }),
+    })
     expect(live.calls.some(call => call.method.startsWith('turn/'))).toBe(false)
   })
 })

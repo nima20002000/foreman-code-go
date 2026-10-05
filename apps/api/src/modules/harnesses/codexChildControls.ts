@@ -95,9 +95,9 @@ export class CodexChildControls {
           if (active?.status === 'inProgress') throw new SubagentDispatchRejectedError()
         }
         current()
-      } catch {
+      } catch (error) {
         // Reads and resume cannot submit the child prompt or interrupt its turn.
-        throw new SubagentDispatchRejectedError()
+        throw new SubagentDispatchRejectedError({ cause: error })
       }
       if (this.attempts.has(receipt.id)) throw new SubagentDispatchRejectedError()
       this.attempts.set(receipt.id, 'uncertain')
@@ -137,7 +137,7 @@ export class CodexChildControls {
         if (error instanceof CodexRpcError && !error.uncertain) {
           starting?.reject()
           this.attempts.set(receipt.id, 'rejected')
-          throw new SubagentDispatchRejectedError()
+          throw new SubagentDispatchRejectedError({ cause: error })
         }
         throw error
       }

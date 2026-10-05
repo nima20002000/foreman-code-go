@@ -741,6 +741,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async attachSession(session: NativeSessionReference, source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     this.assertSessionVersion(session)
+    if (this.locks.has(session.nativeSessionId)) {
+      throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+    }
     return this.exclusive(session.nativeSessionId, async () => {
       const input = structuredClone(source)
       const loaded = this.runtimes.get(session.nativeSessionId)
@@ -2279,6 +2282,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const root = runtime.parent ?? runtime
     const callbackOwner = root.callbackOwners.get(key)
     if (callbackOwner && callbackOwner !== params.threadId) {
+      const owner = callbackOwner === root.session.nativeSessionId
+        ? root : this.childRuntimes.get(callbackOwner)?.runtime
+      const interaction = owner?.interactions.get(key)
+      const file = owner?.fileRequests.get(key)
+      if (interaction) interaction.conflictingIdentity = true
+      if (file) file.conflictingIdentity = true
       this.record(root, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
       return
     }

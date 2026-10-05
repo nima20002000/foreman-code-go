@@ -31,7 +31,7 @@ describe('native session runtime regressions', () => {
   it('exposes a later approval without replaying an earlier uncertain response', async () => {
     const { fixture, manager, session } = await codexFixture()
     await fixture.flag('no-resolution')
-    const completed = collect(manager.startTurn(session, { prompt: 'approval', clientCorrelationId: 'approval-turn' }))
+    const completed = collect(manager.startTurn(session, { prompt: 'multi', clientCorrelationId: 'approval-turn' }))
     const first = await until(() => manager.pending(session))
     const option = first.responseOptions[0]!
     const abort = new AbortController()
@@ -42,10 +42,6 @@ describe('native session runtime regressions', () => {
       .filter((entry) => isObject(entry.wire) && 'result' in entry.wire).length === 1)
     abort.abort(new Error('stop awaiting confirmation'))
     await rejected
-    await emit(fixture.directory, { id: 902, method: 'item/commandExecution/requestApproval', params: {
-      threadId: session.nativeSessionId, turnId: first.turn.nativeTurnId, itemId: 'later-command',
-      command: 'printf later', cwd: fixture.directory, availableDecisions: ['accept', 'decline', 'cancel'],
-    } })
     const second = await until(() => manager.pending(session))
     assert.notEqual(second.turn.nativeRequestId, first.turn.nativeRequestId)
     const history = await manager.history(session)
@@ -129,12 +125,17 @@ describe('native session runtime regressions', () => {
     const fixture = await deliveryFixture()
     codexFixtures.push(fixture)
     let calls = 0
+    let sessionCleanupFailure = false
     const manager = fixture.makeManager(undefined, { transport: (...args) => {
       const transport = new CodexStdioTransport(...args)
       const close = transport.close.bind(transport)
       transport.close = async () => {
         calls += 1
         if (calls === 1) throw new Error('cleanup failed')
+        if (sessionCleanupFailure) {
+          sessionCleanupFailure = false
+          throw new Error('session cleanup failed')
+        }
         await close()
       }
       return transport
@@ -149,8 +150,12 @@ describe('native session runtime regressions', () => {
     const source = input(fixture.directory)
     delete source.environment
     const session = await manager.createSession(source)
-    await manager.close(session)
+    sessionCleanupFailure = true
+    await assert.rejects(manager.close(session), /session cleanup failed/)
     await assert.rejects(manager.attachSession(session, source), nativeCode('CODEX_SESSION_UNAVAILABLE'))
+    await manager.close(session)
+    assert.deepEqual(await manager.attachSession(session, source), session)
+    assert.equal((await fixture.wire('thread/start')).length, 1)
   })
 
   it('F10: returns the exact session ID when abort fires after the successful native POST response', async () => {

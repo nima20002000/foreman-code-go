@@ -62,7 +62,11 @@ it('shared authenticated read projects current response authority and rejects de
   const writer = { ...principal, grants: [{ actions: ['interactions:read', 'interactions:respond'] as const,
     scope: { runIds: [interaction.runId] } }] }
   expect((await service.reviewStatusVisible({ ...writer, grants: writer.grants.map((grant) => ({ ...grant, actions: [...grant.actions] })) }, interaction.id))
-    .activity.response.available).toBe(false)
+    .activity.response.available).toBe(true)
+  const foreignWriter = { ...principal, grants: [...principal.grants,
+    { actions: ['interactions:respond' as const], scope: { runIds: ['another-run'] } }] }
+  expect((await service.reviewStatusVisible(foreignWriter, interaction.id)).activity.response)
+    .toMatchObject({ available: false, reason: 'unauthorized' })
   inspect.mockClear()
   await expect(service.reviewStatusVisible({ ...principal, grants: [] }, interaction.id)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
   expect(inspect).not.toHaveBeenCalled()
