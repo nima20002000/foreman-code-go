@@ -40,10 +40,10 @@ test('discovery rejects symlinked test files and parent directories', () => {
 
 test('stale or forged heavy-job tokens do not count as queue admission', () => {
   const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]
-  const environment = { GRAPHQL_HEAVY_JOB_COMMON: '/git/common', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-token' }
+  const environment = { FOREMAN_CODE_HEAVY_JOB_COMMON: '/git/common', FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-token' }
   const owner = { token: 'owned-token', pid: process.pid, start }
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', owner), true)
-  assert.equal(hasActiveHeavyJobToken({ ...environment, GRAPHQL_HEAVY_JOB_TOKEN: 'stale' }, '/git/common', owner), false)
+  assert.equal(hasActiveHeavyJobToken({ ...environment, FOREMAN_CODE_HEAVY_JOB_TOKEN: 'stale' }, '/git/common', owner), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/other/common', owner), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', { ...owner, start: 'stale' }), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', null), false)
@@ -129,9 +129,9 @@ test('process deadlines allow long progressing files and cannot be disabled by o
   const limits = integrationTimeouts({})
   assert.equal(limits.idleTimeoutMs, 600_000)
   assert.equal(limits.fileTimeoutMs, 3_600_000)
-  assert.equal(integrationTimeouts({ GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
+  assert.equal(integrationTimeouts({ FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
   for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
-    assert.throws(() => integrationTimeouts({ GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
+    assert.throws(() => integrationTimeouts({ FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
   }
 })
 
@@ -280,7 +280,7 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     mkdirSync(running)
     const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]
     const owner = { common, token: 'owned-token', pid: process.pid, start }
-    const environment = { GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: owner.token }
+    const environment = { FOREMAN_CODE_HEAVY_JOB_COMMON: common, FOREMAN_CODE_HEAVY_JOB_TOKEN: owner.token }
     writeFileSync(legacy, JSON.stringify(owner))
     assert.equal(hasHeavyJobAdmission(environment, common), true)
     writeFileSync(legacy, JSON.stringify({ ...owner, token: 'another-slot' }))
@@ -288,8 +288,8 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     writeFileSync(secondary, JSON.stringify(owner))
     writeFileSync(join(running, '000000000001-malformed'), '{')
     assert.equal(hasHeavyJobAdmission(environment, common), true)
-    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_TOKEN: 'forged' }, common), false)
-    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_COMMON: '/other/common' }, common), false)
+    assert.equal(hasHeavyJobAdmission({ ...environment, FOREMAN_CODE_HEAVY_JOB_TOKEN: 'forged' }, common), false)
+    assert.equal(hasHeavyJobAdmission({ ...environment, FOREMAN_CODE_HEAVY_JOB_COMMON: '/other/common' }, common), false)
     for (const invalid of [{ ...owner, start: 'stale' }, { ...owner, common: '/other/common' }, { ...owner, pid: 0 }]) {
       writeFileSync(secondary, JSON.stringify(invalid))
       assert.equal(hasHeavyJobAdmission(environment, common), false)

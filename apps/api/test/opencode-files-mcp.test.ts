@@ -19,8 +19,8 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     const f = await fileToolFixture()
     const host = new LocalOpenCodeExecutionFiles({ executionHostId: 'fixture-host', root: tmpdir(), maxFileBytes: MAX_FILE_BYTES,
       async assertSourceIsolation() {} })
-    const config: Record<string, { enabled: boolean }> = { graphql: { enabled: false } }
-    const status: Record<string, { status: string }> = { graphql: { status: 'disabled' } }
+    const config: Record<string, { enabled: boolean }> = { 'foreman-code': { enabled: false } }
+    const status: Record<string, { status: string }> = { 'foreman-code': { status: 'disabled' } }
     const native = {
       expectedVersion: '1.18.31', async ensure() {}, async dispose() {},
       async request(path: string, init?: RequestInit) {
@@ -39,7 +39,7 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
     }
     const prepare = async () => {
       const turn = new OpenCodeFileTurn({ service: f.service, host, server: native,
-        endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
+        endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'foreman-code',
         maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
       const signal = AbortSignal.timeout(10_000)
       try {
@@ -81,14 +81,14 @@ describe('FIL-09 scoped OpenCode MCP facade', () => {
       expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
       async request(path: string, init?: RequestInit) {
         const url = new URL(path, 'http://127.0.0.1')
-        if (url.pathname === '/config') return Response.json({ mcp: { graphql: { enabled: false } } })
+        if (url.pathname === '/config') return Response.json({ mcp: { 'foreman-code': { enabled: false } } })
         if (url.pathname.endsWith('/disconnect')) return Response.json(true)
         if (init?.method === 'POST') connected = JSON.parse(init.body as string).name
-        return Response.json({ graphql: { status: 'disabled' }, ...(connected ? { [connected]: { status: 'connected' } } : {}) })
+        return Response.json({ 'foreman-code': { status: 'disabled' }, ...(connected ? { [connected]: { status: 'connected' } } : {}) })
       },
     }
     const turn = new OpenCodeFileTurn({ service: f.service, host, server: native,
-      endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
+      endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'foreman-code',
       maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
     registerFileToolsMcp(app, createOpenCodeFileMcpFacade(f.service, () => turn))
     const address = await app.listen({ host: '127.0.0.1', port: 0 })

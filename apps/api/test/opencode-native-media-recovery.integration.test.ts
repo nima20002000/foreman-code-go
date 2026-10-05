@@ -5,9 +5,9 @@ import pg from 'pg'
 import sharp from 'sharp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { it } from 'vitest'
-import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
-import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -96,7 +96,18 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
       return (result.structuredContent as { state: { conversation: { id: string } } }).state.conversation.id
     }
     const id = await send(original.mcp, 'establish', null)
-    await eventually(async () => (await repository.turn(id, 'establish'))?.delivery === 'completed')
+    try {
+      await eventually(async () => (await repository.turn(id, 'establish'))?.delivery === 'completed')
+    } catch (cause) {
+      const turn = await repository.turn(id, 'establish')
+      const conversation = await repository.get(id)
+      throw new Error('Initial native chat did not complete: ' + JSON.stringify({
+        turn,
+        state: conversation?.turn_state,
+        error: conversation?.record.error,
+        modelCalls: f.calls.length,
+      }), { cause })
+    }
     const bytes = await sharp(randomBytes(1024 * 1024 * 3), {
       raw: { width: 1024, height: 1024, channels: 3 },
     }).png({ compressionLevel: 0 }).toBuffer()

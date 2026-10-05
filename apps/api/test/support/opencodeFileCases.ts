@@ -138,13 +138,13 @@ async function fakeNative() {
     const text = Buffer.concat(chunks).toString(), body = text ? JSON.parse(text) : undefined
     requests.push({ path: url.pathname, ...(body ? { body } : {}) })
     response.setHeader('content-type', 'application/json')
-    if (url.pathname === '/config') return response.end(JSON.stringify({ mcp: { graphql: { enabled: appEnabled } } }))
+    if (url.pathname === '/config') return response.end(JSON.stringify({ mcp: { 'foreman-code': { enabled: appEnabled } } }))
     if (url.pathname.endsWith('/disconnect')) { disconnected++; return response.end('true') }
     if (url.pathname === '/mcp' && request.method === 'POST') {
       if (failConnect) { response.statusCode = 500; return response.end(JSON.stringify(body)) }
       statuses[body.name] = { status: 'connected' }; return response.end(JSON.stringify(statuses))
     }
-    if (url.pathname === '/mcp') return response.end(JSON.stringify({ graphql: { status: appEnabled ? 'connected' : 'disabled' }, ...statuses }))
+    if (url.pathname === '/mcp') return response.end(JSON.stringify({ 'foreman-code': { status: appEnabled ? 'connected' : 'disabled' }, ...statuses }))
     response.statusCode = 404; response.end('{}')
   })
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
@@ -183,7 +183,7 @@ async function fixture(mode: 'read' | 'write' = 'write') {
     async remove(handle) { files.delete(handle) },
   }
   const options = { service: backend.service, host, server: native.server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'graphql', maxFileBytes: limit, maxAttachments: 10 }
+    appMcpServerName: 'foreman-code', maxFileBytes: limit, maxAttachments: 10 }
   const turn = new OpenCodeFileTurn(options)
   const admission: AcceptedOpenCodeFileTurn = { context: { ...context(), allowMutation: mode === 'write' },
     attachments: [backend.add()], directory: '/execution/project', executionHostId: 'execution-b', mode,
@@ -209,6 +209,7 @@ export function registerOpenCodeFileCases(test: (name: string, body: () => Promi
       assert.ok(result.promptSuffix.includes('/execution/b/'))
       assert.ok(!result.promptSuffix.includes(f.backend.token))
       assert.ok(!JSON.stringify(post).includes('GRAPHQL_MCP_TOKEN'))
+      assert.ok(!JSON.stringify(post).includes('FOREMAN_CODE_MCP_TOKEN'))
       assert.equal(f.backend.artifacts.values().next().value!.state, 'writing')
       assert.equal(f.native.requests.filter((r) => r.path.includes('/prompt')).length, 0)
     } finally { await f.close() }

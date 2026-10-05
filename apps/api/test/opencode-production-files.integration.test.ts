@@ -8,9 +8,9 @@ import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import Fastify from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { AgentChatContext, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import type { AgentChatContext, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { loadConfig } from '../src/config.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { agentChatCorrelation, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
@@ -113,7 +113,7 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
       const identity = { ownerAgentId: node.agentId, nativeSessionId: session.nativeSessionId,
         nativeTurnId: nativeMessageId(correlation), clientCorrelationId: correlation, directory: workspace, configuration: harness }
       if (!runtime || !server) throw new Error('Production file composition was not allocated.')
-      turn = await prepareOpenCodeChatFiles(runtime, identity, server, 'graphql', AbortSignal.timeout(30_000))
+      turn = await prepareOpenCodeChatFiles(runtime, identity, server, 'foreman-code', AbortSignal.timeout(30_000))
       expect(turn).toBeDefined()
       expect(turn!.inputs.promptSuffix).toContain('files.')
       expect(turn!.inputs.imageParts).toHaveLength(attach ? 1 : 0)
@@ -126,7 +126,7 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
       expect((await files.list(sender.principal, target, { limit: 10 })).items.some((item) => item.file.fileId === ref.fileId))
         .toBe(true)
       await expect(prepareOpenCodeChatFiles(runtime, { ...identity, ownerAgentId: randomUUID() }, server,
-        'graphql', AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: 'FILE_ADMISSION_MISMATCH' })
+        'foreman-code', AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: 'FILE_ADMISSION_MISMATCH' })
       await server.assertFileSourceIsolation!(files.bytes.root, AbortSignal.timeout(10_000))
       if (recovery === 'native_replacement') {
         await turn!.finish('definite_rejection', AbortSignal.timeout(10_000))

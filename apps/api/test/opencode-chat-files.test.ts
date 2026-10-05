@@ -11,8 +11,8 @@ import { createChatFileBackend, fileContext, fileScope, hasFileCode } from './su
 async function fixture(mode: 'read' | 'write' = 'write', editTools = false) {
   const backend = createChatFileBackend()
   const server = new FixtureServer()
-  server.config = { mcp: { graphql: { enabled: false } } }
-  server.mcp = { graphql: { status: 'disabled' } }
+  server.config = { mcp: { 'foreman-code': { enabled: false } } }
+  server.mcp = { 'foreman-code': { status: 'disabled' } }
   const attachment = backend.add('image bytes stay out of prompt', 'image/png', 'image #.png')
   const correlationId = 'chat:conversation-a:accepted-a'
   let facade: FileMcpService | undefined, unmounts = 0, resolutions = 0
@@ -61,7 +61,7 @@ async function fixture(mode: 'read' | 'write' = 'write', editTools = false) {
     },
   }
   const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1',
-    appMcpServerName: 'graphql', appMcpAccess: 'none', chatFiles: runtime })
+    appMcpServerName: 'foreman-code', appMcpAccess: 'none', chatFiles: runtime })
   const harness = { ...configuration(), ...(mode === 'read' ? { nativeAgent: 'plan' } : {}) }
   const session = await manager.createSession({ request: request(harness), environment: { agentId: 'agent-1', variables: {} } })
   const iterators: AsyncIterator<unknown>[] = []

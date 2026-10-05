@@ -3,7 +3,7 @@ import { mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@foreman-code/contracts/files'
 import { LocalOpenCodeExecutionFiles } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { OpenCodeFileTurn } from '../src/modules/harnesses/opencodeFiles/turn.js'
 import { fileToolFixture } from './support/fileTools.js'
@@ -20,13 +20,13 @@ async function workingCopy() {
   let connected = ''
   const server = { expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
     async request(path: string, init?: RequestInit) {
-      if (path.startsWith('/config')) return Response.json({ mcp: { graphql: { enabled: false } } })
+      if (path.startsWith('/config')) return Response.json({ mcp: { 'foreman-code': { enabled: false } } })
       if (init?.method === 'POST' && path.startsWith('/mcp?')) connected = JSON.parse(String(init.body)).name
-      return Response.json({ graphql: { status: 'disabled' }, [connected]: { status: 'connected' } })
+      return Response.json({ 'foreman-code': { status: 'disabled' }, [connected]: { status: 'connected' } })
     } }
   let token = ''
   const turn = new OpenCodeFileTurn({ service: f.service, host, server,
-    endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
+    endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'foreman-code',
     maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS,
     rememberCredential: (issued) => { token = issued } })
   const source = await f.upload()

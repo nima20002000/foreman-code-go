@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { lstat, open, readdir, unlink, type FileHandle } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
-import type { FileRevision } from '@graphql/contracts/files'
+import type { FileRevision } from '@foreman-code/contracts/files'
 import type { AgentFileToolService } from '../../files/tools/service.js'
 import type { FileToolContext } from '../../files/tools/types.js'
 import type { OpenCodeDirectoryOwnership } from './cleanup.js'

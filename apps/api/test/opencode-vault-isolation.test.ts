@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { it } from 'vitest'
-import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from '../src/modules/harnesses/opencodeFiles/host.js'
 import { OpenCodeVaultIsolation } from '../src/modules/harnesses/opencodeFiles/isolation.js'

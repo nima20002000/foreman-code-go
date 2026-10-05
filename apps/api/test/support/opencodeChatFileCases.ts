@@ -8,7 +8,7 @@ import { createChatFileBackend, fileContext, fileScope, fileSignal, hasFileCode 
 async function fixture(mode: 'read' | 'write' = 'write') {
   const backend = createChatFileBackend()
   const requests: { path: string; body?: Record<string, unknown> }[] = []
-  const statuses: Record<string, unknown> = { graphql: { status: 'disabled' } }
+  const statuses: Record<string, unknown> = { 'foreman-code': { status: 'disabled' } }
   let generation = 1, failConnect = false
   const http = createServer(async (request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname
@@ -17,7 +17,7 @@ async function fixture(mode: 'read' | 'write' = 'write') {
     const body = text ? JSON.parse(text) : undefined
     requests.push({ path, ...(body ? { body } : {}) })
     response.setHeader('content-type', 'application/json')
-    if (path === '/config') return response.end(JSON.stringify({ mcp: { graphql: { enabled: false } } }))
+    if (path === '/config') return response.end(JSON.stringify({ mcp: { 'foreman-code': { enabled: false } } }))
     if (path === '/mcp' && request.method === 'POST') {
       backend.audit.push('connect')
       if (failConnect) { response.statusCode = 503; return response.end(JSON.stringify(body)) }
@@ -42,7 +42,7 @@ async function fixture(mode: 'read' | 'write' = 'write') {
     attachments: [backend.add()], mode, executionHostId: 'execution-b', directory: '/workspace/project',
     expiresAt: new Date(Date.now() + 60_000) }
   const options = { service: backend.service, host: backend.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'graphql', maxFileBytes: 25 * 1024 * 1024, maxAttachments: 10,
+    appMcpServerName: 'foreman-code', maxFileBytes: 25 * 1024 * 1024, maxAttachments: 10,
     adoptPublished: backend.adoptPublished }
   const turn = new OpenCodeFileTurn(options)
   const prepare = () => turn.prepareInputs(admission, backend.readAccepted(admission.context), fileSignal())

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { it } from 'vitest'
-import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@foreman-code/contracts/files'
 import {
   createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, OpenCodeResponseTooLargeError, readOpenCodeResponseText,
 } from '../src/modules/harnesses/opencodeClient.js'

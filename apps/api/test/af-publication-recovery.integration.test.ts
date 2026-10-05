@@ -71,12 +71,12 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   expect(admission?.attachments).toEqual(attachments)
   // Reuse ONLY the fake execution host. All service methods/receipts below are real.
   const host = createChatFileBackend()
-  const statuses: Record<string, unknown> = { graphql: { status: 'disabled' } }
+  const statuses: Record<string, unknown> = { 'foreman-code': { status: 'disabled' } }
   const server = { expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
     async request(path: string, init?: RequestInit) {
       const route = new URL(path, 'http://native.invalid').pathname
       let response: unknown = statuses
-      if (route === '/config') response = { mcp: { graphql: { enabled: false } } }
+      if (route === '/config') response = { mcp: { 'foreman-code': { enabled: false } } }
       else if (route === '/mcp' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as { name: string }; statuses[body.name] = { status: 'connected' }
       } else if (route.endsWith('/disconnect')) response = true
@@ -86,7 +86,7 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   const service = f.service
   let token = ''
   const turn = new OpenCodeFileTurn({ host: host.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'graphql', maxFileBytes: MAX_FILE_BYTES, maxAttachments: 10,
+    appMcpServerName: 'foreman-code', maxFileBytes: MAX_FILE_BYTES, maxAttachments: 10,
     rememberCredential: (value) => { token = value },
     service: { sessions: {
       issueForAcceptedSession: (context, expiry) => service.sessions.issueForAcceptedSession(context, expiry, 'opencode'),

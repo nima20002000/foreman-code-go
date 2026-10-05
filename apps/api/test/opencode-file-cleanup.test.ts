@@ -4,7 +4,7 @@ import { link, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, wri
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'vitest'
-import type { FileRevision } from '@graphql/contracts/files'
+import type { FileRevision } from '@foreman-code/contracts/files'
 import { sha256 } from '../src/modules/harnesses/opencodeFiles/attachments.js'
 import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from '../src/modules/harnesses/opencodeFiles/cleanup.js'
 import { LocalOpenCodeExecutionFiles } from '../src/modules/harnesses/opencodeFiles/host.js'
@@ -95,8 +95,8 @@ describe('OpenCode owned file cleanup', () => {
     const f = await fixture()
     const backend = createChatFileBackend()
     const server = new FixtureServer()
-    server.config = { mcp: { graphql: { enabled: false } } }
-    server.mcp = { graphql: { status: 'disabled' } }
+    server.config = { mcp: { 'foreman-code': { enabled: false } } }
+    server.mcp = { 'foreman-code': { status: 'disabled' } }
     server.beforeRequest = (path, init) => {
       if (new URL(path, 'http://fixture.invalid').pathname !== '/mcp' || init.method !== 'POST') return
       const body = object(JSON.parse(String(init.body)))
@@ -105,7 +105,7 @@ describe('OpenCode owned file cleanup', () => {
     }
     const options = {
       service: backend.service, host: f.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-      appMcpServerName: 'graphql', maxFileBytes: 1024, maxAttachments: 10,
+      appMcpServerName: 'foreman-code', maxFileBytes: 1024, maxAttachments: 10,
       adoptPublished: backend.adoptPublished,
     }
     const turn = new OpenCodeFileTurn(options)

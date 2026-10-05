@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, it } from 'vitest'
-import { AgentConfigurationVersionSchema } from '@graphql/contracts'
-import { AgentChatStateSchema, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
-import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@graphql/contracts/files'
-import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
+import { AgentChatStateSchema, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@foreman-code/contracts/files'
+import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -142,8 +142,8 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
 
       const server = new FixtureServer()
       server.nextSessionIds.push(`ses_${randomUUID().replaceAll('-', '')}`)
-      server.config = { mcp: { graphql: { enabled: false } } }
-      server.mcp = { graphql: { status: 'disabled' } }
+      server.config = { mcp: { 'foreman-code': { enabled: false } } }
+      server.mcp = { 'foreman-code': { status: 'disabled' } }
       server.beforeRequest = (path, init) => {
         if (new URL(path, 'http://fixture.invalid').pathname !== '/mcp' || init.method !== 'POST') return
         const body = object(JSON.parse(String(init.body)))
@@ -204,7 +204,7 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
         }
       } }
       const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: node.agentId,
-        appMcpServerName: 'graphql', appMcpAccess: 'none', chatFiles })
+        appMcpServerName: 'foreman-code', appMcpAccess: 'none', chatFiles })
       const factory: AgentChatManagerFactory = () => manager
       const chat = new AgentChatService(pool, conversations, new PostgresOperatorConversationRepository(pool),
         new PostgresWorkflowRepository(pool), {

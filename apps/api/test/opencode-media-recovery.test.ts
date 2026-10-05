@@ -9,7 +9,7 @@ import { FixtureServer, request } from './opencode-fixtures.js'
 for (const transport of ['raw', 'sdk'] as const) {
   it(`recovers a multi-image native prompt and allows its successor through the ${transport} transport`, async () => {
     const server = new FixtureServer()
-    server.config = { mcp: { graphql: { enabled: false } } }
+    server.config = { mcp: { 'foreman-code': { enabled: false } } }
     const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none',
       ...(transport === 'sdk' ? { clientFactory: createOpenCodeSdkTransport } : {}),
     })

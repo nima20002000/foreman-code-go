@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { it } from 'vitest'
-import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -25,7 +25,7 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
     const clients: Client[] = []
     const managers: OpenCodeNativeSessionManager[] = []
     const provider = new FixtureServer()
-    provider.config = { mcp: { graphql: { enabled: false } } }
+    provider.config = { mcp: { 'foreman-code': { enabled: false } } }
     let service: AgentChatService | undefined
     let app: ReturnType<typeof buildApp> | undefined
     try {

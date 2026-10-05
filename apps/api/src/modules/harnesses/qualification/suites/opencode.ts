@@ -19,7 +19,7 @@ class CandidateOpenCodeServer extends ManagedOpenCodeServer {
     super({ binary: input.binary, workingDirectory: input.workDirectory,
       ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
       ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
-      ownerAgentId: 'qualification', appMcpAccess: 'none', appMcpServerName: 'graphql', startupTimeoutMs: 30_000 })
+      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000 })
     Object.defineProperty(this, 'expectedVersion', { value: input.version })
   }
 }
