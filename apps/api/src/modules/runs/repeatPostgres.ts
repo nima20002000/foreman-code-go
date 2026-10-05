@@ -1,6 +1,7 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
+  type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
@@ -8,7 +9,8 @@ import {
   canonicalGraphJson, parseRepeatExitResultV1, parseWorkHandoffResult,
   WorkActivationInputSchema, WorkReturnSchema,
   validateRepeatDecisionV1, validateRepeatSuccessorV1,
-  type WorkflowRunV3, type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
+  type WorkflowRunV3, type WorkActivationInput, type RepeatDecisionMetadataV1,
+  type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
 
 import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
@@ -223,6 +225,23 @@ export class RepeatRunRepository {
       assertActive: () => this.active(context),
     }))
   }
+  readWorkExecutionContext(executionId: string): Promise<HarnessExecutionContext> {
+    return this.transaction(async (context) => {
+      this.active(context)
+      await context.hooks.assertAuthorityLocked(context.sql)
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      if (!stored.workActivationId) return repeatConflict('WORK_ACTIVATION_MISSING')
+      const input = await readWorkActivationInputLocked({ ...context,
+        assertActive: () => this.active(context),
+      }, stored.workActivationId)
+      assertWorkActivationReplay(stored, input)
+      return { parentRequest: input.parentRequest ? {
+        requestId: input.parentRequest.requestId,
+        requesterNodeId: input.parentRequest.requesterNodeId,
+      } : null }
+    })
+  }
   /** Queue one exact activation through the existing native receipt and launch path. */
   admitWorkActivation(activationId: string, candidate: (nodeId: string) => HarnessExecution): Promise<{ execution: HarnessExecution; reused: boolean }> {
     return this.transaction(async (context) => {
@@ -239,14 +258,7 @@ export class RepeatRunRepository {
       if (previous) {
         await this.recordedEffect(context, 'input.bind', previous.execution_id)
         const stored = await this.execution(context, previous.execution_id)
-        const frozen = WorkActivationInputSchema.parse(stored.input)
-        const expected = { ...input }
-        // Inputs admitted before parent obligations were exposed remain frozen.
-        // Reconstruction still validates that obligation from the saved ancestry.
-        if (!('parentRequest' in frozen)) delete expected.parentRequest
-        if (stored.workActivationId !== activationId || !sameRepeatValue(frozen, expected)) {
-          return repeatConflict('WORK_ACTIVATION_REPLAY_CONFLICT')
-        }
+        assertWorkActivationReplay(stored, input)
         return { execution: stored.execution, reused: true }
       }
       const state = (await context.sql.query<{ state: string }>(
@@ -1170,6 +1182,16 @@ export class RepeatRunRepository {
         () => context.hooks.completeRunLocked(context.sql, terminals))
       return 'completed'
     })
+  }
+}
+
+function assertWorkActivationReplay(stored: StoredRepeatExecution, input: WorkActivationInput): void {
+  const frozen = WorkActivationInputSchema.parse(stored.input)
+  const expected = { ...input }
+  // Historical inputs keep their original shape; ancestry is validated separately.
+  if (!('parentRequest' in frozen)) delete expected.parentRequest
+  if (stored.workActivationId !== input.work.activation.activationId || !sameRepeatValue(frozen, expected)) {
+    return repeatConflict('WORK_ACTIVATION_REPLAY_CONFLICT')
   }
 }
 

@@ -1073,6 +1073,15 @@ export const HarnessNativeEventSchema = z
   .strict();
 export type HarnessNativeEvent = z.infer<typeof HarnessNativeEventSchema>;
 
+/** Caller references reconstructed from saved ancestry, separate from frozen task input. */
+export const HarnessExecutionContextSchema = z.object({
+  parentRequest: z.object({
+    requestId: GraphIdSchema,
+    requesterNodeId: GraphIdSchema,
+  }).strict().nullable(),
+}).strict();
+export type HarnessExecutionContext = z.infer<typeof HarnessExecutionContextSchema>;
+
 /** Command handed to a harness adapter when initializing a new native session. */
 export const HarnessExecutionRequestSchema = z
   .object({
@@ -1086,6 +1095,7 @@ export const HarnessExecutionRequestSchema = z
     initialPrompt: z.string().trim().min(1).optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
+    executionContext: HarnessExecutionContextSchema.optional(),
   })
   .strict();
 export type HarnessExecutionRequest = z.infer<typeof HarnessExecutionRequestSchema>;

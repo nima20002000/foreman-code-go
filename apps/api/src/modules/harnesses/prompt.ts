@@ -23,9 +23,13 @@ export function buildHarnessPrompt(request: HarnessExecutionRequest): string {
   const initialPrompt = request.initialPrompt
     ? ['INITIAL USER PROMPT', request.initialPrompt, '']
     : []
+  const executionContext = request.executionContext
+    ? ['TRUSTED WORKFLOW EXECUTION CONTEXT', JSON.stringify(request.executionContext), '']
+    : []
   const prompt = [
     ...appInstructions,
     ...initialPrompt,
+    ...executionContext,
     'ACCEPTED INPUT FROM THE WORKFLOW',
     JSON.stringify(request.input),
     '',

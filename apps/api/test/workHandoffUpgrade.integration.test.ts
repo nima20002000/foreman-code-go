@@ -1,14 +1,27 @@
 import assert from 'node:assert/strict'
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionContextSchema, HarnessExecutionRequestSchema, HarnessExecutionSchema } from '@graphql/contracts'
 import { WorkActivationIdentitySchema, WorkActivationInputSchema, WorkReturnSchema } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { workParentRequestMigration } from '../src/infrastructure/workParentRequestMigration.js'
 import { repeatExecutionIdentity, repeatId, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'
 import { workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
+import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
+import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { finished, workHandoffFixture } from './helpers/workHandoffFixture.js'
 import { digest, text, transaction } from './eng04-migration-fixtures.js'
+
+function nativeReturnFromPrompt(prompt: string) {
+  const contextLine = /^TRUSTED WORKFLOW EXECUTION CONTEXT\n(.+)$/m.exec(prompt)?.[1]
+  assert.ok(contextLine, 'The native continuation needs its saved caller in execution context')
+  const context = HarnessExecutionContextSchema.parse(JSON.parse(contextLine))
+  assert.ok(context.parentRequest)
+  return {
+    routing: { kind: 'return' as const, requestId: context.parentRequest.requestId, outcome: 'accepted' as const },
+    data: { latestDeliverable: { revision: 2 }, remainingFindings: [] },
+  }
+}
 
 describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade', () => {
   it('reuses a populated pre-parent-request continuation and returns to its original caller', async () => {
@@ -88,12 +101,28 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
       expect(replay.execution.input).toEqual(input)
       expect((await db.pool.query('select input_digest from run_repeat_slots where slot_id=$1', [slotId])).rows)
         .toEqual([{ input_digest: inputDigest }])
-      const final = await t.accept(activationId, {
-        routing: { kind: 'return', requestId: ab.request.requestId, outcome: 'accepted' },
-        data: { latestDeliverable: { revision: 2 }, remainingFindings: [] },
-      })
+      const executionContext = await t.store.readWorkExecutionContext(replay.execution.id)
+      expect(executionContext.parentRequest).toEqual({ requestId: ab.request.requestId, requesterNodeId: a.workflowNodeId })
+      await t.restart()
+      expect(await t.store.readWorkExecutionContext(replay.execution.id)).toEqual(executionContext)
+      const configuration = (await db.pool.query<{ record: unknown }>(
+        'select record from agent_configuration_versions where id=$1', [execution.agentConfigurationVersionId])).rows[0]
+      assert.ok(configuration)
+      const node = t.version.definition.nodes.find(item => item.id === execution.workflowNodeId)
+      assert.ok(node && node.kind !== 'job')
+      const request = HarnessExecutionRequestSchema.parse({ executionId: replay.execution.id, runId: t.run.id,
+        workspaceId: t.run.workspaceId, workflowNodeId: replay.execution.workflowNodeId,
+        workingDirectory: db.directory, runtimeDirectory: db.directory, configuration: configuration.record,
+        input: replay.execution.input, executionContext,
+        initialPrompt: currentInitialPrompt(node, false, true) })
+      const nativeResult = nativeReturnFromPrompt(buildHarnessPrompt(request))
+      expect(request.input).toEqual(input)
+      expect(request.input).not.toHaveProperty('parentRequest')
+      const final = await t.accept(activationId, nativeResult)
       await t.restart()
       expect((await t.store.returnWork(final.id)).value.requestId).toBe(ab.request.requestId)
+      expect((await db.pool.query('select input_json,input_digest from run_repeat_slots where slot_id=$1', [slotId])).rows)
+        .toEqual([{ input_json: text(input), input_digest: inputDigest }])
     } finally { await t.close(); await db.close() }
   }, 120000)
 })

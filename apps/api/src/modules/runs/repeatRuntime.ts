@@ -270,10 +270,13 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',
       ].join('\n') : undefined
       const prompts = [initialPrompt, noticePrompt, returnPrompt].filter(Boolean)
+      const executionContext = context.version.definition.handoffs
+        ? await store.readWorkExecutionContext(execution.id) : undefined
+      check()
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
         ...(prompts.length ? { initialPrompt: prompts.join('\n\n') } : {}),
-        configuration, input: execution.input })
+        configuration, input: execution.input, ...(executionContext ? { executionContext } : {}) })
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution

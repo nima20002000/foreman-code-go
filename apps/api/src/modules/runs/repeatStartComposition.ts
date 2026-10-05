@@ -66,6 +66,12 @@ export function repeatNativeStartStore(input: Pick<RepeatEngineStartContext, 'ow
   }
   return {
     store: {
+      readWorkExecutionContext: async (id) => {
+        owned()
+        const context = await store.readWorkExecutionContext(id)
+        owned()
+        return context
+      },
       readExecution: async (id) => {
         owned()
         const current = await store.readExecution(id)
