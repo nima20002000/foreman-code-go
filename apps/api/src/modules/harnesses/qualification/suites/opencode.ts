@@ -225,7 +225,14 @@ export const opencodeQualificationSuite: QualificationSuite = {
         mcpReady = true
         requireCondition(object(object(await request('/mcp'))[mcpName]).status === 'connected', 'File MCP did not connect.')
         evidence['mcp-file-toolsAttempts'] = 1
-        await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+        // Create after MCP registration without the earlier turn's no-tools instructions.
+        await createSession()
+        try {
+          await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+        } finally {
+          const attempts = (evidence.mcpFileAttempts ??= []) as unknown[]
+          attempts.push({ attempt: 1, read, published })
+        }
         requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
         return 'MCP read and publication completed.'
       }],
