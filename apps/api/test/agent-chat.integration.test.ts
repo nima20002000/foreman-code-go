@@ -388,6 +388,34 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     expect(done.messages.some((message) => message.content === 'stale')).toBe(false)
   })
 
+  it.each(['/plan Inspect the repository', 'Inspect the repository'])(
+    'queues one Plan turn instead of steering a regular turn for %s', async content => {
+      const { service } = makeService()
+      const workspace = fixture.scope.workspaceId
+      const read = () => service.read(writer, workspace, query(codexNode))
+      try {
+        const first = await service.send(writer, workspace, request(codexNode, 'warm', null))
+        await settled(service, read)
+        const native = FakeNative.all[0]!
+        native.hold = true
+        await service.send(writer, workspace, request(codexNode, 'regular work', first.state.conversation!.id))
+        const active = await settled(service, read, value => Boolean(value.activeTurn?.nativeTurnId))
+        const input = request(codexNode, content, active.conversation!.id,
+          { intent: 'steer', sessionMode: 'plan', expectedNativeTurnId: active.activeTurn!.nativeTurnId! })
+        const accepted = await service.send(writer, workspace, input)
+        expect(accepted.turn).toMatchObject({ intent: 'next_turn', delivery: 'queued' })
+        expect((await service.send(writer, workspace, input)).replayed).toBe(true)
+        expect(native.steers).toHaveLength(0)
+        native.hold = false
+        native.finish()
+        await settled(service, read)
+        expect(native.modes).toHaveLength(3)
+        expect(native.modes.at(-1)).toBe('plan')
+        expect(native.modes.slice(0, 2)).not.toContain('plan')
+        expect(native.prompts.filter(prompt => prompt.includes('Inspect the repository'))).toHaveLength(1)
+      } finally { await service.shutdown() }
+    })
+
   it('reports OpenCode steering as unavailable and refuses it honestly', async () => {
     const { service } = makeService()
     const state = await service.read(writer, fixture.scope.workspaceId, query(openCodeNode))

@@ -1,6 +1,6 @@
 import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSessionControls } from '../sessionControls/useSessionControls'
-import type { SessionMode } from '@graphql/contracts'
+import { parseSessionCommand, type SessionMode } from '@graphql/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
@@ -65,8 +65,11 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   }, [state])
   const focus = () => composer.current?.focus({ preventScroll: true })
   const submit = (intent: AgentChatIntent, content = draft, sessionMode?: SessionMode) => {
+    const command = parseSessionCommand(content)
+    const mode = command.kind === 'plan-task' ? 'plan' : sessionMode ?? sessionControls.state?.desiredMode
+    const nextIntent = intent === 'steer' && mode === 'plan' ? 'next_turn' : intent
     const attempt = prepareChatAttachments(attachments)
-    if (attempt) chat.send(content, intent, true, false, attempt, sessionMode)
+    if (attempt) chat.send(content, nextIntent, true, false, attempt, mode)
     focus()
   }
   if (selected && chat.access.isPending) return <p role="status">Loading…</p>
