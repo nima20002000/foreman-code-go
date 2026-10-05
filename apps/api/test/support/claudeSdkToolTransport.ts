@@ -27,6 +27,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
   const results: Array<{ name: string; result: unknown; allowed: boolean }> = []
   const offers: string[] = []
   const queries: Array<{ resume: unknown; closed: boolean }> = []
+  const progress: Array<{ tool: string; stage: string }> = []
   let failResume = false
   const sdk: ClaudeSdkClient = {
     sdkVersion: '0.3.284', getSessionInfo: async sessionId => ({ sessionId }),
@@ -69,6 +70,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
         offers.push(message.uuid!)
         send({ type: 'system', subtype: 'init', session_id: nativeId, claude_code_version: '2.1.284', cwd })
         for (const call of calls(String(message.message.content))) {
+          progress.push({ tool: call.name, stage: 'permission' })
           const toolId = randomUUID()
           send({ type: 'assistant', uuid: randomUUID(), session_id: nativeId, parent_tool_use_id: null,
             user_message_uuid: message.uuid, message: { id: randomUUID(), role: 'assistant',
@@ -80,6 +82,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
             allowed = decision.behavior === 'allow'
           }
           let result: unknown
+          progress.push({ tool: call.name, stage: allowed ? 'allowed' : 'denied' })
           if (allowed && call.source === 'sdk') {
             const response = await request({ subtype: 'mcp_message', server_name: call.server,
               message: { jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: {
@@ -93,12 +96,16 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
             if (!config?.url) throw new Error('The delivered HTTP MCP configuration is missing.')
             const client = new Client({ name: 'claude-native-tool', version: '1' })
             clients.push(client)
+            progress.push({ tool: call.name, stage: 'http-connect' })
             await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { ...(config.headers ? { headers: config.headers } : {}) } }))
+            progress.push({ tool: call.name, stage: 'http-call' })
             result = await client.callTool({ name: call.name, arguments: call.arguments })
           }
           results.push({ name: call.name, result, allowed })
+          progress.push({ tool: call.name, stage: 'result' })
           await hook(allowed ? 'PostToolUse' : 'PermissionDenied', call, toolId,
             allowed ? { tool_response: result } : { reason: 'The accepted policy denied this tool.' })
+          progress.push({ tool: call.name, stage: 'acknowledged' })
           send({ type: 'user', uuid: randomUUID(), session_id: nativeId, parent_tool_use_id: null,
             message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolId,
               is_error: !allowed, content: allowed ? JSON.stringify(result) : 'Permission denied' }] } })
@@ -160,5 +167,5 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
       }
     },
   }
-  return { sdk, results, offers, queries, failNextResume: () => { failResume = true } }
+  return { sdk, results, offers, queries, progress, failNextResume: () => { failResume = true } }
 }

@@ -107,7 +107,11 @@ it.each(['management', 'denied-management', 'files'] as const)(
           // Hook acknowledgment arrives after the permission control response.
           expect(approved.result || approved.error).toBeDefined()
         }
-        await vi.waitFor(async () => { await chat.reconcileActive(); expect((await chat.get(conversation.id, owner.principal)).activeRequestId).toBeNull() },
+        await vi.waitFor(async () => {
+          await chat.reconcileActive()
+          const state = await chat.get(conversation.id, owner.principal)
+          expect(state.activeRequestId, JSON.stringify({ error: state.error, progress: transport.progress })).toBeNull()
+        },
           { timeout: 15_000 })
         expect(transport.offers).toHaveLength(1)
         expect(transport.results).toHaveLength(1)

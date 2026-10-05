@@ -1313,7 +1313,10 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       permissionMode: 'default', sandbox: 'read-only', tools: ['Read'], permissionRules: [], instructions: '', mcpServers: {},
     }, (await operators.ensure()).configuration.id)
     chat = new OperatorChatService(repository, operators, () => f.manager, '/tmp/graphql-test-operator', authority)
-    const conversation = await chat.create(owner)
+    const writer = await access.issue({ name: 'truncation owner', audience: 'operator',
+      grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const conversation = await chat.create(writer.principal)
     const reader = await access.issue({ name: 'truncation reader', audience: 'operator',
       grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -1322,7 +1325,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
     const streamed: unknown[] = []
     const unsubscribe = chat.events.subscribe(conversation.id, event => { if (event.type === 'delta') streamed.push(event.data) })
     try {
-      await chat.send(conversation.id, { requestId: 'truncated', content: 'Return a long answer' }, owner)
+      await chat.send(conversation.id, { requestId: 'truncated', content: 'Return a long answer' }, writer.principal)
       await vi.waitFor(() => expect(f.queries).toHaveLength(1))
       const query = f.queries[0]!
       const message = (await query.messages.next()).value!
@@ -1332,16 +1335,23 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       await query.frames.offer(f.frame({ type: 'assistant', uuid: 'truncated-answer', message: { id: 'answer',
         content: [{ type: 'text', text }] } }, message.uuid))
       await query.frames.offer(f.frame({ type: 'result', uuid: 'terminal', subtype: 'success', is_error: false, result: 'done' }, message.uuid))
-      await waitFor(async () => !(await chat.get(conversation.id, owner)).activeRequestId)
+      await waitFor(async () => !(await chat.get(conversation.id, writer.principal)).activeRequestId)
       const truncation = { truncated: true, originalBytes: Buffer.byteLength(text) }
       const stored = (await pool.query("select record from operator_conversation_messages where conversation_id=$1 and role='assistant'",
         [conversation.id])).rows[0]?.record
       expect(stored).toMatchObject({ content: 'é'.repeat(24_000), truncation })
-      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}`,
+      const deniedHttp = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}`,
         headers: { authorization: `Bearer ${reader.token}` } })
+      expect(deniedHttp.statusCode).toBe(404)
+      const deniedMcp = await graphRpc(app, reader.token, 'tools/call', {
+        name: 'operator_chat_get', arguments: { conversationId: conversation.id },
+      })
+      expect(deniedMcp.result?.isError).toBe(true)
+      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}`,
+        headers: { authorization: `Bearer ${writer.token}` } })
       expect(http.statusCode).toBe(200)
       expect(http.json().messages).toContainEqual(expect.objectContaining({ content: stored.content, truncation }))
-      const mcp = await graphRpc(app, reader.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+      const mcp = await graphRpc(app, writer.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
       expect(mcp.result?.isError).not.toBe(true)
       expect((graphRpcValue(mcp.result) as OperatorConversationState).messages)
         .toContainEqual(expect.objectContaining({ content: stored.content, truncation }))
