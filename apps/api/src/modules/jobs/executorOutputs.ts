@@ -8,9 +8,11 @@ import { JobVerificationPassSchema, JobVerificationReportSchema, VerificationJob
   type AcceptedVerificationJobSpec, type JobVerificationReport }
   from '@foreman-code/contracts/job-verification'
 import { z } from 'zod'
-import { JobVerificationRuntimeMeasurementSchema, type JobVerificationRuntimeMeasurement }
+import { JobVerificationRuntimeMeasurementSchema, JobVerificationPrivateGitSchema,
+  JobVerificationPreseedFactsSchema, type JobVerificationRuntimeMeasurement }
   from '@foreman-code/contracts/job-verification-runtime'
 import { jobSupervisorIdentity } from './executor.js'
+import { requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
 
 export class JobOutputCollectionError extends Error {}
 
@@ -61,21 +63,22 @@ export async function readDeclaredJobOutputs(root: string, spec: AcceptedJobSpec
 }
 
 type VerificationExecution = z.infer<typeof VerificationJobExecutionSchema>
-const PreseedFactsSchema = z.object({
-  lockfileSha256: z.string().regex(/^[a-f0-9]{64}$/), pnpmVersion: z.literal('11.27.0'),
-  platform: z.literal('linux'), architecture: z.literal('x64'), provenanceDigest: z.string().regex(/^[a-f0-9]{64}$/),
-  minimumReleaseAgeMinutes: z.literal(2880), releaseAgeVerified: z.literal(true),
-}).strict()
 
 /** Seed facts come from the reviewed image receipt; the context is delivered by the immutable W09 input path. */
 export function verificationRepositoryContext(input: {
   execution: VerificationExecution
   measurement: JobVerificationRuntimeMeasurement
   preseedFacts: unknown
+  gitMounts: VerifiedJobGitMounts
 }) {
   const execution = VerificationJobExecutionSchema.parse(input.execution)
   const measured = JobVerificationRuntimeMeasurementSchema.parse(input.measurement)
   const spec = execution.acceptedSpec
+  const mounts = requireJobGitMounts(execution, { gitMounts: input.gitMounts })
+  const { sourceCommit, generatedCommit, repositoryReceiptDigest, configDigest, indexDigest } = mounts.git
+  const privateGit = JobVerificationPrivateGitSchema.parse({
+    sourceCommit, generatedCommit, repositoryReceiptDigest, configDigest, indexDigest,
+  })
   const suite = measured.suites.find(value => value.suite === spec.verification.suite)
   if (!suite || !isDeepStrictEqual(spec.profile, measured.identity)
     || !['install', 'typecheck', 'lint', 'unit', 'build'].includes(spec.verification.suite)
@@ -96,12 +99,12 @@ export function verificationRepositoryContext(input: {
     suite: spec.verification.suite, executionId: execution.id, attemptId: execution.attemptId,
     target: spec.target, profile: spec.profile, resources: spec.verification.resources,
     parameters: spec.verification.parameters })
-  return { identity, executionTimeoutMs: spec.policy.executionTimeoutMs,
+  return { identity, privateGit, executionTimeoutMs: spec.policy.executionTimeoutMs,
     cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: suite.maxUnitWorkers,
     limits: { summaryBytes, junitBytes, vitestBytes, logsArchiveBytes,
       logBytes: Math.min(spec.policy.maxLogBytes, logsArchiveBytes) },
     mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',
-    preseedReceipt: PreseedFactsSchema.parse(input.preseedFacts) }
+    preseedReceipt: JobVerificationPreseedFactsSchema.parse(input.preseedFacts) }
 }
 
 export interface VerificationReportReserve {

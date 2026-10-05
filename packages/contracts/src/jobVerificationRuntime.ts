@@ -11,6 +11,25 @@ import {
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
+/** W09 authenticates these private repository facts before the worker constructs the read-only context. */
+export const JobVerificationPrivateGitSchema = z.object({
+  sourceCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  repositoryReceiptDigest: DeviceDigestSchema,
+  configDigest: DeviceDigestSchema,
+  indexDigest: DeviceDigestSchema,
+}).strict()
+
+export const JobVerificationPreseedFactsSchema = z.object({
+  lockfileSha256: DeviceDigestSchema,
+  pnpmVersion: z.literal('11.27.0'),
+  platform: z.literal('linux'),
+  architecture: z.literal('x64'),
+  provenanceDigest: DeviceDigestSchema,
+  minimumReleaseAgeMinutes: z.literal(2880),
+  releaseAgeVerified: z.literal(true),
+}).strict()
+
 export const JobVerificationProfileInputSchema = z.object({
   rootId: z.uuid(),
   bindingRevision: DeviceSafeIntegerSchema.positive(),
