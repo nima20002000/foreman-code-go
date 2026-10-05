@@ -36,6 +36,12 @@ export const opencodeQualificationSuite: QualificationSuite = {
     const releaseServer = input.ownCleanup?.(() => server.dispose())
     const releaseApp = input.ownCleanup?.(() => app.close())
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
+    const nativeTurns: Array<{ messageId: string; messages: unknown }> = []
+    const fileRequests: Array<{ method: string; body: unknown; statusCode?: number }> = []
+    const fileResponses: Array<{ tool: string; value: unknown }> = []
+    evidence.nativeTurns = nativeTurns
+    evidence.fileMcpRequests = fileRequests
+    evidence.fileMcpResponses = fileResponses
     let sessionId: string | undefined
     let mcpName: string | undefined
     let mcpReady = false
@@ -50,6 +56,18 @@ export const opencodeQualificationSuite: QualificationSuite = {
     const context: FileToolContext = { ownerPrincipalId: 'qualification', scope, nativeSessionId: 'qualification',
       turnId: 'qualification', allowMutation: true, allowedTools: ['files.read', 'files.publish_result'] }
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
+    const redact = <T>(value: T): T => server.redactWithAdditionalSecrets(value, [token])
+    const observedRequests = new Map<string, typeof fileRequests[number]>()
+    app.addHook('preHandler', async (request) => {
+      const observed = { method: request.method, body: redact(request.body) }
+      fileRequests.push(observed)
+      observedRequests.set(request.id, observed)
+    })
+    app.addHook('onResponse', async (request, reply) => {
+      const observed = observedRequests.get(request.id)
+      if (observed) observed.statusCode = reply.statusCode
+      observedRequests.delete(request.id)
+    })
     const sourceId = randomUUID(), sourceRevisionId = randomUUID(), outputId = randomUUID(), outputRevisionId = randomUUID()
     const now = new Date().toISOString(), expiresAt = new Date(Date.parse(now) + 3_600_000).toISOString()
     const sourceBytes = Buffer.from(`# Qualification\n\n${marker}\n`)
@@ -69,9 +87,11 @@ export const opencodeQualificationSuite: QualificationSuite = {
         requireCondition(request.fileId === sourceId && request.revisionId === sourceRevisionId, 'Wrong source pin.')
         read = true
         const bytes = sourceBytes.subarray(request.offset, request.offset + request.length)
-        return { status: 'ready' as const, file: sourceFile, revision: sourceRevision, readAt: new Date().toISOString(),
+        const result = { status: 'ready' as const, file: sourceFile, revision: sourceRevision, readAt: new Date().toISOString(),
           offset: request.offset, byteLength: bytes.length, contentBase64: bytes.toString('base64'),
           eof: request.offset + bytes.length === sourceBytes.length }
+        fileResponses.push({ tool: 'files.read', value: result })
+        return result
       },
       createWorkingCopy: async () => { throw new Error('files.create_working_copy is not enabled.') },
       publish: async (_token: string, request: { artifactId: string; scope: FileToolContext['scope']; filename: string; mediaType: string }) => {
@@ -83,12 +103,14 @@ export const opencodeQualificationSuite: QualificationSuite = {
             'Published Markdown does not contain the source marker and edit.')
           published = true
           const createdAt = new Date().toISOString()
-          return { value: { file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt,
+          const result = { value: { file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt,
             scope, state: 'ready' as const, retentionDurationSeconds: 3600,
             expiresAt: new Date(Date.parse(createdAt) + 3_600_000).toISOString() },
           revision: { fileId: outputId, revisionId: outputRevisionId, filename: 'qualification-result.md',
             mediaType: 'text/markdown' as const, byteSize: bytes.length,
             sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'agent_output' as const, createdAt } }, replayed: false }
+          fileResponses.push({ tool: 'files.publish_result', value: result })
+          return result
         } catch (error) {
           const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null
           const message = error instanceof Error ? error.message : String(error)
@@ -126,9 +148,12 @@ export const opencodeQualificationSuite: QualificationSuite = {
       await request(`${sessionPath}/prompt_async`, { messageID, agent: 'build',
         ...(model ? { model: { providerID: model[0], modelID: model.slice(1).join('/') } } : {}),
         parts: [{ type: 'text', text: prompt }] })
+      const observed = { messageId: messageID, messages: undefined as unknown }
+      nativeTurns.push(observed)
       while (true) {
         signal.throwIfAborted()
         const messages = await request(`${sessionPath}/message`) as { info?: { role?: string; parentID?: string; finish?: string; error?: unknown; providerID?: string; modelID?: string; time?: { completed?: number } } }[]
+        observed.messages = redact(messages)
         const terminal = messages.find((message) => message.info?.role === 'assistant' && message.info.parentID === messageID
           && (message.info.error || (typeof message.info.time?.completed === 'number'
             && message.info.finish !== undefined && message.info.finish !== 'tool-calls')))
