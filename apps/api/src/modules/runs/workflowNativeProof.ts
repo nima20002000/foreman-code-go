@@ -26,6 +26,7 @@ import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormali
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 import { workflowNativeSourceRecord, persistWorkflowNativeSources } from './workflowNativeSource.js'
 import { appendNormalizedNativeEvent } from './nativeEvents.js'
+import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
 import { OPENCODE_RECONCILIATION_EVENT } from '../harnesses/opencodeReconciliation.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
@@ -236,13 +237,13 @@ export class WorkflowNativeProofServices {
         live: capture.kind === 'live', ...(capture.lane.providerId ? { providerId: capture.lane.providerId } : {}) } : undefined
       const events = capture.source.type === 'event' ? [capture.source.event]
         : history?.events.map((event) => ({ ...event, executionId: stored.execution.id })) ?? []
-      const retainedTranscripts = history && !approval
-        ? await this.retainedTranscriptsLocked(sql, stored.execution.id, events, capture) : new Set<HarnessNativeEvent>()
+      const retainedEvents = history && !approval
+        ? await retainedNativeHistoryEvents(sql, scope, events, capture) : new Set<HarnessNativeEvent>()
       for (const event of events) {
         // The original source is locked above and revalidated before commit.
         // Keep the live capture check while publishing its individual events.
         capture.assertCurrent()
-        if (retainedTranscripts.has(event)) continue
+        if (retainedEvents.has(event)) continue
         await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation)
       }
       if (history?.terminalTurn && capture.lane) {
@@ -257,51 +258,6 @@ export class WorkflowNativeProofServices {
       await this.afterPersistOriginalLocked?.(sql, evidence, structuredClone(record))
       return structuredClone(record)
     } catch (error) { poisonGraphTransaction(sql); throw error }
-  }
-
-  /** A full original history retains all bytes in its private proof. Replaying
-   * an already committed, identical transcript has no semantic effect. Compare
-   * every complete normalized raw row by its exact source tuple before skipping
-   * that no-op; missing/conflicting rows and all authoritative evidence still
-   * use the normal guarded append. No raw insert or source receipt is inferred. */
-  private async retainedTranscriptsLocked(sql: GraphTransactionSql, executionId: string,
-    events: HarnessNativeEvent[], capture: WorkflowNativeCapture): Promise<Set<HarnessNativeEvent>> {
-    const candidates = new Map<string, { normalized: HarnessNativeEvent; originals: HarnessNativeEvent[] }>()
-    const conflicted = new Set<string>()
-    const key = (connection: string | null, sequence: number) => JSON.stringify([connection, sequence])
-    for (const event of events) {
-      const normalized = normalizeNativeProducerEvent(event)
-      if (normalized.rejected || event.type === 'transport.disconnected' || event.type === OPENCODE_RECONCILIATION_EVENT
-        || event.payload.nativeMessageId !== undefined
-        || selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind !== 'ignored') continue
-      const identity = key(event.connectionId ?? null, event.sequence)
-      const previous = candidates.get(identity)
-      if (previous && !sameRepeatValue(previous.normalized, normalized.event)) conflicted.add(identity)
-      if (previous) previous.originals.push(event)
-      else candidates.set(identity, { normalized: normalized.event, originals: [event] })
-    }
-    for (const identity of conflicted) candidates.delete(identity)
-    if (!candidates.size) return new Set()
-    capture.assertCurrent()
-    const rows = await sql.query<{ connection_id: string | null; source_sequence: number | null;
-      sequence: number; record: HarnessNativeEvent }>(`select n.connection_id,n.source_sequence,n.sequence,n.record
-      from harness_native_events n join jsonb_to_recordset($2::jsonb)
-        as original(connection_id text,source_sequence integer)
-        on n.connection_id is not distinct from original.connection_id
-        and case when n.connection_id is null then n.sequence else n.source_sequence end=original.source_sequence
-      where n.execution_id=$1`, [executionId, JSON.stringify([...candidates.values()].map(({ normalized }) => ({
-      connection_id: normalized.connectionId ?? null, source_sequence: normalized.sequence })))])
-    capture.assertCurrent()
-    const retained = new Set<HarnessNativeEvent>()
-    for (const row of rows.rows) {
-      const sourceSequence = row.connection_id === null ? row.sequence : row.source_sequence
-      if (sourceSequence === null) continue
-      const candidate = candidates.get(key(row.connection_id, sourceSequence))
-      if (candidate && sameRepeatValue({ ...row.record, sequence: sourceSequence }, candidate.normalized)) {
-        for (const event of candidate.originals) retained.add(event)
-      }
-    }
-    return retained
   }
 
   async appendEventsLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
