@@ -55,6 +55,7 @@ import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import { readDetachedWorkflowSession, recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
+import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -1075,6 +1076,7 @@ export class ApprovalExecutionCoordinator {
       throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'Restart approval changed its saved native identity.', 409)
     }
     const originals = await owner.oneShotConnection().transaction(async (sql) => {
+      await openWorkflowLifecycleLocked(sql, owner.runId)
       const requests: PendingNativeInteraction[] = []
       for (const item of pending) {
         const proof = await assertSavedPendingApprovalOriginalLocked(sql, item)

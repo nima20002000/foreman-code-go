@@ -29,7 +29,11 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
     const t = await workHandoffFixture(db.pool, 'continuation-upgrade', (version) => ({ ...version,
       definition: { ...version.definition, handoffs: { contractVersion: 1 },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 20 },
-        nodes: version.definition.nodes.map((node) => ({ id: node.id, agentId: node.agentId })),
+        nodes: version.definition.nodes.map((node) => {
+          const configured = { ...node }
+          delete configured.join
+          return configured
+        }),
         edges: [
           { id: 'a-b', kind: 'execution', source: version.definition.nodes[0]!.id, target: version.definition.nodes[1]!.id },
           { id: 'b-c', kind: 'execution', source: version.definition.nodes[1]!.id, target: version.definition.nodes[2]!.id },

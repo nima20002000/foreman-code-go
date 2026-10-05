@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
@@ -8,6 +8,8 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 
@@ -79,7 +81,18 @@ it('renews an expired scoped token while its exact execution lease is still owne
 })
 
 it('restores the original native credential after service restart without allocating or rotating it', async () => {
-  const issued = await credentials.issueForExecution(execution.id)
+  const configuration = AgentConfigurationVersionSchema.parse((await pool.query(
+    'select record from agent_configuration_versions where id=$1', [execution.agentConfigurationVersionId])).rows[0].record)
+  const session = { harness: configuration.harness.harness, providerVersion: 'credential-fixture-no-native',
+    nativeSessionId: 'original-credential-session' }
+  execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId })
+  await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(execution)])
+  const coordination = new PostgresInteractionCoordinationRepository(pool)
+  await coordination.bindWorkflowSession(execution.id, session)
+  await coordination.ensureLane({ id: 'original-credential-lane', harness: session.harness,
+    nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
+    connectionGeneration: 1, revision: 0, observedAt: execution.createdAt, observedStatus: 'idle' })
+  const issued = await new Wave25WorkerCredentialService(pool, access, 60_000).issueForExecution(execution.id)
   const before = (await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
     [issued.principalId])).rows[0]
   const restarted = new WorkerCredentialService(pool, new PostgresAccessService(pool), 60_000)
