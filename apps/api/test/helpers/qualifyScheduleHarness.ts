@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
@@ -22,6 +21,8 @@ import { runWithReadOnlyQualification } from '../../src/modules/harnesses/qualif
 import { scopedCompatibilityProbe } from '../../src/modules/harnesses/compatibility/scopedProbe.js'
 import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
 import type { Sch11Fixture } from './sch11Fixture.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
 /** Native acceptance only: the same qualifiers, owner guards and persistence as production. */
 export async function qualifyScheduleHarness(f: Sch11Fixture, principal: ManagementPrincipal,
@@ -34,7 +35,13 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
   const savedDefaults = await defaults.getHarnessDefaults()
   await defaults.saveHarnessDefaults({ ...savedDefaults,
     codex: { ...savedDefaults.codex, model: configuration.model, reasoningEffort: configuration.reasoningEffort } })
-  const processes = new NativeProcessRegistry(join(f.runtimeRoot, `qualification-${randomUUID()}`))
+  const registryDirectory = join(f.runtimeRoot, `qualification-${randomUUID()}`)
+  const processes = new NativeProcessRegistry(registryDirectory)
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation, {
+    kind: 'native-qualification', root: f.database.directory, registryDirectory,
+    schema: f.database.schema, databaseUrl: process.env.TEST_DATABASE_URL!,
+  })
   const factories = new NativeHarnessFactories({
     codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, openCodeBinary: 'opencode',
     instances: registry.instances, installations: registry.installations,
@@ -70,15 +77,14 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       throw new Error('Main-local qualification does not request a worker.')
     }, f.runtimeRoot))
   const failures: unknown[] = []
+  const cleanupFailures: unknown[] = []
   try {
     const submitted = (await service.run(principal, 'http', 'codex')).qualification
     await service.join()
     const result = await repository.find('codex', submitted.version, submitted.binarySha256!, submitted.suiteRevision)
     if (result?.status !== 'qualified') {
-      const evidenceDirectory = process.env.ENG03_A_EVIDENCE_DIR
-      if (evidenceDirectory && result) {
-        await writeFile(join(evidenceDirectory, `schedule-qualification-${randomUUID()}.json`),
-          JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 })
+      if (result) {
+        await writeNativeAcceptanceEvidence(`schedule-qualification-${randomUUID()}.json`, result)
       }
       const failedChecks = result?.checks.filter(check => !check.passed).map(check => check.id).join(', ')
       throw new Error(`Native qualification did not pass (${failedChecks || 'no completed checks'}): ${result?.failureReason}`)
@@ -95,9 +101,21 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     factories.stopAuxiliaries()
     const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
     for (const result of closed) {
-      if (result.status === 'rejected') failures.push(result.reason)
+      if (result.status === 'rejected') cleanupFailures.push(result.reason)
+    }
+    for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
+      try {
+        if (!await processes.closeOwner(owner)) throw new Error('Native schedule qualification closure is unconfirmed.')
+      } catch (error) {
+        cleanupFailures.push(error)
+      }
     }
   }
+  if (!cleanupFailures.length) {
+    try { completeTestResourceCleanup(invocation, cleanupId) }
+    catch (error) { cleanupFailures.push(error) }
+  }
+  failures.push(...cleanupFailures)
   if (failures.length === 1) throw failures[0]
   if (failures.length > 1) throw new AggregateError(failures, 'Native schedule qualification or cleanup failed.')
 }

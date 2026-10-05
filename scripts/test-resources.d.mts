@@ -13,6 +13,7 @@ export function removeTestRoot(resource: TestRoot): void
 export function registerTestResourceCleanup(resource: TestRoot, details: Record<string, unknown>): string
 export function completeTestResourceCleanup(resource: TestRoot, id: string): void
 export function assertTestResourcesSettled(resource: TestRoot): void
+export function assertFixtureResourcesSettled(directory: string): void
 export function cleanupTestResources(resource: TestDatabase): Promise<void>
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
 export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise<{

@@ -106,6 +106,24 @@ export function assertTestResourcesSettled(resource) {
   }
 }
 
+export function assertFixtureResourcesSettled(fixtureDirectory) {
+  const target = ownedTestPath(fixtureDirectory)
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+  const directory = assertTestPath(invocation, join(invocation.directory, cleanupDirectory))
+  if (!existsSync(directory)) return
+  for (const name of readdirSync(directory)) {
+    const file = assertTestPath(invocation, join(directory, name))
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    if (record.token !== invocation.token || name !== `${record.id}.json`) {
+      throw new Error('Test cleanup ownership mismatch')
+    }
+    const paths = [record.root, record.registryDirectory]
+    if (paths.some(path => typeof path === 'string' && (path === target || path.startsWith(`${target}/`)))) {
+      throw new Error(`Test cleanup remains unconfirmed; database and recovery state retained at ${target}`)
+    }
+  }
+}
+
 export function testEnvironment(environment, resource) {
   environment = resolveProductEnvironment(environment)
   requireTestServerUrl(resource.databaseUrl)

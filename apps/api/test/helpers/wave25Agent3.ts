@@ -16,6 +16,7 @@ import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/module
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { assertFixtureResourcesSettled } from '../../../../scripts/test-resources.mjs'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
@@ -44,7 +45,10 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
     pool, schema, directory,
     async close() {
       await pool.end()
-      try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
+      try {
+        assertFixtureResourcesSettled(directory)
+        await dropFixtureSchema(admin, schema)
+      } finally { await admin.end() }
       await removeFixtureDirectory(directory)
     },
   }

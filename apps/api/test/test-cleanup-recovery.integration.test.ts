@@ -1,15 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { expect, it } from 'vitest'
-import { assertTestDatabase, provisionTestResources, testAdminPool } from '../../../scripts/test-resources.mjs'
+import { assertTestDatabase, completeTestResourceCleanup, dropFixtureSchema, provisionTestResources,
+  registerTestResourceCleanup, removeFixtureDirectory, testAdminPool } from '../../../scripts/test-resources.mjs'
 import { groupUsed, stopGroup } from '../../../scripts/integration-process.mjs'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { agent3Database } from './helpers/wave25Agent3.js'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const require = createRequire(import.meta.url)
@@ -20,6 +23,41 @@ const wrapper = join(root, 'scripts/test-command.mjs')
 function exit(child: ChildProcess): Promise<number | null> {
   return once(child, 'exit').then(([code]) => code as number | null)
 }
+
+it('retains fixture rows and native state until pending qualification closure is confirmed', async () => {
+  const fixture = await agent3Database()
+  const registryDirectory = join(fixture.directory, 'native-processes')
+  const registry = new NativeProcessRegistry(registryDirectory)
+  const owner = 'unfinished-schedule-qualification'
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation, {
+    kind: 'native-qualification', root: fixture.directory, registryDirectory, schema: fixture.schema,
+    databaseUrl: process.env.TEST_DATABASE_URL!,
+  })
+  const saved = join(fixture.directory, 'recovery-note.txt')
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1 })
+  try {
+    await fixture.pool.query('create table retained_fixture(value text)')
+    await fixture.pool.query('insert into retained_fixture values($1)', ['preserved'])
+    await writeFile(saved, 'pending closure')
+    const recovery = registry.reserveLaunch(owner)
+    await expect(registry.closeOwner(owner)).rejects.toThrow('closure remains unconfirmed')
+    await expect(fixture.close()).rejects.toThrow('cleanup remains unconfirmed')
+    expect((await admin.query(`select value from ${fixture.schema}.retained_fixture`)).rows)
+      .toEqual([{ value: 'preserved' }])
+    expect(await readFile(saved, 'utf8')).toBe('pending closure')
+    expect(await registry.abandonReservedLaunch(recovery)).toBe(true)
+    expect(await new NativeProcessRegistry(registryDirectory).closeOwner(owner)).toBe(true)
+    completeTestResourceCleanup(invocation, cleanupId)
+    await dropFixtureSchema(admin, fixture.schema)
+    await removeFixtureDirectory(fixture.directory)
+    expect(existsSync(fixture.directory)).toBe(false)
+    expect((await admin.query('select nspname from pg_namespace where nspname=$1', [fixture.schema])).rows)
+      .toEqual([])
+  } finally {
+    await admin.end()
+  }
+}, 30_000)
 
 async function waitForFile(file: string, child: ChildProcess): Promise<void> {
   const deadline = Date.now() + 20_000
