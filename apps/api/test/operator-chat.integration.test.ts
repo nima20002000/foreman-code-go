@@ -281,8 +281,14 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
       const app = buildApp({
         readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-        operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) }
-          as unknown as OperatorServices } })
+        operator: {
+          access,
+          services: {
+            operatorChat: chat,
+            commands: new PostgresCommandCoordinator(pool),
+          } as unknown as OperatorServices,
+        },
+      })
       registerOperatorChatRoutes(app, chat)
       const client = new Client({ name: 'cold-control-reader', version: '1' })
       try {
