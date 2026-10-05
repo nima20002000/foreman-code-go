@@ -106,6 +106,12 @@ export function autoRetestFiles(failedFiles, { diagnostic, interrupted }) {
   return diagnostic || interrupted ? [] : [...new Set(failedFiles)].sort()
 }
 
+export function integrationVitestArguments(file, testNamePattern) {
+  return ['run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1',
+    '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache',
+    ...(testNamePattern ? ['--testNamePattern', testNamePattern] : [])]
+}
+
 export function fullRunExitCode(failed, interrupted) {
   return interrupted === 'SIGINT' ? 130 : interrupted ? 143 : failed ? 1 : 0
 }
@@ -248,7 +254,8 @@ async function main() {
   let selected = selectFiles(allFiles, startAt)
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
-  const diagnostic = Boolean(startAt || failedFrom)
+  const testNamePattern = readProductEnvironment(process.env, 'INTEGRATION_TEST_NAME_PATTERN')
+  const diagnostic = Boolean(startAt || failedFrom || testNamePattern)
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
   if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
@@ -331,6 +338,7 @@ async function main() {
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
     if (files) console.log('[integration] Selected-file run; results cover only the requested files.')
+    if (testNamePattern) console.log(`[integration] DIAGNOSTIC case selection: ${JSON.stringify(testNamePattern)}; not a verification gate.`)
     const runFile = async (slot, file, phase = 'first') => {
       if (interrupted) return { code: 128 + (interrupted === 'SIGINT' ? 2 : 15) }
       if (active.has(slot.index)) throw new Error(`Slot ${slot.index} still has an owned process group`)
@@ -343,7 +351,9 @@ async function main() {
       const fd = openSync(log, 'w', 0o600)
       const environment = integrationEnvironment(process.env, slot)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
-      const child = spawn('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
+      const child = spawn('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest',
+        ...integrationVitestArguments(file, testNamePattern)],
+      { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       const progress = integrationProcessProgress()
       active.set(slot.index, { child, file, progress })
