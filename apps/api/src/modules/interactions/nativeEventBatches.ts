@@ -43,7 +43,8 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
         NATIVE_PRODUCER_REJECTION_TYPE, 'transport.disconnected', 'interaction.pending', 'permission.asked',
       ].includes(next.value.type)
         || selectNativeGraphEvidence(next.value.type, next.value.payload).kind !== 'ignored'
-      if (immediate || batch.length === NATIVE_EVENT_BATCH_SIZE || Date.now() >= flushAt) {
+      // Ready reads fill the bounded batch; the timer race flushes a waiting read.
+      if (immediate || batch.length === NATIVE_EVENT_BATCH_SIZE) {
         yield batch
         batch = []
       }
