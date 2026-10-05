@@ -43,6 +43,13 @@ configuration. Run it through the root acceptance runner on the approved host.
 It also exercises authenticated MCP denial, creation, execution, cancellation and
 persisted report readback. Fixture tests do not establish physical qualification.
 
+Installer capture is covered by
+`apps/api/test/installed-verification-runtime-capture.acceptance.test.ts`, using
+`FOREMAN_CODE_VERIFICATION_QUALIFICATION_CAPTURE_INPUT` and the protected profile
+input. It reads actual kernel quota state, hashes the selected binaries and seed,
+and checks metadata restoration after host restart. It does not substitute a
+quota observation or mutate the installed seed.
+
 Single-device physical qualification belongs to Phase 2. The two-computer
 Codex-to-Codex gate belongs to Phase 5. Claude/OpenCode two-computer cases remain
 untested. Provider credentials stay on their original computers; real Claude

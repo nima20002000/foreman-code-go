@@ -1,9 +1,9 @@
+import { privateFixtureDirectory } from '../../../../test/helpers/privateFixtureDirectory.js'
 import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from '../../jobs/privateGitMounts.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -28,7 +28,7 @@ import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
 async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false) {
-  const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
+  const root = await privateFixtureDirectory('w08-job-'); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
   const sourceRoot=join(root,execution.acceptedSpec.source.materializationId,'tree');await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot,{mode:0o700})

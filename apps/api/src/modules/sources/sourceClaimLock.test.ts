@@ -1,5 +1,5 @@
-import { chmod, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
+import { chmod, readdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { withClaimLock } from './materialization.js'
@@ -37,7 +37,7 @@ async function settlement<T>(promise: Promise<T>): Promise<T | 'still waiting'> 
 }
 
 it('cancels and joins only its own blocking lock waiter, then releases its guard before rejecting', async () => {
-  const path = await mkdtemp(join(tmpdir(), 'source-claim-lock-'))
+  const path = await privateFixtureDirectory('source-claim-lock-')
   roots.push(path)
   await chmod(path, 0o700)
   const ownerRoot = await openPrivateRoot(path)

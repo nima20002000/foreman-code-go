@@ -3,12 +3,20 @@ import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { expect, it, vi } from 'vitest'
 import { captureGitSource, qualifiedGit } from '../src/modules/sources/capture.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 
 it('captures this complete committed repository into real private storage within the existing source budget', async () => {
-  const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
+  const repository = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
+  const git = promisify(execFile)
+  const gitDirectory = (await git('git', ['rev-parse', '--absolute-git-dir'], { cwd: repository })).stdout.trim()
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  const root = await privateFixtureDirectory('repository-capture-')
+  await git('git', ['clone', '--quiet', '--no-hardlinks', gitDirectory, root], { env: environment })
   const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
   const directory = await mkdtemp(join(persistentFixtureRoot, 'entrypoints-source-capture-'))
@@ -19,8 +27,12 @@ it('captures this complete committed repository into real private storage within
     expect(manifest.entries.map(entry => entry.path)).toEqual([...approvedPaths].sort())
     expect(manifest.entries.length).toBeGreaterThan(2000)
     const entry = manifest.entries.find(value => value.path === 'AGENTS.md')!
-    expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000))).toString()).toContain('Repository instructions')
-  } finally { await rm(directory, { recursive: true, force: true }) }
+    expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000))))
+      .toEqual(await qualifiedGit(root, ['show', `${commit}:AGENTS.md`]))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true })
+  }
 }, 60_000)
 
 it('joins the actual Git child after cancellation with unread batch output', async () => {

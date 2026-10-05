@@ -1,10 +1,10 @@
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
-import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { chmod, mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
@@ -24,7 +24,7 @@ const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture(exitCode=7) {
-  const root = await mkdtemp(join(tmpdir(), 'ci-oci-input-')); roots.push(root)
+  const root = await privateFixtureDirectory('ci-oci-input-'); roots.push(root)
   const sourceRoot = join(root, '11111111-1111-4111-8111-111111111111','tree'), runtimeRoot = join(root, 'runtime')
   await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 }); const inputRoot = join(sourceRoot, JOB_INPUT_DIRECTORY); await mkdir(inputRoot)
   const execution = jobExecution(); const digest = 'a'.repeat(64)

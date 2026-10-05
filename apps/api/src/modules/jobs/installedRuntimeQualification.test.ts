@@ -1,3 +1,5 @@
+import { nativeAgentEnvironment } from '../harnesses/secrets.js'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import type pg from 'pg'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { PostgresSourceService } from '../sources/service.js'
@@ -7,8 +9,7 @@ import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm, readFile, writeFile, mkdir, stat } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { rm, readFile, writeFile, mkdir, stat } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JobRuntimeNativeAdmissionSchema } from '@foreman-code/contracts/job-runtime'
@@ -16,7 +17,8 @@ import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import * as processes from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { JobQualificationCandidateSchema, jobQualificationFingerprint } from './qualification.js'
-import { reserveInstalledJobQualification, runInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
+import { reserveInstalledJobQualification, runInstalledJobRuntimeQualification,
+  reconcileInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import * as installedHost from './installedRuntimeHost.js'
 import { JobVerificationQualificationCandidateSchema, JobRuntimeNativeAdmissionRecordSchema }
   from '@foreman-code/contracts/job-verification-runtime'
@@ -42,14 +44,15 @@ async function fixture() {
       ociExecutable: '/usr/bin/crun', ociBinarySha256: digest, imageDigest: `sha256:${digest}`, toolchainDigest: digest, configurationDigest: digest,
       limits: { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 64, diskBytes: 2097152 } },
     backingFile: '/approved/ci-volume.ext4', backingBytes: 2097152, findmntBinary: '/usr/bin/findmnt', findmntBinarySha256: digest,
-    controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8' }, sourceParent: '/approved/source',
+    controllerEnvironment: nativeAgentEnvironment(process.execPath, '/approved/runtime',
+      { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8' }), sourceParent: '/approved/source',
     runtimeRoot: '/approved/runtime', spoolBytes: 131072, ttlSeconds: 600 })
   const admission = JobRuntimeNativeAdmissionSchema.parse({ schemaVersion: 1, kind: 'job-runtime-qualification', approvalId: id,
     qualificationId: id, operationId: id, workspaceId: id, profileId: id, profileRevision: 1, fingerprintDigest: jobQualificationFingerprint(candidate),
     leaseId: id, runCommandId: 'real-command', runPrincipalId: 'real-running-principal', approvedByPrincipalId: 'real-human',
     hostRef: candidate.fingerprint.hostRef, registration: null, mainInstallationId: id, bootId, connection: null,
     admittedAt: new Date().toISOString(), expiresAt: '2100-01-01T00:00:00Z' })
-  const directory = await mkdtemp(join(tmpdir(), 'ci-native-journal-')); roots.push(directory)
+  const directory = await privateFixtureDirectory('ci-native-journal-'); roots.push(directory)
   const path = join(directory, 'journal.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
   const registry = { scope: vi.fn((owner: string) => ({ root: '/actual-registry', owner })), reserveLaunch: vi.fn(() => ({ root: '/actual-registry', owner: `qualification:${id}:${id}`, launchId: randomUUID() })),
     closeRegistration: vi.fn(), abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true),
@@ -166,6 +169,10 @@ describe('actual qualification reservation seams with mocked native entry only',
       signal: AbortSignal.abort(new Error('original caller disconnected')) })
     await expect(recovered.native.reserveProcess(process.execPath, ['--remote=false', 'info'])).rejects.toThrow()
     expect(await recovered.native.close()).toBe(true)
+    expect(await readFile(path, 'utf8')).toContain(id)
+    expect(await reconcileInstalledJobRuntimeQualification({ ...f.input, journal: reopened,
+      signal: AbortSignal.abort(new Error('original caller disconnected')) }))
+      .toMatchObject({ outcome: 'denied', closure: 'confirmed' })
     await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(namespace)).rejects.toMatchObject({ code: 'ENOENT' })
     expect((await reopened.qualificationStatus(id))?.quotaClaims).toEqual([])

@@ -1,7 +1,7 @@
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import type { JobExecution } from '@foreman-code/contracts/jobs'
 import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from './privateGitMounts.js'
-import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { constants, readFileSync as requireRead } from 'node:fs'
 import { identity } from '../sources/privateFilesystem.js'
@@ -18,7 +18,7 @@ import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistr
 const roots: string[] = [], journals: RemoteOperationJournal[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(journals.splice(0).map(value => value.close())); await Promise.all(roots.splice(0).map(value => rm(value, { recursive: true, force: true }))) })
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'ci-job-owner-')); roots.push(root)
+  const root = await privateFixtureDirectory('ci-job-owner-'); roots.push(root)
   const path = join(root, 'job-runtime-operations.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
   const execution = jobExecution(); execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
   const sourceRoot = join(root, execution.acceptedSpec.source.materializationId,'tree'), runtimeRoot = join(root, 'runtime'); await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 })

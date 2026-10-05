@@ -93,7 +93,11 @@ describe('authenticated original Job source producer with SQL doubles, no DB/phy
     const execution = VerificationJobExecutionSchema.parse({ ...f.execution, schemaVersion: 2,
       acceptedSpec: { ...f.execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
         outputs: facts.spec.outputs, verification: facts.spec.verification, profile: measured.identity,
-        reservationId: randomUUID(), lifecycle: facts.lifecycle } })
+        reservationId: randomUUID(), lifecycle: facts.lifecycle,
+        resourcePolicyRevision: measured.fingerprint.resourcePolicyRevision,
+        resourcePolicyDigest: measured.fingerprint.resourcePolicyDigest,
+        runtimeApprovalId: measured.fingerprint.runtimeApprovalId,
+        runtimeApprovalRevision: measured.fingerprint.runtimeApprovalRevision } })
     const profile = createVerificationProfile({
       id: facts.profile.profileId, revision: facts.profile.profileRevision, workspaceId: execution.workspaceId,
       name: 'Verification runtime', root: f.root, sourceCommit: execution.acceptedSpec.source.commit,

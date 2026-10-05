@@ -23,7 +23,7 @@ function profiles(): JobRuntimeProfileRecord[] {
       resources: f.spec.verification.resources, policy: JobVerificationPolicyRequirementsSchema.parse(jobPolicyRequirementsRecord(f.spec.policy)),
       suites: ['unit'], approvalConfig: { approvalLifetimeMs: fingerprint.approvalConfig.approvalLifetimeMs } },
     createdAt: f.measurement.checkedAt, updatedAt: f.measurement.checkedAt })
-  const build = buildComputerFixture('main-installation', 'workspace').candidate.profile
+  const build = buildComputerFixture(fingerprint.mainInstallationId, fingerprint.root.binding.workspaceId).candidate.profile
   if (build.schemaVersion !== 1) throw new Error('Build fixture required')
   return [verification, jobRuntimeMetadataFixture(build, randomUUID()).profile]
 }

@@ -1,8 +1,8 @@
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { sourceMaterializationClaimName } from './quotaClaims.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, mkdir, open, readdir, readFile, rm, writeFile, symlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { chmod, mkdir, open, readdir, readFile, rm, writeFile, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
@@ -15,7 +15,7 @@ import { identity, openPrivateRoot } from './privateFilesystem.js'
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture(slotCount = 2) {
-  const root = await mkdtemp(join(tmpdir(), 'job-source-quota-'))
+  const root = await privateFixtureDirectory('job-source-quota-')
   roots.push(root)
   await chmod(root, 0o700)
   const bytes = Buffer.from('same accepted source')

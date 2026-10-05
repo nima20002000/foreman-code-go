@@ -1,7 +1,7 @@
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
@@ -12,7 +12,7 @@ const run = promisify(execFile)
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 async function fixture(objectFormat: 'sha1' | 'sha256' = 'sha1') {
-  const root = await mkdtemp(join(tmpdir(), 'verification-snapshot-'))
+  const root = await privateFixtureDirectory('verification-snapshot-')
   roots.push(root)
   const directory = join(root, 'approved')
   const namespace = join(root, 'qualification')

@@ -403,7 +403,7 @@ export async function reconcileInstalledJobRuntimeQualification(input: Installed
   const result: JobRuntimeQualificationResult = { outcome: 'denied',
     closure: closed ? 'confirmed' : 'unconfirmed',
     reasons: prior.result?.outcome === 'denied' ? prior.result.reasons : [reason.slice(0, 500)] }
-  if (closed) await input.journal.qualificationResult(input.admission.operationId, result)
+  if (closed) await reserved.native.recordResult!(result)
   return result
 }
 

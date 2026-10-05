@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { DeviceSessionBindingSchema } from '@foreman-code/contracts/device-connection'
-import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
+import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 
 const ports = vi.hoisted(() => ({ qualification: vi.fn(), open: vi.fn(), close: vi.fn(), jobs: vi.fn(), recover: vi.fn(), handle: vi.fn(), shutdown: vi.fn(), inputs: vi.fn() }))
@@ -52,17 +53,23 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
     jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 }, approvedRoots: async () => ({} as ApprovedRootAllowlist),
     connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined }), codexSuiteRevision: 'unit-suite' })
   expect(ports.jobs).not.toHaveBeenCalled()
-  // Only routing is exercised: parsed Job frame classification is a schema port double.
-  vi.spyOn(RemoteJobExecutionRpcRequestSchema, 'safeParse').mockReturnValue({ success: true, data: {} } as ReturnType<typeof RemoteJobExecutionRpcRequestSchema.safeParse>)
+  const job = jobExecution()
+  const request = RemoteJobExecutionRpcRequestRecordSchema.parse({ method: 'job-status', intent: {
+    schemaVersion: 1, protocolVersion: 1, mainId: job.acceptedSpec.target.mainId,
+    subject: { kind: 'manual-job', workspaceId: job.workspaceId, jobExecutionId: job.id,
+      definitionId: job.acceptedSpec.definitionId }, executionId: job.id, attemptId: job.attemptId,
+    operationId: job.operationId, bindingHash: job.acceptedSpec.bindingHash,
+    inputDigest: `sha256:${job.acceptedSpec.specDigest}`, owner: job.owner,
+  } })
   const execution = mounted.extensions.find(extension => extension.namespace === 'execution-v1')!
   const context = { binding, signal: new AbortController().signal }
-  await expect(execution.handle!({}, context)).resolves.toEqual({ payload: { status: 'unit-routed' } })
-  await execution.handle!({}, context)
+  await expect(execution.handle!(request, context)).resolves.toEqual({ payload: { status: 'unit-routed' } })
+  await execution.handle!(request, context)
   expect(calls).toEqual(['recover', 'handle', 'handle'])
   expect(ports.jobs).toHaveBeenCalledTimes(1)
   expect(ports.jobs.mock.calls[0]![0]).toMatchObject({ connection: binding, journal: await ports.open.mock.results[0]!.value })
   expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json')
-  await expect(execution.handle!({}, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
+  await expect(execution.handle!(request, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
   await mounted.close()
   expect(ports.shutdown).toHaveBeenCalledOnce()
   vi.restoreAllMocks()

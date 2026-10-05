@@ -1,2 +1,4 @@
-// Verification sets TMPDIR to private quota-backed executable scratch.
-export const persistentFixtureRoot = process.env.TMPDIR ?? '/var/tmp'
+import { privateFixtureRoot } from './privateFixtureDirectory.js'
+
+// HOME is quota-backed scratch inside verification; heavy-job TMPDIR may have shared ancestors.
+export const persistentFixtureRoot = await privateFixtureRoot()
