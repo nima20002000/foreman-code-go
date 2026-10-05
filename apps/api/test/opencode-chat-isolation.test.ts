@@ -17,14 +17,16 @@ describe('OpenCode chat App MCP isolation', () => {
       assert.deepEqual(config.mcp[name], { ...inherited.mcp[name as keyof typeof inherited.mcp], enabled: false })
     }
     assert.deepEqual(config.mcp.docs, inherited.mcp.docs)
+    assert.deepEqual(config.mcp['foreman-code'], { enabled: false })
     assert.equal(inherited.mcp['graphql-operator'].enabled, true)
     assert.deepEqual(JSON.parse(buildOpenCodeChatConfigContent(undefined, 'graphql')).mcp, {
-      graphql: { enabled: false }, 'graphql-app': { enabled: false }, 'graphql-operator': { enabled: false },
+      'foreman-code': { enabled: false }, graphql: { enabled: false },
+      'graphql-app': { enabled: false }, 'graphql-operator': { enabled: false },
     })
     const disabled = Object.fromEntries(['graphql', 'graphql-app', 'graphql-operator']
       .map((name) => [name, { status: 'disabled' }]))
     assert.doesNotThrow(() => assertOpenCodeChatMcpDisabled(config, disabled, 'graphql'))
-    for (const name of ['graphql-app', 'graphql-operator']) {
+    for (const name of ['foreman-code', 'graphql', 'graphql-app', 'graphql-operator']) {
       assert.throws(() => assertOpenCodeChatMcpDisabled(config, { ...disabled, [name]: { status: 'connected' } }, 'graphql'),
         (error: { result?: { error?: { code?: string } } }) => error.result?.error?.code === 'OPENCODE_APP_MCP_UNAVAILABLE')
       assert.throws(() => assertOpenCodeChatMcpDisabled({ ...config, mcp: { ...config.mcp, [name]: { enabled: true } } }, disabled, 'graphql'),
